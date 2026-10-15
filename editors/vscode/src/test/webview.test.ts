@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import * as vm from "node:vm";
 
-import { updateDialog } from "../core/dialogs";
+import { modelDialog, reasoningDialog, updateDialog } from "../core/dialogs";
 
 const root = path.join(__dirname, "..", "..");
 const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
@@ -567,8 +567,10 @@ describe("webview footer", () => {
     assert.equal(chips.length, 2);
     assert.equal(byId.get("meta")!.children.length, 2);
     assert.equal(chips[0].dataset.control, "model");
-    assert.equal(chips[0].children[1].textContent, "glm-5");
-    assert.equal(chips[1].children[1].textContent, "Auto");
+    assert.equal(chips[0].children[0].textContent, "glm-5");
+    assert.equal(chips[1].children[0].textContent, "Auto");
+    assert.equal(chips[0].children[0].className, "setting-value");
+    assert.equal(chips[0].children[1].className, "control-icon selector-caret");
     assert.equal(chips[0].getAttribute("aria-label"), "model: glm-5 · 128.0k");
     assert.equal(chips[0].title, "model: glm-5 · 128.0k\nSwitch the model");
     assert.ok(shell.indexOf('id="model-settings"') < shell.indexOf('id="stop"'));
@@ -576,15 +578,15 @@ describe("webview footer", () => {
       { id: "model", label: "model: another-model · 200k" },
       { id: "reasoning", label: "thinking: high" },
     ] } }));
-    assert.equal(byId.get("model-settings")!.children[0].children[1].textContent, "another-model");
-    assert.equal(byId.get("model-settings")!.children[1].children[1].textContent, "High");
+    assert.equal(byId.get("model-settings")!.children[0].children[0].textContent, "another-model");
+    assert.equal(byId.get("model-settings")!.children[1].children[0].textContent, "High");
   });
 
   it("keeps a model label with no prefix visible and accessible", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ footer: { ...footer, chips: [{ id: "model", label: "glm-5" }] } }));
     const chip = byId.get("model-settings")!.children[0];
-    assert.equal(chip.children[1].textContent, "glm-5");
+    assert.equal(chip.children[0].textContent, "glm-5");
     assert.equal(chip.getAttribute("aria-label"), "glm-5");
     assert.equal(chip.title, "glm-5 — click to change");
   });
@@ -592,11 +594,59 @@ describe("webview footer", () => {
   it("posts the chip's control id when its visible value is clicked", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage());
-    const value = byId.get("model-settings")!.children[1].children[1];
+    const value = byId.get("model-settings")!.children[1].children[0];
     byId.get("model-settings")!.fire("click", { target: value });
     const message = last(posted);
     assert.equal(message.k, "control");
     assert.equal(message.control, "reasoning");
+  });
+
+  it("anchors the model dropdown to the selector and preserves search across updates", () => {
+    const { byId, send, active, fireDocument, posted } = loadRenderer();
+    send(stateMessage());
+    const dialog = modelDialog("glm-5", "zai", "", [{ provider: "zai", model: "glm-5" }]);
+    send({ k: "dialog", dialog });
+    const box = byId.get("dialog")!;
+    const search = byId.get("dialog-search-input")!;
+    assert.equal(box.classList.contains("settings-dropdown"), true);
+    assert.equal(box.getAttribute("role"), "dialog");
+    assert.equal(box.getAttribute("aria-modal"), null);
+    assert.equal(byId.get("model-settings")!.children[0].getAttribute("aria-expanded"), "true");
+    assert.ok(box.style.bottom.endsWith("px"));
+    assert.equal(active(), search);
+    search.value = "glm";
+    send({ k: "dialog", dialog: { ...dialog, query: "glm" } });
+    assert.equal(active(), search);
+    assert.equal(search.value, "glm");
+    box.fire("keydown", { key: "ArrowDown", preventDefault() {} });
+    assert.equal(active(), byId.get("dialog-list")!.children[0]);
+    const outside = byId.get("input")!;
+    outside.focus();
+    fireDocument("click", { target: outside });
+    assert.equal(box.hidden, true);
+    assert.equal(active(), outside);
+    assert.equal(last(posted).action, "dialogClose");
+    assert.equal(byId.get("model-settings")!.children[0].getAttribute("aria-expanded"), "false");
+    assert.match(style, /#dialog\.settings-dropdown\s*\{\s*position: fixed;/);
+  });
+
+  it("focuses the selected reasoning, walks choices and restores the selector on Escape", () => {
+    const { byId, send, active, fireDocument } = loadRenderer();
+    send(stateMessage());
+    send({ k: "dialog", dialog: reasoningDialog("high", ["auto", "low", "high"]) });
+    const box = byId.get("dialog")!;
+    const rows = byId.get("dialog-list")!.children;
+    assert.equal(active(), rows[2]);
+    assert.equal(rows[2].classList.contains("current"), true);
+    assert.equal(byId.get("model-settings")!.children[1].getAttribute("aria-expanded"), "true");
+    box.fire("keydown", { key: "ArrowDown", preventDefault() {} });
+    assert.equal(active(), rows[0]);
+    fireDocument("keydown", { key: "Escape" });
+    assert.equal(box.hidden, true);
+    assert.equal(active(), byId.get("model-settings")!.children[1]);
+    send({ k: "dialog", dialog: reasoningDialog("auto", ["auto", "low"]) });
+    box.fire("keydown", { key: "Tab" });
+    assert.equal(box.hidden, true);
   });
 
   /// The composer's own top row is a bar of its own on the box's top edge, the
@@ -701,7 +751,7 @@ describe("webview composer", () => {
     }
     // Stop is the one icon that turns red: it ends the turn rather than
     // opening something.
-    assert.match(shell, /id="stop" class="icon danger run-control"/);
+    assert.match(shell, /id="stop" class="icon danger run-control composer-action"/);
   });
 
   /// The full-size preview is the desktop app's: a ✕ in a head row above the
@@ -787,6 +837,10 @@ describe("webview composer", () => {
     const stopMarkup = /<button id="stop"[^>]*>([\s\S]*?)<\/button>/.exec(shell)![1];
     assert.doesNotMatch(stopMarkup, /spinner|stop-label|Working|Thinking|Running/);
     assert.match(stopMarkup, /stop-icon/);
+    assert.equal(byId.get("stop")!.dataset.level, "busy");
+    assert.equal(byId.get("stop")!.getAttribute("aria-description"), "Thinking… · 2 queued");
+    assert.doesNotMatch(style, /#status::before/);
+    assert.match(style, /\.composer-action\[data-level="busy"\]::after/);
     assert.equal(byId.get("send")!.hidden, true, "and nothing to send hides Send");
     assert.equal(byId.get("run-time")!.hidden, false);
     assert.match(shell, /id="run-time"[^>]*role="timer"/);
@@ -798,6 +852,7 @@ describe("webview composer", () => {
     send(stateMessage());
     assert.equal(byId.get("status")!.hidden, true);
     assert.equal(byId.get("stop")!.hidden, true);
+    assert.equal(byId.get("send")!.dataset.level, "info");
     assert.equal(byId.get("run-time")!.hidden, false);
     assert.equal(byId.get("run-time-text")!.textContent, "Worked for 5s");
     now = 66_500;
@@ -1127,6 +1182,10 @@ describe("webview composer", () => {
     const input = byId.get("input")!;
     input.value = "use the new API";
     input.fire("input");
+    assert.equal(byId.get("send")!.dataset.level, "busy");
+    assert.equal(byId.get("send")!.hidden, false);
+    assert.equal(byId.get("stop")!.hidden, true);
+    assert.equal(byId.get("send")!.getAttribute("aria-description"), "Thinking…");
     byId.get("send")!.fire("click");
     assert.deepEqual(last(posted), { k: "send", text: "use the new API", mode: "steer" });
   });

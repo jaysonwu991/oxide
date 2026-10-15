@@ -1698,6 +1698,7 @@
       const box = chip.id === "model" || chip.id === "reasoning" ? modelSettings : metaBox;
       box.appendChild(chipNode(chip.label, chip.id, chip.title));
     }
+    syncSettingDropdown();
     const info = footer.info || "";
     branchLabel.textContent = info;
     branchLabel.title = info ? `Current branch: ${info}` : "";
@@ -1722,10 +1723,6 @@
     el.className = "meta-chip";
     el.dataset.control = control;
     el.setAttribute("aria-label", String(label));
-    const icon = document.createElement("span");
-    icon.className = "control-icon";
-    icon.innerHTML = CONTROL_ICONS[control] || CONTROL_ICONS.model;
-    el.appendChild(icon);
     if (control === "model" || control === "reasoning") {
       el.classList.add("setting-chip");
       const value = document.createElement("span");
@@ -1733,6 +1730,18 @@
       const name = String(label).replace(/^(model|thinking):\s*/, "").split(" · ")[0];
       value.textContent = control === "reasoning" ? name.charAt(0).toUpperCase() + name.slice(1) : name;
       el.appendChild(value);
+      const caret = document.createElement("span");
+      caret.className = "control-icon selector-caret";
+      caret.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></svg>';
+      el.appendChild(caret);
+      el.setAttribute("aria-haspopup", "dialog");
+      el.setAttribute("aria-controls", "dialog");
+      el.setAttribute("aria-expanded", "false");
+    } else {
+      const icon = document.createElement("span");
+      icon.className = "control-icon";
+      icon.innerHTML = CONTROL_ICONS[control] || CONTROL_ICONS.model;
+      el.appendChild(icon);
     }
     el.title = title ? `${label}\n${title}` : `${label} — click to change`;
     return el;
@@ -1919,6 +1928,10 @@
     const action = followUpBehavior === "steer" ? "Steer the active response" : "Queue as the next turn";
     sendButton.title = busy ? `${action} (Enter)` : "Send (Enter)";
     sendButton.setAttribute("aria-label", busy ? followUpBehavior === "steer" ? "Steer" : "Queue" : "Send");
+    for (const button of [sendButton, stopButton]) {
+      button.dataset.level = busy ? "busy" : "info";
+      button.setAttribute("aria-description", statusLabel.textContent || "Ready");
+    }
   }
 
   let queueMenuTrigger = null;
@@ -2055,6 +2068,14 @@
   /// the rows the filter applies to, so the box asks it and the answer comes
   /// back as a whole new dialog.
   function setDialog(dialog) {
+    const wasDropdown = dialogBox.classList.contains("settings-dropdown");
+    const previousKind = dialogBox.dataset.kind;
+    const opening = dialogBox.hidden || previousKind !== dialog?.kind;
+    if (!dialog || (dialog.kind !== "model" && dialog.kind !== "reasoning")) {
+      dialogBox.style.right = "";
+      dialogBox.style.bottom = "";
+      dialogBox.style.maxHeight = "";
+    }
     dialogList.innerHTML = "";
     // The header's own button is the same state: it says whether the history is
     // on screen, so the two can never disagree about which click closes it.
@@ -2067,10 +2088,17 @@
       dialogSearch.hidden = true;
       dialogSearchInput.value = "";
       syncSearchClear();
+      dialogBox.classList.remove("settings-dropdown");
+      syncSettingDropdown();
+      if (wasDropdown) settingControl(previousKind)?.focus();
       return;
     }
     dialogBox.classList.toggle("pin-footer", dialog.pin === "footer");
     dialogBox.dataset.kind = dialog.kind || "";
+    const dropdown = dialog.kind === "model" || dialog.kind === "reasoning";
+    dialogBox.classList.toggle("settings-dropdown", dropdown);
+    if (dropdown) dialogBox.setAttribute("role", "dialog");
+    else dialogBox.removeAttribute("role");
     dialogTitle.textContent = dialog.title || "";
     const count = dialog.count || 0;
     dialogCount.textContent = count ? String(count) : "";
@@ -2086,7 +2114,7 @@
     }
     syncSearchClear();
     dialogSub.textContent = dialog.subtitle || "";
-    dialogSub.hidden = !dialog.subtitle;
+    dialogSub.hidden = dropdown || !dialog.subtitle;
     dialogNote.textContent = dialog.note || "";
     dialogNote.hidden = !dialog.note;
     for (const entry of dialog.rows || []) dialogList.appendChild(dialogRow(entry));
@@ -2097,7 +2125,44 @@
     dialogRefresh.setAttribute("aria-label", dialogRefresh.title);
     dialogRefresh.dataset.action = dialog.refreshAction || "";
     dialogBox.hidden = false;
+    syncSettingDropdown();
+    if (dropdown && opening) {
+      const current = [...dialogList.children].find((row) => row.classList.contains("current"));
+      (dialog.search ? dialogSearchInput : current || dialogList.children[0] || dialogClose).focus();
+    }
   }
+
+  function settingControl(kind) {
+    return [...modelSettings.children].find((chip) => chip.dataset.control === kind);
+  }
+
+  function syncSettingDropdown() {
+    for (const chip of modelSettings.children) {
+      chip.setAttribute("aria-expanded", String(!dialogBox.hidden && dialogBox.dataset.kind === chip.dataset.control));
+    }
+    if (dialogBox.hidden || !dialogBox.classList.contains("settings-dropdown")) return;
+    const anchor = (settingControl(dialogBox.dataset.kind) || modelSettings).getBoundingClientRect();
+    dialogBox.style.right = `${Math.max(12, window.innerWidth - anchor.right)}px`;
+    dialogBox.style.bottom = `${window.innerHeight - anchor.top + 8}px`;
+    dialogBox.style.maxHeight = `${Math.max(80, Math.min(380, anchor.top - 20))}px`;
+  }
+
+  window.addEventListener("resize", syncSettingDropdown);
+  document.addEventListener("click", (event) => {
+    if (dialogBox.hidden || !dialogBox.classList.contains("settings-dropdown")) return;
+    if (event.target?.closest?.(".settings-dropdown, .setting-chip")) return;
+    closeDialog(false);
+  });
+  dialogBox.addEventListener("keydown", (event) => {
+    if (!dialogBox.classList.contains("settings-dropdown")) return;
+    if (event.key === "Tab") return closeDialog();
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const rows = [...dialogList.children].filter((row) => row.dataset.action);
+    const index = rows.indexOf(document.activeElement);
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    rows[(index + step + rows.length) % rows.length]?.focus();
+  });
 
   /// One row: what it is, what it resolves to underneath, a trailing status word
   /// where one applies, and a button for the rows that turn something over
@@ -2110,11 +2175,14 @@
     // The thread the panel has open, marked by the host: the row keeps its place
     // in the list, and the mark is what says which one it is — so the listing
     // never loses the thread the header names.
-    if (entry.current) el.classList.add("current");
+    if (entry.current || entry.status === "Current") el.classList.add("current");
     if (entry.action) {
       el.type = "button";
       el.dataset.action = entry.action;
       el.dataset.value = entry.value;
+      if (dialogBox.classList.contains("settings-dropdown")) {
+        el.setAttribute("aria-pressed", String(entry.current || entry.status === "Current"));
+      }
     }
     const main = document.createElement("div");
     main.className = "dialog-main";
@@ -2160,7 +2228,9 @@
   /// Closing is the host's decision, so it hears about it too: the dialog is the
   /// controller's state, and whichever pane is attached next would otherwise
   /// paint it again.
-  function closeDialog() {
+  function closeDialog(restoreFocus = true) {
+    // Outside clicks keep the keyboard where the reader moved it.
+    if (!restoreFocus) dialogBox.classList.remove("settings-dropdown");
     setDialog(null);
     vscode.postMessage({ k: "dialogAction", action: "dialogClose", value: "" });
   }
@@ -2882,6 +2952,10 @@
     if (!(target instanceof Element)) return;
     const chip = target.closest("[data-control]");
     if (!chip) return;
+    if (!dialogBox.hidden && dialogBox.classList.contains("settings-dropdown") && dialogBox.dataset.kind === chip.dataset.control) {
+      closeDialog();
+      return;
+    }
     vscode.postMessage({ k: "control", control: chip.dataset.control });
   }
   metaBox.addEventListener("click", clickSetting);

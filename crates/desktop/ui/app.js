@@ -345,32 +345,28 @@ function baseName(path) {
   return trimmed.split(/[\\/]/).pop() || trimmed;
 }
 
-/// The window's own status, at the end of the composer's row. It is a state
-/// rather than a message: the words a caller passes are painted when there are
-/// words to read, while the idle placeholder (`Ready`) is the icon alone, with
-/// the word in its tooltip — the same thing the CLI's footer says by saying
-/// nothing while nothing is happening. `level` is the state the icon wears when
-/// no turn is running: `info` on its own, `error` for what went wrong.
+/// Status decorates the composer action. Notices keep their words beside it;
+/// the idle placeholder needs no separate mark or label.
 function setStatus(text, level = "info") {
   state.statusText = text;
   state.statusLevel = level;
   paintStatus();
 }
 
-/// The idle status badge carries a warning triangle for failures and a dot for
-/// ordinary notices. During a turn, the phase stays in the Stop tooltip.
+/// The action carries the status; a separate line is only needed for a notice.
 function paintStatus() {
   const busy = Boolean(state.busy || state.sendView);
   const level = busy ? "busy" : state.statusLevel;
   const badge = el("status");
   badge.dataset.level = level;
-  if (level !== "busy") {
-    el("status-icon").innerHTML = level === "error" ? ICONS.alert : ICONS.dot;
-  }
   const text = state.statusText || "";
+  for (const id of ["send", "stop"]) {
+    el(id).dataset.level = level;
+    el(id).setAttribute("aria-description", text || IDLE_STATUS);
+  }
   el("status-text").textContent = text;
   el("status-text").hidden = text === IDLE_STATUS;
-  badge.hidden = busy;
+  badge.hidden = busy || !text || text === IDLE_STATUS;
   el("stop").title = `Stop the running turn${text && text !== IDLE_STATUS ? ` · ${text}` : ""}`;
   el("stop").setAttribute("aria-label", el("stop").title);
   badge.title = text;
@@ -3771,6 +3767,33 @@ function closeOverlays(except) {
   // The palette lives above the composer rather than in an overlay, but any
   // dialog that opens takes the keyboard with it.
   if (except !== "command-palette") closePalette();
+  syncSettingsDropdowns();
+}
+
+const SETTINGS_DROPDOWNS = { "models-modal": "model", "reasoning-modal": "reasoning" };
+
+function syncSettingsDropdowns() {
+  for (const [id, control] of Object.entries(SETTINGS_DROPDOWNS)) {
+    el(control).setAttribute("aria-expanded", String(!el(id).hidden));
+  }
+}
+
+function positionSettingsDropdowns() {
+  for (const [id, control] of Object.entries(SETTINGS_DROPDOWNS)) {
+    const box = el(id);
+    if (box.hidden) continue;
+    const anchor = el(control).getBoundingClientRect();
+    box.style.right = `${Math.max(12, window.innerWidth - anchor.right)}px`;
+    box.style.bottom = `${window.innerHeight - anchor.top + 8}px`;
+    box.style.maxHeight = `${Math.max(80, Math.min(380, anchor.top - 20))}px`;
+  }
+}
+
+function closeModels(restoreFocus = true) {
+  if (el("models-modal").hidden) return;
+  el("models-modal").hidden = true;
+  syncSettingsDropdowns();
+  if (restoreFocus) el("model").focus();
 }
 
 // macOS's WKWebView does not implement `window.confirm`/`window.prompt`, so
@@ -3953,10 +3976,16 @@ async function openModels() {
   }
   closeOverlays("models-modal");
   el("models-modal").hidden = false;
+  syncSettingsDropdowns();
+  positionSettingsDropdowns();
   el("model-list").innerHTML = '<div class="empty" style="margin:14px">Loading…</div>';
   el("model-filter").value = "";
+  el("model-filter").focus();
+  const project = state.project;
   try {
-    state.models = await invoke("list_models", { project: state.project });
+    const models = await invoke("list_models", { project });
+    if (state.project !== project || el("models-modal").hidden) return;
+    state.models = models;
     renderModels();
   } catch (error) {
     el("model-list").innerHTML = `<div class="empty" style="margin:14px">${escapeHtml(String(error))}</div>`;
@@ -3977,11 +4006,13 @@ function renderModels() {
     box.appendChild(header);
     for (const model of models) {
       const row = document.createElement("button");
-      row.className = "model" + (model === provider.current ? " active" : "");
+      const current = provider.active && model === provider.current;
+      row.className = "model" + (current ? " active" : "");
+      row.setAttribute("aria-pressed", String(Boolean(current)));
       row.textContent = model;
       row.onclick = async () => {
         await invoke("set_model", { provider: provider.provider, model });
-        el("models-modal").hidden = true;
+        closeModels();
         await loadInfo();
       };
       box.appendChild(row);
@@ -4015,12 +4046,18 @@ function openReasoning() {
   closeOverlays("reasoning-modal");
   renderReasoning();
   el("reasoning-modal").hidden = false;
+  syncSettingsDropdowns();
+  positionSettingsDropdowns();
   focusReasoning();
+  return ensureReasoningLevels();
+}
+
+function ensureReasoningLevels() {
   // A cold model cache has no advertised levels yet; ask the host, which warms
   // it from the provider's listing, and repaint the open picker with the model's
   // own levels. The built-in set stands until that answer arrives, and a late
   // answer for a project or model the reader has left is dropped.
-  if (state.reasoningLevels) return Promise.resolve();
+  if (!state.project || state.reasoningLevels) return Promise.resolve();
   const epoch = ++reasoningEpoch;
   const project = state.project;
   return invoke("reasoning_levels", { project })
@@ -4057,8 +4094,7 @@ function focusReasoning() {
   target.focus();
 }
 
-/// Tab walks the picker's own rows and its Close: the dialog is `aria-modal`, so
-/// nothing behind it is reachable while it is up.
+/// Arrow keys walk the dropdown's rows and Close button.
 function stepReasoningFocus(step) {
   const controls = [...el("reasoning-list").children, el("reasoning-close")];
   const at = controls.indexOf(document.activeElement);
@@ -4068,12 +4104,13 @@ function stepReasoningFocus(step) {
 /// Closing hands the keyboard back to whatever opened the picker. Every path
 /// goes through here — a row, the Close button, or Escape — so a reader who
 /// chose a level is not left at the top of the page behind the dialog.
-function closeReasoning() {
+function closeReasoning(restoreFocus = true) {
   if (el("reasoning-modal").hidden) return;
   el("reasoning-modal").hidden = true;
+  syncSettingsDropdowns();
   const target = reasoningReturnFocus;
   reasoningReturnFocus = null;
-  target?.focus?.();
+  if (restoreFocus) target?.focus?.();
 }
 
 function renderReasoning() {
@@ -6028,14 +6065,33 @@ function init() {
     removeProject(project);
   };
 
-  el("reasoning").onclick = openReasoning;
+  el("reasoning").onclick = () => el("reasoning-modal").hidden ? openReasoning() : closeReasoning();
   el("reasoning-close").onclick = closeReasoning;
   el("reasoning-modal").addEventListener("keydown", (event) => {
-    if (event.key !== "Tab") return;
-    event.preventDefault();
-    stepReasoningFocus(event.shiftKey ? -1 : 1);
+    if (event.key === "Tab") {
+      closeReasoning();
+      event.stopPropagation();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      stepReasoningFocus(event.key === "ArrowDown" ? 1 : -1);
+    }
   });
-  el("model").onclick = openModels;
+  el("models-modal").addEventListener("keydown", (event) => {
+    if (event.key === "Tab") return closeModels();
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const rows = [...el("model-list").children].filter((row) => row.tagName === "BUTTON");
+    const index = rows.indexOf(document.activeElement);
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    rows[(index + step + rows.length) % rows.length]?.focus();
+  });
+  document.addEventListener("click", (event) => {
+    if (event.target?.closest?.(".settings-dropdown, .setting-chip")) return;
+    closeModels(false);
+    closeReasoning(false);
+  });
+  window.addEventListener("resize", positionSettingsDropdowns);
+  el("model").onclick = () => el("models-modal").hidden ? openModels() : closeModels();
   el("theme").onclick = openThemes;
   el("permissions").onclick = openPermissions;
   el("help").onclick = toggleHelp;
@@ -6102,7 +6158,7 @@ function init() {
   el("login-cancel").onclick = () => (el("connect-modal").hidden = true);
   el("login-save").onclick = saveConnect;
   el("provider-filter").addEventListener("input", renderProviders);
-  el("models-close").onclick = () => (el("models-modal").hidden = true);
+  el("models-close").onclick = () => closeModels();
   el("model-filter").addEventListener("input", renderModels);
   el("themes-close").onclick = () => (el("themes-modal").hidden = true);
   el("permissions-close").onclick = () => (el("permissions-modal").hidden = true);
@@ -6318,6 +6374,7 @@ function init() {
       closeSidebarCards();
       closeImage();
       closeReasoning();
+      closeModels();
       if (!el("confirm-modal").hidden) resolveConfirm(false);
       if (!el("rename-modal").hidden) resolveRename(null);
       // A question dismissed with Escape is answered as unanswered rather than

@@ -638,6 +638,7 @@ let steerAccepted = true;
 // What `project_info` answers while a check asks for the folder's own facts,
 // and nothing everywhere else.
 let projectInfo = null;
+let modelCatalog = { providers: [] };
 // What `git_info` answers for the folder's repository: the bar's own read, so a
 // check can drive a branch, a worktree or a folder that is no repository.
 let gitAnswer = {
@@ -810,6 +811,7 @@ const invoke = async (command, args = {}) => {
     case "list_providers":
       return providersAnswer;
     case "list_models":
+      return modelCatalog;
     case "list_themes":
     case "list_sessions":
     case "list_approvals":
@@ -1605,16 +1607,15 @@ check(
   shellAt('class="composer-strip"') < shellAt('id="status"') &&
     !badgeRow.includes('id="usage"') &&
     shellAt('id="status"') < shellAt('id="send"') &&
-    shellAt('id="status-icon"') < shellAt('id="status-text"') &&
-    /id="status"[^>]*role="status"/.test(badgeRow) &&
-    /id="status-icon"[^>]*aria-hidden="true"/.test(badgeRow),
+    !shell.includes('id="status-icon"') &&
+    /id="status"[^>]*role="status"/.test(badgeRow),
   badgeRow.slice(0, 320),
 );
 // Idle notices use the badge; Stop stays a square icon during a turn.
 check(
   "drew the badge's states in the window's own chrome",
   /\.status \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet) &&
-    /\.status\[data-level="error"\] \.status-icon \{ color: var\(--error\); \}/.test(sheet) &&
+    /\.status\[data-level="error"\] \{ color: var\(--error\); \}/.test(sheet) &&
     /#stop\.run-control \{[^}]*width: 30px;/.test(sheet) &&
     /#usage \{ color: var\(--faint\); font-size: 11.5px;/.test(sheet),
   sheet.slice(sheet.indexOf(".status {"), sheet.indexOf(".status {") + 220),
@@ -1804,10 +1805,8 @@ const sharedGlyphs = {
   refresh: "M20.49 15a9 9 0 1 1-2.12-9.36L23 10",
   close: "M18 6 6 18M6 6l12 12",
   power: "M18.36 6.64a9 9 0 1 1-12.73 0",
-  model: "m8 1.8 5.5 3.1v6.2L8 14.2l-5.5-3.1V4.9L8 1.8Z",
+  selector: "m4.5 6.5 3.5 3.5 3.5-3.5",
   branch: "M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5",
-  reasoning:
-    "M8 1.7 9 5l3.3 1L9 7l-1 3.3L7 7 3.7 6 7 5l1-3.3ZM12.7 9.3l.6 1.8 1.7.6-1.7.6-.6 1.7-.6-1.7-1.8-.6 1.8-.6.6-1.8ZM3.5 10.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5.5-1.3Z",
   access:
     "M8 1.7c1.7 1.2 3.3 1.7 5 1.8v3.8c0 3.2-1.7 5.5-5 7-3.3-1.5-5-3.8-5-7V3.5c1.7-.1 3.3-.6 5-1.8Z",
 };
@@ -4569,9 +4568,7 @@ check(
   /^Turn thinking off where the model allows it$/.test(reasoningRow("off")?.children[1]?.textContent),
   reasoningRow("off")?.children[1]?.textContent,
 );
-// The dialog is `aria-modal`, so the keyboard belongs to it: opening puts it on
-// the level in use, not on the chip behind the overlay, where a reader has to
-// tab past the rest of the page to reach a row at all.
+// Opening starts the keyboard on the level in use.
 check(
   "put the keyboard on the level in use",
   document.activeElement === reasoningRow("auto"),
@@ -4585,10 +4582,9 @@ check(
     reasoningRow("high").children[2].innerHTML === "",
   `${reasoningRow("auto").children[2].innerHTML} / ${reasoningRow("high").children[2].innerHTML}`,
 );
-// Tab walks the picker's own controls, so nothing behind it can take a
-// keystroke while it is up.
+// Arrows walk the dropdown's controls without changing the chosen level.
 const tabbedReasoning = (shiftKey = false) =>
-  elementFor("reasoning-modal").fire("keydown", { key: "Tab", shiftKey, preventDefault() {} });
+  elementFor("reasoning-modal").fire("keydown", { key: shiftKey ? "ArrowUp" : "ArrowDown", preventDefault() {} });
 tabbedReasoning();
 const tabbedOnward = document.activeElement === reasoningRow("off");
 elementFor("reasoning-close").focus();
@@ -4597,7 +4593,7 @@ const tabbedRound = document.activeElement === reasoningRow("auto");
 tabbedReasoning(true);
 const shiftTabbedRound = document.activeElement === elementFor("reasoning-close");
 check(
-  "kept Tab inside the picker, and turned it round at the ends",
+  "walked dropdown rows with arrows, wrapping at the ends",
   tabbedOnward && tabbedRound && shiftTabbedRound,
   `${tabbedOnward} / ${tabbedRound} / ${shiftTabbedRound} / ${document.activeElement?.id}`,
 );
@@ -4755,13 +4751,12 @@ check(
     elementFor("reasoning").getAttribute("aria-label") === "thinking: medium",
   `${app.state.reasoning} / ${elementFor("reasoning").getAttribute("aria-label")}`,
 );
-// A dialog a screen reader is told about, named by its own title: the overlay
-// covers the app, so what is behind it is not what a reader is answering.
+// A named, nonmodal dropdown keeps the rest of the app available.
 check(
-  "shipped it as a dialog named by its own title",
-  /id="reasoning-modal"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="reasoning-title"/.test(
+  "shipped a named dropdown without a modal backdrop",
+  /id="reasoning-modal"[^>]*role="dialog"[^>]*aria-labelledby="reasoning-title"/.test(
     shell,
-  ) && /<h2 id="reasoning-title">Reasoning effort<\/h2>/.test(shell),
+  ) && !/id="reasoning-modal"[^>]*aria-modal="true"/.test(shell) && /<h2 id="reasoning-title">Reasoning effort<\/h2>/.test(shell),
   shellAt('aria-labelledby="reasoning-title"'),
 );
 app.state.reasoning = "auto";
@@ -5506,9 +5501,10 @@ console.log("the status badge");
 // to read.
 app.setStatus("Ready");
 check(
-  "drew the idle status as a dot with its word in the tooltip",
+  "consolidated the idle status into the action without a separate dot",
   el("status").dataset.level === "info" &&
-    el("status-icon").innerHTML === app.ICONS.dot &&
+    el("send").dataset.level === "info" &&
+    el("status").hidden === true &&
     el("status-text").hidden === true &&
     el("status-text").textContent === "Ready" &&
     el("status").title === "Ready" &&
@@ -5519,6 +5515,7 @@ app.setBusy();
 check(
   "kept Stop icon-only while running",
   el("status").dataset.level === "busy" &&
+    el("stop").dataset.level === "busy" &&
     el("status").hidden === true &&
     el("stop").title.startsWith("Stop the running turn"),
   `${el("status").dataset.level} / ${el("status").hidden} / ${el("stop").title}`,
@@ -5528,7 +5525,7 @@ app.setStatus("Queued as the next turn.");
 check(
   "kept the words of a status that has them",
   el("status").dataset.level === "info" &&
-    el("status-icon").innerHTML === app.ICONS.dot &&
+    el("send").dataset.level === "info" &&
     el("status-text").hidden === false &&
     el("status-text").textContent === "Queued as the next turn.",
   `${el("status").dataset.level} / ${el("status-text").hidden} / ${el("status-text").textContent}`,
@@ -5539,7 +5536,7 @@ await app.loadSessions();
 check(
   "wore the error state for a status that reports a failure",
   el("status").dataset.level === "error" &&
-    el("status-icon").innerHTML === app.ICONS.alert &&
+    el("send").dataset.level === "error" &&
     el("status-text").hidden === false &&
     el("status-text").textContent === "Failed to load threads: Error: permission denied",
   `${el("status").dataset.level} / ${el("status-text").textContent}`,
@@ -7804,6 +7801,18 @@ app.state.reasoningIdentity = "";
 projectInfo = { ...projectFacts(128000), model: "gpt-5", reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high"] };
 await app.loadInfo();
 check("kept the initial model's configured effort", app.state.reasoning === "high", app.state.reasoning);
+check("loaded project details without a header error",
+  elementFor("project-meta").hidden && elementFor("model-value").textContent === "gpt-5",
+  `${elementFor("project-meta").textContent} / ${elementFor("model-value").textContent}`);
+projectInfo = { ...projectInfo, reasoningLevels: null };
+const levelsReadsBefore = projectCalls("reasoning_levels").length;
+await app.loadInfo();
+await nextTick();
+check("loaded advertised reasoning levels for a cold project without opening the picker",
+  projectCalls("reasoning_levels").length === levelsReadsBefore + 1 &&
+    app.state.reasoningLevels?.join(" ") === `auto ${reasoningAnswer.reasoningLevels.join(" ")}` &&
+    elementFor("reasoning-modal").hidden && elementFor("project-meta").hidden,
+  `${app.state.reasoningLevels} / ${elementFor("project-meta").textContent}`);
 projectInfo = { ...projectInfo, model: "gpt-4o-mini", supportsReasoning: false, reasoningLevels: [] };
 await app.loadInfo();
 check("reset effort after switching to a model without reasoning",
@@ -7814,6 +7823,43 @@ await app.loadInfo();
 check("refreshed the next model's effort choices without restoring the old effort",
   app.state.reasoning === "auto" && !elementFor("reasoning").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",
   `${app.state.reasoning} / ${app.state.reasoningLevels.join(" ")}`);
+
+console.log("composer dropdowns");
+modelCatalog = { providers: [{ provider: "openai", active: true, current: projectInfo.model, models: [projectInfo.model, "gpt-5"] }] };
+await app.openModels();
+check("opened a searchable model dropdown at the composer",
+  !elementFor("models-modal").hidden && document.activeElement === elementFor("model-filter") &&
+    elementFor("model").getAttribute("aria-expanded") === "true" &&
+    /id="models-modal" class="settings-dropdown"/.test(shell) &&
+    elementFor("models-modal").style.bottom.endsWith("px"));
+const modelRows = elementFor("model-list").children.filter((row) => row.tagName === "BUTTON");
+check("marked the model currently selected by the active provider",
+  modelRows[0]?.getAttribute("aria-pressed") === "true" && modelRows[1]?.getAttribute("aria-pressed") === "false");
+elementFor("models-modal").fire("keydown", { key: "ArrowDown", preventDefault() {} });
+check("walked the model dropdown with the keyboard", document.activeElement === modelRows[0]);
+elementFor("model-filter").value = "gpt-5";
+elementFor("model-filter").fire("input", {});
+check("filtered the model dropdown", elementFor("model-list").children.filter((row) => row.tagName === "BUTTON").length === 1);
+projectInfo = { ...projectInfo, model: "gpt-5" };
+await modelRows[1].onclick();
+check("selected a model and refreshed its visible name",
+  elementFor("models-modal").hidden && elementFor("model-value").textContent === "gpt-5" &&
+    projectCalls("set_model").at(-1)?.[1].model === "gpt-5");
+await app.openModels();
+elementFor("prompt").focus();
+document.fire("click", { target: elementFor("prompt") });
+check("dismissed the model dropdown outside without taking focus",
+  elementFor("models-modal").hidden && document.activeElement === elementFor("prompt") &&
+    elementFor("model").getAttribute("aria-expanded") === "false");
+await app.openReasoning();
+check("announced the reasoning dropdown as expanded", elementFor("reasoning").getAttribute("aria-expanded") === "true");
+elementFor("reasoning-modal").fire("keydown", { key: "Tab", stopPropagation() {} });
+check("dismissed reasoning on Tab without cycling the level",
+  elementFor("reasoning-modal").hidden && app.state.reasoning === "auto" &&
+    elementFor("reasoning").getAttribute("aria-expanded") === "false");
+await app.openReasoning();
+document.fire("click", { target: elementFor("prompt") });
+check("dismissed the reasoning dropdown on an outside click", elementFor("reasoning-modal").hidden);
 
 console.log("the bridge");
 check(
