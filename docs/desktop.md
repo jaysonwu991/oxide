@@ -1222,13 +1222,8 @@ version first, the way the CLI's own archives are named: a
 `x86_64` rather than `x64`, so the Linux x64 AppImage is
 `Oxide-<version>-linux-x86_64-Setup.AppImage` while its archive is
 `Oxide-<version>-linux-x64-Setup.tar.gz` — the spelling the build really writes,
-which is the one the updater resolves. Each installer is copied to the name
-releases carried before the versioning (`macos-arm64-Oxide.dmg` and so on) as
-well, so a copy already installed resolves this release and takes up the new
-naming from there — and the Linux x64 AppImage to the `x64` spelling as well,
-since that is the name an installed copy's own updater read before it. That is
-what makes this release reachable by a copy installed either side of the change.
-electron-builder also writes its own `latest*.yml`
+which is the one the updater resolves. One artifact per platform is published,
+under the one name the updater resolves. electron-builder also writes its own `latest*.yml`
 metadata and a blockmap beside the installer; this app resolves its release
 through GitHub itself, so metadata describing a feed it does not read is
 deliberately not published.
@@ -1352,11 +1347,8 @@ shell history.
 
 Each `desktop-v*` release carries installers for the four platforms the app is
 built for. Pick the asset whose platform matches the machine; each name carries
-the version and the platform, read off the release it belongs to. Every release
-carries the pre-versioning name of each of them too — `macos-arm64-Oxide.dmg`
-and so on, and for the Linux x64 AppImage both `linux-x86_64-Oxide-Setup.AppImage`
-and `linux-x64-Oxide-Setup.AppImage` — which is what a copy installed before the
-change resolves its own update by:
+the version and the platform, read off the release it belongs to, and each is
+published under that one name:
 
 | Asset | Platform |
 | --- | --- |
@@ -1376,8 +1368,7 @@ resolves its release through GitHub itself and installs the artifact
 Linux the AppImage, Windows the setup — rather than a feed beside it.
 
 The CLI archives (`Oxide-<version>-<platform>.tar.gz` and
-`Oxide-<version>-win-x64.zip`, with the `Oxide-v<version>-<platform>...` names a
-copy installed before the change resolves published beside them) plus
+`Oxide-<version>-win-x64.zip`) plus
 `install.sh`/`install.ps1` live in the separate `v*` CLI releases, not here; see
 [install.md](install.md).
 

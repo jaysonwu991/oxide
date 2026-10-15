@@ -117,19 +117,16 @@ impl Component {
     }
 
     /// The artifacts this platform installs from, most preferred first: the one
-    /// an in-place install uses, then the downloads a user would pick by hand,
-    /// and last the names releases carried before the version moved into them —
-    /// the name a copy already installed resolves its own release by, so it can
-    /// still install the newest one and take up the new naming from there.
+    /// an in-place install uses, then the downloads a user would pick by hand.
     ///
     /// A name carries the version the way the extension's VSIX does:
     /// `Oxide-<version>-<platform>.<ext>` for the CLI, and for the app
     /// `Oxide-<version>-macos-<arch>.dmg`, `Oxide-<version>-linux-<arch>-Setup.
     /// {AppImage,tar.gz}` and `Oxide-<version>-win-<arch>-Setup.exe` — the
-    /// names `electron-builder.yml` writes. electron-builder spells x64 as
-    /// `x86_64` for an AppImage, so that name carries the spelling the build
-    /// really writes rather than the one this code would prefer. On Linux the
-    /// AppImage the app replaces itself with comes before the archive a user
+    /// names `electron-builder.yml` and `cli.yml` write. electron-builder spells
+    /// x64 as `x86_64` for an AppImage, so that name carries the spelling the
+    /// build really writes rather than the one this code would prefer. On Linux
+    /// the AppImage the app replaces itself with comes before the archive a user
     /// unpacks by hand. macOS x64 is absent because its build was never
     /// published.
     pub fn assets(self, tag: &str, platform: &str) -> Vec<String> {
@@ -141,49 +138,21 @@ impl Component {
                 } else {
                     "tar.gz"
                 };
-                let mut names = vec![format!("Oxide-{version}-{platform}.{extension}")];
-                if let Some(previous) = previous_platform(platform) {
-                    names.push(format!("Oxide-v{version}-{previous}.{extension}"));
-                }
-                names
+                vec![format!("Oxide-{version}-{platform}.{extension}")]
             }
-            Self::Desktop => {
-                let (versioned, previous): (Vec<String>, &[&str]) = match platform {
-                    "macos-arm64" => (
-                        vec![format!("Oxide-{version}-macos-arm64.dmg")],
-                        &["macos-arm64-Oxide.dmg"],
-                    ),
-                    "linux-x64" => (
-                        vec![
-                            format!("Oxide-{version}-linux-x86_64-Setup.AppImage"),
-                            format!("Oxide-{version}-linux-x64-Setup.tar.gz"),
-                        ],
-                        &[
-                            "linux-x86_64-Oxide-Setup.AppImage",
-                            "linux-x64-Oxide-Setup.tar.gz",
-                        ],
-                    ),
-                    "linux-arm64" => (
-                        vec![
-                            format!("Oxide-{version}-linux-arm64-Setup.AppImage"),
-                            format!("Oxide-{version}-linux-arm64-Setup.tar.gz"),
-                        ],
-                        &[
-                            "linux-arm64-Oxide-Setup.AppImage",
-                            "linux-arm64-Oxide-Setup.tar.gz",
-                        ],
-                    ),
-                    "win-x64" => (
-                        vec![format!("Oxide-{version}-win-x64-Setup.exe")],
-                        &["win-x64-Oxide-Setup.exe"],
-                    ),
-                    _ => (Vec::new(), &[]),
-                };
-                versioned
-                    .into_iter()
-                    .chain(previous.iter().map(|name| (*name).to_string()))
-                    .collect()
-            }
+            Self::Desktop => match platform {
+                "macos-arm64" => vec![format!("Oxide-{version}-macos-arm64.dmg")],
+                "linux-x64" => vec![
+                    format!("Oxide-{version}-linux-x86_64-Setup.AppImage"),
+                    format!("Oxide-{version}-linux-x64-Setup.tar.gz"),
+                ],
+                "linux-arm64" => vec![
+                    format!("Oxide-{version}-linux-arm64-Setup.AppImage"),
+                    format!("Oxide-{version}-linux-arm64-Setup.tar.gz"),
+                ],
+                "win-x64" => vec![format!("Oxide-{version}-win-x64-Setup.exe")],
+                _ => Vec::new(),
+            },
             Self::Extension => vec![format!("oxide-vscode-{version}.vsix")],
         }
     }
@@ -540,20 +509,6 @@ pub fn manifest_value(text: &str, key: &str) -> Option<String> {
         let value = value.trim();
         (name.trim() == key && !value.is_empty()).then(|| value.to_string())
     })
-}
-
-/// The platform token a release published before the names carried the version
-/// used: the CLI's `darwin-<arch>` and `win32-x64` spellings, and Linux, which
-/// has always been spelled this way. `None` for a platform no release builds.
-fn previous_platform(platform: &str) -> Option<&'static str> {
-    match platform {
-        "macos-arm64" => Some("darwin-arm64"),
-        "macos-x64" => Some("darwin-x64"),
-        "linux-x64" => Some("linux-x64"),
-        "linux-arm64" => Some("linux-arm64"),
-        "win-x64" => Some("win32-x64"),
-        _ => None,
-    }
 }
 
 /// The platform key the release assets are named after.
@@ -1008,26 +963,25 @@ mod tests {
 
     #[test]
     fn manifests_name_the_platform_asset() {
-        // One manifest carries both spellings of a key: the token a release is
-        // named after, and the one it was named after before the version moved
-        // into the name, so an installer downloaded then still finds its asset.
+        // The manifest names one asset per platform, under the platform token
+        // the release is named after.
         let manifest = "version: v0.26.0\nmacos-arm64: Oxide-0.26.0-macos-arm64.tar.gz\n\
-                        darwin-arm64: Oxide-v0.26.0-darwin-arm64.tar.gz\n\
-                        linux-x64: Oxide-0.26.0-linux-x64.tar.gz\n";
+                        linux-x64: Oxide-0.26.0-linux-x64.tar.gz\n\
+                        win-x64: Oxide-0.26.0-win-x64.zip\n";
         assert_eq!(manifest_value(manifest, "version").unwrap(), "v0.26.0");
         assert_eq!(
             manifest_value(manifest, "macos-arm64").unwrap(),
             "Oxide-0.26.0-macos-arm64.tar.gz"
         );
         assert_eq!(
-            manifest_value(manifest, "darwin-arm64").unwrap(),
-            "Oxide-v0.26.0-darwin-arm64.tar.gz"
-        );
-        assert_eq!(
             manifest_value(manifest, "linux-x64").unwrap(),
             "Oxide-0.26.0-linux-x64.tar.gz"
         );
-        assert!(manifest_value(manifest, "win-x64").is_none());
+        assert_eq!(
+            manifest_value(manifest, "win-x64").unwrap(),
+            "Oxide-0.26.0-win-x64.zip"
+        );
+        assert!(manifest_value(manifest, "darwin-arm64").is_none());
         assert!(manifest_value("not a manifest", "version").is_none());
     }
 
@@ -1046,15 +1000,12 @@ mod tests {
             Release::new(Component::Cli, "v0.26.0", None, "win-x64").asset,
             "Oxide-0.26.0-win-x64.zip"
         );
-        // A release published before the version moved into the name is still
-        // resolved — the name an installed binary asks for — so it can install
-        // the newest release and take up the new naming from there.
+        // One artifact per platform, named the way the release that carries it
+        // is built: nothing is published under a second name for a copy that
+        // resolved its own release by one.
         assert_eq!(
             Component::Cli.assets("v0.26.0", "macos-arm64"),
-            [
-                "Oxide-0.26.0-macos-arm64.tar.gz",
-                "Oxide-v0.26.0-darwin-arm64.tar.gz"
-            ]
+            ["Oxide-0.26.0-macos-arm64.tar.gz"]
         );
 
         let desktop = Release::new(Component::Desktop, "desktop-v0.34.0", None, "macos-arm64");
@@ -1085,17 +1036,12 @@ mod tests {
             .is_empty());
         // The downloads a user would pick by hand are named too, so a front-end
         // can offer one when it cannot install in place: the AppImage this
-        // platform installs from, then the archive to unpack, and last the two
-        // names releases carried before the versioning — most preferred first,
-        // so a release carrying both is installed from the versioned AppImage
-        // while one published before the change is still found.
+        // platform installs from, then the archive to unpack.
         assert_eq!(
             Component::Desktop.assets("desktop-v0.34.0", "linux-x64"),
             [
                 "Oxide-0.34.0-linux-x86_64-Setup.AppImage",
-                "Oxide-0.34.0-linux-x64-Setup.tar.gz",
-                "linux-x86_64-Oxide-Setup.AppImage",
-                "linux-x64-Oxide-Setup.tar.gz"
+                "Oxide-0.34.0-linux-x64-Setup.tar.gz"
             ]
         );
         assert!(Component::Desktop
@@ -1248,9 +1194,10 @@ mod tests {
         assert_eq!(release.asset, "Oxide-0.34.0-linux-x64-Setup.tar.gz");
         assert_eq!(release.digest.as_deref(), Some("sha256:linux"));
 
-        // A release published before the names carried the version is resolved
-        // by the name it was published under, which is the one a copy already
-        // installed asks for.
+        // A release carrying only the names from before the versioning is not
+        // resolved by them: this prefers the names a release is built under
+        // now, so such a release offers nothing rather than an artifact under a
+        // second name.
         let before = serde_json::json!([{
             "tag_name": "desktop-v0.33.0",
             "assets": [
@@ -1264,10 +1211,10 @@ mod tests {
             &before,
             "macos-arm64",
         );
-        assert_eq!(release.asset, "macos-arm64-Oxide.dmg");
-        assert_eq!(release.digest.as_deref(), Some("sha256:old"));
+        assert!(release.asset.is_empty());
+        assert!(release.digest.is_none());
         let release = Release::listed(Component::Desktop, "desktop-v0.33.0", &before, "linux-x64");
-        assert_eq!(release.asset, "linux-x86_64-Oxide-Setup.AppImage");
+        assert!(release.asset.is_empty());
 
         // A release that published no installer for this platform has nothing
         // to offer rather than an artifact it never built.

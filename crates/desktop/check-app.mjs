@@ -365,8 +365,8 @@ let updateAnswer = {
   advice: null,
   releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0",
   asset: {
-    name: "macos-arm64-Oxide.dmg",
-    url: "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/macos-arm64-Oxide.dmg",
+    name: "Oxide-0.34.0-macos-arm64.dmg",
+    url: "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide-0.34.0-macos-arm64.dmg",
     digest: "sha256:86966d1b137203c9ed7366329eb708d02896abce279c3ef33a80d8257a1d68b7",
   },
   // The release's own notes, as the API holds them: the changelog the dialog
@@ -6669,7 +6669,7 @@ check(
 );
 check(
   "named the artifact this machine would download",
-  updateBody().includes("macos-arm64-Oxide.dmg"),
+  updateBody().includes("Oxide-0.34.0-macos-arm64.dmg"),
   updateBody(),
 );
 check(
@@ -6752,7 +6752,7 @@ check(
 );
 check(
   "said how far the download has got",
-  updateBody().includes("macos-arm64-Oxide.dmg") &&
+  updateBody().includes("Oxide-0.34.0-macos-arm64.dmg") &&
     updateBody().includes("12.0 MB of 48.0 MB") &&
     updateBody().includes("25%"),
   updateBody(),
@@ -6856,7 +6856,7 @@ check(
 check(
   "reported the release the install put in place, by version and by file",
   updateBody().includes("Release <code>0.34.0</code>") &&
-    updateBody().includes("macos-arm64-Oxide.dmg") &&
+    updateBody().includes("Oxide-0.34.0-macos-arm64.dmg") &&
     updateBody().includes("/Applications/Oxide.app"),
   updateBody(),
 );
@@ -6957,7 +6957,7 @@ updateAnswer = {
   path: "",
   installable: false,
   advice:
-    "Download macos-arm64-Oxide.dmg from the release page and install it the way this copy was installed.",
+    "Download Oxide-0.34.0-macos-arm64.dmg from the release page and install it the way this copy was installed.",
 };
 await app.openUpdate();
 check(
@@ -6967,7 +6967,7 @@ check(
 );
 check(
   "named the download to use instead",
-  updateBody().includes("macos-arm64-Oxide.dmg") && updateBody().includes("source build"),
+  updateBody().includes("Oxide-0.34.0-macos-arm64.dmg") && updateBody().includes("source build"),
   updateBody(),
 );
 check("left the release page reachable for a copy that needs it", offered(pageButton));
@@ -7276,7 +7276,7 @@ const launchAnswer = {
   ok: true,
   version: "0.34.0",
   tag: "desktop-v0.34.0",
-  asset: "macos-arm64-Oxide.dmg",
+  asset: "Oxide-0.34.0-macos-arm64.dmg",
   path: "/Applications/Oxide.app",
   text: "Oxide 0.34.0 is in /Applications/Oxide.app. Quit Oxide and open it again to run the new version.",
   pending: false,

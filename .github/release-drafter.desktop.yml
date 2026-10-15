@@ -144,10 +144,6 @@ template: |
   - **Linux arm64** — `Oxide-<version>-linux-arm64-Setup.AppImage`, or
     `Oxide-<version>-linux-arm64-Setup.tar.gz` to unpack by hand
 
-  Each of them is published under the name releases carried before the version
-  moved into it — `macos-arm64-Oxide.dmg` and so on — as well, which is what an
-  app already installed resolves its own update by.
-
   On macOS the app is notarized only when this release was built with both an
   Apple Developer certificate and an App Store Connect key configured; a build
   carrying the certificate alone is signed but left unnotarized. If macOS

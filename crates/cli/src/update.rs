@@ -203,7 +203,7 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
     }
 
     let work = WorkDir::new()?;
-    let (url, bytes) = archive(&client, repo, &release, platform).await?;
+    let (url, bytes) = archive(&client, repo, &release).await?;
     let download = work.path().join(&release.asset);
     fs::write(&download, &bytes).with_context(|| format!("writing {}", download.display()))?;
     match updates::fetch(&client, &format!("{url}.sha256"), None).await? {
@@ -275,56 +275,28 @@ fn advice(method: InstallMethod, executable: &Path) -> String {
     }
 }
 
-/// The archive to install, trying the names a release carried before the
-/// version moved into them — the name this binary asked for before the change,
-/// and the lowercase one the releases before the branding published — so a
-/// version pinned to an older release is still installable. Returns the URL
-/// that answered, so its checksum is fetched from beside it.
+/// The archive to install: the one the release resolved for this platform,
+/// which is the only name a release carries it under. Returns the URL that
+/// answered, so its checksum is fetched from beside it.
 async fn archive(
     client: &reqwest::Client,
     repo: &str,
     release: &Release,
-    platform: &str,
 ) -> Result<(String, Vec<u8>)> {
-    let names = archive_names(release, platform);
-    for name in &names {
-        let url = format!(
-            "https://github.com/{repo}/releases/download/{}/{name}",
-            release.tag
-        );
-        println!("Downloading {name}");
-        if let Some(bytes) = updates::fetch(client, &url, None).await? {
-            return Ok((url, bytes));
-        }
+    let name = &release.asset;
+    let url = format!(
+        "https://github.com/{repo}/releases/download/{}/{name}",
+        release.tag
+    );
+    println!("Downloading {name}");
+    match updates::fetch(client, &url, None).await? {
+        Some(bytes) => Ok((url, bytes)),
+        None => bail!(
+            "{} is not published for {}; see https://github.com/{repo}/releases",
+            release.asset,
+            release.version
+        ),
     }
-    bail!(
-        "{} is not published for {}; see https://github.com/{repo}/releases",
-        release.asset,
-        release.version
-    )
-}
-
-/// The names a release of this train may carry the archive under: the one it
-/// was resolved by, the one releases carried before the version moved into the
-/// name, and the lowercase one the releases before the branding published.
-fn archive_names(release: &Release, platform: &str) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for name in
-        std::iter::once(release.asset.clone()).chain(Component::Cli.assets(&release.tag, platform))
-    {
-        if !name.is_empty() && !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    if let Some(previous) = names
-        .iter()
-        .find(|name| name.starts_with("Oxide-v"))
-        .and_then(|name| name.strip_prefix("Oxide"))
-        .map(str::to_string)
-    {
-        names.push(format!("oxide{previous}"));
-    }
-    names
 }
 
 /// Checks a downloaded archive against the `.sha256` file published beside it,
@@ -505,7 +477,7 @@ mod tests {
 
     #[test]
     fn a_stale_asset_is_refused_before_it_replaces_the_binary() {
-        let asset = "Oxide-v0.27.0-linux-x64.tar.gz";
+        let asset = "Oxide-0.27.0-linux-x64.tar.gz";
         refuse_version_mismatch(asset, "0.27.0", "0.27.0").unwrap();
         let error = refuse_version_mismatch(asset, "0.26.0", "0.27.0").unwrap_err();
         assert!(
@@ -656,33 +628,12 @@ mod tests {
         let release = updates::pinned(Component::Cli, "0.26.0", "linux-x64").unwrap();
         assert_eq!(release.tag, "v0.26.0");
         assert_eq!(release.version, "0.26.0");
+        // One archive per platform, named the way the release that carries it is
+        // built — nothing is published under a second name.
+        assert_eq!(release.asset, "Oxide-0.26.0-linux-x64.tar.gz");
         assert_eq!(
             release.url("jaysonwu991/oxide"),
             "https://github.com/jaysonwu991/oxide/releases/download/v0.26.0/Oxide-0.26.0-linux-x64.tar.gz"
-        );
-        // A release published before the version moved into the name is
-        // installed from the name it carried then, and one older still from the
-        // lowercase name the releases before the branding published — in that
-        // order, so the newest name a release could carry is what answers.
-        assert_eq!(
-            archive_names(&release, "linux-x64"),
-            [
-                "Oxide-0.26.0-linux-x64.tar.gz",
-                "Oxide-v0.26.0-linux-x64.tar.gz",
-                "oxide-v0.26.0-linux-x64.tar.gz"
-            ]
-        );
-        // A release the API listed offers the name it really carries first, and
-        // a name it appears under only once.
-        let mut listed = updates::pinned(Component::Cli, "0.26.0", "linux-x64").unwrap();
-        listed.asset = "Oxide-v0.26.0-linux-x64.tar.gz".to_string();
-        assert_eq!(
-            archive_names(&listed, "linux-x64"),
-            [
-                "Oxide-v0.26.0-linux-x64.tar.gz",
-                "Oxide-0.26.0-linux-x64.tar.gz",
-                "oxide-v0.26.0-linux-x64.tar.gz"
-            ]
         );
     }
 
