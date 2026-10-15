@@ -808,7 +808,9 @@ async fn run_loop(
         // with nothing must not fail the turn the user already saw complete.
         let nudging = match verification_reminder.take() {
             Some(reminder) => {
-                request.push(Message::system(reminder));
+                // A system-only tail is lifted into the leading system prompt
+                // by Anthropic gateways, leaving an unsupported assistant prefill.
+                request.push(Message::user(reminder));
                 true
             }
             None => false,
@@ -4169,6 +4171,15 @@ mod tests {
         let requests = server.await.unwrap();
         assert_eq!(requests.len(), 5);
         assert!(requests[2].contains("Before you finish"), "{}", requests[2]);
+        let body: serde_json::Value =
+            serde_json::from_str(requests[2].split_once("\r\n\r\n").unwrap().1).unwrap();
+        let last = body["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["role"], "user");
+        assert!(last["content"]
+            .as_str()
+            .unwrap()
+            .contains("Before you finish"));
+
         // The nudge repeats the one thing that outranks it, so it never pushes
         // a check the user asked to skip back onto the model.
         assert!(

@@ -2784,9 +2784,16 @@ impl Config {
              every unrelated project on the machine before the command times out. Keep each \
              `bash` command focused on one task \
              instead of chaining unrelated commands with `;` or `&&`. `read`, `ls`, `find`, and \
-             `grep` accept absolute paths, so you do not need a shell to inspect files outside \
-             the project, and `bash` already starts in the project root, so run a command \
-             directly instead of prefixing `cd <root> &&`. Create a file — including a scratch or \
+             `grep` accept absolute paths within the allowed project roots, so use them directly \
+             for file inspection. `bash` already starts in the project root, so run a command \
+             directly instead of prefixing `cd <root> &&`. On Unix, `bash` runs a non-interactive \
+             Bash with pipefail: a failing test before `| tail` still fails the tool call. Shell \
+             functions such as `nvm` are not loaded. If the project's exact `.nvmrc` version is \
+             already installed under `~/.nvm/versions/node`, its bin directory is added to PATH \
+             automatically; verify with `node --version` and run the package manager directly \
+             instead of sourcing home-directory startup scripts. Check an installed command's \
+             version and `--help` before guessing version-specific flags. Pass `edit.edits` as a \
+             JSON array of objects with `oldText` and `newText`, never XML parameter markup. Create a file — including a scratch or \
              verification script — with the `write` tool rather than a shell heredoc, and keep it \
              inside the project: a script run from the temp directory resolves its relative imports \
              against its own directory, not the working directory, so `require('./...')` fails the \
@@ -2867,7 +2874,11 @@ impl Config {
              `main`/`master` only when neither is set): branch protection rejects a direct push \
              and you would have to undo the commit. When you are asked to raise a pull request \
              while on the default branch, create a feature branch first, commit there, push that \
-             branch, and open the PR from it.\nAny summary about a pull or merge request — one \
+             branch, and open the PR from it. Supply `gh pr create --head <branch> --base <default>` \
+             explicitly: a single-branch clone may push successfully without storing a remote-tracking \
+             ref, so do not repeatedly push or change its fetch configuration to satisfy PR inference. \
+             Write multiline PR text to a project-local scratch file and pass `--body-file`, then remove \
+             only that scratch file after creation.\nAny summary about a pull or merge request — one \
              you opened, updated, checked, or replied to — names it with a link the user can \
              click (`[#123 title](https://github.com/owner/repo/pull/123)`, the URL `gh pr create` \
              printed or `gh pr view <number> --json url` reports; `glab` reports the same for a \

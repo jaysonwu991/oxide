@@ -542,7 +542,7 @@ pub async fn execute_with_scope(
                     "mcp_load requires a `server` string, for example {{\"server\":\"github\"}}"
                 )),
             },
-            "bash" => bash(cwd, &args, progress).await.map(ToolOutput::text),
+            "bash" => bash(cwd, &args, progress).await,
             "webfetch" => webfetch_guarded(&args, mcp).await.map(ToolOutput::text),
             "read" | "write" | "edit" | "ls" | "find" | "grep" => {
                 let cwd = cwd.to_path_buf();
@@ -759,12 +759,74 @@ fn normalize_path(path: &Path) -> PathBuf {
     out
 }
 
+/// A quoted cat heredoc used as a GitHub PR body is literal text, not a path
+/// operand or executable script. Keep the command around it subject to checks.
+fn shell_scope_source(command: &str) -> String {
+    let mut source = command.as_bytes().to_vec();
+    for (start, _) in command.match_indices("$(cat <<") {
+        let prefix = &command[..start];
+        if !prefix.ends_with("--body \"") {
+            continue;
+        }
+        let segments = shell_segments(prefix);
+        let words: Vec<_> = segments.last().unwrap_or(&"").split_whitespace().collect();
+        let Some(index) = shell_command_index(&words) else {
+            continue;
+        };
+        if shell_word_name(words[index]) != "gh"
+            || words.get(index + 1) != Some(&"pr")
+            || !matches!(words.get(index + 2), Some(&"create" | &"edit"))
+        {
+            continue;
+        }
+        let rest = &command[start + "$(cat <<".len()..];
+        let Some((header, body)) = rest.split_once('\n') else {
+            continue;
+        };
+        let header = header.trim_end();
+        let Some(quote) = header.chars().next().filter(|ch| matches!(ch, '\'' | '"')) else {
+            continue;
+        };
+        let Some(delimiter) = header
+            .strip_prefix(quote)
+            .and_then(|text| text.strip_suffix(quote))
+        else {
+            continue;
+        };
+        if delimiter.is_empty()
+            || !delimiter
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            continue;
+        }
+        let body_start = command.len() - body.len();
+        let mut offset = 0;
+        for line in body.split_inclusive('\n') {
+            if line.trim_end_matches(['\r', '\n']) == delimiter {
+                if body[offset + line.len()..].trim_start().starts_with(")\"") {
+                    for byte in &mut source[body_start..body_start + offset] {
+                        if *byte != b'\n' && *byte != b'\r' {
+                            *byte = b' ';
+                        }
+                    }
+                }
+                break;
+            }
+            offset += line.len();
+        }
+    }
+    String::from_utf8(source).expect("masking literal data preserves UTF-8")
+}
+
 /// Shells cannot be made into a portable OS sandbox here, but deliberate
 /// cross-project commands have concrete path operands. Refuse absolute/home
 /// paths and parent traversal before starting the process. This catches the
 /// `cd /sibling/repo` and absolute grep/read forms while leaving ordinary build
 /// commands, URLs, and `/dev/null` redirection alone.
 fn enforce_scoped_shell(cwd: &Path, command: &str, scope: PathScope<'_>) -> Result<()> {
+    let source = shell_scope_source(command);
+    let command = source.as_str();
     if command.contains("$HOME")
         || command.contains("${HOME}")
         || command.contains("$PWD/..")
@@ -1025,6 +1087,21 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
     match args.get("edits") {
         Some(Value::String(text)) => match parse_edits_string(text) {
             Some(parsed) => collect_edits(&parsed, &mut raw)?,
+            None if args.get("newText").and_then(Value::as_str).is_some()
+                && text
+                    .trim_start()
+                    .starts_with("<parameter name=\"oldText\">") =>
+            {
+                let old = text
+                    .trim_start()
+                    .strip_prefix("<parameter name=\"oldText\">")
+                    .unwrap();
+                raw.push(Replacement {
+                    old: old.strip_suffix("</parameter>").unwrap_or(old).to_string(),
+                    new: args["newText"].as_str().unwrap().to_string(),
+                    path: None,
+                });
+            }
             None => {
                 let mut snippet: String = text.chars().take(80).collect();
                 if text.chars().count() > 80 {
@@ -3061,6 +3138,41 @@ fn bash_path() -> Option<OsString> {
     Some(augment_path(&inherited, &home))
 }
 
+fn project_bash_path(cwd: &Path) -> Option<OsString> {
+    let home = dirs::home_dir()?;
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    Some(project_runtime_path(cwd, &home, &inherited))
+}
+
+fn project_runtime_path(cwd: &Path, home: &Path, inherited: &std::ffi::OsStr) -> OsString {
+    let augmented = augment_path(inherited, home);
+    let Some(version) = std::fs::read_to_string(cwd.join(".nvmrc")).ok() else {
+        return augmented;
+    };
+    let version = version.trim().trim_start_matches('v');
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3
+        || !parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|ch| ch.is_ascii_digit()))
+    {
+        return augmented;
+    }
+    let bin = home
+        .join(".nvm/versions/node")
+        .join(format!("v{version}"))
+        .join("bin");
+    if !bin
+        .join(if cfg!(windows) { "node.exe" } else { "node" })
+        .is_file()
+    {
+        return augmented;
+    }
+    let mut paths = vec![bin.clone()];
+    paths.extend(std::env::split_paths(&augmented).filter(|path| path != &bin));
+    std::env::join_paths(paths).unwrap_or(augmented)
+}
+
 fn augment_path(inherited: &std::ffi::OsStr, home: &Path) -> OsString {
     let mut paths = Vec::new();
     let candidates = [
@@ -3092,7 +3204,7 @@ fn augment_path(inherited: &std::ffi::OsStr, home: &Path) -> OsString {
     std::env::join_paths(paths).unwrap_or_else(|_| inherited.to_os_string())
 }
 
-async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
+async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutput> {
     let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
     if uses_recursive_shell_grep(command) {
         anyhow::bail!(
@@ -3111,11 +3223,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
     };
     #[cfg(not(windows))]
     let mut shell = {
-        let mut shell = tokio::process::Command::new("sh");
-        shell.arg("-c").arg(command);
+        let mut shell = tokio::process::Command::new("bash");
+        shell
+            .args(["--noprofile", "--norc", "-o", "pipefail", "-c"])
+            .arg(command);
         shell
     };
-    if let Some(path) = bash_path() {
+    if let Some(path) = project_bash_path(cwd) {
         shell.env("PATH", path);
     }
     crate::child::detach_terminal(&mut shell);
@@ -3159,7 +3273,10 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<String> {
         output.push('\n');
         output.push_str(module_failure_hint(&output, cwd));
     }
-    Ok(output)
+    Ok(ToolOutput {
+        is_error: exit != 0,
+        ..ToolOutput::text(output)
+    })
 }
 
 struct StreamCapture {
@@ -4011,6 +4128,25 @@ mod tests {
         assert!(!descriptions.contains("outside the project are allowed"));
 
         std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn project_boundary_treats_quoted_pr_heredoc_as_text_but_checks_executable_paths() {
+        let cwd = std::env::current_dir().unwrap();
+        let quoted = "gh pr create --body \"$(cat <<'EOF'\n### Screenshot / GIF\n$HOME /outside/file $(cat /outside/secret) `cat /outside/secret`\nEOF\n)\"";
+        assert!(enforce_scoped_shell(&cwd, quoted, PathScope::CurrentProject).is_ok());
+        for command in [
+            quoted.replace("<<'EOF'", "<<EOF"),
+            quoted.replace("gh pr create --body", "python -c"),
+            quoted.replace("EOF\n)\"", "EOF\ncat /outside/secret\n)\""),
+            format!("{quoted} && cat /outside/secret"),
+            "python <<'EOF'\nopen('/outside/secret')\nEOF".into(),
+        ] {
+            assert!(
+                enforce_scoped_shell(&cwd, &command, PathScope::CurrentProject).is_err(),
+                "{command}"
+            );
+        }
     }
 
     #[test]
@@ -5300,6 +5436,38 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_reports_pipeline_failures_as_tool_errors() {
+        let cwd = std::env::current_dir().unwrap();
+        let mcp = McpRegistry::default();
+        let out = execute(
+            &call(
+                "bash",
+                json!({ "command": "(printf 'test failed\\n'; exit 7) | tail -1" }),
+            ),
+            &cwd,
+            &mcp,
+            &Progress::default(),
+        )
+        .await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("test failed") && out.text.ends_with("[exit: 7]"),
+            "{}",
+            out.text
+        );
+        let ok = execute(
+            &call("bash", json!({ "command": "printf 'passed\\n' | tail -1" })),
+            &cwd,
+            &mcp,
+            &Progress::default(),
+        )
+        .await;
+        assert!(!ok.is_error, "{}", ok.text);
+        assert!(ok.text.ends_with("[exit: 0]"));
+    }
+
     #[tokio::test]
     async fn bash_streams_progress() {
         let dir = std::env::temp_dir().join(format!("oxide_bash_stream_{}", std::process::id()));
@@ -5526,6 +5694,38 @@ mod tests {
             .function
             .description
             .contains("runs ripgrep when available"));
+    }
+
+    #[test]
+    fn project_nvmrc_uses_the_installed_node_without_sourcing_home_scripts() {
+        let base = std::env::temp_dir().join(format!(
+            "oxide_node_path_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = base.join("project");
+        let home = base.join("home");
+        let node_bin = home.join(".nvm/versions/node/v22.23.3/bin");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&node_bin).unwrap();
+        std::fs::write(
+            node_bin.join(if cfg!(windows) { "node.exe" } else { "node" }),
+            "",
+        )
+        .unwrap();
+        std::fs::write(project.join(".nvmrc"), "22.23.3\n").unwrap();
+        let inherited = std::env::join_paths([home.join(".volta/bin")]).unwrap();
+        let paths: Vec<_> =
+            std::env::split_paths(&project_runtime_path(&project, &home, &inherited)).collect();
+        assert_eq!(paths[0], node_bin);
+        for invalid in ["../../outside", "lts/*", "22.23.99"] {
+            std::fs::write(project.join(".nvmrc"), invalid).unwrap();
+            assert_eq!(
+                project_runtime_path(&project, &home, &inherited),
+                augment_path(&inherited, &home)
+            );
+        }
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -6405,6 +6605,32 @@ mod tests {
         assert!(!out.text.contains("1|one"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_recovers_a_wrapped_old_text_with_a_sibling_replacement() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_edit_xml_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "before\n").unwrap();
+        edit(&dir, &json!({ "path": "a.txt", "edits": "\n<parameter name=\"oldText\">before", "newText": "after" })).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "after\n"
+        );
+        assert!(edit(
+            &dir,
+            &json!({ "path": "a.txt", "edits": "<parameter name=\"oldText\">after" })
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "after\n"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
