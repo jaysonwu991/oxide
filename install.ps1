@@ -69,20 +69,6 @@
         }
     }
 
-    # The token a release was named after before the version moved into the
-    # name, which is the key an older manifest carries and the name an older
-    # archive carries.
-    function Get-PreviousPlatform([string]$Platform) {
-        switch ($Platform) {
-            "win-x64" { return "win32-x64" }
-            "macos-arm64" { return "darwin-arm64" }
-            "macos-x64" { return "darwin-x64" }
-            "linux-x64" { return "linux-x64" }
-            "linux-arm64" { return "linux-arm64" }
-            default { return $null }
-        }
-    }
-
     function Get-Text([string]$Url) {
         $response = Invoke-WebRequest -Uri $Url -UseBasicParsing
         $content = $response.Content
@@ -158,28 +144,9 @@
         if (-not $ver) { throw "could not read version from $ManifestName" }
         $asset = Get-ManifestValue $manifest $Platform
         if (-not $asset) {
-            $previous = Get-PreviousPlatform $Platform
-            if ($previous) { $asset = Get-ManifestValue $manifest $previous }
-        }
-        if (-not $asset) {
             throw "no asset for $Platform; supported targets: macos-arm64, macos-x64, linux-x64, linux-arm64, win-x64"
         }
         return "$BaseUrl/releases/download/$ver/$asset"
-    }
-
-    # The names an archive can still be published under: the token a release was
-    # named after before the version moved into it, and the lowercase name the
-    # releases before the branding published. A pinned version — a rollback —
-    # can need either, and an older release only carries them.
-    function Get-LegacyUrls([string]$Platform, [string]$Ver) {
-        $previous = Get-PreviousPlatform $Platform
-        if (-not $previous) { return @() }
-        $ver = $Ver -replace "^v", ""
-        $ext = if ($Platform -like "win-*") { "zip" } else { "tar.gz" }
-        return @(
-            "$BaseUrl/releases/download/v$ver/Oxide-v$ver-$previous.$ext",
-            "$BaseUrl/releases/download/v$ver/oxide-v$ver-$previous.$ext"
-        )
     }
 
     function Test-Checksum([string]$File, [string]$SumsFile) {
@@ -216,7 +183,6 @@
     $platform = Get-Platform
     $url = Resolve-Url $platform
     $archiveName = ($url -split "/")[-1]
-    $tag = ($url -split "/")[-2]
 
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("oxide-install-" + [Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
@@ -224,26 +190,7 @@
     try {
         $archivePath = Join-Path $tmp $archiveName
         Write-Info "downloading $archiveName for $platform"
-        try {
-            Get-Binary $url $archivePath
-        } catch {
-            $fallback = $null
-            foreach ($candidate in (Get-LegacyUrls $platform $tag)) {
-                $name = ($candidate -split "/")[-1]
-                Write-Info "downloading $name for $platform"
-                try {
-                    Get-Binary $candidate (Join-Path $tmp $name)
-                } catch {
-                    continue
-                }
-                $fallback = $candidate
-                $archiveName = $name
-                $archivePath = Join-Path $tmp $name
-                break
-            }
-            if (-not $fallback) { throw }
-            $url = $fallback
-        }
+        Get-Binary $url $archivePath
 
         $sumsPath = Join-Path $tmp "$archiveName.sha256"
         $haveSums = $true

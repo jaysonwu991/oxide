@@ -77,28 +77,10 @@ detect_platform() {
     printf '%s' "$platform"
 }
 
-# The token a release was named after before the version moved into the name,
-# which is the key an older manifest carries and the name an older archive
-# carries.
-previous_platform() {
-    case "$1" in
-        macos-arm64) printf '%s' "darwin-arm64" ;;
-        macos-x64) printf '%s' "darwin-x64" ;;
-        linux-x64 | linux-arm64) printf '%s' "$1" ;;
-        *) return 1 ;;
-    esac
-}
-
 manifest_asset() {
     body="$1"
     platform="$2"
     name="$(printf '%s\n' "$body" | awk -F': ' -v k="$platform" '$1 == k {sub(/^[[:space:]]*/, "", $2); sub(/[[:space:]]*$/, "", $2); print $2; exit}')"
-    if [ -z "$name" ]; then
-        previous="$(previous_platform "$platform")" || previous=""
-        if [ -n "$previous" ]; then
-            name="$(printf '%s\n' "$body" | awk -F': ' -v k="$previous" '$1 == k {sub(/^[[:space:]]*/, "", $2); sub(/[[:space:]]*$/, "", $2); print $2; exit}')"
-        fi
-    fi
     [ -n "$name" ] || err "no asset for ${platform}; supported targets: macos-arm64, macos-x64, linux-x64, linux-arm64"
     printf '%s' "$name"
 }
@@ -144,19 +126,6 @@ resolve_url() {
     printf '%s/releases/download/%s/%s' "$BASE_URL" "$ver" "$asset"
 }
 
-# The names an archive can still be published under: the token a release was
-# named after before the version moved into it, and the lowercase name the
-# releases before the branding published. A pinned version — a rollback — can
-# need either, and an older release only carries them.
-legacy_urls() {
-    platform="$1"
-    ver="$2"
-    ver="${ver#v}"
-    previous="$(previous_platform "$platform")" || return 1
-    printf '%s/releases/download/v%s/Oxide-v%s-%s.tar.gz\n' "$BASE_URL" "$ver" "$ver" "$previous"
-    printf '%s/releases/download/v%s/oxide-v%s-%s.tar.gz\n' "$BASE_URL" "$ver" "$ver" "$previous"
-}
-
 verify_checksum() {
     file="$1"
     sums="$2"
@@ -185,30 +154,12 @@ main() {
     platform="$(detect_platform)"
     url="$(resolve_url "$platform")"
     archive="${url##*/}"
-    # The tag the resolved URL sits under, which is the version a fallback name
-    # is built with: `resolve_url` runs in a subshell, so the `ver` it reads out
-    # of the manifest is gone by the time a download fails.
-    tag="${url%/*}"
-    tag="${tag##*/}"
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
     info "downloading ${archive} for ${platform}"
-    if ! download "$url" "${tmp}/${archive}"; then
-        fallback=""
-        for candidate in $(legacy_urls "$platform" "$tag"); do
-            name="${candidate##*/}"
-            info "downloading ${name} for ${platform}"
-            if download "$candidate" "${tmp}/${name}"; then
-                fallback="$candidate"
-                archive="$name"
-                break
-            fi
-        done
-        [ -n "$fallback" ] || err "download failed for ${archive}"
-        url="$fallback"
-    fi
+    download "$url" "${tmp}/${archive}" || err "download failed for ${archive}"
 
     if download "${url}.sha256" "${tmp}/${archive}.sha256" 2>/dev/null; then
         verify_checksum "${tmp}/${archive}" "${tmp}/${archive}.sha256"
