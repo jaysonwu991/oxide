@@ -4133,14 +4133,16 @@ mod tests {
     #[test]
     fn project_boundary_treats_quoted_pr_heredoc_as_text_but_checks_executable_paths() {
         let cwd = std::env::current_dir().unwrap();
-        let quoted = "gh pr create --body \"$(cat <<'EOF'\n### Screenshot / GIF\n$HOME /outside/file $(cat /outside/secret) `cat /outside/secret`\nEOF\n)\"";
-        assert!(enforce_scoped_shell(&cwd, quoted, PathScope::CurrentProject).is_ok());
+        let secret = cwd.parent().unwrap().join("outside/secret");
+        let secret = secret.to_string_lossy().replace('\\', "/");
+        let quoted = "gh pr create --body \"$(cat <<'EOF'\n### Screenshot / GIF\n$HOME /outside/file $(cat /outside/secret) `cat /outside/secret`\nEOF\n)\"".replace("/outside/secret", &secret);
+        assert!(enforce_scoped_shell(&cwd, &quoted, PathScope::CurrentProject).is_ok());
         for command in [
             quoted.replace("<<'EOF'", "<<EOF"),
             quoted.replace("gh pr create --body", "python -c"),
-            quoted.replace("EOF\n)\"", "EOF\ncat /outside/secret\n)\""),
-            format!("{quoted} && cat /outside/secret"),
-            "python <<'EOF'\nopen('/outside/secret')\nEOF".into(),
+            quoted.replace("EOF\n)\"", &format!("EOF\ncat {secret}\n)\"")),
+            format!("{quoted} && cat {secret}"),
+            format!("python <<'EOF'\nopen('{secret}')\nEOF"),
         ] {
             assert!(
                 enforce_scoped_shell(&cwd, &command, PathScope::CurrentProject).is_err(),
