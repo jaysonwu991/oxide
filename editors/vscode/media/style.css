@@ -1510,14 +1510,19 @@ footer {
   text-overflow: ellipsis;
 }
 
-#status::before {
+.composer-action { position: relative; flex: none; }
+.composer-action[data-level="busy"]::after {
   content: "";
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
+  position: absolute;
+  inset: 2px;
+  border: 1.5px solid transparent;
+  border-top-color: currentColor;
+  border-right-color: currentColor;
   border-radius: 50%;
-  background: currentColor;
-  opacity: 0.55;
+  animation: spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-action[data-level="busy"]::after { animation: none; }
 }
 
 #stop.run-control { padding: 0; }
@@ -2555,3 +2560,18 @@ button.icon {
 .model-settings .setting-chip { width: auto; min-width: 0; padding: 0 5px; gap: 5px; font-family: inherit; font-size: 0.85em; }
 .model-settings .setting-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-settings [data-control="reasoning"] { flex: none; }
+.model-settings .setting-chip { border-radius: 6px; color: var(--vscode-foreground); }
+.model-settings [data-control="reasoning"] { color: var(--vscode-descriptionForeground); }
+.model-settings .selector-caret { width: 12px; height: 12px; color: var(--vscode-descriptionForeground); }
+.model-settings .selector-caret svg { width: 12px; height: 12px; }
+#dialog.settings-dropdown {
+  position: fixed;
+  z-index: 50;
+  width: min(360px, calc(100vw - 24px));
+  max-width: none;
+  margin: 0;
+  border-radius: 12px;
+  padding: 10px 6px;
+  box-shadow: 0 8px 30px #0005;
+}
+#dialog.settings-dropdown .popover-head { margin-bottom: 6px; }
