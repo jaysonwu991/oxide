@@ -324,7 +324,9 @@ fn advertised_reasoning_levels(config: &Config) -> Value {
         .reasoning_supported
         .as_ref()
         .is_some_and(|meta| !meta.supported.is_empty());
-    if advertised {
+    if !config.supports_reasoning() {
+        json!([])
+    } else if advertised {
         json!(config
             .reasoning_levels()
             .iter()
@@ -731,6 +733,28 @@ pub async fn change_sides(project: String, baseline: String, path: String) -> Cm
     tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
         let snapshots = Snapshots::open(&root)?;
         read_sides(&snapshots, &root, &baseline, &path)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
+pub async fn repository_changes(project: String) -> CmdResult<oxide_core::changes::TurnChanges> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || oxide_desktop::repository::changes(&root))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+pub async fn repository_sides(project: String, path: String) -> CmdResult<Value> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let (old, new) = oxide_desktop::repository::sides(&root, &path)?;
+        let (Some(old), Some(new)) = (side_text(old), side_text(new)) else {
+            return Ok(json!({ "binary": true, "omitted": false, "lines": [] }));
+        };
+        Ok(review_sides(&old, &new))
     })
     .await
     .map_err(err)?
@@ -1369,6 +1393,10 @@ pub async fn dispatch(
             )
             .await,
         ),
+        "repository_changes" => command_value(repository_changes(arg(&args, "project")?).await),
+        "repository_sides" => {
+            command_value(repository_sides(arg(&args, "project")?, arg(&args, "path")?).await)
+        }
         "change_sides" => command_value(
             change_sides(
                 arg(&args, "project")?,

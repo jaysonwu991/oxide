@@ -1929,39 +1929,39 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let start = app.scroll as usize;
     let end = (start + view as usize).min(app.lines.len());
-    // The transcript draws into the full area rather than the inset `inner`,
-    // padding every row to the width with a styled space, because ratatui only
-    // writes cells whose style changed since the previous frame: a blank cell is
-    // blank in both, so a glyph the terminal left in an edge column - a stray
-    // cell from a reflow on resize, an overlay drawn outside the frame -
-    // survived every repaint and showed up as a one-column strip at the side of
-    // the pane. The row is not indented on the left: the first cell is the
-    // text's own, so the assistant reply, the table and the composer's rule all
-    // start on the same column.
+    // Keep message content inside its own viewport. The separate edge column
+    // is cleared explicitly so a panel cannot color it after wrapping or resize.
     let edge = Style::default().fg(app.theme.assistant);
-    let mut content = vec![edge_fill(area.width, edge); top_pad as usize];
+    let mut content = vec![edge_fill(inner.width, edge); top_pad as usize];
     content.extend(
         selection_lines(app, start, end)
             .into_iter()
             .map(|mut line| {
                 own_left_edge(&mut line, edge);
-                let used: usize = line
-                    .spans
-                    .iter()
-                    .map(|span| span.content.chars().count())
-                    .sum();
-                let pad = (area.width as usize).saturating_sub(used);
+                let used = line.width();
+                let pad = (inner.width as usize).saturating_sub(used);
                 line.spans.push(Span::styled(" ".repeat(pad), edge));
                 line
             }),
     );
-    content.resize_with(area.height as usize, || edge_fill(area.width, edge));
+    content.resize_with(area.height as usize, || edge_fill(inner.width, edge));
     // Every message line is already wrapped to the viewport width, so the
     // paragraph must not wrap again: `Wrap` inserts a phantom empty row before
     // any line that exactly fills the width, which desynchronises the tool
     // panel backgrounds from their text.
     let paragraph = Paragraph::new(content);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(
+        paragraph,
+        Rect {
+            width: inner.width,
+            ..area
+        },
+    );
+    if area.width > 0 {
+        let lane = Rect::new(area.right() - 1, area.y, 1, area.height);
+        let blank = edge_fill(1, edge.bg(Color::Reset));
+        frame.render_widget(Paragraph::new(vec![blank; area.height as usize]), lane);
+    }
 
     // Pi floats a "jump to latest message" row over the bottom of a transcript
     // the reader has scrolled away from; clicking it (or End) returns to the
@@ -2999,7 +2999,7 @@ fn busy_status_text(app: &App) -> String {
     if !app.input.trim().is_empty() || !app.attachments.is_empty() {
         text.push_str(" · Enter steer · Alt+Enter queue");
     }
-    text.push_str(" · Esc clear · /exit quit ");
+    text.push(' ');
     text
 }
 
@@ -3430,11 +3430,7 @@ fn push_bg_panel(lines: &mut Rows, body: Rows, width: usize, bg: Color) {
     let fill = Style::default().bg(bg);
     lines.push(Line::from(Span::styled(" ".repeat(outer), fill)));
     for (line, join) in body.lines.into_iter().zip(body.joins) {
-        let used: usize = line
-            .spans
-            .iter()
-            .map(|span| span.content.chars().count())
-            .sum();
+        let used = line.width();
         let pad = inner.saturating_sub(used);
         let mut spans = Vec::with_capacity(line.spans.len() + 3);
         spans.push(Span::styled(" ", fill));
@@ -3689,7 +3685,7 @@ fn push_tool_output(lines: &mut Rows, text: &str, width: usize, style: Style) {
     let width = width.max(1);
     let indent = TOOL_WRAP_INDENT.min(width.saturating_sub(1));
     for raw in text.split('\n') {
-        if raw.chars().count() <= width {
+        if text_width(raw) <= width {
             lines.push(Line::from(Span::styled(raw.to_string(), style)));
             continue;
         }
@@ -3863,9 +3859,13 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
     }
 
     for &(ch, index) in &chars {
+        let cells = char_width(ch);
+        if cells > width {
+            continue;
+        }
         let is_ws = ch.is_whitespace();
         let word_found = non_ws_prev && is_ws;
-        let untrimmed_overflow = pending_line.is_empty() && word_width + ws_width + 1 > width;
+        let untrimmed_overflow = pending_line.is_empty() && word_width + ws_width + cells > width;
 
         if word_found || untrimmed_overflow {
             pending_line.append(&mut pending_ws);
@@ -3876,17 +3876,17 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
             word_width = 0;
         }
 
-        let line_full = line_width >= width;
-        let pending_word_overflow = line_width + ws_width + word_width >= width;
+        let line_full = cells > 0 && line_width >= width;
+        let pending_word_overflow = line_width + ws_width + word_width + cells > width;
 
         if line_full || pending_word_overflow {
             let mut remaining = width.saturating_sub(line_width);
             flush(&mut pending_line, &mut lines, base, &mut first);
             line_width = 0;
             while !pending_ws.is_empty() && remaining > 0 {
-                ws_width = ws_width.saturating_sub(1);
-                remaining -= 1;
-                pending_ws.remove(0);
+                let cells = char_width(pending_ws.remove(0).0);
+                ws_width = ws_width.saturating_sub(cells);
+                remaining = remaining.saturating_sub(cells);
             }
             if is_ws && pending_ws.is_empty() {
                 continue;
@@ -3894,10 +3894,10 @@ fn wrap_segment(raw: &str, width: usize, base: usize) -> Vec<WrapLine> {
         }
 
         if is_ws {
-            ws_width += 1;
+            ws_width += cells;
             pending_ws.push((ch, index));
         } else {
-            word_width += 1;
+            word_width += cells;
             pending_word.push((ch, index));
         }
         non_ws_prev = !is_ws;
@@ -5468,6 +5468,47 @@ mod tests {
     }
 
     #[test]
+    fn tool_panels_fit_terminal_cells_and_leave_the_edge_unpainted() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = App::new(
+            "model".into(),
+            "/tmp/project".into(),
+            crate::config::Reasoning::Auto,
+        );
+        app.items.push(ChatItem::ToolResult {
+            name: "bash".into(),
+            args: r#"{"command":"ps aux | rg rust-analyzer"}"#.into(),
+            output: format!("{}\n{}\n[exit: 0]", "/Users/dev/.rustup/toolchains/stable-aarch64-apple-darwin/libexec/rust-analyzer-proc-macro-srv".repeat(2), "项目/测试/e\u{301}".repeat(20)),
+            is_error: false,
+            diff: None,
+            millis: 0,
+        });
+        for width in [80, 40, 100] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            for line in &app.lines {
+                assert!(
+                    line.width() <= usize::from(width - 1),
+                    "row overflows: {:?}",
+                    line_text(line)
+                );
+            }
+            let area = main_areas(Rect::new(0, 0, width, 24), &app)[0];
+            for y in area.y..area.bottom() {
+                let edge = &terminal.backend().buffer()[(width - 1, y)];
+                assert_eq!(edge.symbol(), " ");
+                assert_eq!(
+                    edge.bg,
+                    Color::Reset,
+                    "panel background reached the edge at {width}x{y}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_transcript_cell_is_repainted() {
         use ratatui::backend::TestBackend;
         use ratatui::buffer::Buffer;
@@ -6134,7 +6175,8 @@ mod tests {
             .map(|x| buffer[(x, input_row)].symbol())
             .collect();
         assert!(row.contains("ready"));
-        assert!(row.contains("Esc clear · /exit quit"));
+        assert!(!row.contains("Esc clear"));
+        assert!(!row.contains("/exit quit"));
         assert!(!row.contains("108k"));
         assert!(!row.contains("20%"));
 
@@ -6515,8 +6557,11 @@ mod wrap_parity_tests {
         let mut out = Vec::new();
         for y in 0..height {
             let mut line = String::new();
-            for x in 0..width {
-                line.push_str(buffer[(x, y)].symbol());
+            let mut x = 0;
+            while x < width {
+                let symbol = buffer[(x, y)].symbol();
+                line.push_str(symbol);
+                x += text_width(symbol).max(1) as u16;
             }
             out.push(line.trim_end().to_string());
         }
@@ -6555,6 +6600,20 @@ mod wrap_parity_tests {
     }
 
     #[test]
+    fn wide_character_wrap_preserves_text_without_overflow() {
+        for text in ["项目中的终端输出需要正确换行", "e\u{301}e\u{301}项目测试"] {
+            for width in 2..30 {
+                let rows = segments(text, width);
+                assert!(
+                    rows.iter().all(|row| text_width(row) <= width),
+                    "{text:?} at {width}"
+                );
+                assert_eq!(rows.concat(), text);
+            }
+        }
+    }
+
+    #[test]
     fn wrap_matches_ratatui_line_breaks() {
         let texts = [
             "the quick brown fox",
@@ -6564,6 +6623,7 @@ mod wrap_parity_tests {
             "12 34 56 78 9 10 11 12 13",
             "a bb ccc dddd eeeee ffffff ggggggg",
             "word ",
+            "e\u{301}e\u{301}e\u{301} hello world",
             " supercalifragilisticexpialidocious tail",
         ];
         for text in texts {

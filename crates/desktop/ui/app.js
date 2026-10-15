@@ -255,6 +255,8 @@ const state = {
   // picker shows these instead of the full set, so it never offers a level the
   // model would clamp away.
   reasoningLevels: null,
+  supportsReasoning: null,
+  reasoningIdentity: "",
   contextWindow: 0,
   // Whether the credential is a plan rather than a metered key, which the usage
   // line marks ` (sub)` the way the terminal footer does.
@@ -356,8 +358,7 @@ function setStatus(text, level = "info") {
 }
 
 /// The idle status badge carries a warning triangle for failures and a dot for
-/// ordinary notices. During a turn, the phase moves into the Stop button beside
-/// its spinner, making the running state and its action one control.
+/// ordinary notices. During a turn, the phase stays in the Stop tooltip.
 function paintStatus() {
   const busy = Boolean(state.busy || state.sendView);
   const level = busy ? "busy" : state.statusLevel;
@@ -370,7 +371,6 @@ function paintStatus() {
   el("status-text").textContent = text;
   el("status-text").hidden = text === IDLE_STATUS;
   badge.hidden = busy;
-  el("stop-label").textContent = text && text !== IDLE_STATUS ? text : "Working…";
   el("stop").title = `Stop the running turn${text && text !== IDLE_STATUS ? ` · ${text}` : ""}`;
   el("stop").setAttribute("aria-label", el("stop").title);
   badge.title = text;
@@ -1190,10 +1190,15 @@ async function loadInfo() {
     if (project !== state.project) return;
     // The project or model moved on, so a levels read still in flight is stale.
     reasoningEpoch += 1;
-    state.reasoning = info.reasoning;
-    state.reasoningPicked = false;
-    state.reasoningLevels =
-      Array.isArray(info.reasoningLevels) && info.reasoningLevels.length
+    const identity = `${project}\n${info.provider}\n${info.model}`;
+    const changedModel = state.reasoningIdentity && identity !== state.reasoningIdentity;
+    state.reasoningIdentity = identity;
+    state.supportsReasoning = info.supportsReasoning;
+    state.reasoning = changedModel || info.supportsReasoning === false ? "auto" : info.reasoning;
+    state.reasoningPicked = Boolean(changedModel) || info.supportsReasoning === false;
+    state.reasoningLevels = info.supportsReasoning === false
+      ? ["auto"]
+      : Array.isArray(info.reasoningLevels)
         ? ["auto", ...info.reasoningLevels]
         : null;
     state.contextWindow = info.contextWindow || 0;
@@ -1202,6 +1207,7 @@ async function loadInfo() {
     state.subscription = Boolean(info.subscription);
     state.trust = info.trust || null;
     updateChips();
+    void ensureReasoningLevels();
     renderProjectMeta(info);
     updateTrustButton();
     // The window the thread's own totals are measured against arrives with the
@@ -1243,6 +1249,7 @@ async function refreshContextWindow() {
 function renderProjectMeta(info) {
   const window = state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "";
   labelControl("model", `model: ${info.model}${window}`, "Switch model");
+  el("model-value").textContent = info.model;
   const notes = [];
   if (!info.hasKey) notes.push("no API key");
   if (info.trust && info.trust.required && !info.trust.trusted) {
@@ -1298,6 +1305,8 @@ async function answerTrust(trusted) {
 
 function updateChips() {
   labelControl("reasoning", `thinking: ${state.reasoning}`, "Choose the reasoning level (Shift+Tab cycles)");
+  el("reasoning").hidden = state.supportsReasoning === false;
+  el("reasoning-value").textContent = state.reasoning.charAt(0).toUpperCase() + state.reasoning.slice(1);
   updateProjectChip();
   // A folder switch resets the transcript, which is where the header's own
   // banner is decided.
@@ -1322,9 +1331,7 @@ function updateProjectChip() {
   el("project").setAttribute("aria-label", open ? `project: ${name}` : "Choose a project");
 }
 
-/// An icon-only control names the value it holds where a text chip used to show
-/// it — the tooltip and the accessible name — the way the VS Code panel's own
-/// chips carry it, so the composer's row is the same chrome in both front-ends.
+/// Keep each selector's full value and keyboard hint accessible.
 function labelControl(id, label, hint) {
   const chip = el(id);
   chip.title = hint ? `${label}\n${hint}` : label;
@@ -1362,6 +1369,7 @@ async function loadGit() {
     state.git = null;
   }
   paintComposerFacts();
+  if (!el("details-panel").hidden || reviewState?.card.repository) refreshProjectDetails();
 }
 
 /// The composer's own top row, above the message box: the branch the folder is on
@@ -1514,6 +1522,7 @@ function resetTranscript() {
   // where that turn is — if it is not the one this welcome belongs to.
   state.changes = [];
   closeReview();
+  if (!el("details-panel").hidden) refreshProjectDetails();
   el("transcript").innerHTML = "";
   el("usage").textContent = "";
   state.usage = null;
@@ -2034,6 +2043,7 @@ async function openRun() {
   }
   state.changes = [];
   closeReview();
+  if (!el("details-panel").hidden) refreshProjectDetails();
   el("transcript").innerHTML = "";
   clearPaintIdle();
   refreshThreadTitle();
@@ -2898,6 +2908,7 @@ function renderChanges(payload) {
   }
   transcript.appendChild(changesCard(card));
   scrollDown(transcript);
+  if (project === state.project && !el("details-panel").hidden) refreshProjectDetails();
 }
 
 /// `+12 −3`, shared by a card's header and its rows. A side with nothing to
@@ -2978,7 +2989,7 @@ function changesCard(card) {
   const review = document.createElement("button");
   review.type = "button";
   review.className = "ghost small";
-  review.textContent = "Review";
+  review.textContent = "View changes";
   review.onclick = (event) => {
     event.stopPropagation();
     openReview(card);
@@ -3091,11 +3102,14 @@ let reviewState = null;
 const REVIEW_CONTEXT = 3;
 
 function openReview(card) {
-  reviewState = { card, index: 0, sides: new Map(), expanded: new Set() };
-  el("review-title").textContent = card.title.textContent;
+  reviewState = { card, index: 0, sides: new Map(), reads: new Map(), expanded: new Set(), openFiles: new Set(card.files.slice(0, 1).map((file) => file.path)) };
+  el("review-title").textContent = "Changes";
   el("review-total").innerHTML = statsHtml(card.added, card.removed);
   closeOverlays("review-modal");
   el("review-modal").hidden = false;
+  el("details-panel").hidden = true;
+  el("review-scope").value = "turn";
+  paintDockToggles();
   paintReview();
   el("review-close").focus();
 }
@@ -3103,77 +3117,76 @@ function openReview(card) {
 function closeReview() {
   reviewState = null;
   el("review-modal").hidden = true;
+  paintDockToggles();
 }
 
 /// Paints the card's own listing and the file the review is showing.
 function paintReview() {
   if (!reviewState) return;
   const { card } = reviewState;
+  el("review-title").textContent = "Changes";
+  el("review-total").innerHTML = statsHtml(card.added, card.removed);
   const list = el("review-files");
   list.innerHTML = "";
+  if (!card.files.length) {
+    list.appendChild(reviewNote("No changes."));
+    return;
+  }
   card.files.forEach((file, index) => {
     const row = changeRow(file);
     row.classList.toggle("active", index === reviewState.index);
+    row.setAttribute("aria-expanded", String(reviewState.openFiles.has(file.path)));
+    row.setAttribute("aria-controls", `review-file-${index}`);
+    row.classList.toggle("open", reviewState.openFiles.has(file.path));
     row.onclick = () => {
       reviewState.index = index;
+      if (reviewState.openFiles.has(file.path)) reviewState.openFiles.delete(file.path);
+      else reviewState.openFiles.add(file.path);
       paintReview();
     };
     list.appendChild(row);
+    if (reviewState.openFiles.has(file.path)) {
+      const body = document.createElement("div");
+      body.className = "review-inline-diff";
+      body.id = `review-file-${index}`;
+      list.appendChild(body);
+      paintReviewFile(file, body);
+    }
   });
-  paintReviewFile(card.files[reviewState.index]);
 }
 
-/// Paints one file's two sides. They come from the project's shadow snapshot —
-/// the state the run found is nowhere on disk — so a file reads as a whole diff,
-/// both sides with their own line numbers, rather than as the few hunks a row's
-/// preview keeps. The answer is kept per path, and one for a file the reader has
-/// already walked off is dropped rather than painted under the wrong name.
-function paintReviewFile(file) {
+function paintReviewFile(file, target) {
   if (!reviewState) return;
-  const target = el("review-diff");
-  const showing = () =>
-    reviewState && reviewState.card.files[reviewState.index] === file;
-  const sides = reviewState.sides.get(file.path);
+  const current = reviewState;
+  const showing = () => reviewState === current && current.openFiles.has(file.path);
+  const sides = current.sides.get(file.path);
   if (sides !== undefined) {
-    target.replaceChildren(reviewFileHead(file), ...reviewBody(file, sides));
-    scrollReview();
+    target.replaceChildren(...reviewBody(file, sides));
     return;
   }
-  target.replaceChildren(reviewFileHead(file), reviewNote("Reading the change⋯"));
-  invoke("change_sides", {
-    project: reviewState.card.project,
-    baseline: reviewState.card.baseline,
-    path: file.path,
-  })
+  target.replaceChildren(reviewNote("Reading the change⋯"));
+  const args = { project: current.card.project, path: file.path };
+  if (!current.card.repository) args.baseline = current.card.baseline;
+  let reading = current.reads.get(file.path);
+  if (!reading) {
+    reading = current.card.repository
+      ? invoke("repository_sides", args)
+      : invoke("change_sides", args);
+    current.reads.set(file.path, reading);
+  }
+  reading
     .then((read) => {
       if (!showing()) return;
-      reviewState.sides.set(file.path, read);
-      paintReviewFile(file);
+      current.sides.set(file.path, read);
+      paintReviewFile(file, target);
     })
     .catch((error) => {
       if (!showing()) return;
-      // A failure is kept as its own answer, so walking away and back reports
-      // it rather than asking again in a loop.
-      const sides = { failed: String(error) };
-      reviewState.sides.set(file.path, sides);
-      paintReviewFile(file);
+      current.sides.set(file.path, { failed: String(error) });
+      paintReviewFile(file, target);
     });
 }
 
-function reviewFileHead(file) {
-  const head = document.createElement("div");
-  head.className = "review-file";
-  // The same words a card's row uses, so a binary or mode-only file reads the
-  // same in both listings rather than as an empty column.
-  const stats = file.binary
-    ? "binary"
-    : statsHtml(file.added, file.removed) || "no line changes";
-  head.innerHTML =
-    statusBadge(file.status) +
-    `<span class="change-path">${escapeHtml(file.path)}</span>` +
-    `<span class="change-stats">${stats}</span>`;
-  return head;
-}
 
 function reviewNote(text) {
   const note = document.createElement("div");
@@ -3262,27 +3275,139 @@ function diffRow(line) {
   return row;
 }
 
-/// Opens a file on its first change rather than on whatever its top happens to
-/// be, since a long file would otherwise show the reader its unchanged head.
-function scrollReview() {
-  const row = el("review-diff").querySelector?.(".split-row.add, .split-row.remove");
-  if (row && row.scrollIntoView) row.scrollIntoView({ block: "center" });
-}
-
 /// Walks the review's files, the way a changes view does.
 function walkReview(step) {
   if (!reviewState) return;
   const count = reviewState.card.files.length;
+  if (!count) return;
   reviewState.index = (reviewState.index + step + count) % count;
+  reviewState.openFiles.add(reviewState.card.files[reviewState.index].path);
   paintReview();
+  el("review-files").querySelectorAll(".change-row")[reviewState.index]?.scrollIntoView?.({ block: "nearest" });
 }
 
 function reviewKey(event) {
-  if (!reviewState) return;
+  if (!reviewState || event.target?.tagName === "SELECT") return;
   const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
   if (!step) return;
   event.preventDefault();
   walkReview(step);
+}
+
+let detailsRead = 0;
+
+function paintDockToggles() {
+  el("changes-toggle").setAttribute("aria-expanded", String(!el("review-modal").hidden));
+  el("details-toggle").setAttribute("aria-expanded", String(!el("details-panel").hidden));
+}
+
+function closeDetails() {
+  el("details-panel").hidden = true;
+  detailsRead += 1;
+  paintDockToggles();
+}
+
+async function openProjectDetails() {
+  if (!el("details-panel").hidden) {
+    closeDetails();
+    return;
+  }
+  closeReview();
+  el("details-panel").hidden = false;
+  paintDockToggles();
+  await refreshProjectDetails();
+}
+
+async function refreshProjectDetails() {
+  const project = state.project;
+  const read = ++detailsRead;
+  el("details-project").textContent = project ? projectNameOf(project) : "Choose a project";
+  el("details-stats").textContent = "";
+  el("details-changes").disabled = !project;
+  el("details-more").disabled = !project;
+  el("details-branch").hidden = !state.git?.repo || !project;
+  el("details-branch").innerHTML = ICONS.branch + `<span>${escapeHtml(project ? state.git?.branch || state.git?.detached || "" : "")}</span>`;
+  el("details-sources").textContent = project ? "Loading sources…" : "Select a project to see its sources.";
+  if (!project) return;
+  const current = () => read === detailsRead && project === state.project;
+  await Promise.all([
+    invoke("repository_changes", { project }).then((changes) => {
+      if (!current()) return;
+      const card = { ...changes, project, repository: true };
+      el("details-stats").innerHTML = statsHtml(changes.added, changes.removed);
+      el("details-changes").title = `${changes.files.length} changed files`;
+      if (reviewState?.card.repository) showRepositoryCard(card);
+    }).catch((error) => {
+      if (!current()) return;
+      el("details-stats").textContent = "";
+      el("details-changes").title = String(error);
+      if (reviewState?.card.repository) el("review-files").replaceChildren(reviewNote(String(error)));
+    }),
+    invoke("mcp_servers", { project }).then((servers) => {
+      if (!current()) return;
+      const box = el("details-sources");
+      box.innerHTML = "";
+      for (const server of servers) {
+        const row = document.createElement("button");
+        row.className = "details-row source-row";
+        row.innerHTML = ICONS.power + `<span>${escapeHtml(server.name)}</span>`;
+        row.title = server.status || server.state;
+        row.onclick = openMcps;
+        box.appendChild(row);
+      }
+      if (!servers.length) box.textContent = "No sources connected.";
+    }).catch((error) => {
+      if (current()) el("details-sources").textContent = `Could not load sources: ${error}`;
+    }),
+  ]);
+}
+
+function showRepositoryCard(card) {
+  const previous = reviewState?.card.repository && reviewState.card.project === card.project ? reviewState : null;
+  const selected = previous?.card.files[previous.index]?.path;
+  reviewState = {
+    card,
+    index: Math.max(0, card.files.findIndex((file) => file.path === selected)),
+    sides: new Map(),
+    reads: new Map(),
+    expanded: previous?.expanded || new Set(),
+    openFiles: previous?.openFiles || new Set(card.files.slice(0, 1).map((file) => file.path)),
+  };
+  el("review-scope").value = "repository";
+  paintReview();
+}
+
+async function openRepositoryChanges() {
+  closeDetails();
+  el("review-modal").hidden = false;
+  el("review-scope").value = "repository";
+  el("review-title").textContent = "Changes";
+  el("review-total").innerHTML = "";
+  el("review-files").replaceChildren(reviewNote("Reading changes…"));
+  paintDockToggles();
+  const project = state.project;
+  const pending = { card: { repository: true, project, files: [] } };
+  reviewState = pending;
+  if (!project) {
+    el("review-files").replaceChildren(reviewNote("Select a project to view changes."));
+    return;
+  }
+  try {
+    const changes = await invoke("repository_changes", { project });
+    if (reviewState !== pending || project !== state.project) return;
+    showRepositoryCard({ ...changes, project, repository: true });
+  } catch (error) {
+    if (reviewState === pending) el("review-files").replaceChildren(reviewNote(String(error)));
+  }
+}
+
+function changeReviewScope() {
+  if (el("review-scope").value === "repository") return openRepositoryChanges();
+  const card = state.changes.filter((card) => !card.undone).at(-1);
+  if (card) return openReview(card);
+  reviewState = null;
+  el("review-total").innerHTML = "";
+  el("review-files").replaceChildren(reviewNote("No changes from a turn in this chat yet."));
 }
 
 /// The events that write into the thread a turn is in. The transcript events go
@@ -3632,7 +3757,6 @@ const OVERLAYS = [
   "rename-modal",
   "image-modal",
   "sessions-modal",
-  "review-modal",
   "update-modal",
   "help-modal",
 ];
@@ -3643,7 +3767,7 @@ function closeOverlays(except) {
   }
   // The review's state is its card and the file it is showing, so closing the
   // panel drops it along with the markup rather than leaving it half-open.
-  if (except !== "review-modal") reviewState = null;
+
   // The palette lives above the composer rather than in an overlay, but any
   // dialog that opens takes the keyboard with it.
   if (except !== "command-palette") closePalette();
@@ -3902,8 +4026,16 @@ function openReasoning() {
   return invoke("reasoning_levels", { project })
     .then((info) => {
       if (epoch !== reasoningEpoch || state.project !== project) return;
-      if (info && Array.isArray(info.reasoningLevels) && info.reasoningLevels.length) {
-        state.reasoningLevels = ["auto", ...info.reasoningLevels];
+      if (info) {
+        state.supportsReasoning = info.supportsReasoning;
+        state.reasoningLevels = info.supportsReasoning === false
+          ? ["auto"]
+          : Array.isArray(info.reasoningLevels) ? ["auto", ...info.reasoningLevels] : null;
+        if (state.reasoningLevels && !state.reasoningLevels.includes(state.reasoning)) {
+          state.reasoning = "auto";
+          state.reasoningPicked = true;
+        }
+        updateChips();
         if (!el("reasoning-modal").hidden) {
           renderReasoning();
           focusReasoning();
@@ -5353,6 +5485,8 @@ function toggleHelp() {
 /// only has to agree with the chip — and a level set from anywhere but the
 /// picker's own row leaves the listing, whose mark would be out of date.
 function setReasoning(level) {
+  const levels = state.reasoningLevels || REASONING;
+  if (!levels.includes(level)) return;
   state.reasoning = level;
   state.reasoningPicked = true;
   updateChips();
@@ -5690,6 +5824,56 @@ function initSidebarResize() {
   });
 }
 
+function initDockResize() {
+  for (const [panelId, handleId] of [["review-modal", "changes-resizer"], ["details-panel", "details-resizer"]]) {
+    const panel = el(panelId);
+    const handle = el(handleId);
+    const key = `oxide.${panelId}.width`;
+    const apply = (width, save = false) => {
+      const max = Math.max(260, window.innerWidth - (document.querySelector(".sidebar")?.getBoundingClientRect().width || 220) - 320);
+      const value = Math.round(Math.max(260, Math.min(max, width)));
+      panel.style.flexBasis = `${value}px`;
+      handle.setAttribute("aria-valuenow", String(value));
+      handle.setAttribute("aria-valuemax", String(max));
+      if (save) localStorage.setItem(key, String(value));
+    };
+    const saved = Number(localStorage.getItem(key));
+    if (saved > 0) apply(saved);
+    handle.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      handle.setPointerCapture(event.pointerId);
+      const width = panel.getBoundingClientRect().width;
+      const start = event.clientX;
+      document.body.classList.add("resizing");
+      const move = (event) => apply(width + start - event.clientX);
+      const end = (event) => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+        handle.releasePointerCapture?.(event.pointerId);
+        document.body.classList.remove("resizing");
+        apply(panel.getBoundingClientRect().width, true);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      event.stopPropagation();
+      apply(panel.getBoundingClientRect().width + (event.key === "ArrowLeft" ? 20 : -20), true);
+    });
+    handle.addEventListener("dblclick", () => {
+      panel.style.flexBasis = "";
+      localStorage.removeItem(key);
+    });
+    window.addEventListener("resize", () => {
+      if (!panel.hidden && panel.style.flexBasis) apply(panel.getBoundingClientRect().width);
+    });
+  }
+}
+
 /// How long a scrollbar stays drawn after the last scroll of its box, in
 /// milliseconds: long enough to be read while the wheel is still spinning down,
 /// short enough that the bar is away by the time the reader has moved on.
@@ -5822,6 +6006,7 @@ function finishEditorControlPress(event) {
 
 function init() {
   initSidebarResize();
+  initDockResize();
   initOverlayScrollbars();
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
@@ -5964,9 +6149,22 @@ function init() {
     }
   });
   el("help-close").onclick = () => (el("help-modal").hidden = true);
-  el("review-close").onclick = closeReview;
-  el("review-prev").onclick = () => walkReview(-1);
-  el("review-next").onclick = () => walkReview(1);
+  el("review-close").onclick = () => { closeReview(); el("changes-toggle").focus(); };
+  el("changes-toggle").onclick = () => {
+    if (!el("review-modal").hidden) closeReview();
+    else openRepositoryChanges();
+  };
+  el("details-toggle").onclick = openProjectDetails;
+  el("details-more").onclick = () => {
+    const project = state.projects.find((project) => project.path === state.project);
+    if (project) showProjectActions(project, listedSessions().filter((session) => session.cwd === project.path), el("details-more"), el("details-more"));
+  };
+  el("details-changes").onclick = openRepositoryChanges;
+  el("details-add-source").onclick = openMcps;
+  el("details-view-sources").onclick = openMcps;
+  el("details-changes-icon").innerHTML = ICONS.file;
+  el("review-scope").onchange = changeReviewScope;
+  el("review-refresh").onclick = changeReviewScope;
 
   // WebKit can spend the first press after editing only moving focus to a
   // control, withholding its click until the next press. That focus default is
@@ -6116,6 +6314,7 @@ function init() {
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      const modalOpen = OVERLAYS.some((id) => !el(id).hidden);
       closeSidebarCards();
       closeImage();
       closeReasoning();
@@ -6125,9 +6324,14 @@ function init() {
       // hidden, so the turn continues instead of waiting out the timeout.
       if (!el("question").hidden) answerQuestion(true);
       closeOverlays();
+      if (!modalOpen) {
+        closeReview();
+        closeDetails();
+      }
       return;
     }
     if (event.key === "Tab" && event.shiftKey) {
+      if (event.target?.closest?.(".changes-pane, .details-pane")) return;
       // Shift+Tab belongs to the picker while it is up: it walks the rows, which
       // is what the dialog's own handler does with it, rather than cycling the
       // levels under a reader who is choosing one.
@@ -6380,7 +6584,7 @@ function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
     return button;
   };
   const edit = project.registered ? action("edit-project", ICONS.gear, "Edit project") : null;
-  const remove = project.registered ? null : action("remove-project", ICONS.close, "Delete project");
+  const remove = project.registered ? null : action("remove-project", ICONS.close, "Remove project");
   card.append(head, pin, meta, path);
   if (edit) card.append(edit);
   if (remove) card.append(remove);
@@ -6882,7 +7086,12 @@ async function removeProject(project) {
   const threads = (state.sessions || []).filter((session) => session.cwd === project.path);
   const count = threads.length;
 
-  if (project.registered) {
+  if (state.busy && (state.runProject || state.project) === project.path) {
+    setStatus("A turn is running; stop it before removing this project.");
+    return;
+  }
+
+  try {
     // "Remove" and "delete its threads" are different actions, so the dialog
     // makes the choice explicit instead of guessing from the row.
     const choice = await confirmDialog(
@@ -6906,21 +7115,11 @@ async function removeProject(project) {
       clearSelectedProject();
       loadTheme();
     }
+    await loadSessions();
     renderProjectsTree();
-    return;
+  } catch (error) {
+    setStatus(`Could not remove project: ${error}`, "error");
   }
-
-  if (!count) return;
-  const ok = await confirmDialog(
-    "Delete project",
-    `“${project.name}” only exists because of its ${count} thread${count === 1 ? "" : "s"}. Deleting removes the project and ${count === 1 ? "that thread" : "those threads"} permanently.`,
-    "Delete project",
-  );
-  if (!ok) return;
-  for (const session of threads) {
-    await invoke("delete_session", { project: session.cwd, id: session.id });
-  }
-  await refreshAfterRemoval();
 }
 
 async function removeSession(session) {

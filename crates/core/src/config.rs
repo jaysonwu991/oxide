@@ -1686,8 +1686,11 @@ impl Config {
     /// has a lowest-effort answer for it). A model whose listing carried levels
     /// returns exactly those; otherwise the built-in set is offered for a model
     /// the name heuristic recognizes, and a model known not to reason keeps
-    /// only `off`.
+    /// no explicit levels.
     pub fn reasoning_levels(&self) -> Vec<Reasoning> {
+        if !self.supports_reasoning() {
+            return Vec::new();
+        }
         let mut levels = vec![Reasoning::Off];
         if let Some(meta) = &self.reasoning_supported {
             if !meta.supported.is_empty() {
@@ -2035,7 +2038,14 @@ impl Config {
                     }
                 }
             }
+            self.reset_model_reasoning();
         }
+    }
+
+    /// Refresh model-specific capabilities without carrying an effort from the previous model.
+    pub fn reset_model_reasoning(&mut self) {
+        self.reasoning = Reasoning::Auto;
+        self.reasoning_supported = crate::llm::cached_model_reasoning(self, &self.model);
     }
 
     /// Records the outgoing provider's endpoint when it was customized, or
@@ -2246,7 +2256,10 @@ impl Config {
     pub fn apply_login_options(&mut self, model: &str, base_url: &str, portkey_config: &str) {
         let name = canonical_provider(&self.provider);
         if !model.trim().is_empty() {
-            self.model = model.trim().to_string();
+            if self.model != model.trim() {
+                self.model = model.trim().to_string();
+                self.reset_model_reasoning();
+            }
             self.provider_models
                 .insert(name.clone(), self.model.clone());
         }
@@ -2294,6 +2307,11 @@ impl Config {
         let default_url =
             ProviderPreset::for_name(&provider).map(|preset| preset.base_url.to_string());
         Self::update_at(path, move |object| {
+            if object.get("model").and_then(|v| v.as_str()) != Some(model.as_str())
+                || object.get("provider").and_then(|v| v.as_str()) != Some(provider.as_str())
+            {
+                object.insert("reasoning".to_string(), serde_json::json!("auto"));
+            }
             object.insert(
                 "provider".to_string(),
                 serde_json::Value::String(provider.clone()),
@@ -2358,7 +2376,12 @@ impl Config {
 
     /// Persists the selected model in `config.json`, preserving other settings.
     pub fn set_active_model_at(path: &Path, model: &str) -> Result<()> {
-        Self::set_active_field_at(path, "model", model)
+        Self::update_at(path, |object| {
+            if object.get("model").and_then(|v| v.as_str()) != Some(model) {
+                object.insert("reasoning".to_string(), serde_json::json!("auto"));
+            }
+            object.insert("model".to_string(), serde_json::json!(model));
+        })
     }
 
     /// Persists the model used by default for new sessions (`/models` Ctrl+S).
@@ -2784,9 +2807,16 @@ impl Config {
              every unrelated project on the machine before the command times out. Keep each \
              `bash` command focused on one task \
              instead of chaining unrelated commands with `;` or `&&`. `read`, `ls`, `find`, and \
-             `grep` accept absolute paths, so you do not need a shell to inspect files outside \
-             the project, and `bash` already starts in the project root, so run a command \
-             directly instead of prefixing `cd <root> &&`. Create a file — including a scratch or \
+             `grep` accept absolute paths within the allowed project roots, so use them directly \
+             for file inspection. `bash` already starts in the project root, so run a command \
+             directly instead of prefixing `cd <root> &&`. On Unix, `bash` runs a non-interactive \
+             Bash with pipefail: a failing test before `| tail` still fails the tool call. Shell \
+             functions such as `nvm` are not loaded. If the project's exact `.nvmrc` version is \
+             already installed under `~/.nvm/versions/node`, its bin directory is added to PATH \
+             automatically; verify with `node --version` and run the package manager directly \
+             instead of sourcing home-directory startup scripts. Check an installed command's \
+             version and `--help` before guessing version-specific flags. Pass `edit.edits` as a \
+             JSON array of objects with `oldText` and `newText`, never XML parameter markup. Create a file — including a scratch or \
              verification script — with the `write` tool rather than a shell heredoc, and keep it \
              inside the project: a script run from the temp directory resolves its relative imports \
              against its own directory, not the working directory, so `require('./...')` fails the \
@@ -2867,7 +2897,11 @@ impl Config {
              `main`/`master` only when neither is set): branch protection rejects a direct push \
              and you would have to undo the commit. When you are asked to raise a pull request \
              while on the default branch, create a feature branch first, commit there, push that \
-             branch, and open the PR from it.\nAny summary about a pull or merge request — one \
+             branch, and open the PR from it. Supply `gh pr create --head <branch> --base <default>` \
+             explicitly: a single-branch clone may push successfully without storing a remote-tracking \
+             ref, so do not repeatedly push or change its fetch configuration to satisfy PR inference. \
+             Write multiline PR text to a project-local scratch file and pass `--body-file`, then remove \
+             only that scratch file after creation.\nAny summary about a pull or merge request — one \
              you opened, updated, checked, or replied to — names it with a link the user can \
              click (`[#123 title](https://github.com/owner/repo/pull/123)`, the URL `gh pr create` \
              printed or `gh pr view <number> --json url` reports; `glab` reports the same for a \
@@ -3496,6 +3530,64 @@ mod tests {
         assert_eq!(Reasoning::Auto.next_in(&choices), Reasoning::Off);
         assert_eq!(Reasoning::Max.next_in(&choices), Reasoning::Auto);
         assert_eq!(Reasoning::Medium.next_in(&choices), Reasoning::Auto);
+    }
+
+    #[test]
+    fn model_switch_resets_effort_and_discards_previous_capabilities() {
+        let mut config = Config {
+            provider: "openai".into(),
+            model: "gpt-5".into(),
+            reasoning: Reasoning::High,
+            reasoning_supported: Some(ModelReasoning {
+                supported: vec![Reasoning::Low, Reasoning::High],
+                default: None,
+            }),
+            ..Config::default()
+        };
+        config.apply_login_options("gpt-5", "", "");
+        assert_eq!(config.reasoning, Reasoning::High);
+        config.apply_login_options("gpt-4o-mini", "", "");
+        assert_eq!(config.reasoning, Reasoning::Auto);
+        assert!(!config.supports_reasoning());
+        assert!(config.reasoning_levels().is_empty());
+        assert!(config.reasoning_supported.is_none());
+        config.reasoning = Reasoning::High;
+        config.apply_provider("anthropic", "key");
+        assert_eq!(config.reasoning, Reasoning::Auto);
+        assert!(config.supports_reasoning());
+    }
+
+    #[test]
+    fn saved_model_switch_resets_effort_only_when_selection_changes() {
+        let dir = temp_dir("selection-reasoning");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"provider":"openai","model":"gpt-5","reasoning":"high"}"#,
+        )
+        .unwrap();
+        let mut config = Config {
+            provider: "openai".into(),
+            model: "gpt-5".into(),
+            ..Config::default()
+        };
+        config.persist_selection_at(&path).unwrap();
+        let read = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+        };
+        assert_eq!(read()["reasoning"], "high");
+        config.model = "gpt-4o-mini".into();
+        config.persist_selection_at(&path).unwrap();
+        assert_eq!(read()["reasoning"], "auto");
+        std::fs::write(
+            &path,
+            r#"{"provider":"openai","model":"gpt-4o-mini","reasoning":"high"}"#,
+        )
+        .unwrap();
+        config.provider = "portkey".into();
+        config.persist_selection_at(&path).unwrap();
+        assert_eq!(read()["reasoning"], "auto");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

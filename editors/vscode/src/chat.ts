@@ -372,10 +372,12 @@ export class ChatController {
   /// The active model's advertised reasoning levels, read through the CLI.
   /// Empty until the answer arrives, when the built-in set stands in.
   private reasoningLevels: string[] = [];
+  private supportsReasoning: boolean | undefined;
   /// The folder, model and provider those levels belong to. `refreshProject`
   /// compares it so every path that repaints the footer — a setting, a folder,
   /// a login — re-reads them rather than only the attach and the model pick.
   private reasoningIdentity = "";
+  private resettingReasoning = false;
   /// The newest read of them, so a stale answer is dropped rather than
   /// repainting the chip with a model the panel has moved off.
   private reasoningProbe = 0;
@@ -647,7 +649,9 @@ export class ChatController {
       // answered out of what the last one left behind.
       this.project = null;
       this.reasoningIdentity = "";
+      this.resettingReasoning = false;
       this.reasoningLevels = [];
+      this.supportsReasoning = undefined;
       this.contextWindow = null;
       this.reasoningProbe += 1;
       this.contextProbe += 1;
@@ -668,9 +672,23 @@ export class ChatController {
     }\n${this.project.provider}`;
     const moved = identity !== this.reasoningIdentity;
     if (moved) {
+      const previous = this.reasoningIdentity;
       this.reasoningIdentity = identity;
+      this.resettingReasoning = false;
+      if (previous && previous.split("\n")[0] === folder.uri.fsPath) {
+        this.resettingReasoning = true;
+        void this.updateSetting("reasoning", "auto").finally(() => {
+          if (this.reasoningIdentity !== identity) return;
+          this.resettingReasoning = false;
+          this.broadcast(this.stateMessage());
+        }).catch(() => {
+          this.showNotice("Could not save the reasoning reset.", "error");
+        });
+      }
       this.reasoningLevels = [];
+      this.supportsReasoning = undefined;
       this.contextWindow = null;
+      this.reasoningProbe += 1;
       void this.refreshReasoning(true);
     }
     if (moved || recheckWindow) void this.refreshContextWindow();
@@ -703,8 +721,9 @@ export class ChatController {
       model: this.setting<string>("model", "").trim() || project?.model || "",
       provider: project?.provider ?? "",
       contextWindow: this.contextWindow ?? project?.contextWindow ?? 0,
-      reasoning: this.setting<string>("reasoning", "auto"),
+      reasoning: this.currentReasoning(),
       reasoningLevels: this.reasoningLevels.length ? this.reasoningLevels : undefined,
+      supportsReasoning: this.supportsReasoning,
       agent,
       agentCount: project?.agents.length ?? 0,
       access: project?.access ?? "untrusted",
@@ -737,6 +756,7 @@ export class ChatController {
       const info = parseReasoning(result.stdout);
       if (!info || probe !== this.reasoningProbe) return;
       this.reasoningLevels = info.levels;
+      this.supportsReasoning = info.supportsReasoning;
       this.broadcast(this.stateMessage());
     } catch {
       // The built-in set stands.
@@ -845,14 +865,27 @@ export class ChatController {
     const target = vscode.workspace.workspaceFolders?.length
       ? vscode.ConfigurationTarget.Workspace
       : vscode.ConfigurationTarget.Global;
-    await vscode.workspace.getConfiguration("oxide").update(key, value, target);
+    const settings = vscode.workspace.getConfiguration("oxide");
+    const changedModel = key === "model" && settings.get<string>(key, "") !== value;
+    await settings.update(key, value, target);
+    if (changedModel) await settings.update("reasoning", "auto", target);
+  }
+
+  private currentReasoning(): string {
+    if (this.resettingReasoning) return "auto";
+    const selected = this.setting<string>("reasoning", "auto");
+    const levels = reasoningChoices({
+      reasoningLevels: this.reasoningLevels,
+      supportsReasoning: this.supportsReasoning,
+    });
+    return levels.includes(selected) ? selected : "auto";
   }
 
   private turnOptions(): TurnOptions {
     return {
       model: this.setting<string>("model", "").trim(),
       agent: this.setting<string>("agent", "").trim(),
-      reasoning: this.setting<string>("reasoning", "auto"),
+      reasoning: this.currentReasoning(),
       trust: this.trust(),
       tools: splitList(this.setting<string>("tools", "")),
       excludeTools: splitList(this.setting<string>("excludeTools", "")),
@@ -3160,8 +3193,8 @@ export class ChatController {
   async setReasoning(): Promise<void> {
     this.showDialog(
       reasoningDialog(
-        this.setting<string>("reasoning", "auto"),
-        reasoningChoices({ reasoningLevels: this.reasoningLevels }),
+        this.currentReasoning(),
+        reasoningChoices({ reasoningLevels: this.reasoningLevels, supportsReasoning: this.supportsReasoning }),
       ),
     );
   }
@@ -3239,6 +3272,7 @@ export class ChatController {
     // now, so the chips and the window are read again from it; the panel's own
     // override goes, or it would name a model the provider it just left serves.
     await this.updateSetting("model", "");
+    await this.updateSetting("reasoning", "auto");
     this.refreshProject(true);
     this.showNotice(
       `Switched to ${outcome?.label || provider} on ${picked}.`,

@@ -1425,7 +1425,10 @@ async fn list_reasoning(
         .reasoning_supported
         .as_ref()
         .is_some_and(|meta| !meta.supported.is_empty());
-    let levels: Option<Vec<&str>> = advertised.then(|| {
+    let levels: Option<Vec<&str>> = (advertised || !config.supports_reasoning()).then(|| {
+        if !config.supports_reasoning() {
+            return Vec::new();
+        }
         config
             .reasoning_levels()
             .iter()

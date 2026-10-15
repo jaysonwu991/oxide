@@ -606,64 +606,55 @@ body.resizing { cursor: col-resize; user-select: none; }
   text-align: left;
 }
 
-.review-dialog {
-  width: min(1480px, calc(100vw - 24px));
-  max-width: none;
-  height: calc(100vh - 24px);
-  padding: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
-}
-.review-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 52px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.review-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.review-total { flex: none; display: inline-flex; gap: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
-.review-hint { margin-left: auto; color: var(--faint); font-size: 11px; }
-.review-body { display: flex; flex: 1 1 auto; min-height: 0; }
-.review-files { flex: 0 0 clamp(220px, 22vw, 310px); overflow: auto; padding: 6px 14px 6px 6px; border-right: 1px solid var(--border); background: var(--panel); }
-.review-files .change-row { margin: 1px 0; border: 0; border-radius: 7px; }
-.review-files .change-row.active { box-shadow: inset 3px 0 0 var(--accent); background: var(--panel-2); }
-.review-diff { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 0 18px 18px; background: var(--bg); }
-.review-file {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin: 0 -18px 10px;
-  padding: 11px 18px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 94%, transparent);
-  backdrop-filter: blur(10px);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-}
+.topbar-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.topbar-actions button[aria-expanded="true"] { background: var(--panel-2); color: var(--text); }
+.changes-pane { position: relative; flex: 0 1 48%; width: 720px; min-width: 340px; border-left: 1px solid var(--border); background: var(--bg); }
+.review-dialog { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.review-head { display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.dock-title { display: flex; align-items: center; justify-content: space-between; min-height: 52px; padding: 0 12px; border-bottom: 1px solid var(--border); }
+.dock-title h2 { margin: 0; font-size: 13px; font-weight: 500; }
+#review-scope { min-width: 0; max-width: 135px; border: 0; border-radius: 16px; background: var(--panel-2); color: var(--text); font: inherit; font-size: 12px; padding: 6px; }
+.review-total { display: inline-flex; gap: 5px; flex: none; font-size: 12px; }
+#review-refresh { margin-left: auto; }
+.review-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.review-files { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 0 0; }
+.review-files .change-row { width: 100%; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 12px; }
+.review-files .change-row.active { background: var(--panel); }
+.review-files .change-row.open .change-chev { transform: rotate(0deg); }
+.review-inline-diff { overflow-x: auto; padding: 0 0 12px; }
+.details-pane { position: relative; flex: 0 0 300px; overflow: auto; padding: 16px 14px; border-left: 1px solid var(--border); }
+.details-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 18px; padding: 16px; }
+.details-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--faint); margin-bottom: 8px; }
+#details-project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.details-row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 9px 0; border: 0; background: none; color: var(--text); text-align: left; font: inherit; font-size: 12.5px; }
+button.details-row:hover { color: var(--accent); }
+#details-changes-icon svg { width: 17px; height: 17px; display: block; }
+#details-stats { margin-left: auto; white-space: nowrap; }
+#details-branch { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; color: var(--faint); }
+#details-branch span { overflow: hidden; text-overflow: ellipsis; }
+#details-branch svg, .source-row svg { width: 17px; height: 17px; flex: none; }
+.details-sources-head { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); margin-top: 10px; padding-top: 12px; color: var(--faint); font-size: 12px; }
+#details-sources { color: var(--faint); font-size: 12px; }
+#details-view-sources { color: var(--faint); }
+@media (max-width: 1050px) { .changes-pane { flex-basis: 45%; min-width: 300px; } .details-pane { flex-basis: 260px; } }
 /* The review's diff: both sides of one file, each line on the side that holds it
    with that side's own number. One grid whose rows are its contents, so every
    row's columns line up with the next one's however a line wraps. */
 .split {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  grid-template-columns: max-content minmax(max-content, 1fr);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
-  min-width: 720px;
+  min-width: 100%;
   line-height: 1.55;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
 }
 .split-row { display: contents; }
+.split-row > :nth-child(1), .split-row > :nth-child(2) { display: none; }
+.split-row.remove > :nth-child(1), .split-row.remove > :nth-child(2) { display: block; }
+.split-row.remove > :nth-child(3), .split-row.remove > :nth-child(4) { display: none; }
 .split-num {
   padding: 0 8px 0 2px;
   color: var(--faint);
@@ -672,8 +663,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 /* The divider belongs to the newer side, so the two columns stay apart as the
    eye crosses a row where one of them is empty. */
-.split-row > :nth-child(3) { border-left: 1px solid var(--border); padding-left: 8px; }
-.split-text { min-width: 0; padding: 1px 14px 1px 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.split-row > :nth-child(3) { padding-left: 8px; }
+.split-text { min-width: 0; padding: 1px 14px 1px 6px; white-space: pre; }
 .split-row:hover .split-num, .split-row:hover .split-text { filter: brightness(1.12); }
 .split-row.add .split-num, .split-row.add .split-text { background: rgba(120, 211, 138, 0.1); }
 .split-row.remove .split-num, .split-row.remove .split-text { background: rgba(240, 138, 130, 0.1); }
@@ -1031,10 +1022,7 @@ body.running .composer { border-radius: 16px; }
 #image-view-close:hover { color: var(--error); }
 
 @media (max-width: 760px) {
-  .review-dialog { width: calc(100vw - 12px); height: calc(100vh - 12px); }
-  .review-body { flex-direction: column; }
-  .review-files { flex: 0 0 min(32vh, 220px); border-right: 0; border-bottom: 1px solid var(--border); }
-  .review-hint { display: none; }
+  .changes-pane { min-width: 260px; }
 }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 /* Stop and the message action share this corner. While work is running, the
@@ -1059,8 +1047,7 @@ body.running .composer { border-radius: 16px; }
 }
 .status-icon { display: block; width: 12px; height: 12px; flex: none; color: var(--dim); }
 .status-icon svg { display: block; width: 12px; height: 12px; }
-/* A failure wears the theme's own error color. The running spinner lives inside
-   Stop, where the phase and the action form one control. */
+/* A failure wears the theme's own error color. */
 .status[data-level="error"] .status-icon { color: var(--error); }
 /* The words a status has to say, when it has any: one line the reader scans rather
    than a paragraph, so it is bounded and cut with an ellipsis — its tooltip keeps
@@ -1079,30 +1066,20 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 #stop.run-control {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  width: auto;
+  justify-content: center;
+  width: 30px;
   height: 30px;
-  padding: 0 8px;
+  padding: 0;
   border-radius: 9px;
-  font-size: 11.5px;
-  white-space: nowrap;
 }
 #stop.run-control:hover:not(:disabled) { color: var(--error); }
-#stop.run-control .spinner {
-  width: 10px;
-  height: 10px;
-  margin: 0;
-  border-color: var(--accent);
-  border-top-color: transparent;
-}
-#stop.run-control .stop-icon {
-  display: inline-flex;
-}
-#stop.run-control .stop-icon svg {
-  display: block;
-  width: 12px;
-  height: 12px;
-}
+#stop.run-control .stop-icon { display: inline-flex; }
+#stop.run-control .stop-icon svg { display: block; width: 15px; height: 15px; }
+.model-settings { display: flex; align-items: center; min-width: 0; gap: 2px; }
+.setting-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 28px; padding: 0 5px; border-color: transparent; font-family: inherit; }
+.setting-chip svg { flex: none; }
+#model-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#reasoning { flex: none; color: var(--faint); }
 .composer-left { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 /* The composer's chips carry what a message goes with; the app's own dialogs
    stand beside them after a rule of their own, so the row reads as two groups
@@ -2132,3 +2109,6 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.dock-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 4; touch-action: none; }
+.dock-resizer:hover, .dock-resizer:focus-visible { background: color-mix(in srgb, var(--accent) 35%, transparent); }

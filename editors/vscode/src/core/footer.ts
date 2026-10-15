@@ -36,6 +36,7 @@ export interface FooterInput {
   /// them. The chip title names these rather than the built-in set; the dialog
   /// and the cycle use them too.
   reasoningLevels?: readonly string[];
+  supportsReasoning?: boolean;
   agent: string;
   /// How many agents were discovered, for the agent chip's tooltip.
   agentCount: number;
@@ -74,7 +75,8 @@ export function nextReasoning(current: string, levels: readonly string[] = REASO
 
 /// The levels a chip's tooltip, the picker and the cycle offer: `auto` plus the
 /// model's own advertised levels, or the built-in set when none was advertised.
-export function reasoningChoices(input: Pick<FooterInput, "reasoningLevels">): readonly string[] {
+export function reasoningChoices(input: Pick<FooterInput, "reasoningLevels" | "supportsReasoning">): readonly string[] {
+  if (input.supportsReasoning === false) return ["auto"];
   const advertised = input.reasoningLevels;
   if (!advertised || advertised.length === 0) return REASONING_LEVELS;
   return ["auto", ...advertised.filter((level) => level !== "auto")];
@@ -89,11 +91,11 @@ export function footerState(input: FooterInput): FooterState {
         label: `model: ${input.model || "config.json"}${input.contextWindow ? ` · ${formatTokens(input.contextWindow)}` : ""}`,
         title: `Model a turn runs with (--model)${input.provider ? ` on ${input.provider}` : ""}. Click to change it.`,
       },
-      {
-        id: "reasoning",
+      ...(input.supportsReasoning === false ? [] : [{
+        id: "reasoning" as const,
         label: `thinking: ${input.reasoning}`,
         title: `Reasoning effort (--reasoning): ${reasoningChoices(input).join(" → ")}. Click to choose a level.`,
-      },
+      }]),
       {
         id: "agent",
         label: `agent: ${input.agent || "default"}`,

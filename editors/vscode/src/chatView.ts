@@ -398,7 +398,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div id="meta" class="meta" aria-label="Turn settings"></div>
       <span id="status" hidden></span>
       <span class="spacer"></span>
-      <button id="stop" class="icon danger run-control" hidden title="Stop the running turn (Esc)" aria-label="Stop"><span class="spinner" aria-hidden="true"></span><span id="stop-label">Working…</span><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
+      <div id="model-settings" class="model-settings" aria-label="Model and reasoning"></div>
+      <button id="stop" class="icon danger run-control" hidden title="Stop the running turn (Esc)" aria-label="Stop"><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
       <button id="send" class="icon primary" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
     </div>
     <div id="dropzone" hidden><span>Drop files to attach</span></div>

@@ -647,6 +647,8 @@ let gitAnswer = {
   detached: "",
 };
 let gitError = null;
+let repositoryChanges = { files: [], added: 0, removed: 0 };
+let repositoryError = null;
 // What `session_messages` answers for a stored thread's own totals, and nothing
 // everywhere else.
 let sessionUsage = null;
@@ -733,6 +735,10 @@ const invoke = async (command, args = {}) => {
         usage: sessionUsage,
       };
     }
+    case "repository_changes":
+      if (repositoryError) throw repositoryError;
+      return repositoryChanges;
+    case "repository_sides":
     case "change_sides": {
       const failure = changeSidesError.get(args.path);
       if (failure) throw failure;
@@ -940,10 +946,10 @@ vm.runInThisContext(
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " updateRunBanner, viewingRun, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
-    " loadGit," +
+    " loadGit, openProjectDetails, refreshProjectDetails, openRepositoryChanges, changeReviewScope," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
-    " updateChips, openReasoning," +
+    " updateChips, openReasoning, loadInfo," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " renderMarkdown, SCROLLBAR_LINGER, setUsage, setStatus, paintStatus };\n",
@@ -1604,13 +1610,12 @@ check(
     /id="status-icon"[^>]*aria-hidden="true"/.test(badgeRow),
   badgeRow.slice(0, 320),
 );
-// Idle notices use the badge; while a turn runs, its spinner and phase share the
-// Stop control. A failure keeps the theme's error color.
+// Idle notices use the badge; Stop stays a square icon during a turn.
 check(
   "drew the badge's states in the window's own chrome",
   /\.status \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet) &&
     /\.status\[data-level="error"\] \.status-icon \{ color: var\(--error\); \}/.test(sheet) &&
-    /#stop\.run-control \.spinner \{[^}]*border-color: var\(--accent\);/.test(sheet) &&
+    /#stop\.run-control \{[^}]*width: 30px;/.test(sheet) &&
     /#usage \{ color: var\(--faint\); font-size: 11.5px;/.test(sheet),
   sheet.slice(sheet.indexOf(".status {"), sheet.indexOf(".status {") + 220),
 );
@@ -1708,10 +1713,10 @@ for (const [id, label] of [
 // in its own class, drawn from the same path.
 check(
   "drew the review's head as glyphs",
-  ["review-prev", "review-next", "review-close"].every(
+  ["review-refresh", "review-close"].every(
     (id) => buttonFor(id).includes("<svg") && /<\/svg>$/.test(buttonFor(id)),
   ),
-  `${buttonFor("review-prev")} / ${buttonFor("review-close")}`,
+  `${buttonFor("review-refresh")} / ${buttonFor("review-close")}`,
 );
 
 // The sidebar's foot keeps the two that belong to the window rather than to a
@@ -1729,18 +1734,12 @@ check(
     ["connect", "trust", "permissions", "help"].every((id) =>
       composerLeft.includes(`id="${id}"`),
     ) &&
-    shellAt('id="reasoning"') < shellAt('id="connect"'),
+    shellAt('id="reasoning"') > shellAt('id="connect"'),
   `foot: ${idsIn(sidebarFoot)} · composer: ${idsIn(composerLeft)}`,
 );
-// The chrome is icon-first, the way the extension's is: each control is a glyph
-// whose words live in its tooltip, so the row reads as buttons rather than as a
-// sentence. The model and the thinking level are the same chrome with their
-// value in the tooltip instead of on the chip, the way the panel's chips carry
-// it.
+// Utility controls stay icon-only; model and reasoning expose their values.
 for (const [id, title, label] of [
   ["attach", "Attach images or PDFs (paste with the platform paste shortcut)", "Attach images or PDFs"],
-  ["model", "Model", "Model"],
-  ["reasoning", "Thinking level", "Thinking level"],
   ["connect", "Connect a provider", "Connect a provider"],
   ["trust", "Project trust", "Project trust"],
   ["permissions", "Saved tool approvals", "Saved tool approvals"],
@@ -1757,33 +1756,22 @@ for (const [id, title, label] of [
     button,
   );
 }
-// The two front-ends lay their composer out the same way round: what the
-// extension's own row carries leads — the attach button, the model, the thinking
-// level, the project's access — and the controls only this window has follow.
-// The panel's own order is read out of the source that composes it rather than
-// restated here, so a reorder there fails this check instead of drifting: the
-// ids this window has no control for (the panel's agent chip, which this app
-// reaches through its own palette) are skipped.
 const footerSource = readFileSync(
   new URL("../../editors/vscode/src/core/footer.ts", import.meta.url),
   "utf8",
 );
-const chipsBlock = (footerSource.match(/chips: \[([\s\S]*?)\n\s*\],/) || [])[1] || "";
-const extensionChips = [...chipsBlock.matchAll(/id: "([a-z]+)"/g)].map((match) => match[1]);
-const windowIdFor = { model: "model", reasoning: "reasoning", access: "trust" };
-const sharedOrder = extensionChips.map((id) => windowIdFor[id]).filter(Boolean);
-const composerOrder = ["attach", "model", "reasoning", "trust", "connect", "permissions", "help"];
-const rowOrder = idsIn(composerLeft);
-const standsInOrder = (list) =>
-  list.every((id, index) => rowOrder.includes(id) && (index === 0 || rowOrder.indexOf(list[index - 1]) < rowOrder.indexOf(id)));
-check(
-  "kept the extension's own order in the composer's row",
-  extensionChips.length === 4 &&
-    standsInOrder(sharedOrder) &&
-    standsInOrder(composerOrder) &&
-    shellAt('id="trust"') < shellAt('class="composer-sep"'),
-  `${extensionChips.join(" ")} → ${rowOrder}`,
-);
+
+// Model and reasoning are visible selectors beside the single action icon.
+for (const [id, value] of [["model", "deepseek-flash"], ["reasoning", "Auto"]]) {
+  check(
+    `showed the current ${id} beside the action`,
+    buttonFor(id).includes(`id="${id}-value"`) &&
+      shellAt(`id="${id}"`) > shellAt('class="composer-right"') &&
+      shellAt(`id="${id}"`) < shellAt('id="stop"') &&
+      elementFor(`${id}-value`).textContent === value,
+    elementFor(`${id}-value`).textContent,
+  );
+}
 check(
   "sized an icon chip a circle of the row's own height, its glyph centered",
   /\.chip-icon \{[^}]*display: inline-flex;[^}]*align-items: center;[^}]*justify-content: center;[^}]*\}/.test(
@@ -3870,7 +3858,7 @@ check(
   String(head.children[0].className) === "changes-icon" &&
     head.children[0].innerHTML === app.ICONS.file &&
     head.children[5].children[0].textContent === "Undo" &&
-    head.children[5].children[1].textContent === "Review",
+    head.children[5].children[1].textContent === "View changes",
   `${head.children[0].className} / ${head.children[5].children.map((b) => b.textContent).join(", ")}`,
 );
 // The card's fold and each row's are the same caret, drawn pointing down: a
@@ -3955,20 +3943,25 @@ check(
 // two sides — what the run found, out of the project's shadow snapshot, and what
 // is on disk now — the app hands over one file at a time.
 const reviewTick = () => new Promise((resolve) => setTimeout(resolve, 0));
-const reviewParts = () => elementFor("review-diff").children;
+const reviewFileRows = () => elementFor("review-files").children.filter((row) => row.classList.contains("change-row"));
+const reviewParts = () => {
+  const children = elementFor("review-files").children;
+  const index = children.findIndex((row) => row.classList.contains("active"));
+  return [children[index], children[index + 1]?.children[0]];
+};
 const reviewRows = () => reviewParts()[1]?.children || [];
 const splitCells = (row) => row.children.map((cell) => cell.textContent);
 head.children[5].children[1].onclick({ stopPropagation() {} });
 check("opened the review", elementFor("review-modal").hidden === false);
 check(
   "headed it with the card's own title and totals",
-  elementFor("review-title").textContent === "Edited 6 files" &&
+  elementFor("review-title").textContent === "Changes" &&
     elementFor("review-total").innerHTML.includes("+12"),
   `${elementFor("review-title").textContent} / ${elementFor("review-total").innerHTML}`,
 );
 check(
   "listed every file the card lists, the rows its own listing folds included",
-  elementFor("review-files").children.length === 6,
+  reviewFileRows().length === 6,
   String(elementFor("review-files").children.length),
 );
 check(
@@ -4005,7 +3998,7 @@ check(
     JSON.stringify(splitCells(reviewRows()[2])) === JSON.stringify(["", "", "2", "    new();"]),
   JSON.stringify(reviewRows().map(splitCells)),
 );
-elementFor("review-files").children[1].onclick();
+reviewFileRows()[1].onclick();
 await reviewTick();
 check(
   "showed the file that was clicked",
@@ -4051,9 +4044,9 @@ check(
 );
 check(
   "marked the row the review is showing",
-  elementFor("review-files").children[3].classList.contains("active") &&
-    !elementFor("review-files").children[0].classList.contains("active"),
-  String(elementFor("review-files").children[3].className),
+  reviewFileRows()[3].classList.contains("active") &&
+    !reviewFileRows()[0].classList.contains("active"),
+  String(reviewFileRows()[3].className),
 );
 reviewKey("ArrowDown");
 await reviewTick();
@@ -4069,7 +4062,7 @@ check(
   reviewParts()[1].textContent.includes("no longer in the snapshot"),
   reviewParts()[1].textContent,
 );
-elementFor("review-files").children[0].onclick();
+reviewFileRows()[0].onclick();
 await reviewTick();
 reviewKey("ArrowUp");
 await reviewTick();
@@ -4078,6 +4071,55 @@ check(
   reviewParts()[0].innerHTML.includes("design.md"),
   reviewParts()[0].innerHTML,
 );
+
+// Multiple files stay expanded, and the reader can collapse a file independently.
+const secondRow = reviewFileRows()[1];
+secondRow.onclick();
+check("collapsed a file in place", reviewFileRows()[1].getAttribute("aria-expanded") === "false");
+secondRow.onclick();
+await reviewTick();
+check("expanded it again", reviewFileRows()[1].getAttribute("aria-expanded") === "true");
+check(
+  "docked Changes beside the conversation without a modal veil",
+  /<aside id="review-modal" class="changes-pane"/.test(shell) &&
+    !/<aside id="review-modal"[^>]*aria-modal/.test(shell) &&
+    /grid-template-columns: max-content minmax\(max-content, 1fr\)/.test(sheet),
+);
+repositoryChanges = { files: [file("src/agent.rs", "modified", 4, 1)], added: 4, removed: 1 };
+calls.length = 0;
+await app.openProjectDetails();
+check(
+  "opened project details with repository counts and real sources",
+  !elementFor("details-panel").hidden && elementFor("review-modal").hidden &&
+    elementFor("details-stats").innerHTML.includes("+4") &&
+    elementFor("details-sources").children.length === servers.length &&
+    elementFor("details-toggle").getAttribute("aria-expanded") === "true",
+);
+elementFor("details-view-sources").click();
+await reviewTick();
+check("opened source management without replacing the project panel", !elementFor("mcps-modal").hidden && !elementFor("details-panel").hidden);
+document.fire("keydown", { key: "Escape" });
+check("dismissed source management before the dock behind it", elementFor("mcps-modal").hidden && !elementFor("details-panel").hidden);
+elementFor("details-resizer").fire("keydown", { key: "ArrowLeft", preventDefault() {}, stopPropagation() {} });
+check("resized the dock from its keyboard separator", elementFor("details-panel").style.flexBasis === "320px");
+await app.openRepositoryChanges();
+await reviewTick();
+check(
+  "opened Uncommitted changes from the project card",
+  elementFor("details-panel").hidden && !elementFor("review-modal").hidden &&
+    elementFor("review-scope").value === "repository" &&
+    calls.some(([name]) => name === "repository_changes") &&
+    calls.some(([name]) => name === "repository_sides"),
+);
+elementFor("review-scope").value = "turn";
+app.changeReviewScope();
+await reviewTick();
+check("switched back to the turn's own snapshot", elementFor("review-total").innerHTML.includes("+12"));
+repositoryError = "This project is not in a Git repository.";
+await app.openRepositoryChanges();
+check("reported a repository read failure", elementFor("review-files").children[0].textContent.includes("not in a Git repository"));
+repositoryError = null;
+app.closeReview();
 
 // Undo puts the project back to the run's own baseline, which the payload
 // carried, rather than to the repository's last commit.
@@ -4470,7 +4512,8 @@ check(
 check(
   "named the composer's chip for the model it would run",
   elementFor("model").getAttribute("aria-label") === "model: deepseek-flash · 128k" &&
-    elementFor("model").title === "model: deepseek-flash · 128k\nSwitch model",
+    elementFor("model").title === "model: deepseek-flash · 128k\nSwitch model" &&
+    elementFor("model-value").textContent === "deepseek-flash",
   `${elementFor("model").getAttribute("aria-label")} / ${JSON.stringify(elementFor("model").title)}`,
 );
 app.state.reasoning = "high";
@@ -4478,7 +4521,8 @@ app.updateChips();
 check(
   "named the thinking chip for the level it would think at",
   elementFor("reasoning").getAttribute("aria-label") === "thinking: high" &&
-    elementFor("reasoning").title === "thinking: high\nChoose the reasoning level (Shift+Tab cycles)",
+    elementFor("reasoning").title === "thinking: high\nChoose the reasoning level (Shift+Tab cycles)" &&
+    elementFor("reasoning-value").textContent === "High",
   `${elementFor("reasoning").getAttribute("aria-label")} / ${JSON.stringify(elementFor("reasoning").title)}`,
 );
 app.state.reasoning = "auto";
@@ -4633,6 +4677,23 @@ check(
 );
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 reasoningAnswer.reasoningLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+app.state.reasoningLevels = null;
+const savedReasoningAnswer = { ...reasoningAnswer };
+reasoningAnswer.supportsReasoning = false;
+reasoningAnswer.reasoningLevels = [];
+app.state.reasoning = "high";
+await app.openReasoning();
+check("hid unsupported reasoning and discarded the previous effort",
+  elementFor("reasoning").hidden && app.state.reasoning === "auto" && reasoningNames().join(" ") === "auto",
+  `${elementFor("reasoning").hidden} / ${app.state.reasoning} / ${reasoningNames()}`);
+await app.runSlashCommand("/reasoning high");
+check("refused effort for a model without reasoning", app.state.reasoning === "auto", app.state.reasoning);
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+Object.assign(reasoningAnswer, savedReasoningAnswer);
+app.state.reasoningLevels = null;
+await app.openReasoning();
+check("restored the new model's own reasoning choices", !elementFor("reasoning").hidden && reasoningNames().includes("high"), reasoningNames().join(" "));
+document.fire("keydown", { key: "Escape", preventDefault() {} });
 app.state.reasoningLevels = null;
 // There is nothing to pick before a project is open — the level would be
 // replaced by the one that project's config resolves to — so the chip gives the
@@ -4825,8 +4886,8 @@ console.log("composer action");
 check(
   "drew the composer's corner as glyphs",
   ["send", "stop"].every((id) => buttonFor(id).includes("<svg")) &&
-    buttonFor("stop").includes('id="stop-label"') &&
-    buttonFor("stop").includes('class="spinner"'),
+    !buttonFor("stop").includes('id="stop-label"') &&
+    !buttonFor("stop").includes('class="spinner"'),
   `${buttonFor("send")} / ${buttonFor("stop")}`,
 );
 // Stop and Send swap as the box gains text. New context waits by default; the
@@ -4916,11 +4977,11 @@ check(
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 check(
-  "combined the running phase and Stop in one control",
+  "kept the running phase in the Stop tooltip",
   elementFor("status").hidden === true &&
-    elementFor("stop-label").textContent.length > 0 &&
+    elementFor("stop").title.startsWith("Stop the running turn") &&
     buttonFor("stop").includes('class="stop-icon"'),
-  `${elementFor("status").hidden} / ${elementFor("stop-label").textContent}`,
+  `${elementFor("status").hidden} / ${elementFor("stop").title}`,
 );
 check(
   "showed the turn's total working time above the transcript",
@@ -5456,11 +5517,11 @@ check(
 );
 app.setBusy();
 check(
-  "moved the running state into Stop",
+  "kept Stop icon-only while running",
   el("status").dataset.level === "busy" &&
     el("status").hidden === true &&
-    el("stop-label").textContent === "Working…",
-  `${el("status").dataset.level} / ${el("status").hidden} / ${el("stop-label").textContent}`,
+    el("stop").title.startsWith("Stop the running turn"),
+  `${el("status").dataset.level} / ${el("status").hidden} / ${el("stop").title}`,
 );
 app.setIdle();
 app.setStatus("Queued as the next turn.");
@@ -6330,6 +6391,45 @@ check(
   calls.filter(([name]) => name === "delete_session").length === 2,
   JSON.stringify(calls.map(([name]) => name)),
 );
+
+// Removing a discovered folder has the same non-destructive default as an added one.
+const discoveredTarget = { ...removeTarget, registered: false };
+projectRows = [discoveredTarget];
+threads = [{ id: "keep-me", cwd: removeTarget.path, name: "Preserved chat" }];
+app.state.projects = [...projectRows];
+app.state.sessions = [...threads];
+app.state.project = removeTarget.path;
+app.state.busy = false;
+calls.length = 0;
+const removeDiscovered = app.removeProject(discoveredTarget);
+await nextTick();
+check(
+  "offered removal without deleting a discovered project's chats",
+  elementFor("confirm-title").textContent === "Remove project" &&
+    elementFor("confirm-ok").textContent === "Remove project",
+  elementFor("confirm-title").textContent,
+);
+elementFor("confirm-ok").click();
+await removeDiscovered;
+check(
+  "removed the discovered folder and refreshed chats without deleting them",
+  calls.some(([name]) => name === "remove_project") &&
+    calls.some(([name]) => name === "all_sessions") &&
+    !calls.some(([name]) => name === "delete_session") &&
+    app.state.project === null,
+  JSON.stringify(calls.map(([name]) => name)),
+);
+app.state.busy = true;
+app.state.runProject = removeTarget.path;
+calls.length = 0;
+await app.removeProject(removeTarget);
+check(
+  "refused to remove the folder of a running turn",
+  calls.length === 0 && /stop it before removing/.test(elementFor("status-text").textContent),
+  elementFor("status-text").textContent,
+);
+app.state.busy = false;
+app.state.runProject = null;
 
 console.log("project and thread actions");
 projectRows = [
@@ -7697,6 +7797,23 @@ check(
 first.fire("dragend", over(35));
 reorderError = null;
 await app.renderProjectsTree();
+
+console.log("model-specific reasoning");
+app.state.project = "/work/oxide";
+app.state.reasoningIdentity = "";
+projectInfo = { ...projectFacts(128000), model: "gpt-5", reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high"] };
+await app.loadInfo();
+check("kept the initial model's configured effort", app.state.reasoning === "high", app.state.reasoning);
+projectInfo = { ...projectInfo, model: "gpt-4o-mini", supportsReasoning: false, reasoningLevels: [] };
+await app.loadInfo();
+check("reset effort after switching to a model without reasoning",
+  app.state.reasoning === "auto" && app.state.reasoningPicked && elementFor("reasoning").hidden,
+  `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning").hidden}`);
+projectInfo = { ...projectInfo, model: "deepseek-reasoner", supportsReasoning: true, reasoningLevels: ["low", "high", "max"] };
+await app.loadInfo();
+check("refreshed the next model's effort choices without restoring the old effort",
+  app.state.reasoning === "auto" && !elementFor("reasoning").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",
+  `${app.state.reasoning} / ${app.state.reasoningLevels.join(" ")}`);
 
 console.log("the bridge");
 check(
