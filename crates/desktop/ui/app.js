@@ -255,6 +255,8 @@ const state = {
   // picker shows these instead of the full set, so it never offers a level the
   // model would clamp away.
   reasoningLevels: null,
+  supportsReasoning: null,
+  reasoningIdentity: "",
   contextWindow: 0,
   // Whether the credential is a plan rather than a metered key, which the usage
   // line marks ` (sub)` the way the terminal footer does.
@@ -1188,10 +1190,15 @@ async function loadInfo() {
     if (project !== state.project) return;
     // The project or model moved on, so a levels read still in flight is stale.
     reasoningEpoch += 1;
-    state.reasoning = info.reasoning;
-    state.reasoningPicked = false;
-    state.reasoningLevels =
-      Array.isArray(info.reasoningLevels) && info.reasoningLevels.length
+    const identity = `${project}\n${info.provider}\n${info.model}`;
+    const changedModel = state.reasoningIdentity && identity !== state.reasoningIdentity;
+    state.reasoningIdentity = identity;
+    state.supportsReasoning = info.supportsReasoning;
+    state.reasoning = changedModel || info.supportsReasoning === false ? "auto" : info.reasoning;
+    state.reasoningPicked = Boolean(changedModel) || info.supportsReasoning === false;
+    state.reasoningLevels = info.supportsReasoning === false
+      ? ["auto"]
+      : Array.isArray(info.reasoningLevels)
         ? ["auto", ...info.reasoningLevels]
         : null;
     state.contextWindow = info.contextWindow || 0;
@@ -1200,6 +1207,7 @@ async function loadInfo() {
     state.subscription = Boolean(info.subscription);
     state.trust = info.trust || null;
     updateChips();
+    void ensureReasoningLevels();
     renderProjectMeta(info);
     updateTrustButton();
     // The window the thread's own totals are measured against arrives with the
@@ -1297,6 +1305,7 @@ async function answerTrust(trusted) {
 
 function updateChips() {
   labelControl("reasoning", `thinking: ${state.reasoning}`, "Choose the reasoning level (Shift+Tab cycles)");
+  el("reasoning").hidden = state.supportsReasoning === false;
   el("reasoning-value").textContent = state.reasoning.charAt(0).toUpperCase() + state.reasoning.slice(1);
   updateProjectChip();
   // A folder switch resets the transcript, which is where the header's own
@@ -4017,8 +4026,16 @@ function openReasoning() {
   return invoke("reasoning_levels", { project })
     .then((info) => {
       if (epoch !== reasoningEpoch || state.project !== project) return;
-      if (info && Array.isArray(info.reasoningLevels) && info.reasoningLevels.length) {
-        state.reasoningLevels = ["auto", ...info.reasoningLevels];
+      if (info) {
+        state.supportsReasoning = info.supportsReasoning;
+        state.reasoningLevels = info.supportsReasoning === false
+          ? ["auto"]
+          : Array.isArray(info.reasoningLevels) ? ["auto", ...info.reasoningLevels] : null;
+        if (state.reasoningLevels && !state.reasoningLevels.includes(state.reasoning)) {
+          state.reasoning = "auto";
+          state.reasoningPicked = true;
+        }
+        updateChips();
         if (!el("reasoning-modal").hidden) {
           renderReasoning();
           focusReasoning();
@@ -5468,6 +5485,8 @@ function toggleHelp() {
 /// only has to agree with the chip — and a level set from anywhere but the
 /// picker's own row leaves the listing, whose mark would be out of date.
 function setReasoning(level) {
+  const levels = state.reasoningLevels || REASONING;
+  if (!levels.includes(level)) return;
   state.reasoning = level;
   state.reasoningPicked = true;
   updateChips();

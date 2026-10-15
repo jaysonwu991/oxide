@@ -324,7 +324,9 @@ fn advertised_reasoning_levels(config: &Config) -> Value {
         .reasoning_supported
         .as_ref()
         .is_some_and(|meta| !meta.supported.is_empty());
-    if advertised {
+    if !config.supports_reasoning() {
+        json!([])
+    } else if advertised {
         json!(config
             .reasoning_levels()
             .iter()

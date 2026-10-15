@@ -949,7 +949,7 @@ vm.runInThisContext(
     " loadGit, openProjectDetails, refreshProjectDetails, openRepositoryChanges, changeReviewScope," +
     " loadMcps, openSessions," +
     " listedSessions, selectSessionFromTree, removeSession," +
-    " updateChips, openReasoning," +
+    " updateChips, openReasoning, loadInfo," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " renderMarkdown, SCROLLBAR_LINGER, setUsage, setStatus, paintStatus };\n",
@@ -4678,6 +4678,23 @@ check(
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 reasoningAnswer.reasoningLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 app.state.reasoningLevels = null;
+const savedReasoningAnswer = { ...reasoningAnswer };
+reasoningAnswer.supportsReasoning = false;
+reasoningAnswer.reasoningLevels = [];
+app.state.reasoning = "high";
+await app.openReasoning();
+check("hid unsupported reasoning and discarded the previous effort",
+  elementFor("reasoning").hidden && app.state.reasoning === "auto" && reasoningNames().join(" ") === "auto",
+  `${elementFor("reasoning").hidden} / ${app.state.reasoning} / ${reasoningNames()}`);
+await app.runSlashCommand("/reasoning high");
+check("refused effort for a model without reasoning", app.state.reasoning === "auto", app.state.reasoning);
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+Object.assign(reasoningAnswer, savedReasoningAnswer);
+app.state.reasoningLevels = null;
+await app.openReasoning();
+check("restored the new model's own reasoning choices", !elementFor("reasoning").hidden && reasoningNames().includes("high"), reasoningNames().join(" "));
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+app.state.reasoningLevels = null;
 // There is nothing to pick before a project is open — the level would be
 // replaced by the one that project's config resolves to — so the chip gives the
 // answer the app's other project-bound commands give.
@@ -7780,6 +7797,23 @@ check(
 first.fire("dragend", over(35));
 reorderError = null;
 await app.renderProjectsTree();
+
+console.log("model-specific reasoning");
+app.state.project = "/work/oxide";
+app.state.reasoningIdentity = "";
+projectInfo = { ...projectFacts(128000), model: "gpt-5", reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high"] };
+await app.loadInfo();
+check("kept the initial model's configured effort", app.state.reasoning === "high", app.state.reasoning);
+projectInfo = { ...projectInfo, model: "gpt-4o-mini", supportsReasoning: false, reasoningLevels: [] };
+await app.loadInfo();
+check("reset effort after switching to a model without reasoning",
+  app.state.reasoning === "auto" && app.state.reasoningPicked && elementFor("reasoning").hidden,
+  `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning").hidden}`);
+projectInfo = { ...projectInfo, model: "deepseek-reasoner", supportsReasoning: true, reasoningLevels: ["low", "high", "max"] };
+await app.loadInfo();
+check("refreshed the next model's effort choices without restoring the old effort",
+  app.state.reasoning === "auto" && !elementFor("reasoning").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",
+  `${app.state.reasoning} / ${app.state.reasoningLevels.join(" ")}`);
 
 console.log("the bridge");
 check(

@@ -218,4 +218,12 @@ describe("footer formatting", () => {
     ).chips.find((entry) => entry.id === "reasoning")?.title;
     assert.match(title ?? "", /auto → off → low → high → max/);
   });
+  it("offers only Auto and hides effort for a model without reasoning", () => {
+    const options = { supportsReasoning: false, reasoningLevels: ["low", "high"] };
+    assert.deepEqual(reasoningChoices(options), ["auto"]);
+    assert.equal(nextReasoning("high", reasoningChoices(options)), "auto");
+    assert.equal(footerState(input(options)).chips.some((chip) => chip.id === "reasoning"), false);
+    assert.equal(footerState(input({ supportsReasoning: true })).chips.some((chip) => chip.id === "reasoning"), true);
+  });
+
 });

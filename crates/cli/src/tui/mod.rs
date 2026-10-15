@@ -630,7 +630,14 @@ fn handle_key(
     }
 
     if app.models.is_some() {
+        let previous = (config.provider.clone(), config.model.clone());
         handle_models_key(key, app, config);
+        if previous != (config.provider.clone(), config.model.clone()) {
+            if let Some(log) = session.as_ref() {
+                let _ = log.append_model_change(&config.provider, &config.model);
+                let _ = log.append_thinking_level(config.reasoning.label());
+            }
+        }
         sync_usage_bar(app, config, usage_tx);
         return;
     }
@@ -1372,12 +1379,17 @@ fn handle_key(
                     )));
                     return;
                 }
-                config.model = requested.to_string();
-                if let Err(err) = Config::set_active_model_at(&Config::config_path(), requested) {
+                let mut selected = config.clone();
+                selected.apply_login_options(requested, "", "");
+                if let Err(err) = selected.persist_selection_at(&Config::config_path()) {
                     app.items.push(ChatItem::Error(format!("{err:#}")));
+                    return;
                 }
+                *config = selected;
+                apply_model_state(app, config);
                 if let Some(log) = session.as_ref() {
                     let _ = log.append_model_change(&config.provider, &config.model);
+                    let _ = log.append_thinking_level(config.reasoning.label());
                 }
                 app.items
                     .push(ChatItem::Info(format!("model set to {requested}")));
@@ -1404,6 +1416,11 @@ fn handle_key(
                     return;
                 }
                 match crate::config::Reasoning::parse(requested) {
+                    Some(level) if level != Reasoning::Auto && !config.supports_reasoning() => {
+                        app.items.push(ChatItem::Error(
+                            "This model has no configurable reasoning effort.".into(),
+                        ));
+                    }
                     Some(level) => {
                         config.reasoning = level;
                         if let Some(log) = session.as_ref() {
@@ -4860,6 +4877,7 @@ fn switch_provider(app: &mut App, config: &mut Config, provider: &str) -> Result
 /// Refreshes the footer and picker state after the active provider or model
 /// changed.
 fn apply_model_state(app: &mut App, config: &Config) {
+    app.reasoning = config.reasoning;
     app.model = config.model.clone();
     app.provider = config.provider.clone();
     app.subscription = config.is_subscription();
@@ -4870,14 +4888,17 @@ fn apply_model_state(app: &mut App, config: &Config) {
 /// Selects a model from the picker, switching providers first when the chosen
 /// model belongs to another logged-in one, and remembers it for that provider.
 fn select_model(app: &mut App, config: &mut Config, choice: &ModelChoice) -> Result<()> {
-    if crate::auth::canonical_provider(&config.provider)
+    let mut selected = config.clone();
+    if crate::auth::canonical_provider(&selected.provider)
         != crate::auth::canonical_provider(&choice.provider)
     {
-        switch_provider(app, config, &choice.provider)?;
+        let (name, key) = crate::auth::select_stored(&choice.provider)?;
+        selected.apply_provider(&name, &key);
     }
-    config.model = choice.model.clone();
-    config.persist_selection_at(&Config::config_path())?;
-    refresh_reasoning(config);
+    selected.apply_login_options(&choice.model, "", "");
+    selected.persist_selection_at(&Config::config_path())?;
+    refresh_reasoning(&mut selected);
+    *config = selected;
     apply_model_state(app, config);
     Ok(())
 }
