@@ -737,6 +737,28 @@ pub async fn change_sides(project: String, baseline: String, path: String) -> Cm
     .map_err(err)
 }
 
+pub async fn repository_changes(project: String) -> CmdResult<oxide_core::changes::TurnChanges> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || oxide_desktop::repository::changes(&root))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+pub async fn repository_sides(project: String, path: String) -> CmdResult<Value> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let (old, new) = oxide_desktop::repository::sides(&root, &path)?;
+        let (Some(old), Some(new)) = (side_text(old), side_text(new)) else {
+            return Ok(json!({ "binary": true, "omitted": false, "lines": [] }));
+        };
+        Ok(review_sides(&old, &new))
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
 /// Both sides of one file: what the baseline recorded, read out of the snapshot
 /// repo, and what is on the disk now. A side that is not there — a file the run
 /// added or deleted — reads as empty; a side that is not text makes the whole
@@ -1369,6 +1391,10 @@ pub async fn dispatch(
             )
             .await,
         ),
+        "repository_changes" => command_value(repository_changes(arg(&args, "project")?).await),
+        "repository_sides" => {
+            command_value(repository_sides(arg(&args, "project")?, arg(&args, "path")?).await)
+        }
         "change_sides" => command_value(
             change_sides(
                 arg(&args, "project")?,

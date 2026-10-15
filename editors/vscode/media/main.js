@@ -40,7 +40,6 @@
   ];
   const sendButton = $("send");
   const stopButton = $("stop");
-  const stopLabel = $("stop-label");
   const queueBox = $("queue");
   const statusLabel = $("status");
   const runTime = $("run-time");
@@ -50,6 +49,7 @@
   const gauge = $("gauge");
   const gaugeFill = $("gauge-fill");
   const metaBox = $("meta");
+  const modelSettings = $("model-settings");
   const chipBox = $("chips");
   const atBox = $("at");
   const branchLabel = $("branch");
@@ -1643,7 +1643,6 @@
     statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
     if (busy) {
       statusLabel.hidden = true;
-      stopLabel.textContent = label || "Working…";
       stopButton.title = `Stop the running turn (Esc)${label ? ` · ${label}` : ""}`;
       stopButton.setAttribute("aria-label", stopButton.title);
     }
@@ -1694,8 +1693,10 @@
   function setFooter(footer) {
     if (!footer) return;
     metaBox.innerHTML = "";
+    modelSettings.innerHTML = "";
     for (const chip of footer.chips || []) {
-      metaBox.appendChild(chipNode(chip.label, chip.id, chip.title));
+      const box = chip.id === "model" || chip.id === "reasoning" ? modelSettings : metaBox;
+      box.appendChild(chipNode(chip.label, chip.id, chip.title));
     }
     const info = footer.info || "";
     branchLabel.textContent = info;
@@ -1714,8 +1715,7 @@
     gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
   }
 
-  /// One icon-only control. Its full current value stays in the accessible name
-  /// and tooltip, so compacting the toolbar does not make it mysterious.
+  /// Model and reasoning keep visible values beside the action button.
   function chipNode(label, control, title) {
     const el = document.createElement("button");
     el.type = "button";
@@ -1726,6 +1726,14 @@
     icon.className = "control-icon";
     icon.innerHTML = CONTROL_ICONS[control] || CONTROL_ICONS.model;
     el.appendChild(icon);
+    if (control === "model" || control === "reasoning") {
+      el.classList.add("setting-chip");
+      const value = document.createElement("span");
+      value.className = "setting-value";
+      const name = String(label).replace(/^(model|thinking):\s*/, "").split(" · ")[0];
+      value.textContent = control === "reasoning" ? name.charAt(0).toUpperCase() + name.slice(1) : name;
+      el.appendChild(value);
+    }
     el.title = title ? `${label}\n${title}` : `${label} — click to change`;
     return el;
   }
@@ -2869,13 +2877,15 @@
 
   // The footer's chips are the extension's own commands: each one opens a picker
   // or cycles a setting, and the host re-sends the footer afterwards.
-  metaBox.addEventListener("click", (event) => {
+  function clickSetting(event) {
     const target = event.target;
     if (!(target instanceof Element)) return;
     const chip = target.closest("[data-control]");
     if (!chip) return;
     vscode.postMessage({ k: "control", control: chip.dataset.control });
-  });
+  }
+  metaBox.addEventListener("click", clickSetting);
+  modelSettings.addEventListener("click", clickSetting);
 
   // Links open in the browser and paths open in the editor, because a webview
   // cannot navigate or read the workspace itself.

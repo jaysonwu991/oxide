@@ -1162,8 +1162,7 @@ footer {
   display: none;
 }
 
-/* Turn settings are icon controls in the composer's toolbar. Their current
-   values live in the tooltip and accessible name rather than crowding the row. */
+/* Turn settings share the composer toolbar. */
 .meta {
   display: flex;
   flex-wrap: wrap;
@@ -1490,8 +1489,7 @@ footer {
   color: var(--vscode-foreground);
 }
 
-/* The composer's toolbar: the attach button, the phase, and the send controls
-   on one line so the primary action never moves. */
+/* The composer toolbar keeps its settings beside the message action. */
 #bar {
   display: flex;
   align-items: center;
@@ -1522,29 +1520,9 @@ footer {
   opacity: 0.55;
 }
 
-#stop.run-control {
-  width: auto;
-  gap: 5px;
-  padding: 0 7px;
-  font-size: 0.82em;
-  white-space: nowrap;
-}
-
-#stop.run-control .spinner {
-  width: 8px;
-  height: 8px;
-  margin: 0;
-  color: var(--vscode-charts-blue, var(--vscode-foreground));
-}
-
-#stop.run-control .stop-icon {
-  display: inline-flex;
-}
-
-#stop.run-control .stop-icon svg {
-  width: 11px;
-  height: 11px;
-}
+#stop.run-control { padding: 0; }
+#stop.run-control .stop-icon { display: inline-flex; }
+#stop.run-control .stop-icon svg { width: 16px; height: 16px; }
 
 #dropzone {
   position: absolute;
@@ -2571,3 +2549,9 @@ button.icon {
   .msg.user { max-width: 88%; margin-right: 0; }
   .review-hint { display: none; }
 }
+
+#send, #stop { flex: none; }
+.model-settings { display: flex; align-items: center; min-width: 0; gap: 2px; }
+.model-settings .setting-chip { width: auto; min-width: 0; padding: 0 5px; gap: 5px; font-family: inherit; font-size: 0.85em; }
+.model-settings .setting-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-settings [data-control="reasoning"] { flex: none; }

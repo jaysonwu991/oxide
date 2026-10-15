@@ -63,6 +63,9 @@ pub struct SessionView {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectRegistry {
     pub projects: Vec<Project>,
+    /// Folders explicitly removed from the desktop, even when sessions remain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_projects: Vec<String>,
     /// The order the reader dragged the sidebar into, by [`ProjectView::id`], —
     /// a registered folder's canonical path or a discovered one's session `cwd`.
     /// A folder this does not name is one the reader has not placed — a newly
@@ -195,6 +198,9 @@ impl DesktopManager {
         if !canonical.is_dir() {
             anyhow::bail!("{} is not a directory", canonical.display());
         }
+        self.registry
+            .removed_projects
+            .retain(|path| Path::new(path) != canonical.as_path());
         if let Some(existing) = self
             .registry
             .projects
@@ -225,16 +231,26 @@ impl DesktopManager {
 
     /// Removes a folder from the sidebar. Sessions on disk are left untouched.
     pub fn remove_project(&mut self, id: &str) -> Result<bool> {
-        let before = self.registry.projects.len();
+        let before = self.registry.clone();
         self.registry
             .projects
             .retain(|project| project.id != id && project.path.to_string_lossy() != id);
-        let removed = self.registry.projects.len() != before;
-        if removed {
-            self.registry.pinned_projects.retain(|each| each != id);
-            self.persist()?;
+        let removed = self.registry.projects.len() != before.projects.len();
+        // Discovered rows use their cwd as their id and have no registry entry.
+        if !removed && !Path::new(id).is_absolute() {
+            return Ok(false);
         }
-        Ok(removed)
+        let newly_hidden = !self.registry.removed_projects.iter().any(|path| path == id);
+        if newly_hidden {
+            self.registry.removed_projects.push(id.to_string());
+        }
+        self.registry.pinned_projects.retain(|each| each != id);
+        self.registry.order.retain(|each| each != id);
+        if let Err(error) = self.persist() {
+            self.registry = before;
+            return Err(error);
+        }
+        Ok(removed || newly_hidden)
     }
 
     pub fn update_project(&mut self, id: &str, name: &str) -> Result<bool> {
@@ -320,7 +336,10 @@ impl DesktopManager {
     pub fn session_views(&self, sessions: Vec<SessionSummary>) -> Vec<SessionView> {
         let mut views: Vec<_> = sessions
             .into_iter()
-            .filter(|summary| !self.registry.archived_sessions.contains(&summary.id))
+            .filter(|summary| {
+                !self.registry.archived_sessions.contains(&summary.id)
+                    && !self.registry.removed_projects.contains(&summary.cwd)
+            })
             .map(|summary| SessionView {
                 pinned: self.registry.pinned_sessions.contains(&summary.id),
                 summary,
@@ -366,7 +385,9 @@ impl DesktopManager {
 
         for summary in sessions {
             let path = PathBuf::from(&summary.cwd);
-            if views.iter().any(|view| view.path == summary.cwd) {
+            if self.registry.removed_projects.contains(&summary.cwd)
+                || views.iter().any(|view| view.path == summary.cwd)
+            {
                 continue;
             }
             // One row per distinct session cwd not already registered.
@@ -705,6 +726,36 @@ mod tests {
         assert!(manager.registered().is_empty());
         assert!(!manager.remove_project("nothing").unwrap());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn removed_projects_stay_hidden_until_added_again() {
+        let store = temp_store();
+        let mut manager = DesktopManager::load_from(store.clone()).unwrap();
+        let dir = std::env::temp_dir().join(format!("oxide_proj_hide_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = manager.add_project(&dir).unwrap();
+        let discovered = dir.join("discovered").to_string_lossy().to_string();
+        let sessions = vec![summary(&project.id, 10), summary(&discovered, 20)];
+        manager.set_project_pinned(&project.id, true).unwrap();
+        manager.reorder(std::slice::from_ref(&project.id)).unwrap();
+        assert!(manager.remove_project(&project.id).unwrap());
+        assert!(manager.remove_project(&discovered).unwrap());
+
+        let mut reloaded = DesktopManager::load_from(store).unwrap();
+        assert!(reloaded.overview_with(&sessions).is_empty());
+        assert!(reloaded.session_views(sessions.clone()).is_empty());
+        assert!(!reloaded.registry.pinned_projects.contains(&project.id));
+        assert!(!reloaded.registry.order.contains(&project.id));
+        reloaded.add_project(&dir).unwrap();
+        let restored = reloaded.overview_with(&sessions);
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].session_count, 1);
+        assert_eq!(reloaded.session_views(sessions).len(), 1);
+        let persisted = DesktopManager::load_from(reloaded.store_path().to_path_buf()).unwrap();
+        assert!(!persisted.registry.removed_projects.contains(&project.id));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(persisted.store_path().parent().unwrap()).ok();
     }
 
     #[test]

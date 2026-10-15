@@ -560,45 +560,40 @@ function paletteAsked(posted: Record<string, unknown>[]): number {
 }
 
 describe("webview footer", () => {
-  it("paints one icon control per footer setting", () => {
+  it("shows model and reasoning beside the action while other settings stay icons", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
-    const chips = byId.get("meta")!.children;
-    assert.equal(chips.length, 4);
-    assert.deepEqual(
-      chips.map((chip) => chip.className),
-      ["meta-chip", "meta-chip", "meta-chip", "meta-chip"],
-    );
-    assert.equal(chips[0].children.length, 1);
-    assert.equal(chips[0].children[0].className, "control-icon");
+    const chips = byId.get("model-settings")!.children;
+    assert.equal(chips.length, 2);
+    assert.equal(byId.get("meta")!.children.length, 2);
     assert.equal(chips[0].dataset.control, "model");
+    assert.equal(chips[0].children[1].textContent, "glm-5");
+    assert.equal(chips[1].children[1].textContent, "Auto");
     assert.equal(chips[0].getAttribute("aria-label"), "model: glm-5 · 128.0k");
     assert.equal(chips[0].title, "model: glm-5 · 128.0k\nSwitch the model");
-    assert.equal(chips[1].getAttribute("aria-label"), "thinking: auto");
-    assert.equal(
-      new Set(chips.map((chip) => chip.children[0].innerHTML)).size,
-      4,
-      "model, reasoning, agent and project access each use their own glyph",
-    );
+    assert.ok(shell.indexOf('id="model-settings"') < shell.indexOf('id="stop"'));
+    send(stateMessage({ footer: { ...footer, chips: [
+      { id: "model", label: "model: another-model · 200k" },
+      { id: "reasoning", label: "thinking: high" },
+    ] } }));
+    assert.equal(byId.get("model-settings")!.children[0].children[1].textContent, "another-model");
+    assert.equal(byId.get("model-settings")!.children[1].children[1].textContent, "High");
   });
 
-  it("keeps a label with no key as the icon's accessible name", () => {
+  it("keeps a model label with no prefix visible and accessible", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ footer: { ...footer, chips: [{ id: "model", label: "glm-5" }] } }));
-    const chip = byId.get("meta")!.children[0];
-    assert.equal(chip.children.length, 1);
+    const chip = byId.get("model-settings")!.children[0];
+    assert.equal(chip.children[1].textContent, "glm-5");
     assert.equal(chip.getAttribute("aria-label"), "glm-5");
     assert.equal(chip.title, "glm-5 — click to change");
   });
 
-  it("posts the chip's control id when it is clicked", () => {
+  it("posts the chip's control id when its visible value is clicked", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage());
-    // A click lands on the chip's own span, as it does in the real DOM: the
-    // event bubbles to the strip, and the handler reads the control id off the
-    // chip around the target.
-    const icon = byId.get("meta")!.children[1].children[0];
-    byId.get("meta")!.fire("click", { target: icon });
+    const value = byId.get("model-settings")!.children[1].children[1];
+    byId.get("model-settings")!.fire("click", { target: value });
     const message = last(posted);
     assert.equal(message.k, "control");
     assert.equal(message.control, "reasoning");
@@ -788,8 +783,10 @@ describe("webview composer", () => {
     assert.equal(byId.get("status")!.classList.contains("busy"), true);
     assert.equal(byId.get("status")!.hidden, true, "the phase is part of the Stop control");
     assert.equal(byId.get("stop")!.hidden, false, "a running turn offers Stop");
-    assert.equal(byId.get("stop-label")!.textContent, "Thinking… · 2 queued");
-    assert.match(shell, /id="stop"[\s\S]*?spinner[\s\S]*?stop-label[\s\S]*?stop-icon[\s\S]*?<\/button>/);
+    assert.match(byId.get("stop")!.title, /Thinking… · 2 queued/);
+    const stopMarkup = /<button id="stop"[^>]*>([\s\S]*?)<\/button>/.exec(shell)![1];
+    assert.doesNotMatch(stopMarkup, /spinner|stop-label|Working|Thinking|Running/);
+    assert.match(stopMarkup, /stop-icon/);
     assert.equal(byId.get("send")!.hidden, true, "and nothing to send hides Send");
     assert.equal(byId.get("run-time")!.hidden, false);
     assert.match(shell, /id="run-time"[^>]*role="timer"/);
