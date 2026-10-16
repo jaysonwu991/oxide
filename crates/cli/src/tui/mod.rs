@@ -258,6 +258,7 @@ async fn event_loop(
         unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
     let (update_tx, mut update_rx) = unbounded_channel::<update_notice::Notice>();
     let (catalog_tx, mut catalog_rx) = unbounded_channel::<catalog::ModelsByProvider>();
+    let (adopted_tx, mut adopted_rx) = unbounded_channel::<AdoptedCatalog>();
     let (login_tx, login_rx) = unbounded_channel::<LoginEvent>();
     let mut login_rx = Some(login_rx);
     spawn_update_notice(&update_tx, &cwd);
@@ -303,6 +304,9 @@ async fn event_loop(
                         if let Some(provider) = app.pending_login.take() {
                             app.login_attempt += 1;
                             start_device_login(provider, app.login_attempt, &login_tx);
+                        }
+                        if let Some(provider) = app.pending_catalog.take() {
+                            start_catalog_lookup(&adopted_tx, &config, &provider);
                         }
                     }
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
@@ -413,6 +417,11 @@ async fn event_loop(
                     // gauge is repainted with the window this run resolves.
                     config.catalog_windows = windows;
                     app.context_limit = context_limit(&config);
+                }
+            }
+            adopted = adopted_rx.recv() => {
+                if let Some(adopted) = adopted {
+                    apply_adopted_catalog(&mut app, &mut config, adopted);
                 }
             }
             _ = tick.tick(), if app.busy => {
@@ -4957,6 +4966,56 @@ struct LoginEvent {
     step: LoginStep,
 }
 
+/// The answer a login's own catalog lookup brought back: the model the account
+/// really serves, and the two facts that say whether it is still this session's
+/// to apply — the provider, and the model it was adopted in place of.
+struct AdoptedCatalog {
+    provider: String,
+    from: String,
+    model: String,
+}
+
+/// Reads the provider's own listing after a login the dialog has already saved,
+/// off the UI thread: a catalog lookup is a network round trip, and the reader
+/// is back at the prompt. The model it lands on is handed to the event loop
+/// rather than written here, since that loop is the one writer of `config.json`.
+fn start_catalog_lookup(tx: &UnboundedSender<AdoptedCatalog>, config: &Config, provider: &str) {
+    let tx = tx.clone();
+    let mut adopted = config.clone();
+    let provider = crate::auth::canonical_provider(provider);
+    let from = config.model.clone();
+    tokio::spawn(async move {
+        if adopted.adopt_provider_catalog().await {
+            let _ = tx.send(AdoptedCatalog {
+                provider,
+                from,
+                model: adopted.model,
+            });
+        }
+    });
+}
+
+/// Takes the model a login's catalog lookup adopted, when the session is still
+/// on the provider it was read for and still on the model it was read over: a
+/// reader who moved on in the meantime is not dragged back by an answer about a
+/// selection they have left.
+fn apply_adopted_catalog(app: &mut App, config: &mut Config, adopted: AdoptedCatalog) {
+    if crate::auth::canonical_provider(&config.provider) != adopted.provider
+        || config.model != adopted.from
+    {
+        return;
+    }
+    config.model = adopted.model;
+    refresh_reasoning(config);
+    let _ = config.persist_selection_at(&Config::config_path());
+    apply_model_state(app, config);
+    app.items.push(ChatItem::Info(format!(
+        "model set to {} — what {} serves",
+        config.model, config.provider
+    )));
+    app.auto_scroll = true;
+}
+
 /// Paints one step of a browser login. The code and URL land in the dialog it
 /// belongs to (a dialog the reader closed is left alone, since nothing is
 /// waiting on it any more), the minted credential moves it on to the settings
@@ -5106,6 +5165,11 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                                     crate::auth::provider_label(&name),
                                     config.model
                                 )));
+                                // What that account really serves is what the
+                                // provider's own listing says, which the event
+                                // loop reads while the reader is back at the
+                                // prompt.
+                                app.pending_catalog = Some(name);
                                 app.status = "ready".to_string();
                                 keep = false;
                             }

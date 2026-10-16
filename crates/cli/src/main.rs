@@ -822,7 +822,7 @@ async fn main() -> Result<()> {
                 model,
                 base_url,
                 json,
-            } => connect_provider(&provider, key_stdin, model, base_url, json),
+            } => connect_provider(&provider, key_stdin, model, base_url, json).await,
             Command::Changes { action } => match action {
                 ChangesAction::Show {
                     path,
@@ -1322,7 +1322,7 @@ fn read_clipboard(json_output: bool) -> Result<()> {
 /// credential lands in the same `auth.json` the terminal writes, so a login here
 /// is a login there. The key is read from stdin rather than an argument, which
 /// would be visible in the process listing and kept in the shell's history.
-fn connect_provider(
+async fn connect_provider(
     provider: &str,
     key_stdin: bool,
     model: Option<String>,
@@ -1340,7 +1340,7 @@ fn connect_provider(
     };
     let cwd = std::env::current_dir().context("resolving current directory")?;
     let outcome =
-        auth::login_provider(provider, &key, model.as_deref(), base_url.as_deref(), &cwd)?;
+        auth::login_provider(provider, &key, model.as_deref(), base_url.as_deref(), &cwd).await?;
     if json_output {
         println!("{}", serde_json::to_string(&outcome)?);
     } else {

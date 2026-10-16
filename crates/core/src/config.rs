@@ -1104,6 +1104,11 @@ fn apply_stored_provider_fallback(
 
 const CONFIG_DIR_NAME: &str = "Oxide";
 
+/// How long a login waits on the provider's own catalog before leaving the
+/// selection as the credential left it. A login is a dialog somebody is looking
+/// at, so it does not wait the read timeout a turn may afford.
+const LOGIN_CATALOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The Oxide configuration directory under the platform config dir
 /// (`<platform config>/Oxide`). The pre-branding `<platform config>/oxide`
 /// directory is migrated once on first access when the new one is absent.
@@ -2005,11 +2010,17 @@ impl Config {
         let current = canonical_provider(&self.provider);
         let target = canonical_provider(provider);
         let provider_changed = current != target;
-        if provider_changed && !current.is_empty() && !self.model.trim().is_empty() {
+        // Only a provider that was signed in has a model to remember. A config
+        // nothing has been connected to is carrying the table's first provider
+        // and its default model, and remembering those would write a provider
+        // the reader never chose into `config.json` the first time they connect
+        // another one.
+        let leaving = provider_changed && !current.is_empty() && self.signed_in(&current);
+        if leaving && !self.model.trim().is_empty() {
             self.provider_models
                 .insert(current.clone(), self.model.clone());
         }
-        if provider_changed && !current.is_empty() {
+        if leaving {
             self.remember_base_url(&current);
         }
         self.provider = provider.to_string();
@@ -2034,6 +2045,14 @@ impl Config {
             }
             self.reset_model_reasoning();
         }
+    }
+
+    /// Whether this config is really on `provider`: it holds a credential for
+    /// it, or it is a model server on this machine, which is signed in by being
+    /// reachable.
+    fn signed_in(&self, provider: &str) -> bool {
+        !self.api_key.trim().is_empty()
+            || ProviderPreset::for_name(provider).is_some_and(|preset| preset.local)
     }
 
     /// Refresh model-specific capabilities without carrying an effort from the previous model.
@@ -2275,6 +2294,59 @@ impl Config {
             .cloned()
             .or_else(|| ProviderPreset::for_name(&name).map(|preset| preset.model.to_string()))
             .unwrap_or_else(|| self.model.clone())
+    }
+
+    /// Whether the model in use is this app's own guess rather than a choice
+    /// somebody made: the provider's preset default, with nothing of the
+    /// reader's own remembered for that provider — a login dialog pre-fills its
+    /// model field with that default and the login applies it as if it had been
+    /// chosen, so the field alone cannot say who picked it. A login is where
+    /// that guess is checked against what the account really serves.
+    fn uses_preset_default_model(&self) -> bool {
+        let name = canonical_provider(&self.provider);
+        let Some(preset) = ProviderPreset::for_name(&name) else {
+            return false;
+        };
+        if preset.model != self.model {
+            return false;
+        }
+        self.provider_models
+            .get(&name)
+            .is_none_or(|remembered| remembered == preset.model)
+    }
+
+    /// Takes the provider's own catalog as the truth about what this account
+    /// serves: a preset default the listing does not name — DeepSeek's
+    /// `deepseek-chat`, which the provider has moved past — is replaced by the
+    /// first model it does, and the effort levels are read back from the same
+    /// answer either way, so a fresh connection starts on a model that exists
+    /// and on the levels that model advertises. A model the reader chose is
+    /// left exactly as it is. `true` when the model moved, so a caller writes
+    /// `config.json` only then.
+    pub fn adopt_listed_models(&mut self, models: &[String]) -> bool {
+        let mut adopted = false;
+        if self.uses_preset_default_model()
+            && !models.is_empty()
+            && !models.iter().any(|model| model == &self.model)
+        {
+            self.model = models[0].clone();
+            self.provider_models
+                .insert(canonical_provider(&self.provider), self.model.clone());
+            adopted = true;
+        }
+        self.reasoning_supported = crate::llm::cached_model_reasoning(self, &self.model);
+        adopted
+    }
+
+    /// The provider's own listing, fetched once as a login finishes. A provider
+    /// that cannot be listed — offline, or one whose endpoint answers nothing —
+    /// leaves the selection exactly as the credential left it.
+    pub async fn adopt_provider_catalog(&mut self) -> bool {
+        let client = crate::llm::LlmClient::new(self.clone());
+        match tokio::time::timeout(LOGIN_CATALOG_TIMEOUT, client.refresh_models()).await {
+            Ok(Ok(models)) => self.adopt_listed_models(&models),
+            Ok(Err(_)) | Err(_) => false,
+        }
     }
 
     /// A copy of this config pointed at another provider, for querying that
@@ -3822,7 +3894,12 @@ mod tests {
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{"auto_approve":false}"#).unwrap();
 
-        let mut config = Config::default();
+        // A config really on OpenAI — it holds that credential, so its model is
+        // a choice worth remembering when the selection moves away from it.
+        let mut config = Config {
+            api_key: "sk-openai".into(),
+            ..Config::default()
+        };
         config.apply_provider("anthropic", "sk-ant");
         config.model = "claude-opus-5".to_string();
         config.persist_selection_at(&path).unwrap();
@@ -3902,6 +3979,7 @@ mod tests {
             model: "gpt-5.6-sol".into(),
             base_url: "https://gateway.example.com/v1".into(),
             portkey_config: "pc-example".into(),
+            api_key: "pk-test".into(),
             ..Config::default()
         };
 
@@ -3924,6 +4002,7 @@ mod tests {
             provider: "my-endpoint".into(),
             model: "custom-model".into(),
             base_url: "https://custom.example/v1".into(),
+            api_key: "sk-custom".into(),
             ..Config::default()
         };
 
@@ -3974,6 +4053,66 @@ mod tests {
             config.provider_base_urls["portkey"],
             "https://gateway.example.com/v1"
         );
+    }
+
+    /// A config nothing has been connected to is carrying the table's first
+    /// provider and its default model. Connecting another provider must not
+    /// write those into `config.json` as if the reader had chosen them.
+    #[test]
+    fn a_first_login_does_not_write_the_tables_default_provider() {
+        let mut config = Config::default();
+        assert_eq!(config.provider, "openai");
+
+        config.apply_provider("deepseek", "sk-deepseek");
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.model, "deepseek-chat");
+        assert!(config.provider_models.is_empty());
+        assert!(config.provider_base_urls.is_empty());
+    }
+
+    /// The model an account really serves: a preset default the provider has
+    /// moved past is replaced by the first model the listing names.
+    #[test]
+    fn a_listing_replaces_a_preset_default_the_provider_has_moved_past() {
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "sk-deepseek");
+
+        let adopted = config
+            .adopt_listed_models(&["deepseek-flash".to_string(), "deepseek-v4-pro".to_string()]);
+
+        assert!(adopted);
+        assert_eq!(config.model, "deepseek-flash");
+        assert_eq!(config.model_for_provider("deepseek"), "deepseek-flash");
+    }
+
+    /// A model somebody chose is theirs: a listing that does not name it — one
+    /// the reader typed, or a model remembered for the provider — is left alone.
+    #[test]
+    fn a_listing_leaves_a_chosen_model_where_it_is() {
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "sk-deepseek");
+        config.apply_login_options("deepseek-v4-pro", "", "");
+
+        assert!(!config.adopt_listed_models(&["deepseek-flash".to_string()]));
+        assert_eq!(config.model, "deepseek-v4-pro");
+
+        // And a preset default the listing does name stays where it is.
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "sk-deepseek");
+        assert!(!config
+            .adopt_listed_models(&["deepseek-chat".to_string(), "deepseek-v4-pro".to_string()]));
+        assert_eq!(config.model, "deepseek-chat");
+    }
+
+    /// A provider that cannot be listed leaves the selection exactly as the
+    /// login left it.
+    #[test]
+    fn an_empty_listing_leaves_the_selection_alone() {
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "sk-deepseek");
+
+        assert!(!config.adopt_listed_models(&[]));
+        assert_eq!(config.model, "deepseek-chat");
     }
 
     #[test]
