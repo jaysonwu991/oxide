@@ -323,9 +323,21 @@ impl SessionLog {
     }
 
     pub fn latest(cwd: &Path) -> Option<Self> {
-        Self::latest_in(&project_dir(cwd))
+        let state =
+            crate::session_state::SessionState::load_from(&crate::session_state::path()).ok()?;
+        let summary = Self::list(cwd)
+            .ok()?
+            .into_iter()
+            .filter(|session| !state.archived(&session.id))
+            .max_by_key(|session| {
+                std::fs::metadata(&session.path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+            })?;
+        Self::open(summary.path).ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn latest_in(dir: &Path) -> Option<Self> {
         let mut files: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(dir)
             .ok()?

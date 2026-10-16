@@ -31,7 +31,7 @@ export type DialogRowKind = "action" | "thread" | "";
 /// The glyphs a row's own button can be painted with. The webview cannot load
 /// VS Code's codicon font, so the few it needs are named here and inlined as
 /// SVG by the renderer — the words the button carries stay in `button`.
-export type DialogIcon = "power" | "trash" | "";
+export type DialogIcon = "power" | "pin" | "archive" | "";
 
 export interface DialogRow {
   /// What the row's action posts back — a server name, a session id.
@@ -49,6 +49,7 @@ export interface DialogRow {
   /// label for a screen reader, and its text when `icon` is empty.
   button: string;
   buttonAction: string;
+  buttons?: { label: string; action: string; icon: DialogIcon }[];
   /// The glyph the button is painted as, so a narrow pane gets a switch rather
   /// than a word that would not fit.
   icon: DialogIcon;
@@ -80,7 +81,6 @@ export type DialogKind =
   | "permissions"
   | "mcp"
   | "sessions"
-  | "delete"
   | "undo";
 
 export interface DialogState {
@@ -115,11 +115,8 @@ export interface DialogState {
 export const MCP_TOGGLE = "mcpToggle";
 export const MCP_REFRESH = "mcpRefresh";
 export const OPEN_SESSION = "openSession";
-/// The trash at the end of a session row: it opens the confirmation rather than
-/// deleting, because a thread cannot be recovered once its file is gone.
-export const SESSION_DELETE = "sessionDelete";
-/// The confirmation's own row, which does the deletion.
-export const SESSION_DELETE_CONFIRM = "sessionDeleteConfirm";
+export const SESSION_PIN = "sessionPin";
+export const SESSION_ARCHIVE = "sessionArchive";
 /// The confirmation a change card's Undo opens, and the row that does the
 /// restore. The Undo under the card itself posts its own view message, since it
 /// is a transcript control rather than a row of a dialog.
@@ -699,7 +696,7 @@ export function sessionDialog(
     // leaves the thread title visible above the transcript while the list is up.
     pin: "footer",
     title: "Sessions",
-    subtitle: "Threads stored for this project, most recent first. Picking one opens it here.",
+    subtitle: "Threads stored for this project, pinned first, then most recent. Picking one opens it here.",
     note: note || empty,
     rows: [
       row(NEW_SESSION, "New chat", {
@@ -716,8 +713,7 @@ export function sessionDialog(
       }),
       ...standing.map((entry) =>
         row(entry.id, entry.label || entry.id, {
-          // The store has no file to delete yet: a trash on this row would ask
-          // the CLI to remove a session it cannot find.
+          // Preferences are offered once the store has a file for the thread.
           detail: "Open in this panel — the store has no file for it yet",
           status: entry.id === runningId ? "Running" : "Current",
           tone: (entry.id === runningId ? "ok" : "muted") as DialogTone,
@@ -732,12 +728,13 @@ export function sessionDialog(
         const name = session.label || session.id;
         return row(session.id, name, {
           detail: `${session.messages} message${session.messages === 1 ? "" : "s"}`,
-          status: marked ? "Current" : live ? "Running" : session.age,
+          status: marked ? "Current" : live ? "Running" : session.pinned ? "Pinned" : session.age,
           tone: live ? "ok" : "muted",
           action: OPEN_SESSION,
-          button: `Delete ${name}`,
-          buttonAction: SESSION_DELETE,
-          icon: "trash",
+          buttons: [
+            { label: session.pinned ? "Unpin thread" : "Pin thread", action: SESSION_PIN, icon: "pin" },
+            { label: "Archive thread", action: SESSION_ARCHIVE, icon: "archive" },
+          ],
           kind: "thread",
           current: marked,
         });
@@ -746,41 +743,6 @@ export function sessionDialog(
     count: threads,
     search: true,
     query,
-    refreshLabel: "",
-    refreshAction: "",
-  };
-}
-
-/// The confirmation a session row's trash opens: the thread is named, so the
-/// dialog says what it would delete, and the deletion itself is the row rather
-/// than a second button.
-///
-/// A panel dialog rather than `showWarningMessage({ modal: true }, …)`: the
-/// listing stays readable behind it, and answering it does not hand the window
-/// to VS Code's own chrome.
-export function deleteSessionDialog(session: {
-  id: string;
-  label: string;
-  detail: string;
-}): DialogState {
-  const label = session.label || session.id;
-  return {
-    kind: "delete",
-    pin: "header",
-    title: "Delete thread",
-    subtitle: `“${label}” and its stored conversation are removed from this project.`,
-    note: "This cannot be undone. The file is deleted from Oxide's session store.",
-    rows: [
-      row(session.id, "Delete thread", {
-        detail: session.detail,
-        tone: "error",
-        action: SESSION_DELETE_CONFIRM,
-      }),
-      row("", "Cancel", { detail: "Keep the thread", action: CLOSE_DIALOG }),
-    ],
-    count: 0,
-    search: false,
-    query: "",
     refreshLabel: "",
     refreshAction: "",
   };

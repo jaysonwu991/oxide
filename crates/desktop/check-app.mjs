@@ -950,7 +950,7 @@ vm.runInThisContext(
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
     " loadGit, openProjectDetails, refreshProjectDetails, openRepositoryChanges, changeReviewScope," +
     " loadMcps, openSessions," +
-    " listedSessions, selectSessionFromTree, removeSession," +
+    " listedSessions, selectSessionFromTree, archiveSession," +
     " updateChips, openReasoning, loadInfo," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
@@ -975,6 +975,7 @@ console.log("launch");
 // folder when they pick one.
 await nextTick();
 check("opened on no project", app.state.project === null, String(app.state.project));
+check("showed the project summary on launch", !elementFor("details-panel").hidden);
 check(
   "marked no project as the active one",
   elementFor("projects-tree").children.every(
@@ -1504,6 +1505,16 @@ const shell = readFileSync(`${here}index.html`, "utf8");
 // parse pairs up.
 const sheet = readFileSync(`${here}style.css`, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const shellAt = (needle) => shell.indexOf(needle);
+const mainContent = shell.slice(shell.indexOf('<div class="main-content">'), shell.indexOf("</main>"));
+check(
+  "kept the conversation, summary and Changes under one header",
+  mainContent.includes('class="conversation-pane"') &&
+    mainContent.includes('id="transcript"') &&
+    mainContent.includes('id="details-panel"') &&
+    mainContent.includes('id="review-modal"') &&
+    !mainContent.includes('class="topbar"') &&
+    /\.main-content \{[^}]*display: flex;[^}]*min-height: 0;/.test(sheet),
+);
 const buttonFor = (id) => {
   const at = shell.indexOf(`id="${id}"`);
   if (at < 0) return "";
@@ -3855,30 +3866,14 @@ const list = card.children[1];
 check(
   "led with a file tile, and offered Undo before Review",
   String(head.children[0].className) === "changes-icon" &&
-    head.children[0].innerHTML === app.ICONS.file &&
-    head.children[5].children[0].textContent === "Undo" &&
-    head.children[5].children[1].textContent === "View changes",
-  `${head.children[0].className} / ${head.children[5].children.map((b) => b.textContent).join(", ")}`,
+    head.children[0].innerHTML === app.ICONS.changes &&
+    head.querySelector(".changes-actions").children[0].textContent === "Undo" &&
+    head.querySelector(".changes-actions").children[1].textContent === "View changes",
+  `${head.children[0].className} / ${head.querySelector(".changes-actions").children.map((b) => b.textContent).join(", ")}`,
 );
-// The card's fold and each row's are the same caret, drawn pointing down: a
-// closed row turns it to the right, an open one leaves it as it is.
-const changedRowCaret = transcriptCards()[0].children[1].children[0];
-check(
-  "drew the card's fold and its rows' carets from the app's own set",
-  head.children[1].innerHTML === app.ICONS.caret &&
-    String(changedRowCaret.innerHTML).includes(app.ICONS.caret),
-  `${head.children[1].innerHTML} / ${changedRowCaret.innerHTML}`,
-);
-// The caret is drawn pointing down, so a row that is closed turns it to the
-// right and one that is open leaves it alone — while the card's own fold is the
-// other way round, since the card starts open.
-check(
-  "turned a closed row's caret to its row, and the card's to its own state",
-  /\.change-chev \{[^}]*transform: rotate\(-90deg\)/.test(sheet) &&
-    /\.change-row\.open \.change-chev \{ transform: rotate\(0deg\)/.test(sheet) &&
-    /\.changes\.collapsed \.changes-caret \{ transform: rotate\(-90deg\)/.test(sheet),
-  `${sheet.slice(sheet.indexOf(".change-chev {"), sheet.indexOf(".change-diff {"))}`,
-);
+check("kept the header as a summary rather than a collapse control", !head.onclick && !head.querySelector(".changes-caret"));
+check("stacked the title and totals together", head.querySelector(".changes-summary").children.length === 2 &&
+  /\.changes-summary \{[^}]*flex-direction: column/.test(sheet));
 // The transcript is a flex column and the card hides its own overflow, which
 // together let a flex item shrink below the rows it holds: without its own
 // height the card collapses to nothing in a long conversation, leaving no card
@@ -3890,28 +3885,28 @@ check(
 );
 check(
   "named the card after what it lists",
-  head.children[2].textContent === "Edited 6 files",
-  head.children[2].textContent,
+  head.querySelector(".changes-title").textContent === "Edited 6 files",
+  head.querySelector(".changes-title").textContent,
 );
 check(
   "counted the turn's additions and deletions",
-  head.children[3].innerHTML.includes("+12") && head.children[3].innerHTML.includes("−3"),
-  head.children[3].innerHTML,
+  head.querySelector(".changes-total").innerHTML.includes("+12") && head.querySelector(".changes-total").innerHTML.includes("−3"),
+  head.querySelector(".changes-total").innerHTML,
 );
 check("listed one row per changed file", list.children.length === 6, String(list.children.length));
 check(
   "folded the rows past what the card shows behind their count",
-  card.children[2].hidden === false && card.children[2].textContent === "Show 1 more file",
-  card.children[2].textContent,
+  card.children[2].hidden === false && card.children[2].children[0].textContent === "Show 3 more files",
+  card.children[2].children[0].textContent,
 );
 const changedRow = list.children[0];
 check(
-  "badged the row with its status and counted its lines",
-  changedRow.innerHTML.includes("change-status modified") &&
-    changedRow.innerHTML.includes(">M<") &&
-    changedRow.innerHTML.includes("src/agent.rs") &&
-    changedRow.innerHTML.includes("+8") &&
-    changedRow.innerHTML.includes("−2"),
+  "showed the path and counts without status badges or fold carets",
+  !changedRow.innerHTML.includes("change-status") &&
+    !changedRow.innerHTML.includes("change-chev") &&
+    changedRow.innerHTML.includes('class="change-directory">src/') &&
+    changedRow.innerHTML.includes('class="change-filename">agent.rs') &&
+    changedRow.innerHTML.includes("+8") && changedRow.innerHTML.includes("−2"),
   changedRow.innerHTML,
 );
 check(
@@ -3920,23 +3915,14 @@ check(
   list.children[2].innerHTML,
 );
 
-// A row opens its own diff where it sits, so reading one file leaves the rest of
-// the listing alone, and closes it again on a second click.
-changedRow.onclick();
-check(
-  "opened the row's diff beneath it",
-  changedRow.diffPanel &&
-    changedRow.diffPanel.innerHTML.includes("dline del") &&
-    changedRow.diffPanel.innerHTML.includes("dline add") &&
-    list.children[1] === changedRow.diffPanel,
-  changedRow.diffPanel && changedRow.diffPanel.innerHTML,
-);
-changedRow.onclick();
-check(
-  "closed the diff again",
-  changedRow.diffPanel === null && list.children.length === 6,
-  String(list.children.length),
-);
+// A compact row opens that file in Changes, keeping the transcript card compact.
+list.children[1].onclick();
+await nextTick();
+check("opened the selected file in Changes", !elementFor("review-modal").hidden &&
+  elementFor("review-files").children.some((row) => row.classList.contains("active") && row.innerHTML.includes("src/tools.rs")) &&
+  !changedRow.diffPanel && list.children.length === 6);
+app.closeReview();
+calls.length = 0;
 
 // The review is the card's own listing beside whichever file is selected, whose
 // two sides — what the run found, out of the project's shadow snapshot, and what
@@ -3950,7 +3936,7 @@ const reviewParts = () => {
 };
 const reviewRows = () => reviewParts()[1]?.children || [];
 const splitCells = (row) => row.children.map((cell) => cell.textContent);
-head.children[5].children[1].onclick({ stopPropagation() {} });
+head.querySelector(".changes-actions").children[1].onclick({ stopPropagation() {} });
 check("opened the review", elementFor("review-modal").hidden === false);
 check(
   "headed it with the card's own title and totals",
@@ -4119,11 +4105,33 @@ await app.openRepositoryChanges();
 check("reported a repository read failure", elementFor("review-files").children[0].textContent.includes("not in a Git repository"));
 repositoryError = null;
 app.closeReview();
+check("restored the idle summary when Changes closed", !elementFor("details-panel").hidden);
+await app.openProjectDetails();
+check("kept the summary visible when its header button was pressed", !elementFor("details-panel").hidden);
+await app.openRepositoryChanges();
+check("hid the summary for idle Changes", elementFor("details-panel").hidden);
+app.setBusy();
+check(
+  "kept the summary hidden as a run started with Changes open",
+  elementFor("details-panel").hidden && !elementFor("review-modal").hidden,
+);
+app.closeReview();
+check("restored the summary during a run when Changes closed", !elementFor("details-panel").hidden);
+await app.openRepositoryChanges();
+check(
+  "hid the running summary when Changes opened",
+  elementFor("details-panel").hidden && !elementFor("review-modal").hidden,
+);
+app.setIdle();
+check("hid the summary when the run ended with Changes open", elementFor("details-panel").hidden);
+app.closeReview();
+document.fire("keydown", { key: "Escape" });
+check("kept the summary after Escape closed Changes", !elementFor("details-panel").hidden);
 
 // Undo puts the project back to the run's own baseline, which the payload
 // carried, rather than to the repository's last commit.
 calls.length = 0;
-head.children[5].children[0].onclick({ stopPropagation() {} });
+head.querySelector(".changes-actions").children[0].onclick({ stopPropagation() {} });
 elementFor("confirm-ok").onclick();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const undone = calls.find(([name]) => name === "undo_turn");
@@ -4138,10 +4146,10 @@ check(
 );
 check(
   "said the card was undone",
-  head.children[4].textContent === "Undone" &&
-    head.children[4].hidden === false &&
-    head.children[5].children[0].hidden === true,
-  `${head.children[4].textContent} / ${head.children[4].hidden}`,
+  head.querySelector(".changes-note").textContent === "Undone" &&
+    head.querySelector(".changes-note").hidden === false &&
+    head.querySelector(".changes-actions").children[0].hidden === true,
+  `${head.querySelector(".changes-note").textContent} / ${head.querySelector(".changes-note").hidden}`,
 );
 
 // A listing longer than the card shows folds the rest behind a button rather
@@ -4164,29 +4172,22 @@ const longList = longCard.children[1];
 const more = longCard.children[2];
 check(
   "showed the first rows and folded the rest",
-  longList.children.filter((row) => !row.hidden).length === 5 &&
+  longList.children.filter((row) => !row.hidden).length === 3 &&
     more.hidden === false &&
-    more.textContent === "Show 2 more files",
-  `${longList.children.filter((row) => !row.hidden).length} rows / ${more.textContent}`,
+    more.children[0].textContent === "Show 4 more files",
+  `${longList.children.filter((row) => !row.hidden).length} rows / ${more.children[0].textContent}`,
 );
 more.onclick({ stopPropagation() {} });
 check(
   "revealed the rest when asked",
-  longList.children.every((row) => !row.hidden) && more.textContent === "Show less",
-  `${more.textContent}`,
+  longList.children.every((row) => !row.hidden) && more.children[0].textContent === "Show less",
+  `${more.children[0].textContent}`,
 );
-longCard.children[0].onclick();
-check(
-  "collapsed the whole listing from its header",
-  String(longCard.className).includes("collapsed"),
-  String(longCard.className),
-);
-check(
-  "left out a side with nothing to count",
-  longCard.children[0].children[3].innerHTML.includes("+7") &&
-    !longCard.children[0].children[3].innerHTML.includes("−0"),
-  longCard.children[0].children[3].innerHTML,
-);
+more.onclick({ stopPropagation() {} });
+check("folded back to three rows from Show less", longList.children.filter((row) => !row.hidden).length === 3 &&
+  more.children[0].textContent === "Show 4 more files" && more.getAttribute("aria-expanded") === "false");
+check("kept both line counts including an unchanged side", longCard.querySelector(".changes-total").innerHTML.includes("+7") &&
+  longCard.querySelector(".changes-total").innerHTML.includes("−0"));
 
 // Only the newest turn can be put back: an older card's baseline is the state
 // before that turn, so its own Undo would take every change made since with it.
@@ -4209,13 +4210,13 @@ await emit("agent-end", {
 const newest = transcriptCards().at(-1);
 check(
   "offered Undo on the newest turn alone",
-  newest.children[0].children[5].children[0].hidden === false &&
-    longCard.children[0].children[5].children[0].hidden === true,
-  `${newest.children[0].children[5].children[0].hidden} / ${longCard.children[0].children[5].children[0].hidden}`,
+  newest.querySelector(".changes-actions").children[0].hidden === false &&
+    longCard.querySelector(".changes-actions").children[0].hidden === true,
+  `${newest.querySelector(".changes-actions").children[0].hidden} / ${longCard.querySelector(".changes-actions").children[0].hidden}`,
 );
 check(
   "said a row with no lines moved has none to count",
-  newest.children[1].children[1].innerHTML.includes("no line changes"),
+  newest.children[1].children[1].innerHTML.includes("+0") && newest.children[1].children[1].innerHTML.includes("−0"),
   newest.children[1].children[1].innerHTML,
 );
 
@@ -4237,8 +4238,8 @@ check(
 );
 check(
   "kept the newest card's Undo when that turn was dropped",
-  newest.children[0].children[5].children[0].hidden === false,
-  `${newest.children[0].children[5].children[0].hidden}`,
+  newest.querySelector(".changes-actions").children[0].hidden === false,
+  `${newest.querySelector(".changes-actions").children[0].hidden}`,
 );
 
 // A turn that moved no lines at all — a binary file rewritten, a mode change —
@@ -4258,9 +4259,9 @@ await emit("agent-end", {
 const quiet = transcriptCards().at(-1);
 check(
   "left a turn that moved no lines with no total to show",
-  quiet.children[0].children[3].innerHTML === "" &&
+  quiet.querySelector(".changes-total").innerHTML === "" &&
     quiet.children[1].children[0].innerHTML.includes("binary"),
-  `${quiet.children[0].children[3].innerHTML} / ${quiet.children[1].children[0].innerHTML}`,
+  `${quiet.querySelector(".changes-total").innerHTML} / ${quiet.children[1].children[0].innerHTML}`,
 );
 
 // A turn that changed nothing — or a backend that could not take a baseline —
@@ -5862,7 +5863,7 @@ check(
   "kept a finished turn's card for the thread it was not shown on",
   app.state.parked?.session === runningThread.id &&
     el("transcript").outline() === "" &&
-    /src\/turn\.rs/.test(app.state.parked.node.outline()),
+    app.state.parked.node.querySelector(".turn-change-row")?.title.startsWith("src/turn.rs"),
   `${app.state.parked?.session} / ${el("transcript").outline()} / ${app.state.parked?.node.outline()}`,
 );
 check(
@@ -5876,7 +5877,7 @@ await nextTick();
 check(
   "painted that card when the thread it belongs to was opened",
   app.state.parked === null &&
-    /src\/turn\.rs/.test(el("transcript").outline()) &&
+    el("transcript").querySelector(".turn-change-row")?.title.startsWith("src/turn.rs") &&
     /half a reply/.test(el("transcript").outline()),
   `${app.state.parked} / ${el("transcript").outline()}`,
 );
@@ -5889,12 +5890,12 @@ app.state.runSession = runningThread.id;
 app.setBusy();
 app.state.runId = 63;
 calls.length = 0;
-const removal = app.removeSession(runningThread);
+const removal = app.archiveSession(runningThread);
 await nextTick();
 check(
-  "refused to delete the thread the turn is running in from another thread",
+  "refused to archive the thread the turn is running in from another thread",
   !calls.some(([name]) => name === "delete_session") &&
-    /stop it before deleting/.test(status()) &&
+    /stop it before archiving/.test(status()) &&
     app.state.session === readThread.id &&
     elementFor("confirm-modal").hidden === true,
   `${JSON.stringify(calls.map(([name]) => name))} / ${status()} / ${elementFor("confirm-modal").hidden}`,
@@ -5987,17 +5988,17 @@ check(
   `${parkedTree} / ${elementFor("sessions-list").outline()}`.split("\n")[0],
 );
 calls.length = 0;
-const parkedRemoval = app.removeSession(runningThread);
+const parkedRemoval = app.archiveSession(runningThread);
 await nextTick();
-elementFor("confirm-ok").onclick();
 await parkedRemoval;
 check(
-  "dropped a parked transcript when its thread was deleted",
-  calls.some(([name]) => name === "delete_session") &&
+  "dropped a parked transcript when its thread was archived",
+  calls.some(([name]) => name === "archive_session") &&
     app.state.parked === null &&
     elementFor("run-banner").hidden === true,
   `${JSON.stringify(calls.map(([name]) => name))} / ${app.state.parked} / ${elementFor("run-banner").hidden}`,
 );
+check("explained permanent CLI deletion after archiving", /oxide sessions delete/.test(status()));
 app.state.parked = null;
 app.state.changes = [];
 threads = existing;
@@ -6309,9 +6310,9 @@ check(
   syntheticRow.children.map((node) => String(node.className)).join(","),
 );
 calls.length = 0;
-await app.removeSession(synthetic);
+await app.archiveSession(synthetic);
 check(
-  "deleted nothing for a thread the store has not written",
+  "archived nothing for a thread the store has not written",
   !calls.length && app.state.session === "6f3031b2beef",
   JSON.stringify(calls.map(([name]) => name)),
 );
@@ -6375,19 +6376,13 @@ check(
   String(stoppedAtTheRow),
 );
 check(
-  "offered the second choice because the project has threads",
-  elementFor("confirm-alt").hidden === false &&
-    /Delete 2 threads/.test(elementFor("confirm-alt").textContent),
-  `${elementFor("confirm-alt").hidden} / ${elementFor("confirm-alt").textContent}`,
+  "kept project removal non-destructive and explained CLI cleanup",
+  elementFor("confirm-alt").hidden && /oxide sessions delete/.test(elementFor("confirm-message").textContent),
 );
 calls.length = 0;
-elementFor("confirm-alt").onclick(press({ target: elementFor("confirm-alt") }));
+elementFor("confirm-ok").onclick(press({ target: elementFor("confirm-ok") }));
 await nextTick();
-check(
-  "answered with that dialog's own choice",
-  calls.filter(([name]) => name === "delete_session").length === 2,
-  JSON.stringify(calls.map(([name]) => name)),
-);
+check("never deleted session logs when removing a project", !calls.some(([name]) => name === "delete_session"));
 
 // Removing a discovered folder has the same non-destructive default as an added one.
 const discoveredTarget = { ...removeTarget, registered: false };

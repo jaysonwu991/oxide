@@ -15,7 +15,6 @@ import {
   CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
-  deleteSessionDialog,
   logoutDialog,
   MCP_TOGGLE,
   modelDialog,
@@ -27,8 +26,8 @@ import {
   providerDialog,
   PROVIDER_LOGOUT,
   PROVIDER_SELECT,
-  SESSION_DELETE,
-  SESSION_DELETE_CONFIRM,
+  SESSION_PIN,
+  SESSION_ARCHIVE,
   sessionDialog,
   trustDialog,
   undoChangesDialog,
@@ -481,7 +480,7 @@ describe("session dialog", () => {
     assert.equal(dialog.title, "Sessions");
     // It grows from the composer, like Desktop's `/session` panel.
     assert.equal(dialog.pin, "footer");
-    assert.match(dialog.subtitle, /most recent first/);
+    assert.match(dialog.subtitle, /pinned first, then most recent/);
     assert.deepEqual(
       dialog.rows.map((row) => row.value),
       [NEW_SESSION, CONTINUE_SESSION, "fe0031b1", "7c8031b1"],
@@ -492,20 +491,11 @@ describe("session dialog", () => {
     );
     // Both are answered by the panel, so neither carries a toggle.
     assert.equal(dialog.refreshLabel, "");
-    // A session row ends in a trash: the two ways out of the current thread do
-    // not, since neither deletes anything.
-    assert.deepEqual(
-      dialog.rows.map((row) => row.button),
-      ["", "", "Delete Create VS Code Extension for Oxide", "Delete say hi"],
-    );
-    assert.deepEqual(
-      dialog.rows.map((row) => row.buttonAction),
-      ["", "", SESSION_DELETE, SESSION_DELETE],
-    );
-    assert.deepEqual(
-      dialog.rows.map((row) => row.icon),
-      ["", "", "trash", "trash"],
-    );
+    assert.deepEqual(dialog.rows.map((row) => (row.buttons || []).map((button) => button.action)),
+      [[], [], [SESSION_PIN, SESSION_ARCHIVE], [SESSION_PIN, SESSION_ARCHIVE]]);
+    assert.deepEqual(dialog.rows[2].buttons?.map((button) => button.icon), ["pin", "archive"]);
+    const pinned = sessionDialog([{ ...sessions[0], pinned: true }], null);
+    assert.equal(pinned.rows[2].buttons?.[0].label, "Unpin thread");
     // With no thread open there is nothing to close, so the row offers a fresh
     // chat rather than claiming it closes one.
     assert.equal(dialog.rows[0].label, "New chat");
@@ -547,7 +537,7 @@ describe("session dialog", () => {
     assert.equal(running.status, "Running");
     assert.equal(running.tone, "ok", "it stands out from an ordinary age");
     assert.equal(running.current, false, "the thread on screen is the current one");
-    assert.equal(running.buttonAction, SESSION_DELETE, "and it is still a thread to delete");
+    assert.equal(running.buttons?.[0].action, SESSION_PIN, "and it can still be pinned");
     const onScreen = dialog.rows.find((row) => row.value === "7c8031b1")!;
     assert.equal(onScreen.status, "Current");
     assert.equal(onScreen.tone, "muted");
@@ -666,7 +656,7 @@ describe("session dialog", () => {
       [NEW_SESSION, CONTINUE_SESSION, "fe0031b1"],
       "the row is the store's, listed once",
     );
-    assert.equal(dialog.rows[2].buttonAction, SESSION_DELETE, "and it can be deleted");
+    assert.equal(dialog.rows[2].buttons?.[1].action, SESSION_ARCHIVE, "and it can be archived");
   });
 
   it("names an unnamed row after the thread the panel is showing", () => {
@@ -755,42 +745,6 @@ describe("session dialog", () => {
       0,
       "a query the title does not match still leaves nothing",
     );
-  });
-});
-
-describe("delete-thread confirmation", () => {
-  const thread = {
-    id: "fe0031b1",
-    label: "Create VS Code Extension for Oxide",
-    detail: "just now · 195 messages · fe0031b1",
-  };
-
-  it("names the thread, and puts the deletion in a row of its own", () => {
-    const dialog = deleteSessionDialog(thread);
-    assert.equal(dialog.title, "Delete thread");
-    // It replaces the session listing it was opened from, so it stays where
-    // that one was rather than jumping to the other end of the panel.
-    assert.equal(dialog.pin, "header");
-    assert.match(dialog.subtitle, /Create VS Code Extension for Oxide/);
-    assert.match(dialog.note, /cannot be undone/);
-    assert.deepEqual(
-      dialog.rows.map((row) => row.label),
-      ["Delete thread", "Cancel"],
-    );
-    assert.deepEqual(
-      dialog.rows.map((row) => row.action),
-      [SESSION_DELETE_CONFIRM, CLOSE_DIALOG],
-    );
-    // The row carries the id the deletion acts on, and reads as destructive.
-    assert.equal(dialog.rows[0].value, "fe0031b1");
-    assert.equal(dialog.rows[0].tone, "error");
-    assert.equal(dialog.rows[0].detail, thread.detail);
-    assert.equal(dialog.refreshLabel, "", "the listing is repainted, not rechecked");
-  });
-
-  it("falls back to the id for a thread that was never named", () => {
-    const dialog = deleteSessionDialog({ id: "abc123", label: "", detail: "" });
-    assert.match(dialog.subtitle, /abc123/);
   });
 });
 

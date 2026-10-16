@@ -745,6 +745,7 @@ pub struct PendingApproval {
 pub struct App {
     pub input: String,
     pub input_cursor: usize,
+    pub input_generation: u64,
     pub input_history: Vec<String>,
     pub history_index: Option<usize>,
     pub items: Vec<ChatItem>,
@@ -954,6 +955,7 @@ impl App {
         Self {
             input: String::new(),
             input_cursor: 0,
+            input_generation: 0,
             input_history: Vec::new(),
             history_index: None,
             items: Vec::new(),
@@ -1110,11 +1112,13 @@ impl App {
     }
 
     pub fn clear_input(&mut self) {
+        self.input_generation = self.input_generation.wrapping_add(1);
         self.input.clear();
         self.input_cursor = 0;
     }
 
     pub fn set_input(&mut self, input: String) {
+        self.input_generation = self.input_generation.wrapping_add(1);
         self.input = input;
         self.input_cursor = self.input.len();
     }

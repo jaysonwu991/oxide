@@ -531,7 +531,7 @@ describe("command contributions", () => {
       assert.ok(chat.includes(`case ${action}:`), `${action} is handled by the controller`);
     }
     // The confirm row a delete opens has to lead somewhere, too.
-    assert.ok(actions.has("SESSION_DELETE") && actions.has("SESSION_DELETE_CONFIRM"));
+    assert.ok(actions.has("SESSION_PIN") && actions.has("SESSION_ARCHIVE"));
   });
 
   it("routes a question answer to the running turn", () => {
@@ -770,21 +770,12 @@ describe("command contributions", () => {
     );
   });
 
-  it("will not delete a thread while the running turn owns its file", () => {
-    // The turn's CLI appends to the session file as it works, so removing it
-    // from here pulls the file out from under the process and the next append
-    // fails with `No such file or directory`. Both the confirmation and the
-    // write itself refuse while a turn is up.
-    const confirm = chat.slice(
-      chat.indexOf("private confirmDeleteSession("),
-      chat.indexOf("private async deleteSession("),
-    );
-    const remove = chat.slice(
-      chat.indexOf("private async deleteSession("),
-      chat.indexOf("private showDialog("),
-    );
-    assert.ok(confirm.includes("if (this.turn)"), "the confirmation checks for a running turn");
-    assert.ok(remove.includes("if (this.turn)"), "the write checks again");
+  it("offers pin and archive while reserving deletion for the CLI", () => {
+    const actions = chat.slice(chat.indexOf("private async changeSession("), chat.indexOf("// ---------- dialogs ----------"));
+    assert.ok(actions.includes('action === "archive" && running'));
+    assert.ok(actions.includes('sessionActionArgs(id, operation)'));
+    assert.ok(actions.includes("oxide sessions delete ${id}"));
+    assert.ok(!chat.includes("sessionDeleteArgs") && !chat.includes("confirmDeleteSession"));
   });
 
   it("tracks the file being edited, and reads it when the message goes", () => {
@@ -1296,7 +1287,7 @@ describe("command contributions", () => {
     // Every read that can land after the reader moved on is dropped: a history
     // painted into whatever transcript is on screen would show one conversation's
     // messages as another's.
-    const history = chat.slice(chat.indexOf("private async loadHistory("), chat.indexOf("private async deleteSession("));
+    const history = chat.slice(chat.indexOf("private async loadHistory("), chat.indexOf("private async changeSession("));
     assert.ok(
       history.includes("const target = this.transcript;") &&
         history.includes("if (this.transcript !== target) return;") &&

@@ -165,6 +165,8 @@ const ICONS = {
   plus: glyph('<path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>', 16),
   more: glyph('<path d="M5 12h.01M12 12h.01M19 12h.01" ' + STROKE_24 + '/>'),
   compose: glyph('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" ' + STROKE_24 + '/>'),
+  changes: glyph('<rect x="4" y="3" width="16" height="18" rx="3" ' + STROKE_24 + '/><path d="M8 9h8M12 5v8M8 17h8" ' + STROKE_24 + '/>'),
+  undo: glyph('<path d="m9 4-5 5 5 5M4 9h10a6 6 0 0 1 0 12h-3" ' + STROKE_24 + '/>'),
   pin: glyph('<path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z" ' + STROKE_24 + '/>'),
   archive: glyph('<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6" ' + STROKE_24 + '/>'),
   chat: glyph('<path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" ' + STROKE_24 + '/>'),
@@ -568,7 +570,7 @@ function listedSessions() {
       path: "",
       // A thread the store has not written has no file, so the commands that read
       // one off disk have nothing to answer for it: its rows are handled in the
-      // window instead of through `session_messages` or `delete_session`.
+      // window instead of through `session_messages`.
       unstored: true,
     });
   }
@@ -2849,7 +2851,7 @@ function renderStoredTranscript(container, messages) {
 
 // Rows a card shows before the rest are folded behind a "Show N more files"
 // button.
-const CHANGES_VISIBLE = 5;
+const CHANGES_VISIBLE = 3;
 
 // The badge per status, spelling the core's `ChangeStatus`.
 const CHANGE_LETTERS = { added: "A", modified: "M", deleted: "D" };
@@ -2890,7 +2892,6 @@ function renderChanges(payload) {
     // The cards of its own thread, which its Undo reads to tell whether it is the
     // newest turn there.
     changes: list,
-    collapsed: false,
     all: false,
     undone: false,
     rows: [],
@@ -2907,12 +2908,10 @@ function renderChanges(payload) {
   if (project === state.project && !el("details-panel").hidden) refreshProjectDetails();
 }
 
-/// `+12 −3`, shared by a card's header and its rows. A side with nothing to
-/// count is left out, as the CLI's own listing spells it, so a turn that only
-/// removed lines reads as `−3` rather than `+0 −3`.
-function statsHtml(added, removed) {
-  const add = added ? `<span class="stats-add">+${added}</span>` : "";
-  const del = removed ? `<span class="stats-del">−${removed}</span>` : "";
+/// `+12 −3`; compact turn cards also show a side with zero changed lines.
+function statsHtml(added, removed, showZero = false) {
+  const add = added || showZero ? `<span class="stats-add">+${added}</span>` : "";
+  const del = removed || showZero ? `<span class="stats-del">−${removed}</span>` : "";
   return add + del;
 }
 
@@ -2921,42 +2920,27 @@ function statusBadge(status) {
   return `<span class="change-status ${key}" title="${key}">${CHANGE_LETTERS[key]}</span>`;
 }
 
-/// The diff a row opens: the same preview the tool cards paint, without their
-/// path header, since the row above it already names the file.
-function changeDiffHtml(file) {
-  if (file.binary) return `<div class="diff"><pre>Binary file — no text diff.</pre></div>`;
-  if (!file.diff) return `<div class="diff"><pre>No textual changes.</pre></div>`;
-  return `<div class="diff"><pre>${diffLines(file.diff)}</pre></div>`;
-}
-
-function changeRow(file) {
+function changeRow(file, onOpen = null) {
   const row = document.createElement("button");
   row.type = "button";
   row.className = "change-row";
-  row.innerHTML =
-    statusBadge(file.status) +
-    `<span class="change-path">${escapeHtml(file.path)}</span>` +
-    `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed) || "no line changes"}</span>` +
-    `<span class="change-chev">${ICONS.caret}</span>`;
-  row.onclick = () => toggleChangeDiff(row, file);
-  return row;
-}
-
-/// A row swaps its own diff in and out, so reading one file does not disturb
-/// the rest of the listing.
-function toggleChangeDiff(row, file) {
-  if (row.diffPanel) {
-    row.diffPanel.remove();
-    row.diffPanel = null;
-    row.classList.remove("open");
-    return;
+  if (onOpen) {
+    row.classList.add("turn-change-row");
+    const split = Math.max(file.path.lastIndexOf("/"), file.path.lastIndexOf("\\")) + 1;
+    row.innerHTML =
+      `<span class="change-path"><span class="change-directory">${escapeHtml(file.path.slice(0, split))}</span><span class="change-filename">${escapeHtml(file.path.slice(split))}</span></span>` +
+      `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed, true)}</span>`;
+    row.title = `${file.path} · ${file.status}`;
+    row.setAttribute("aria-label", `View changes for ${file.path}`);
+    row.onclick = onOpen;
+  } else {
+    row.innerHTML =
+      statusBadge(file.status) +
+      `<span class="change-path">${escapeHtml(file.path)}</span>` +
+      `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed) || "no line changes"}</span>` +
+      `<span class="change-chev">${ICONS.caret}</span>`;
   }
-  const panel = document.createElement("div");
-  panel.className = "change-diff";
-  panel.innerHTML = changeDiffHtml(file);
-  row.after(panel);
-  row.diffPanel = panel;
-  row.classList.add("open");
+  return row;
 }
 
 function changesCard(card) {
@@ -2968,10 +2952,9 @@ function changesCard(card) {
   const icon = document.createElement("span");
   icon.className = "changes-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.innerHTML = ICONS.file;
-  const caret = document.createElement("span");
-  caret.className = "changes-caret";
-  caret.innerHTML = ICONS.caret;
+  icon.innerHTML = ICONS.changes;
+  const summary = document.createElement("div");
+  summary.className = "changes-summary";
   const title = document.createElement("span");
   title.className = "changes-title";
   const total = document.createElement("span");
@@ -2984,7 +2967,7 @@ function changesCard(card) {
   actions.className = "changes-actions";
   const review = document.createElement("button");
   review.type = "button";
-  review.className = "ghost small";
+  review.className = "changes-review";
   review.textContent = "View changes";
   review.onclick = (event) => {
     event.stopPropagation();
@@ -2992,8 +2975,12 @@ function changesCard(card) {
   };
   const undo = document.createElement("button");
   undo.type = "button";
-  undo.className = "ghost small";
+  undo.className = "changes-undo";
   undo.textContent = "Undo";
+  const undoIcon = document.createElement("span");
+  undoIcon.setAttribute("aria-hidden", "true");
+  undoIcon.innerHTML = ICONS.undo;
+  undo.appendChild(undoIcon);
   undo.onclick = (event) => {
     event.stopPropagation();
     undoChanges(card);
@@ -3006,22 +2993,27 @@ function changesCard(card) {
   more.type = "button";
   more.className = "changes-more";
 
-  head.append(icon, caret, title, total, note, actions);
-  head.onclick = () => {
-    card.collapsed = !card.collapsed;
-    paintChanges(card);
-  };
+  const moreLabel = document.createElement("span");
+  moreLabel.className = "changes-more-label";
+  const moreIcon = document.createElement("span");
+  moreIcon.className = "changes-more-caret";
+  moreIcon.setAttribute("aria-hidden", "true");
+  moreIcon.innerHTML = ICONS.caret;
+  more.append(moreLabel, moreIcon);
+  summary.append(title, total);
+  head.append(icon, summary, note, actions);
   block.append(head, list, more);
 
   card.block = block;
   card.list = list;
   card.more = more;
+  card.moreLabel = moreLabel;
   card.note = note;
   card.undo = undo;
   card.title = title;
   card.total = total;
-  for (const file of card.files) {
-    const row = changeRow(file);
+  for (const [index, file] of card.files.entries()) {
+    const row = changeRow(file, () => openReview(card, index));
     card.rows.push({ file, row });
     list.appendChild(row);
   }
@@ -3037,19 +3029,20 @@ function changesCard(card) {
 function paintChanges(card) {
   const count = card.files.length;
   card.title.textContent = `Edited ${count} file${count === 1 ? "" : "s"}`;
-  card.total.innerHTML = statsHtml(card.added, card.removed);
+  card.total.innerHTML = statsHtml(card.added, card.removed, Boolean(card.added || card.removed));
   // An undo restores the state before its own turn, so it is only offered while
   // that turn is the newest one of its own thread: anything made after it would
   // go too.
   const list = card.changes || state.changes;
   card.undo.hidden = card.undone || list[list.length - 1] !== card;
-  card.block.classList.toggle("collapsed", card.collapsed);
   const shown = card.all ? card.rows : card.rows.slice(0, CHANGES_VISIBLE);
   const visible = new Set(shown);
   for (const entry of card.rows) entry.row.hidden = !visible.has(entry);
   const hidden = count - shown.length;
-  card.more.hidden = card.collapsed || (hidden <= 0 && !card.all);
-  card.more.textContent = card.all ? "Show less" : `Show ${hidden} more file${hidden === 1 ? "" : "s"}`;
+  card.more.hidden = count <= CHANGES_VISIBLE;
+  card.more.setAttribute("aria-expanded", String(card.all));
+  card.moreLabel.textContent = card.all ? "Show less" : `Show ${hidden} more file${hidden === 1 ? "" : "s"}`;
+  card.more.classList.toggle("expanded", card.all);
 }
 
 /// Puts the project back to the state the turn started from. The baseline is
@@ -3097,23 +3090,23 @@ let reviewState = null;
 // change in the file it belongs to.
 const REVIEW_CONTEXT = 3;
 
-function openReview(card) {
-  reviewState = { card, index: 0, sides: new Map(), reads: new Map(), expanded: new Set(), openFiles: new Set(card.files.slice(0, 1).map((file) => file.path)) };
+function openReview(card, index = 0) {
+  reviewState = { card, index, sides: new Map(), reads: new Map(), expanded: new Set(), openFiles: new Set(card.files.slice(index, index + 1).map((file) => file.path)) };
   el("review-title").textContent = "Changes";
   el("review-total").innerHTML = statsHtml(card.added, card.removed);
   closeOverlays("review-modal");
   el("review-modal").hidden = false;
-  el("details-panel").hidden = true;
   el("review-scope").value = "turn";
   paintDockToggles();
   paintReview();
+  el("review-files").querySelectorAll(".change-row")[index]?.scrollIntoView?.({ block: "nearest" });
   el("review-close").focus();
 }
 
 function closeReview() {
   reviewState = null;
   el("review-modal").hidden = true;
-  paintDockToggles();
+  return paintDockToggles();
 }
 
 /// Paints the card's own listing and the file the review is showing.
@@ -3293,25 +3286,17 @@ function reviewKey(event) {
 let detailsRead = 0;
 
 function paintDockToggles() {
+  // The summary belongs to the conversation; Changes takes its place while open.
+  const panel = el("details-panel");
+  const wasHidden = panel.hidden;
+  panel.hidden = !el("review-modal").hidden;
   el("changes-toggle").setAttribute("aria-expanded", String(!el("review-modal").hidden));
-  el("details-toggle").setAttribute("aria-expanded", String(!el("details-panel").hidden));
+  el("details-toggle").setAttribute("aria-expanded", String(!panel.hidden));
+  if (wasHidden && !panel.hidden) return refreshProjectDetails();
 }
 
-function closeDetails() {
-  el("details-panel").hidden = true;
-  detailsRead += 1;
-  paintDockToggles();
-}
-
-async function openProjectDetails() {
-  if (!el("details-panel").hidden) {
-    closeDetails();
-    return;
-  }
-  closeReview();
-  el("details-panel").hidden = false;
-  paintDockToggles();
-  await refreshProjectDetails();
+function openProjectDetails() {
+  return closeReview();
 }
 
 async function refreshProjectDetails() {
@@ -3374,7 +3359,6 @@ function showRepositoryCard(card) {
 }
 
 async function openRepositoryChanges() {
-  closeDetails();
   el("review-modal").hidden = false;
   el("review-scope").value = "repository";
   el("review-title").textContent = "Changes";
@@ -6383,7 +6367,6 @@ function init() {
       closeOverlays();
       if (!modalOpen) {
         closeReview();
-        closeDetails();
       }
       return;
     }
@@ -6422,6 +6405,7 @@ function init() {
   setStatus(IDLE_STATUS);
   updateSendState();
   renderWelcome();
+  paintDockToggles();
   initEvents();
   loadTheme();
   // The sidebar is loaded rather than opened on: a project is not selected for
@@ -6744,6 +6728,7 @@ async function pinSession(session) {
 }
 
 async function archiveSession(session) {
+  if (!session || session.unstored) return;
   if (state.busy && (state.session === session.id || state.runSession === session.id)) {
     setStatus("A turn is running; stop it before archiving this thread.");
     return;
@@ -6756,7 +6741,7 @@ async function archiveSession(session) {
     closeSidebarCards();
     renderProjectsTree();
     repaintWelcome();
-    setStatus("Thread archived");
+    setStatus(`Thread archived. To permanently delete its log, run oxide sessions delete ${session.id} from its project folder. To restore it, run oxide sessions unarchive ${session.id}.`);
   } catch (error) {
     setStatus(`Could not archive thread: ${error}`, "error");
   }
@@ -7129,44 +7114,19 @@ function selectedProjectStillListed() {
   return !state.project || state.projects.some((project) => project.path === state.project);
 }
 
-// After a deletion, reload the tree and drop the selection if its project no
-// longer exists, so the composer cannot start a turn against a removed row.
-async function refreshAfterRemoval() {
-  await loadProjects();
-  if (!selectedProjectStillListed()) {
-    clearSelectedProject();
-    loadTheme();
-  }
-}
-
 async function removeProject(project) {
-  const threads = (state.sessions || []).filter((session) => session.cwd === project.path);
-  const count = threads.length;
-
   if (state.busy && (state.runProject || state.project) === project.path) {
     setStatus("A turn is running; stop it before removing this project.");
     return;
   }
 
   try {
-    // "Remove" and "delete its threads" are different actions, so the dialog
-    // makes the choice explicit instead of guessing from the row.
     const choice = await confirmDialog(
       "Remove project",
-      count
-        ? `Remove “${project.name}” from the sidebar, or also delete its ${count} thread${count === 1 ? "" : "s"}?\n\nRemoving keeps the threads on disk, so adding the folder again brings them back.`
-        : `Remove “${project.name}” from the sidebar?`,
+      `Remove “${project.name}” from the sidebar?\n\nIts sessions stay on disk. Use oxide sessions delete from the project folder to delete sessions permanently.`,
       "Remove project",
-      count
-        ? { label: `Delete ${count} thread${count === 1 ? "" : "s"}`, value: "delete-threads" }
-        : null,
     );
     if (!choice) return;
-    if (choice === "delete-threads") {
-      for (const session of threads) {
-        await invoke("delete_session", { project: session.cwd, id: session.id });
-      }
-    }
     state.projects = await invoke("remove_project", { id: project.id });
     if (!selectedProjectStillListed()) {
       clearSelectedProject();
@@ -7177,31 +7137,4 @@ async function removeProject(project) {
   } catch (error) {
     setStatus(`Could not remove project: ${error}`, "error");
   }
-}
-
-async function removeSession(session) {
-  // Nothing on disk to remove for a thread the store has not written yet.
-  if (!session || session.unstored) return;
-  // A running turn appends to this thread's file as it works, so deleting it
-  // here would leave the process writing into a file that is gone — and the
-  // thread it is running in may be one the reader is not looking at, which is
-  // the run's own to keep until it stops.
-  if (state.busy && (state.session === session.id || state.runSession === session.id)) {
-    setStatus("A turn is running; stop it before deleting this thread.");
-    return;
-  }
-  const label = session.name || session.preview || session.id.slice(0, 8);
-  const ok = await confirmDialog(
-    "Delete thread",
-    `Delete “${label}” permanently?\n\nThe project and its other threads are not affected.`,
-    "Delete thread",
-  );
-  if (!ok) return;
-  await invoke("delete_session", { project: session.cwd, id: session.id });
-  // A thread the run left parked is gone from the store, so its transcript goes
-  // too — the strip that was the way back to it has nothing to open.
-  if (state.parked?.session === session.id) state.parked = null;
-  if (state.session === session.id) resetTranscript();
-  updateRunBanner();
-  await refreshAfterRemoval();
 }

@@ -1129,6 +1129,10 @@ pub enum Paste {
 /// path the model would then fail to read: the pasteboard's own picture is
 /// written out in its place, the same grant fallback an attached paste made.
 pub fn clipboard_paste() -> Paste {
+    #[cfg(target_os = "macos")]
+    if let Some(paste) = clipboard_paste_appkit() {
+        return paste;
+    }
     let named = clipboard_paths();
     if !named.is_empty() {
         return Paste::Paths(paste_paths(named));
@@ -1184,8 +1188,103 @@ fn paste_paths_with(
 /// it named no file for has a path to insert; `None` when the pasteboard holds
 /// no image or the scratch cannot be written.
 fn saved_clipboard_picture() -> Option<PathBuf> {
-    let picture = clipboard_picture()?;
-    clipboard_dir().and_then(|dir| save_clipboard_image(&dir, &picture.part, &picture.bytes))
+    let bytes = clipboard_bytes()?;
+    clipboard_dir().and_then(|dir| save_pasted_image(&dir, &bytes))
+}
+
+/// Pasting inserts a path; encoding and resizing belong to loading that path
+/// for a model request. Keep the original PNG bytes here, like Pi's editor.
+fn save_pasted_image(dir: &Path, bytes: &[u8]) -> Option<PathBuf> {
+    if bytes.is_empty() {
+        return None;
+    }
+    std::fs::create_dir_all(dir).ok()?;
+    cleanup_clipboard(dir);
+    let digest = Sha256::digest(bytes);
+    let id: String = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let path = dir.join(format!("{id}.png"));
+    if !path.exists() {
+        std::fs::write(&path, bytes).ok()?;
+    }
+    Some(path)
+}
+
+/// One AppKit invocation reads the clipboard for the editor. Starting AppKit
+/// separately for file URLs and image bytes dominates ordinary screenshot pastes.
+#[cfg(target_os = "macos")]
+fn clipboard_paste_appkit() -> Option<Paste> {
+    let dir = TempImageDir::new()?;
+    let directory = dir
+        .path()
+        .to_str()?
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let script = r#"use framework "AppKit"
+set pb to current application's NSPasteboard's generalPasteboard()
+set urls to pb's readObjectsForClasses:{current application's NSURL} options:(missing value)
+set paths to {}
+if urls is not missing value then
+repeat with u in urls
+if (u's isFileURL()) as boolean then set end of paths to (u's |path|() as text)
+end repeat
+end if
+if (count of paths) > 0 then
+set AppleScript's text item delimiters to linefeed
+return "paths" & linefeed & (paths as text)
+end if
+set png to pb's dataForType:"public.png"
+if png is not missing value then
+if (png's writeToFile:"__DIR__/clipboard.png" atomically:true) as boolean then return "image" & linefeed & "public.png"
+end if
+set tiff to pb's dataForType:"public.tiff"
+if tiff is not missing value then
+if (tiff's writeToFile:"__DIR__/clipboard.tiff" atomically:true) as boolean then return "image" & linefeed & "public.tiff"
+end if
+set txt to pb's stringForType:"public.utf8-plain-text"
+if txt is not missing value then return "text" & linefeed & (txt as text)
+set ts to (pb's types()) as list
+set AppleScript's text item delimiters to ", "
+return "types" & linefeed & (ts as text)"#.replace("__DIR__", &directory);
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let output = String::from_utf8(output.stdout).ok()?;
+    clipboard_paste_output(&output, dir.path(), |bytes| {
+        clipboard_dir().and_then(|dir| save_pasted_image(&dir, bytes))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_paste_output(
+    output: &str,
+    directory: &Path,
+    save: impl FnOnce(&[u8]) -> Option<PathBuf>,
+) -> Option<Paste> {
+    let (kind, value) = output
+        .strip_suffix('\n')
+        .unwrap_or(output)
+        .split_once('\n')?;
+    match kind {
+        "paths" => Some(Paste::Paths(paste_paths(clipboard_paths_from(value)))),
+        "image" => {
+            let bytes = read_appkit_picture(directory, value)?;
+            let path = save(&bytes)?;
+            Some(Paste::Paths(vec![path]))
+        }
+        "text" => Some(Paste::Text(value.to_string())),
+        "types" if value.is_empty() => Some(Paste::Empty {
+            types: String::new(),
+        }),
+        // Legacy aliases and unusual representations keep the compatibility read.
+        _ => None,
+    }
 }
 
 /// A copied file as the paste attaches it, or the pasteboard's own picture when
@@ -1549,13 +1648,16 @@ fn clipboard_bytes_appkit() -> Option<Vec<u8>> {
     if !output.status.success() {
         return None;
     }
-    let source = dir.path().join(appkit_output_name(&String::from_utf8_lossy(
-        &output.stdout,
-    ))?);
+    read_appkit_picture(dir.path(), &String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(target_os = "macos")]
+fn read_appkit_picture(dir: &Path, uti: &str) -> Option<Vec<u8>> {
+    let source = dir.join(appkit_output_name(uti)?);
     if source.extension().and_then(|ext| ext.to_str()) == Some("png") {
         return std::fs::read(&source).ok();
     }
-    let converted = dir.path().join("converted.png");
+    let converted = dir.join("converted.png");
     let status = Command::new("sips")
         .args(["-s", "format", "png"])
         .arg(&source)
@@ -1633,6 +1735,51 @@ fn run_stdout(command: &str, args: &[&str]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_paste_saves_original_image_without_resizing_or_encoding() {
+        let dir = std::env::temp_dir().join(format!("oxide-paste-raw-{}", std::process::id()));
+        let mut bytes = ONE_PX_PNG.to_vec();
+        bytes[16..20].copy_from_slice(&5000u32.to_be_bytes());
+        bytes.resize(IMAGE_OPTIMIZE_MIN_BYTES + 1, 0);
+        let path = save_pasted_image(&dir, &bytes).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(save_pasted_image(&dir, &bytes).unwrap(), path);
+        assert!(save_pasted_image(&dir, &[]).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn appkit_paste_snapshot_preserves_text_paths_and_original_png_bytes() {
+        let dir = std::env::temp_dir().join(format!("oxide-paste-snapshot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("clipboard.png"), ONE_PX_PNG).unwrap();
+        let save = |bytes: &[u8]| {
+            assert_eq!(bytes, ONE_PX_PNG);
+            Some(dir.join("saved.png"))
+        };
+        assert!(
+            matches!(clipboard_paste_output("image\npublic.png\n", &dir, save), Some(Paste::Paths(paths)) if paths == vec![dir.join("saved.png")])
+        );
+        assert!(
+            matches!(clipboard_paste_output("text\nfirst\nsecond\n\n", &dir, save), Some(Paste::Text(text)) if text == "first\nsecond\n")
+        );
+        let paths = format!(
+            "paths\n{}\n{}\n",
+            dir.join("one.txt").display(),
+            dir.join("two.txt").display()
+        );
+        assert!(
+            matches!(clipboard_paste_output(&paths, &dir, save), Some(Paste::Paths(paths)) if paths.len() == 2)
+        );
+        assert!(matches!(
+            clipboard_paste_output("types\n\n", &dir, save),
+            Some(Paste::Empty { .. })
+        ));
+        assert!(clipboard_paste_output("types\nlegacy-alias\n", &dir, save).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn base64_matches_rfc4648_vectors() {

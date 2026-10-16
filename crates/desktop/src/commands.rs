@@ -446,14 +446,14 @@ fn project_dir(project: &str) -> Result<PathBuf, String> {
 pub async fn list_sessions(project: String, state: &DesktopState) -> CmdResult<Vec<SessionView>> {
     let manager = state.manager.lock().await;
     let sessions = manager.sessions_for(&PathBuf::from(project)).map_err(err)?;
-    Ok(manager.session_views(sessions))
+    manager.session_views(sessions).map_err(err)
 }
 
 /// Sessions across every project, newest first (the cross-repo view).
 pub async fn all_sessions(state: &DesktopState) -> CmdResult<Vec<SessionView>> {
     let manager = state.manager.lock().await;
     let sessions = manager.all_sessions().map_err(err)?;
-    Ok(manager.session_views(sessions))
+    manager.session_views(sessions).map_err(err)
 }
 
 pub async fn set_session_pinned(
@@ -464,14 +464,14 @@ pub async fn set_session_pinned(
     let mut manager = state.manager.lock().await;
     manager.set_session_pinned(&id, pinned).map_err(err)?;
     let sessions = manager.all_sessions().map_err(err)?;
-    Ok(manager.session_views(sessions))
+    manager.session_views(sessions).map_err(err)
 }
 
 pub async fn archive_session(id: String, state: &DesktopState) -> CmdResult<Vec<SessionView>> {
     let mut manager = state.manager.lock().await;
     manager.archive_session(&id).map_err(err)?;
     let sessions = manager.all_sessions().map_err(err)?;
-    Ok(manager.session_views(sessions))
+    manager.session_views(sessions).map_err(err)
 }
 
 /// The stored transcript for one session.
@@ -503,10 +503,6 @@ pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
 
 pub async fn rename_session(project: String, id: String, name: String) -> CmdResult<()> {
     SessionLog::rename(&PathBuf::from(project), &id, &name).map_err(err)
-}
-
-pub async fn delete_session(project: String, id: String) -> CmdResult<()> {
-    SessionLog::delete(&PathBuf::from(project), &id).map_err(err)
 }
 
 // ---------- providers ----------
@@ -1349,9 +1345,6 @@ pub async fn dispatch(
             )
             .await,
         ),
-        "delete_session" => {
-            command_value(delete_session(arg(&args, "project")?, arg(&args, "id")?).await)
-        }
         "list_providers" => command_value(list_providers().await),
         "login" => command_value(
             login(

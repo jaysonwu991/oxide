@@ -45,6 +45,8 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 const MAX_TOOL_PROGRESS_BYTES: usize = 6_000;
 
+type ClipboardResult = (u64, Result<media::Paste, String>);
+
 /// The result of an async marketplace action (add or install), delivered back
 /// to the event loop so the overlay can refresh and show the outcome.
 enum MarketplaceOutcome {
@@ -252,6 +254,7 @@ async fn event_loop(
 
     let mut reader = EventStream::new();
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
+    let (paste_tx, mut paste_rx) = unbounded_channel::<ClipboardResult>();
     let (models_tx, mut models_rx) = unbounded_channel::<ModelCatalogs>();
     let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<(String, String, McpStatus)>>();
     let (plugins_tx, mut plugins_rx) = unbounded_channel::<String>();
@@ -301,7 +304,7 @@ async fn event_loop(
                         handle_key(
                             key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
                             snapshots.as_ref(), &lsp, &mut session, &approvals, &models_tx, &mcps_tx,
-                            &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx, &update_tx,
+                            &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx, &update_tx, &paste_tx,
                         );
                         if let Some(provider) = app.pending_login.take() {
                             app.login_attempt += 1;
@@ -331,6 +334,12 @@ async fn event_loop(
                         usage_inflight = spawn_usage_refresh(&config, &app.usage_settings, &usage_tx);
                     }
                     got_agent_event = true;
+                }
+            }
+            pasted = paste_rx.recv() => {
+                if let Some((generation, result)) = pasted {
+                    apply_clipboard_paste(&mut app, generation, result);
+                    refresh_suggestions(&mut app, &config);
                 }
             }
             result = models_rx.recv() => {
@@ -597,6 +606,7 @@ fn handle_key(
     marketplaces_tx: &UnboundedSender<MarketplaceOutcome>,
     usage_tx: &UnboundedSender<Result<crate::portkey_usage::Snapshot, String>>,
     update_tx: &UnboundedSender<update_notice::Notice>,
+    paste_tx: &UnboundedSender<ClipboardResult>,
 ) {
     // Ctrl+C copies an active mouse selection, otherwise quits. It still quits
     // while a dialog or the trust prompt is open (those never hold a selection).
@@ -1674,17 +1684,7 @@ fn handle_key(
             });
         }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Pi's own paste reads the clipboard as text to insert, not as an
-            // attachment: a copied file's path (or an image written to the
-            // scratch dir), else the clipboard text. The model reads the path.
-            match media::clipboard_paste() {
-                media::Paste::Paths(paths) => insert_pasted_paths(app, &paths),
-                media::Paste::Text(text) => {
-                    app.insert_input(&text);
-                    app.auto_scroll = true;
-                }
-                media::Paste::Empty { types } => app.show_status(nothing_to_attach(&types)),
-            }
+            start_clipboard_paste(app, paste_tx, media::clipboard_paste);
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             let half = (app.view_height / 2).max(1);
@@ -4410,6 +4410,38 @@ fn handle_model_result(catalogs: ModelCatalogs, app: &mut App) {
     ));
 }
 
+fn start_clipboard_paste(
+    app: &App,
+    sender: &UnboundedSender<ClipboardResult>,
+    read: impl FnOnce() -> media::Paste + Send + 'static,
+) {
+    let generation = app.input_generation;
+    let sender = sender.clone();
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(read)
+            .await
+            .map_err(|error| format!("clipboard: {error}"));
+        let _ = sender.send((generation, result));
+    });
+}
+
+fn apply_clipboard_paste(app: &mut App, generation: u64, result: Result<media::Paste, String>) {
+    // A slow clipboard (including Universal Clipboard) belongs to the draft
+    // that requested it, not a message composed after sending or clearing it.
+    if generation != app.input_generation {
+        return;
+    }
+    match result {
+        Ok(media::Paste::Paths(paths)) => insert_pasted_paths(app, &paths),
+        Ok(media::Paste::Text(text)) => {
+            app.insert_input(&text);
+            app.auto_scroll = true;
+        }
+        Ok(media::Paste::Empty { types }) => app.show_status(nothing_to_attach(&types)),
+        Err(error) => app.show_status(format!("Failed to paste from clipboard: {error}")),
+    }
+}
+
 fn handle_paste(text: String, app: &mut App) {
     let mut text = text;
     text.retain(|ch| ch != '\r' && ch != '\n');
@@ -5504,6 +5536,51 @@ mod tests {
             "/tmp".to_string(),
             Reasoning::Auto,
         )
+    }
+
+    #[tokio::test]
+    async fn slow_clipboard_does_not_block_typing_and_inserts_paths_at_the_caret() {
+        let mut app = test_app();
+        let (sender, mut receiver) = unbounded_channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        start_clipboard_paste(&app, &sender, move || {
+            gate.recv().unwrap();
+            media::Paste::Paths(vec![PathBuf::from("/tmp/screenshot.png")])
+        });
+        app.insert_input("explain this");
+        app.input_cursor = "explain".len();
+        assert!(receiver.try_recv().is_err());
+        release.send(()).unwrap();
+        let (generation, paste) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        apply_clipboard_paste(&mut app, generation, paste);
+        assert_eq!(app.input, "explain /tmp/screenshot.png this");
+        assert!(app.attachments.is_empty());
+    }
+
+    #[test]
+    fn late_clipboard_results_never_enter_a_cleared_or_replaced_draft() {
+        let mut app = test_app();
+        let original = app.input_generation;
+        app.clear_input();
+        app.insert_input("a new message");
+        apply_clipboard_paste(
+            &mut app,
+            original,
+            Ok(media::Paste::Text("old clipboard".into())),
+        );
+        assert_eq!(app.input, "a new message");
+        let original = app.input_generation;
+        app.set_input("recalled message".into());
+        apply_clipboard_paste(
+            &mut app,
+            original,
+            Ok(media::Paste::Paths(vec!["/tmp/old.png".into()])),
+        );
+        assert_eq!(app.input, "recalled message");
     }
 
     /// The tests that redirect `settings.json` through `OXIDE_SETTINGS_FILE`

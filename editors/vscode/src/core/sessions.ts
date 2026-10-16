@@ -9,6 +9,7 @@ export interface SessionEntry {
   age: string;
   messages: number;
   label: string;
+  pinned?: boolean;
 }
 
 /// One line of `oxide sessions list`:
@@ -23,6 +24,16 @@ export interface SessionEntry {
 const SESSION_LINE = /^([0-9a-fA-F-]+)\s+(just now|\d+(?:m|h|d) ago)\s+(\d+) msg\s*(.*)$/;
 
 export function parseSessionList(output: string): SessionEntry[] {
+  if (output.trimStart().startsWith("[")) {
+    const rows: unknown = JSON.parse(output);
+    if (!Array.isArray(rows)) throw new Error("Invalid session listing");
+    return rows.map((row) => {
+      if (!row || typeof row.id !== "string" || typeof row.message_count !== "number" ||
+          typeof row.age !== "string") throw new Error("Invalid session entry");
+      return { id: row.id, label: row.name || row.preview || "", age: row.age,
+        messages: row.message_count, pinned: row.pinned === true };
+    });
+  }
   const entries: SessionEntry[] = [];
   for (const line of output.split("\n")) {
     const match = SESSION_LINE.exec(line.trimEnd());

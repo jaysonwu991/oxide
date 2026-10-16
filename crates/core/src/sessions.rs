@@ -10,7 +10,13 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn list(cwd: &Path, all: bool, older_than_days: Option<u64>) -> Result<()> {
+pub fn list(
+    cwd: &Path,
+    all: bool,
+    older_than_days: Option<u64>,
+    archived: bool,
+    json: bool,
+) -> Result<()> {
     let mut sessions = if all {
         SessionLog::list_all()?
     } else {
@@ -19,6 +25,28 @@ pub fn list(cwd: &Path, all: bool, older_than_days: Option<u64>) -> Result<()> {
     if let Some(days) = older_than_days {
         let cutoff = now_secs().saturating_sub(days.saturating_mul(86_400));
         sessions.retain(|summary| summary.modified_at < cutoff);
+    }
+    let state = crate::session_state::SessionState::load_from(&crate::session_state::path())?;
+    sessions.retain(|session| state.archived(&session.id) == archived);
+    sessions.sort_by_key(|session| {
+        (
+            std::cmp::Reverse(state.pinned(&session.id)),
+            std::cmp::Reverse(session.modified_at),
+        )
+    });
+    if json {
+        let views: Vec<_> = sessions
+            .iter()
+            .map(|summary| {
+                let mut view = serde_json::to_value(summary)?;
+                view["pinned"] = json!(state.pinned(&summary.id));
+                view["archived"] = json!(archived);
+                view["age"] = json!(relative_age(now_secs(), summary.modified_at));
+                Ok(view)
+            })
+            .collect::<Result<_>>()?;
+        println!("{}", serde_json::to_string(&views)?);
+        return Ok(());
     }
     if sessions.is_empty() {
         println!("no sessions{}", if all { "" } else { " for this project" });
@@ -49,6 +77,24 @@ pub fn list(cwd: &Path, all: bool, older_than_days: Option<u64>) -> Result<()> {
                 label
             );
         }
+    }
+    Ok(())
+}
+
+pub fn set_state(cwd: &Path, id: &str, action: &str) -> Result<()> {
+    let session = SessionLog::open_ref(cwd, id)?.summary()?;
+    crate::session_state::SessionState::update_at(&crate::session_state::path(), |state| {
+        match action {
+            "pin" => state.set_pinned(&session.id, true)?,
+            "unpin" => state.set_pinned(&session.id, false)?,
+            "archive" => state.set_archived(&session.id, true),
+            "unarchive" => state.set_archived(&session.id, false),
+            _ => anyhow::bail!("unknown session action: {action}"),
+        }
+        Ok(())
+    })?;
+    if action == "archive" {
+        println!("Session archived. Its log is kept. To delete it permanently, run `oxide sessions delete {}` from this project. To restore it, run `oxide sessions unarchive {}`.", session.id, session.id);
     }
     Ok(())
 }
