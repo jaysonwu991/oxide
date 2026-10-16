@@ -874,7 +874,13 @@ per line when a multi-select copy names several, or the Finder's own alias
 record), the scratch path a clipboard image is written to under the config dir
 (`clipboard/<id>.png`) when the copy named no file, or plain clipboard text. The
 model reads the path, so a pasted image arrives through its file rather than as a
-pending attachment. A file this app may not read is not inserted as a path the
+pending attachment. Clipboard reads run in the background, so the editor stays
+responsive while macOS retrieves an image (including Universal Clipboard).
+Ordinary file/image/text pastes share one AppKit query. Image bytes are saved
+without resizing or base64 encoding during paste; the attachment loader handles
+that when the path is sent. Like Pi, pasting inserts paths rather than opening
+a progress dialog. A result arriving after the draft was cleared, sent or
+replaced is discarded. A file this app may not read is not inserted as a path the
 model would then fail on: the pasteboard's own picture is written out in its
 place, so the inserted path still points at something the run can read. macOS
 keeps the Desktop, Documents and Downloads folders behind a per-app grant, so a
