@@ -1,4 +1,4 @@
-name: vscode
+name: VS Code
 
 # Builds and publishes the VS Code extension. It releases independently of the
 # CLI and the desktop app: only an `extension-v*` tag builds the VSIX and

@@ -127,8 +127,7 @@ impl Component {
     /// x64 as `x86_64` for an AppImage, so that name carries the spelling the
     /// build really writes rather than the one this code would prefer. On Linux
     /// the AppImage the app replaces itself with comes before the archive a user
-    /// unpacks by hand. macOS x64 is absent because its build was never
-    /// published.
+    /// unpacks by hand. Both macOS architectures use a disk image.
     pub fn assets(self, tag: &str, platform: &str) -> Vec<String> {
         let version = release_version(tag);
         match self {
@@ -142,6 +141,7 @@ impl Component {
             }
             Self::Desktop => match platform {
                 "macos-arm64" => vec![format!("Oxide-{version}-macos-arm64.dmg")],
+                "macos-x64" => vec![format!("Oxide-{version}-macos-x64.dmg")],
                 "linux-x64" => vec![
                     format!("Oxide-{version}-linux-x86_64-Setup.AppImage"),
                     format!("Oxide-{version}-linux-x64-Setup.tar.gz"),
@@ -1020,6 +1020,7 @@ mod tests {
             "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0"
         );
         for (platform, asset) in [
+            ("macos-x64", "Oxide-0.34.0-macos-x64.dmg"),
             ("linux-x64", "Oxide-0.34.0-linux-x86_64-Setup.AppImage"),
             ("linux-arm64", "Oxide-0.34.0-linux-arm64-Setup.AppImage"),
             ("win-x64", "Oxide-0.34.0-win-x64-Setup.exe"),
@@ -1029,11 +1030,6 @@ mod tests {
                 asset
             );
         }
-        // There is no Intel Mac build to offer, so a check on one names no
-        // artifact at all rather than one that is not on the release.
-        assert!(Component::Desktop
-            .assets("desktop-v0.34.0", "macos-x64")
-            .is_empty());
         // The downloads a user would pick by hand are named too, so a front-end
         // can offer one when it cannot install in place: the AppImage this
         // platform installs from, then the archive to unpack.

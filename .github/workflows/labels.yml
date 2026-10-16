@@ -1,4 +1,4 @@
-name: labels
+name: Labels
 
 # Creates and updates the type labels the release-drafter autolabeler applies
 # (see .github/labels.yml). `skip-delete` keeps the repository's other labels,

@@ -1,8 +1,8 @@
-name: desktop
+name: Desktop
 
-# Builds the desktop app for macOS (Apple Silicon), Linux x64 and arm64, and
+# Builds the desktop app for macOS x64 and arm64, Linux x64 and arm64, and
 # Windows, and hands the installers it produced to the release job. It releases
-# independently of the CLI: only a `desktop-v*` tag drafts a desktop release, so
+# independently of the CLI: only a `desktop-v*` tag publishes a desktop release, so
 # a CLI `v*` tag
 # never forces a desktop rebuild. Only the release job — the one that writes a
 # release — is granted `contents: write`; a build, including a
@@ -20,8 +20,8 @@ name: desktop
 # reads — and a build with no secrets configured still produces an installable
 # bundle.
 #
-# Every platform builds on its own host, and there is no macOS x64 core, so the
-# app ships for Apple Silicon alone and Intel Macs are not a target.
+# Every architecture builds on its own host, so the harness and Electron
+# installer carry the same architecture, including on Intel Macs.
 
 on:
   workflow_dispatch:
@@ -41,20 +41,29 @@ jobs:
           - platform: macos-latest
             name: macOS arm64
             artifact: macos-arm64
+            arch: arm64
+
+          - platform: macos-15-intel
+            name: macOS x64
+            artifact: macos-x64
+            arch: x64
 
           - platform: ubuntu-24.04
             name: Linux x64
             artifact: linux-x64
+            arch: x64
 
           # The arm64 Linux artifact is built on an arm64 runner rather than
           # cross-compiled, so the harness and the AppImage are both native.
           - platform: ubuntu-24.04-arm
             name: Linux arm64
             artifact: linux-arm64
+            arch: arm64
 
           - platform: windows-latest
             name: Windows x64
             artifact: windows-x64
+            arch: x64
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
     steps:
@@ -197,7 +206,7 @@ jobs:
       - name: Build
         working-directory: crates/desktop
         shell: bash
-        run: pnpm run dist
+        run: pnpm run dist --${{ matrix.arch }}
 
       # The installers `docs/desktop.md` lists under **Release assets**, named
       # the way `oxide_core::updates::Component::Desktop::assets()` resolves
@@ -217,7 +226,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: draft the release
+    name: publish release
     needs: build
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     runs-on: ubuntu-latest
@@ -227,10 +236,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
+          pattern: oxide-desktop-*
           merge-multiple: true
       # Keep the notes release-drafter already drafted for this tag; only create
       # a release when none exists yet (for example a tag pushed by hand).
-      - name: Create draft release and upload installers
+      # Upload everything before publishing, including when reusing a draft.
+      - name: Upload installers and publish release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -242,3 +253,4 @@ jobs:
           fi
           find release-assets -type f -print0 \
             | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
+          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false

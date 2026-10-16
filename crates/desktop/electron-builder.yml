@@ -34,8 +34,7 @@ mac:
   category: public.app-category.developer-tools
   target:
     - target: dmg
-      arch:
-        - arm64
+      # Default to the host architecture locally; CI selects its matrix arch.
   artifactName: Oxide-${version}-macos-${arch}.${ext}
   icon: icons/icon.icns
   # A hardened runtime is what notarization requires; these are the two

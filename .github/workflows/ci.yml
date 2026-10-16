@@ -1,4 +1,4 @@
-name: ci
+name: CI
 
 # Pull-request and `main` checks for the whole repository: the Rust workspace
 # (formatting, clippy, tests), the desktop app with its

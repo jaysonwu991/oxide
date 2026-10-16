@@ -659,6 +659,7 @@ console.log("the release");
 const versioned = (name) => `Oxide-${packaged.version}-${name}`;
 const artifacts = [
   { platform: "mac", arch: "arm64", ext: "dmg", asset: versioned("macos-arm64.dmg") },
+  { platform: "mac", arch: "x64", ext: "dmg", asset: versioned("macos-x64.dmg") },
   {
     platform: "linux",
     arch: "x86_64",
@@ -734,13 +735,13 @@ check(
     .map((platform) => targetsOf(platform).map(({ target }) => target).join("+"))
     .join(" / "),
 );
-// macOS is arm64 only — the x64 build was never published — which is what the
-// core's own platform list says too.
+// macOS defaults to the native harness's architecture locally. CI selects one
+// architecture per runner rather than bundling the native harness for both.
 const archesOf = (platform, expected) =>
   targetsOf(platform).every(({ arch }) => arch.slice().sort().join(",") === expected);
 check(
   "built the architectures the core offers a release for",
-  archesOf("mac", "arm64") &&
+  archesOf("mac", "") &&
     archesOf("win", "x64") &&
     archesOf("linux", "arm64,x64") &&
     /const SUPPORTED_PLATFORMS: &str = "macos-arm64, macos-x64, linux-x64, linux-arm64, win-x64"/.test(
@@ -753,6 +754,34 @@ check(
         .join(" "),
     )
     .join(" / "),
+);
+const builds = [...workflowJobs[1].matchAll(
+  /- platform: (\S+)\s+name: ([^\n]+)\s+artifact: (\S+)\s+arch: (\S+)/g,
+)];
+const nativeBuilds = [
+  ["macos-latest", "macos-arm64", "arm64"],
+  ["macos-15-intel", "macos-x64", "x64"],
+  ["ubuntu-24.04", "linux-x64", "x64"],
+  ["ubuntu-24.04-arm", "linux-arm64", "arm64"],
+  ["windows-latest", "windows-x64", "x64"],
+];
+check(
+  "packaged Electron and the harness for the same native architecture",
+  builds.length === nativeBuilds.length &&
+    nativeBuilds.every(([host, artifact, arch]) =>
+      builds.some((row) => row[1] === host && row[3] === artifact && row[4] === arch),
+    ) && workflowJobs[1].includes("pnpm run dist --${{ matrix.arch }}"),
+);
+const releaseJob = desktopWorkflow.slice(desktopWorkflow.indexOf("\n  release:"));
+check(
+  "published tagged desktop releases after uploading their installers",
+  /name: publish release/.test(releaseJob) &&
+    /needs: build/.test(releaseJob) &&
+    /if: startsWith\(github.ref, 'refs\/tags\/desktop-v'\)/.test(releaseJob) &&
+    releaseJob.includes('--title "Oxide Desktop ${GITHUB_REF_NAME#desktop-}" --generate-notes') &&
+    releaseJob.includes('gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false') &&
+    releaseJob.indexOf("gh release upload") < releaseJob.indexOf("gh release edit") &&
+    releaseJob.includes("set -euo pipefail"),
 );
 // The engine is a child process the app starts itself, so it has to be inside
 // the app: carried as a resource on each platform, and named as a binary so the

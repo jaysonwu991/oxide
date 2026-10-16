@@ -1232,7 +1232,7 @@ through GitHub itself, so metadata describing a feed it does not read is
 deliberately not published.
 
 Builds are per-platform: a macOS build produces only the macOS artifact, so a
-release is four builds (macOS arm64, Linux x64, Linux arm64, Windows x64), each
+release is five builds (macOS arm64, macOS x64, Linux x64, Linux arm64, Windows x64), each
 on a runner of its own platform — the Linux arm64 artifact on an arm64 runner
 rather than cross-compiled, so the engine and the AppImage are both native.
 macOS is the only platform that is signed and notarized; the hardened runtime it
@@ -1240,15 +1240,16 @@ runs under needs the entitlements in `build/entitlements.mac.plist` (the JIT and
 unsigned-executable-memory Electron's own JavaScript engine needs, and the third
 that lets the app run the engine it ships, which is signed as part of the
 bundle), which `electron-builder.yml` points both `entitlements` and
-`entitlementsInherit` at. macOS Intel is not built at all: the app ships for
-Apple Silicon alone. The Windows installer is a one-click, per-user install
+`entitlementsInherit` at. The macOS x64 build runs on an Intel runner, and each
+job selects its own architecture with `pnpm run dist --<arch>` so Electron and
+the native harness match. The Windows installer is a one-click, per-user install
 (`oneClick: true`, `perMachine: false`), which is what lets the app offer it as
 an install rather than as a file to unpack.
 
 A build with no signing credentials in the environment is unsigned, which is what
-a local build is. `.github/workflows/desktop.yml` — which builds macOS arm64,
+a local build is. `.github/workflows/desktop.yml` — which builds macOS x64 and arm64,
 Linux x64 and arm64, and Windows x64 on a `desktop-v*` tag push — sets those
-variables, and only on the macOS job:
+variables, and only on the macOS jobs:
 
 | Variable | Secret | Value |
 | --- | --- | --- |
@@ -1348,7 +1349,7 @@ shell history.
 
 ## Release assets
 
-Each `desktop-v*` release carries installers for the four platforms the app is
+Each `desktop-v*` release carries installers for the five platforms the app is
 built for. Pick the asset whose platform matches the machine; each name carries
 the version and the platform, read off the release it belongs to, and each is
 published under that one name:
@@ -1356,15 +1357,15 @@ published under that one name:
 | Asset | Platform |
 | --- | --- |
 | `Oxide-<v>-macos-arm64.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
+| `Oxide-<v>-macos-x64.dmg` | macOS, Intel (`uname -m` → `x86_64`) |
 | `Oxide-<v>-linux-x86_64-Setup.AppImage` | Linux x64 (the file the app replaces itself with) |
 | `Oxide-<v>-linux-x64-Setup.tar.gz` | Linux x64, an archive to unpack by hand |
 | `Oxide-<v>-linux-arm64-Setup.AppImage` | Linux arm64 |
 | `Oxide-<v>-linux-arm64-Setup.tar.gz` | Linux arm64, an archive to unpack by hand |
 | `Oxide-<v>-win-x64-Setup.exe` | Windows x64 (a one-click, per-user install) |
 
-There is no **macOS Intel** asset: the app is built for Apple Silicon alone, and
-`Component::Desktop` resolves no asset for `macos-x64`, so a check on an Intel
-Mac is offered no desktop release. electron-builder's own update metadata
+Both Apple Silicon and Intel Macs resolve their own disk image through
+`Component::Desktop`. electron-builder's own update metadata
 (`latest*.yml` and the blockmap naming an archive) is not uploaded: this app
 resolves its release through GitHub itself and installs the artifact
 `Component::Desktop::assets()` names for this platform — macOS the disk image,
@@ -1379,6 +1380,8 @@ The workflow builds every platform in its own job and hands the installers to
 the release job: each build job uploads what it produced — `*.dmg`, `*.AppImage`,
 `*-Setup.tar.gz` and `*-Setup.exe` — as a workflow artifact, and the release job —
 the only job granted `contents: write`, and the one that
-runs for a `desktop-v*` tag alone — drafts the release and uploads them, so a
+runs for a `desktop-v*` tag alone — preserves the existing draft's notes, uploads
+all installers and publishes the release. If no draft exists, it creates one
+with generated notes before uploading and publishing. A
 `workflow_dispatch` build publishes nothing and needs no more than a read-only
 token.
