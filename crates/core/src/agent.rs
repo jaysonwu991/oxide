@@ -1586,7 +1586,7 @@ fn build_tool_specs(
     depth: usize,
     offer_session_title: bool,
 ) -> Vec<ToolSpec> {
-    let mut specs = tools::specs_for_scope(&runtime.mcp, path_scope(config));
+    let mut specs = tools::specs(&runtime.mcp);
     if depth < MAX_TASK_DEPTH
         && config
             .ecosystem
@@ -2485,10 +2485,8 @@ async fn dispatch(
             .await,
         ),
         "memory" => legacy_tool_output(memory(config, &call.function.arguments)),
-        "diagnostics" => {
-            lsp_diagnostics(runtime, cwd, &call.function.arguments, path_scope(config)).await
-        }
-        _ => tools::execute_with_scope(call, cwd, &runtime.mcp, progress, path_scope(config)).await,
+        "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
+        _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
     }
 }
 
@@ -2553,37 +2551,19 @@ async fn ask(runtime: &Runtime, arguments: &str) -> tools::ToolOutput {
     tools::ToolOutput::text(ask::format_reply(&questions, reply))
 }
 
-async fn lsp_diagnostics(
-    runtime: &Runtime,
-    cwd: &Path,
-    arguments: &str,
-    scope: tools::PathScope<'_>,
-) -> tools::ToolOutput {
+async fn lsp_diagnostics(runtime: &Runtime, cwd: &Path, arguments: &str) -> tools::ToolOutput {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
     let Some(path) = args.get("path").and_then(Value::as_str) else {
         return tools::ToolOutput::error(
             "diagnostics requires a `path` string, for example {\"path\":\"src/main.rs\"}",
         );
     };
-    if let Err(error) = tools::ensure_scoped_path(cwd, path, scope) {
-        return tools::ToolOutput::error(format!("{error:#}"));
-    }
     match runtime.lsp.diagnostics(cwd, Path::new(path)).await {
         Some(diagnostics) => tools::ToolOutput::text(diagnostics),
         None => tools::ToolOutput::error(format!(
             "no language server is available for `{path}`; check that the file type is supported \
              and its language server is installed"
         )),
-    }
-}
-
-fn path_scope(config: &Config) -> tools::PathScope<'_> {
-    if config.project_only {
-        tools::PathScope::CurrentProject
-    } else if config.workspaces.roots().is_empty() {
-        tools::PathScope::Unrestricted
-    } else {
-        tools::PathScope::RegisteredProjects(config.workspaces.roots())
     }
 }
 
@@ -3397,6 +3377,59 @@ mod tests {
             follow_up_mode: QueueMode::OneAtATime,
             cancel: Cancel::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn tool_access_is_independent_of_project_trust() {
+        let base = std::env::temp_dir().join(format!(
+            "oxide_filesystem_access_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project = base.join("project");
+        let outside = base.join("scratch.txt");
+        std::fs::create_dir_all(&project).unwrap();
+        let runtime = test_runtime().await;
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        for trusted in [true, false] {
+            let config = Config {
+                trusted,
+                ..Config::default()
+            };
+            for (name, arguments) in [
+                (
+                    "write",
+                    json!({"path": outside, "content": "scratch content"}),
+                ),
+                ("read", json!({"path": outside})),
+                ("bash", json!({"command": "echo /"})),
+            ] {
+                let mut call = tool_call(name);
+                call.function.arguments = arguments.to_string();
+                let output = dispatch(
+                    &config,
+                    &project,
+                    &runtime,
+                    &events,
+                    &call,
+                    0,
+                    &tools::Progress::default(),
+                )
+                .await;
+                assert!(
+                    !output.is_error,
+                    "{name} (trusted={trusted}): {}",
+                    output.text
+                );
+                if name == "read" {
+                    assert!(output.text.contains("scratch content"));
+                }
+            }
+        }
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[tokio::test]

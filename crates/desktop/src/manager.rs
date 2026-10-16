@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use oxide_core::config::Config;
 use oxide_core::session::{SessionLog, SessionSummary};
-use oxide_core::trust::{DefaultTrust, TrustStore};
+use oxide_core::trust::TrustStore;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
@@ -487,9 +487,7 @@ pub(crate) fn project_trust_with(
     project: &Path,
 ) -> ProjectTrust {
     let required = oxide_core::trust::requires_trust(project);
-    let awaiting = required
-        && store.decision(project).is_none()
-        && config.default_project_trust == DefaultTrust::Ask;
+    let awaiting = oxide_core::trust::needs_prompt(store, project, config.default_project_trust);
     ProjectTrust {
         required,
         trusted: config.trusted,
@@ -963,12 +961,12 @@ mod tests {
     }
 
     #[test]
-    fn trust_is_not_required_without_project_resources() {
+    fn plain_projects_also_await_a_trust_decision() {
         let dir = std::env::temp_dir().join(format!("oxide_proj_plain_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let trust = project_trust_with(&TrustStore::default(), &Config::default(), &dir);
         assert!(!trust.required);
-        assert!(!trust.awaiting);
+        assert!(trust.awaiting);
         assert!(trust.resources.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -977,7 +975,7 @@ mod tests {
     fn trust_follows_a_non_ask_default() {
         let dir = project_with_agents("always");
         let config = Config {
-            default_project_trust: DefaultTrust::Always,
+            default_project_trust: oxide_core::trust::DefaultTrust::Always,
             ..Config::default()
         };
         let trust = project_trust_with(&TrustStore::default(), &config, &dir);

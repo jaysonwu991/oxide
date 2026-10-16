@@ -32,8 +32,7 @@ pub struct Workspaces {
     current: PathBuf,
     others: Vec<Project>,
     /// Every live registered project root, including entries omitted from the
-    /// prompt's bounded display list. Desktop tool access uses this complete
-    /// set, so tightening the filesystem boundary does not hide older projects.
+    /// prompt's bounded display list.
     roots: Vec<PathBuf>,
     /// How many known projects the list left out.
     omitted: usize,
@@ -142,7 +141,7 @@ impl Workspaces {
             " The other folders added to Oxide on this machine are listed below. Each is an \
              allowed project root: `read`, `grep`, `find`, `ls`, `write` and `edit` take its \
              absolute path, so a file in another registered project can be read, searched and \
-             edited directly from this run. Unregistered paths remain outside the run. A `bash` \
+             edited directly from this run. Other filesystem paths are also accessible. A `bash` \
              command starts in this project's root, so name a registered path when work spans \
              projects. Resolve a repository the user \
              names here, or by listing the folder beside this one, before searching: do not scan \
@@ -315,7 +314,7 @@ mod tests {
         assert!(section.contains(&canonical(&here)));
         assert!(section.contains("registered project"), "{section}");
         assert!(
-            section.contains("Unregistered paths remain outside"),
+            section.contains("Other filesystem paths are also accessible"),
             "{section}"
         );
         assert!(section.contains("find ~"), "{section}");

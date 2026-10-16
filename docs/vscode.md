@@ -176,7 +176,12 @@ only the CLI should write that store — and leaves the `oxide.projectTrust`
 setting unset, so the panel follows the saved decision rather than holding a
 second answer. A folder trusted in one front-end is trusted in all of them; the
 setting remains as a manual default for a user who wants one, and `resolveAccess`
-still reads it first when it is set.
+still reads it first when it is set. With the default `ask` policy, the panel
+automatically opens the trust dialog for an undecided folder, including one
+without project-local resources. Its shield is accented when trusted. Trust
+controls loading project-local resources. File and shell tools use the
+operating-system user's filesystem permissions regardless of project trust,
+matching Pi; temporary files and other projects remain accessible.
 
 A login is the exception, and it is not written here either: **Oxide: Connect
 Provider**, `/connect` in the composer, or a row of the panel's provider table

@@ -1052,8 +1052,10 @@ in a sibling project can be read, searched, and edited from the run, while
 
 Project-local resources that can change behavior or execute code (agents,
 commands, prompts, skills, plugins, `SYSTEM.md`) load only after the project is
-trusted. On interactive startup Oxide asks when a project requires trust and no
-decision is saved; non-interactive runs use `defaultProjectTrust` (in
+trusted. On interactive startup Oxide asks when no decision is saved, even if
+the project has no local resources. File and shell tools use the operating-system
+user's filesystem permissions independently of project trust, as in Pi.
+Non-interactive runs use `defaultProjectTrust` (in
 `settings.json`) without prompting.
 
 - `defaultProjectTrust`: `ask` (default), `always`, or `never`.

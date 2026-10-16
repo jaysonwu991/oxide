@@ -33,7 +33,7 @@ import {
 import { AttachmentStore, previewForDataUrl, previewForFile } from "./attachments";
 import { atSuggestions, atToken } from "./core/at";
 import { isApprovalDecision, type ApprovalDecision } from "./core/approvals";
-import { trustSetArgs } from "./core/trust";
+import { needsTrustPrompt, trustSetArgs } from "./core/trust";
 import { modelsForProvider } from "./core/config";
 import type { QuestionAnswer } from "./core/questions";
 import {
@@ -117,7 +117,6 @@ import {
   buildPrompt,
   contextLabel,
   expandAtReferences,
-  pathInside,
   relativePath,
   selectionLines,
   sliceLines,
@@ -142,7 +141,6 @@ import {
   isFile,
   readFileHead,
   readTextFile,
-  realPath,
   resolveBinary,
   runCapture,
   startTurn,
@@ -357,6 +355,8 @@ export class ChatController {
   /// than in a view: both panes show the same dialog, and a re-listing repaints
   /// whichever ones are attached.
   private dialog: DialogState | null = null;
+  private trustPrompted = new Set<string>();
+  private trustDialogFolder: string | null = null;
   private servers: McpServerView[] = [];
   /// The newest `/mcp` probe. A listing opened while an earlier probe is still
   /// running supersedes it, so an answer that arrives afterwards is dropped
@@ -602,6 +602,7 @@ export class ChatController {
 
   stateMessage(): ViewMessage {
     this.refreshProject();
+    this.promptProjectTrust();
     return {
       k: "state",
       ...this.transcript.state({
@@ -941,13 +942,11 @@ export class ChatController {
     return folder ? relativePath(folder.uri.fsPath, file) : file;
   }
 
-  /// The path shown to the model when `file` is inside the active project, or
-  /// null when attaching it would let this chat read another workspace. Real
-  /// paths close the same symlink escape as the CLI's core boundary.
+  /// The model sees project-relative paths inside the folder and absolute
+  /// paths elsewhere, matching the CLI tools.
   projectRelative(file: string): string | null {
     const folder = this.folder();
     if (!folder) return null;
-    if (!pathInside(realPath(folder.uri.fsPath), realPath(file))) return null;
     return relativePath(folder.uri.fsPath, file);
   }
 
@@ -3169,10 +3168,25 @@ export class ChatController {
     );
   }
 
+  private promptProjectTrust(): void {
+    const folder = this.folder()?.uri.fsPath;
+    if (this.dialog?.kind === "trust" && folder !== this.trustDialogFolder) this.closeDialog();
+    if (!folder || !this.project || this.dialog || this.trustPrompted.has(folder)) return;
+    if (!needsTrustPrompt({
+      setting: this.trust(),
+      saved: this.project.savedTrust,
+      defaultTrust: this.project.defaultTrust,
+    })) return;
+    this.trustPrompted.add(folder);
+    this.trustDialogFolder = folder;
+    this.showDialog(trustDialog({ setting: this.trust(), saved: this.project.savedTrust }));
+  }
+
   /// The folder's own access as the panel last read it, for the trust dialog's
   /// marker and the footer's chip.
   async setProjectTrust(): Promise<void> {
     this.refreshProject();
+    this.trustDialogFolder = this.folder()?.uri.fsPath ?? null;
     this.showDialog(
       trustDialog({ setting: this.trust(), saved: this.project?.savedTrust }),
     );

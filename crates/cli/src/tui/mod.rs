@@ -60,6 +60,7 @@ pub async fn run(
     session: Option<SessionLog>,
     open_sessions_picker: bool,
     theme_name: String,
+    prompt_for_trust: bool,
 ) -> Result<()> {
     // Refuse before touching the terminal: with stdin or stdout redirected (a
     // test, a pipe, a CI runner) raw mode has no console to drive and the event
@@ -104,6 +105,7 @@ pub async fn run(
         session,
         open_sessions_picker,
         theme_name,
+        prompt_for_trust,
         notices_rx,
     )
     .await;
@@ -131,6 +133,7 @@ async fn event_loop(
     mut session: Option<SessionLog>,
     open_sessions_picker: bool,
     theme_name: String,
+    prompt_for_trust: bool,
     mut notices_rx: UnboundedReceiver<Notice>,
 ) -> Result<()> {
     let mut app = App::new(
@@ -161,23 +164,14 @@ async fn event_loop(
         app.usage = Some(crate::portkey_usage::UsageBar::new(&app.usage_settings));
     }
 
-    // Project trust: prompt once for projects with resources that can execute
-    // or reshape the agent, unless a decision was saved or the default applies.
     let trust_store = crate::trust::TrustStore::load().unwrap_or_default();
-    if let Some(saved) = trust_store.decision(&cwd) {
-        config.trusted = saved;
-    } else if crate::trust::requires_trust(&cwd)
-        && config.default_project_trust == crate::trust::DefaultTrust::Ask
+    if prompt_for_trust
+        && crate::trust::needs_prompt(&trust_store, &cwd, config.default_project_trust)
     {
-        config.trusted = false;
         app.trust = Some(TrustState::new(
             cwd.display().to_string(),
             crate::trust::project_resources(&cwd),
         ));
-    } else {
-        config.trusted =
-            crate::trust::resolve(&trust_store, &cwd, None, config.default_project_trust)
-                .is_trusted();
     }
     if !config.trusted {
         config.reload_ecosystem(&cwd);
@@ -1522,10 +1516,9 @@ fn handle_key(
                     Some(config.reasoning.label().to_string()),
                 ) {
                     Ok(mut reloaded) => {
+                        reloaded.trusted = config.trusted;
                         reloaded.load_context_files = config.load_context_files;
-                        if !config.load_context_files {
-                            reloaded.ecosystem = crate::ecosystem::load_with(cwd, false);
-                        }
+                        reloaded.reload_ecosystem(cwd);
                         *config = reloaded;
                         refresh_suggestions(app, config);
                         app.items.push(ChatItem::Info(
@@ -1609,7 +1602,7 @@ fn handle_key(
                 .map(|attachment| attachment.part)
                 .collect();
             for path in media::referenced_attachments(&raw, cwd) {
-                match load_project_attachment(cwd, &path) {
+                match media::load_attachment(&path) {
                     Ok(part) => {
                         names.push(path.display().to_string());
                         parts.push(part);
@@ -4602,7 +4595,7 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
         .map(|attachment| attachment.part.clone())
         .collect();
     for path in media::referenced_attachments(raw, cwd) {
-        match load_project_attachment(cwd, &path) {
+        match media::load_attachment(&path) {
             Ok(part) => {
                 names.push(path.display().to_string());
                 parts.push(part);
@@ -4654,14 +4647,6 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
     } else {
         app.status = "steering active response...".to_string();
     }
-}
-
-/// An `@path` typed into the terminal is still a filesystem read initiated by
-/// the agent front-end, so it follows the same project boundary as tools and
-/// RPC attachments. Clipboard bytes are already loaded and do not pass here.
-fn load_project_attachment(cwd: &Path, path: &Path) -> anyhow::Result<ContentPart> {
-    oxide_core::tools::ensure_project_path(cwd, &path.to_string_lossy())?;
-    media::load_attachment(path)
 }
 
 /// Pulls every queued message back into the editor so it can be edited or

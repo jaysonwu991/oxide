@@ -1260,8 +1260,7 @@ function renderProjectMeta(info) {
 function updateTrustButton() {
   const button = el("trust");
   if (!button) return;
-  const required = Boolean(state.project && state.trust && state.trust.required);
-  button.hidden = !required;
+  button.hidden = !state.project;
   button.classList.toggle("active", Boolean(state.trust && state.trust.trusted));
   const label = state.trust && state.trust.trusted
     ? "Project trusted · click to review"

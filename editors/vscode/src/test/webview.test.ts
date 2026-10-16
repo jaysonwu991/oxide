@@ -582,6 +582,18 @@ describe("webview footer", () => {
     assert.equal(byId.get("model-settings")!.children[1].children[0].textContent, "High");
   });
 
+  it("accents the trust shield only while the project is trusted", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const access = byId.get("meta")!.children.find((chip) => chip.dataset.control === "access")!;
+    assert.equal(access.classList.contains("active"), true);
+    assert.equal(access.getAttribute("aria-pressed"), "true");
+    send(stateMessage({ footer: { ...footer, chips: [{ id: "access", label: "access: untrusted" }] } }));
+    const declined = byId.get("meta")!.children.find((chip) => chip.dataset.control === "access")!;
+    assert.equal(declined.classList.contains("active"), false);
+    assert.equal(declined.getAttribute("aria-pressed"), "false");
+  });
+
   it("keeps a model label with no prefix visible and accessible", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ footer: { ...footer, chips: [{ id: "model", label: "glm-5" }] } }));
