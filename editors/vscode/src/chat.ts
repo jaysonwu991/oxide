@@ -9,7 +9,7 @@ import * as vscode from "vscode";
 
 import {
   buildTurnArgs,
-  sessionDeleteArgs,
+  sessionActionArgs,
   sessionShowArgs,
   sessionsListArgs,
   splitList,
@@ -46,7 +46,6 @@ import {
   CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
-  deleteSessionDialog,
   logoutDialog,
   MCP_REFRESH,
   MCP_TOGGLE,
@@ -58,8 +57,8 @@ import {
   providerDialog,
   PROVIDER_LOGOUT,
   PROVIDER_SELECT,
-  SESSION_DELETE,
-  SESSION_DELETE_CONFIRM,
+  SESSION_PIN,
+  SESSION_ARCHIVE,
   sessionDialog,
   reasoningDialog,
   trustDialog,
@@ -2174,71 +2173,42 @@ export class ChatController {
     );
   }
 
-  /// The trash on a session row opens the confirmation rather than deleting: a
-  /// thread's file cannot be recovered once it is gone, and the desktop asks
-  /// the same way.
-  private confirmDeleteSession(id: string): void {
-    // The running turn owns the session file and appends to it as it works, so
-    // deleting it here would pull the file out from under the process — the
-    // next append fails with `No such file or directory` and the turn is lost.
-    if (this.turn) {
-      this.showSessions("A turn is running; stop it before deleting a thread.");
-      return;
-    }
+  private async changeSession(id: string, action: "pin" | "archive"): Promise<void> {
     const session = this.sessions.find((entry) => entry.id === id);
-    if (!session) return;
-    this.showDialog(
-      deleteSessionDialog({
-        id: session.id,
-        label: session.label,
-        detail: `${session.age} · ${session.messages} message${
-          session.messages === 1 ? "" : "s"
-        } · ${session.id}`,
-      }),
-    );
-  }
-
-  /// Deletes one thread through the CLI (`sessions delete --force`, since the
-  /// confirmation was taken here) and paints the listing again. A thread that
-  /// was open in the panel is closed with it: the session file the next turn
-  /// would have continued is gone.
-  private async deleteSession(id: string): Promise<void> {
-    // The confirmation could have been open when a turn started, and a queued
-    // message can begin one between the click and here, so the guard is
-    // repeated at the point that writes.
-    if (this.turn) {
-      this.showNotice("Stop the running turn before deleting a thread.", "warn");
-      return;
-    }
     const cwd = this.cwd();
-    if (!cwd) {
-      this.showNotice("Open a folder first.", "error");
+    if (!session || !cwd) return;
+    const running = this.turn && (this.transcript.sessionId === id ||
+      (this.runTranscript ?? this.transcript).sessionId === id);
+    if (action === "archive" && running) {
+      this.showSessions("A turn is running; stop it before archiving this thread.");
       return;
     }
-    const label = this.sessions.find((entry) => entry.id === id)?.label || id;
-    const result = await runCapture(this.binary(), sessionDeleteArgs(id), cwd);
+    const operation = action === "pin" && session.pinned ? "unpin" : action;
+    const result = await runCapture(this.binary(), sessionActionArgs(id, operation), cwd);
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
-      const failed = `Could not delete ${label}: ${detail}`;
-      this.showNotice(failed, "error");
-      this.showSessions(failed);
+      this.showNotice(`Could not ${operation} thread: ${detail}`, "error");
       return;
     }
-    if (this.transcript.sessionId === id) {
-      this.transcript = this.newTranscript();
-      this.sessionTitle = null;
-      this.continueLast = false;
+    if (action === "archive") {
+      this.sessions = this.sessions.filter((entry) => entry.id !== id);
+      if (this.transcript.sessionId === id) {
+        this.transcript = this.newTranscript();
+        this.sessionTitle = null;
+        this.continueLast = false;
+      }
+      if (this.parkedRun()?.sessionId === id) {
+        this.runTranscript = null;
+        this.runTitle = "";
+      }
       this.broadcast(this.stateMessage());
     }
-    // A finished turn's thread can still be parked behind the strip; deleting it
-    // takes the strip with it, since there is nothing left to open.
-    if (this.parkedRun()?.sessionId === id) {
-      this.runTranscript = null;
-      this.runTitle = "";
-      this.broadcast(this.stateMessage());
-    }
-    this.showNotice(`Deleted ${label}.`);
-    await this.openSessions();
+    await this.syncSessions();
+    const notice = action === "archive"
+      ? `Thread archived. To permanently delete its log, run oxide sessions delete ${id} from its project folder. To restore it, run oxide sessions unarchive ${id}.`
+      : `${operation === "pin" ? "Pinned" : "Unpinned"} ${session.label || id}.`;
+    this.showNotice(notice);
+    if (this.dialog?.kind === "sessions") this.showSessions(notice);
   }
 
   // ---------- dialogs ----------
@@ -3017,10 +2987,10 @@ export class ChatController {
         return this.openRelease(value);
       case OPEN_SESSION:
         return this.openSession(value);
-      case SESSION_DELETE:
-        return this.confirmDeleteSession(value);
-      case SESSION_DELETE_CONFIRM:
-        return this.deleteSession(value);
+      case SESSION_PIN:
+        return this.changeSession(value, "pin");
+      case SESSION_ARCHIVE:
+        return this.changeSession(value, "archive");
       case PROVIDER_SELECT:
         return this.connectProvider(value);
       case PROVIDER_LOGOUT:

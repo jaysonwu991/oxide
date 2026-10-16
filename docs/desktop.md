@@ -677,14 +677,15 @@ taken, since that pick is the last step of the message rather than a move
 somewhere else (`selectProject` only clears the attachments when a project is
 already open, where the chips were meant for the folder being left).
 
-The `✕` on a project row removes an **Added** project from the registry
-(`remove_project`), keeping its sessions; for a **Discovered** project it
-deletes that project's sessions, since those sessions are the only reason the
-row exists. The `✕` on a session row deletes just that thread
-(`SessionLog::delete`). Both ask for confirmation, and removing a deleted
-project's last session drops its row on the next refresh. A stray discovered row
-such as `oxide-old` simply means a session was recorded while the CLI ran in
-that directory; it is not a project you added.
+Removing a project from **Edit project** hides its sidebar row and keeps its
+sessions, whether it was added or discovered. Stored session rows offer Pin/Unpin
+and Archive. Pin/archive preferences live in `desktop/sessions.json`, shared with
+the extension through the CLI; the first write preserves preferences from older
+`desktop/projects.json` registries. Archived threads are excluded from the tree,
+recents and session picker. A thread owned by a running turn cannot be archived.
+The archive notice explains that its log stays on disk: run
+`oxide sessions delete <id>` from the project folder for permanent deletion, or
+`oxide sessions unarchive <id>` to restore it. There is no GUI session deletion.
 
 A run is told about those projects, not just the one it starts in: the shared
 core reads the same `desktop/projects.json` into the `# Workspaces` section of
@@ -815,10 +816,12 @@ added/removed line counts, a binary file named rather than counted, and the same
 compact preview the tool cards paint), and a turn that changed nothing paints no
 card at all.
 
-- **The card** — the header says `Edited N files` with the turn's `+`/`−`
-totals; each row carries the `A`/`M`/`D` badge, the path and its own counts. Five
-rows are shown, with `Show N more files` for the rest and `Show less` to fold them
-back, and the header's caret collapses the card.
+- **The card** — the header says `Edited N files`, with the turn's `+`/`−`
+totals below it and **Undo** before **View changes** on the right. Three file
+rows show paths and counts; directory names are dimmer than filenames, and a
+binary file is named as such. **Show N more files** reveals the rest and
+**Show less** folds them back. File rows open the selected file in the Changes
+pane, keeping the transcript compact. The header does not collapse the card.
 - **Review** — opens the turn over the whole window: its files on the left, and
 on the right the selected file's two sides — the state the run found, read out
 of the snapshot at the card's own baseline, against what is on disk now, aligned

@@ -105,7 +105,13 @@ impl MemoryStore {
     }
 
     pub fn len(&self) -> usize {
-        self.entries.lock().map(|e| e.len()).unwrap_or(0)
+        self.entries
+            .lock()
+            .map(|mut entries| {
+                self.refresh(&mut entries);
+                entries.len()
+            })
+            .unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -113,6 +119,7 @@ impl MemoryStore {
     }
 
     pub fn add(&self, content: &str, scope: Scope, tags: Vec<String>) -> Result<MemoryEntry> {
+        let _lock = self.lock()?;
         let now = now_secs();
         let entry = MemoryEntry {
             id: new_id(),
@@ -123,13 +130,15 @@ impl MemoryStore {
             updated_at: now,
         };
         let mut entries = self.entries.lock().expect("memory store poisoned");
+        self.refresh(&mut entries);
         entries.push(entry.clone());
         self.persist(&entries, scope)?;
         Ok(entry)
     }
 
     pub fn search(&self, query: &str, scope: QueryScope, limit: usize) -> Vec<MemoryEntry> {
-        let entries = self.entries.lock().expect("memory store poisoned");
+        let mut entries = self.entries.lock().expect("memory store poisoned");
+        self.refresh(&mut entries);
         let docs: Vec<(&MemoryEntry, Vec<String>)> = entries
             .iter()
             .filter(|entry| scope.matches(entry.scope))
@@ -177,7 +186,8 @@ impl MemoryStore {
     }
 
     pub fn list(&self, scope: QueryScope, limit: usize) -> Vec<MemoryEntry> {
-        let entries = self.entries.lock().expect("memory store poisoned");
+        let mut entries = self.entries.lock().expect("memory store poisoned");
+        self.refresh(&mut entries);
         let docs: Vec<(&MemoryEntry, Vec<String>)> = entries
             .iter()
             .filter(|entry| scope.matches(entry.scope))
@@ -191,7 +201,8 @@ impl MemoryStore {
     }
 
     pub fn profile(&self) -> Option<MemoryEntry> {
-        let entries = self.entries.lock().expect("memory store poisoned");
+        let mut entries = self.entries.lock().expect("memory store poisoned");
+        self.refresh(&mut entries);
         entries
             .iter()
             .filter(|entry| {
@@ -202,7 +213,9 @@ impl MemoryStore {
     }
 
     pub fn forget(&self, id: &str) -> Result<bool> {
+        let _lock = self.lock()?;
         let mut entries = self.entries.lock().expect("memory store poisoned");
+        self.refresh(&mut entries);
         let Some(index) = entries.iter().position(|entry| entry.id == id) else {
             return Ok(false);
         };
@@ -210,6 +223,33 @@ impl MemoryStore {
         entries.remove(index);
         self.persist(&entries, scope)?;
         Ok(true)
+    }
+
+    fn refresh(&self, entries: &mut Vec<MemoryEntry>) {
+        if self.root.as_os_str().is_empty() {
+            return;
+        }
+        *entries = read_entries(&self.root.join("user.json"), Scope::User);
+        entries.extend(read_entries(
+            &project_file(&self.root, &self.project_id),
+            Scope::Project,
+        ));
+    }
+
+    fn lock(&self) -> Result<std::fs::File> {
+        anyhow::ensure!(
+            !self.root.as_os_str().is_empty(),
+            "memory store is not configured"
+        );
+        std::fs::create_dir_all(&self.root)?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.root.join("store.lock"))?;
+        lock.lock()?;
+        Ok(lock)
     }
 
     fn persist(&self, entries: &[MemoryEntry], scope: Scope) -> Result<()> {
@@ -225,7 +265,9 @@ impl MemoryStore {
             .filter(|entry| entry.scope == scope)
             .collect();
         let raw = serde_json::to_string_pretty(&subset)?;
-        std::fs::write(&path, raw)?;
+        let temp = path.with_extension("json.tmp");
+        std::fs::write(&temp, raw)?;
+        std::fs::rename(&temp, &path)?;
         Ok(())
     }
 }
@@ -340,6 +382,53 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn independent_front_ends_merge_memory_and_reload_the_prompt() {
+        let root = temp_dir("shared_front_ends");
+        let cwd = temp_dir("shared_project");
+        let cli = MemoryStore::open(root.clone(), &cwd);
+        let desktop = MemoryStore::open(root.clone(), &cwd);
+        let extension = MemoryStore::open(root.clone(), &cwd);
+        let first = cli.add("CLI project note", Scope::Project, vec![]).unwrap();
+        desktop
+            .add(
+                "Desktop user preference",
+                Scope::User,
+                vec!["profile".into()],
+            )
+            .unwrap();
+        extension
+            .add("Extension project note", Scope::Project, vec![])
+            .unwrap();
+        for store in [&cli, &desktop, &extension] {
+            assert_eq!(store.len(), 3);
+            assert_eq!(
+                store.search("project note", QueryScope::Project, 8).len(),
+                2
+            );
+            assert!(store.profile().unwrap().content.contains("Desktop"));
+            let config = crate::config::Config {
+                memory: store.clone(),
+                ..Default::default()
+            };
+            let prompt = config.compose_system_prompt();
+            assert!(prompt.contains("CLI project note"));
+            assert!(prompt.contains("Desktop user preference"));
+            assert!(prompt.contains("Extension project note"));
+        }
+        assert!(desktop.forget(&first.id).unwrap());
+        extension
+            .add("Another extension note", Scope::Project, vec![])
+            .unwrap();
+        assert!(!cli
+            .list(QueryScope::All, 10)
+            .iter()
+            .any(|entry| entry.id == first.id));
+        assert_eq!(MemoryStore::open(root.clone(), &cwd).len(), 3);
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(cwd).ok();
     }
 
     #[test]

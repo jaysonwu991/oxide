@@ -2112,20 +2112,9 @@ button.dialog-row:focus-visible {
 
 /* A thread: the title the sidebar-style listing is scanned by is a shade
    brighter than the actions', and its age and message count are the line under
-   it. The trash only takes room in the row the pointer is on, so a column of
-   threads is not a column of delete buttons — the same bargain VS Code makes
-   everywhere else. */
+   it. Pin and Archive stay visible, matching Desktop. */
 .dialog-row.thread .dialog-label {
   font-weight: 500;
-}
-
-.dialog-row.thread .dialog-button {
-  opacity: 0;
-}
-
-.dialog-row.thread:hover .dialog-button,
-.dialog-row.thread:focus-within .dialog-button {
-  opacity: 1;
 }
 
 /* The thread the header names, left in its own place in the list: it is marked

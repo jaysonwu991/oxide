@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 
-import { buildTurnArgs, sessionDeleteArgs, sessionShowArgs, sessionsListArgs, splitList } from "../core/args";
+import { buildTurnArgs, sessionActionArgs, sessionShowArgs, sessionsListArgs, splitList } from "../core/args";
 import {
   configDir,
   contextWindow,
@@ -135,10 +135,10 @@ describe("buildTurnArgs", () => {
   });
 
   it("lists sessions for the project", () => {
-    assert.deepEqual(sessionsListArgs(), ["sessions", "list"]);
+    assert.deepEqual(sessionsListArgs(), ["sessions", "list", "--json"]);
   });
 
-  it("reads one session's stored conversation, and deletes one", () => {
+  it("reads one session's stored conversation, and changes its sidebar state", () => {
     assert.deepEqual(sessionShowArgs("fe0031b1", 60), [
       "sessions",
       "show",
@@ -147,14 +147,9 @@ describe("buildTurnArgs", () => {
       "60",
       "--json",
     ]);
-    // The confirmation is the panel's, so the CLI is asked not to ask again on
-    // a stdin this process has no way to answer on.
-    assert.deepEqual(sessionDeleteArgs("fe0031b1"), [
-      "sessions",
-      "delete",
-      "fe0031b1",
-      "--force",
-    ]);
+    for (const action of ["pin", "unpin", "archive"] as const) {
+      assert.deepEqual(sessionActionArgs("fe0031b1", action), ["sessions", action, "fe0031b1"]);
+    }
   });
 
   it("normalizes a comma-separated tool list", () => {
@@ -686,6 +681,16 @@ describe("tool diff", () => {
 });
 
 describe("session listing", () => {
+  it("reads the shared pin metadata from the CLI JSON listing", () => {
+    const rows = [{ id: "a1", name: "Pinned chat", preview: "original", message_count: 4, age: "2h ago", pinned: true },
+      { id: "b2", name: null, preview: "Unnamed chat", message_count: 2, age: "just now", pinned: false }];
+    assert.deepEqual(parseSessionList(JSON.stringify(rows)), [
+      { id: "a1", label: "Pinned chat", messages: 4, age: "2h ago", pinned: true },
+      { id: "b2", label: "Unnamed chat", messages: 2, age: "just now", pinned: false },
+    ]);
+    assert.deepEqual(parseSessionList("[]"), []);
+  });
+
   it("parses the CLI's listing", () => {
     const output = [
       "fe0031b1  just now     195 msg  Create VS Code Extension for Oxide",
@@ -1024,9 +1029,9 @@ describe("command spawning", () => {
   });
 
   it("leaves a batch file alone on a platform that has no cmd.exe", () => {
-    assert.deepEqual(spawnPlan("oxide.cmd", ["sessions", "list"], "darwin", {}), {
+    assert.deepEqual(spawnPlan("oxide.cmd", ["sessions", "list", "--json"], "darwin", {}), {
       file: "oxide.cmd",
-      args: ["sessions", "list"],
+      args: ["sessions", "list", "--json"],
       verbatim: false,
     });
   });

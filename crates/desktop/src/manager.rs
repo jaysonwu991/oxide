@@ -50,9 +50,7 @@ pub struct ProjectView {
     pub pinned: bool,
 }
 
-/// A stored thread annotated with desktop-only sidebar state. Session logs stay
-/// compatible with every front-end; pin/archive choices belong to the desktop
-/// registry beside the project ordering they affect.
+/// A stored thread annotated with the shared pin/archive preferences.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionView {
     #[serde(flatten)]
@@ -280,14 +278,20 @@ impl DesktopManager {
     }
 
     pub fn set_session_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
-        set_membership(&mut self.registry.pinned_sessions, id, pinned);
-        self.persist()
+        oxide_core::session_state::SessionState::update_at(
+            &self.store.with_file_name("sessions.json"),
+            |state| state.set_pinned(id, pinned),
+        )
     }
 
     pub fn archive_session(&mut self, id: &str) -> Result<()> {
-        set_membership(&mut self.registry.archived_sessions, id, true);
-        set_membership(&mut self.registry.pinned_sessions, id, false);
-        self.persist()
+        oxide_core::session_state::SessionState::update_at(
+            &self.store.with_file_name("sessions.json"),
+            |state| {
+                state.set_archived(id, true);
+                Ok(())
+            },
+        )
     }
 
     /// Records the order the reader dragged the sidebar into: the ids exactly as
@@ -333,20 +337,23 @@ impl DesktopManager {
         SessionLog::list_all()
     }
 
-    pub fn session_views(&self, sessions: Vec<SessionSummary>) -> Vec<SessionView> {
+    pub fn session_views(&self, sessions: Vec<SessionSummary>) -> Result<Vec<SessionView>> {
+        let state = oxide_core::session_state::SessionState::load_from(
+            &self.store.with_file_name("sessions.json"),
+        )?;
         let mut views: Vec<_> = sessions
             .into_iter()
             .filter(|summary| {
-                !self.registry.archived_sessions.contains(&summary.id)
+                !state.archived(&summary.id)
                     && !self.registry.removed_projects.contains(&summary.cwd)
             })
             .map(|summary| SessionView {
-                pinned: self.registry.pinned_sessions.contains(&summary.id),
+                pinned: state.pinned(&summary.id),
                 summary,
             })
             .collect();
         views.sort_by_cached_key(|view| (Reverse(view.pinned), Reverse(view.summary.modified_at)));
-        views
+        Ok(views)
     }
 
     /// The CLI configuration for a project: the same global `config.json` and
@@ -358,7 +365,15 @@ impl DesktopManager {
 
     /// Reads the shared session store and merges it with the registry.
     pub fn overview(&self) -> Result<Vec<ProjectView>> {
-        Ok(self.overview_with(&self.all_sessions()?))
+        let state = oxide_core::session_state::SessionState::load_from(
+            &self.store.with_file_name("sessions.json"),
+        )?;
+        let sessions: Vec<_> = self
+            .all_sessions()?
+            .into_iter()
+            .filter(|session| !state.archived(&session.id))
+            .collect();
+        Ok(self.overview_with(&sessions))
     }
 
     /// Pure merge of registered projects and session-derived projects. Kept
@@ -694,22 +709,20 @@ mod tests {
         let project_view = reloaded.overview_with(std::slice::from_ref(&session));
         assert_eq!(project_view[0].name, "Pinned project");
         assert!(project_view[0].pinned);
-        let session_view = reloaded.session_views(vec![session.clone()]);
+        let session_view = reloaded.session_views(vec![session.clone()]).unwrap();
         assert_eq!(session_view.len(), 1);
         assert!(session_view[0].pinned);
 
         let mut reloaded = reloaded;
         reloaded.archive_session(&session.id).unwrap();
-        assert!(reloaded.session_views(vec![session]).is_empty());
+        assert!(reloaded.session_views(vec![session]).unwrap().is_empty());
         let persisted = DesktopManager::load_from(store).unwrap();
-        assert!(persisted
-            .registry
-            .archived_sessions
-            .contains(&"s42".to_string()));
-        assert!(!persisted
-            .registry
-            .pinned_sessions
-            .contains(&"s42".to_string()));
+        let state = oxide_core::session_state::SessionState::load_from(
+            &persisted.store.with_file_name("sessions.json"),
+        )
+        .unwrap();
+        assert!(state.archived("s42"));
+        assert!(!state.pinned("s42"));
 
         std::fs::remove_dir_all(&dir).ok();
         let _ = std::fs::remove_dir_all(persisted.store_path().parent().unwrap());
@@ -744,14 +757,14 @@ mod tests {
 
         let mut reloaded = DesktopManager::load_from(store).unwrap();
         assert!(reloaded.overview_with(&sessions).is_empty());
-        assert!(reloaded.session_views(sessions.clone()).is_empty());
+        assert!(reloaded.session_views(sessions.clone()).unwrap().is_empty());
         assert!(!reloaded.registry.pinned_projects.contains(&project.id));
         assert!(!reloaded.registry.order.contains(&project.id));
         reloaded.add_project(&dir).unwrap();
         let restored = reloaded.overview_with(&sessions);
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].session_count, 1);
-        assert_eq!(reloaded.session_views(sessions).len(), 1);
+        assert_eq!(reloaded.session_views(sessions).unwrap().len(), 1);
         let persisted = DesktopManager::load_from(reloaded.store_path().to_path_buf()).unwrap();
         assert!(!persisted.registry.removed_projects.contains(&project.id));
         std::fs::remove_dir_all(&dir).ok();

@@ -40,7 +40,13 @@ setting they ignore project resources unless `--approve` is passed.
 ```sh
 oxide sessions list                        # current project
 oxide sessions list --all                  # every project
-oxide sessions list --older-than 30        # stale sessions only
+oxide sessions list --older-than 30        # stale active sessions only
+oxide sessions list --archived             # archived sessions for this project
+oxide sessions list --json                 # shared metadata, including pinned
+oxide sessions pin <id>                    # pin in Desktop and the extension
+oxide sessions unpin <id>
+oxide sessions archive <id>                # hide it; keep the log
+oxide sessions unarchive <id>              # restore it
 oxide sessions show <id>                   # print one saved conversation
 oxide sessions delete <id>                 # delete one (prompts)
 oxide sessions delete --older-than 30 --force
@@ -56,6 +62,11 @@ plus its most recent messages instead of replaying the full transcript. `show`
 takes `--tail <n>` for just the newest messages and `--json` for the object a
 front-end draws. See
 [Data locations and reset](cli.md#data-locations-and-reset).
+
+Desktop and the extension offer Pin/Unpin and Archive. Archiving preserves the
+session log and shows the CLI deletion command. `sessions delete --older-than 30`
+also includes archived logs, and asks for confirmation unless `--force` is given.
+Archiving and deleting session logs leave persistent memory intact.
 
 ## A turn's changes
 

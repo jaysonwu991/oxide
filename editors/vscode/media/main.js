@@ -2029,14 +2029,15 @@
   // ---------- dialogs ----------
 
   /// The icons a dialog's own rows need: the power switch beside a server and
-  /// the trash at the end of a thread, neither of which a character renders the
+  /// the pin and archive actions on a thread, neither of which a character renders the
   /// same way everywhere. The header's Recheck and Close come from the shell,
   /// and every other row is words.
   const POWER_ICON =
     '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
-  const TRASH_ICON =
-    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  const DIALOG_ICONS = { power: POWER_ICON, trash: TRASH_ICON };
+  const TRASH_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const PIN_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const ARCHIVE_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const DIALOG_ICONS = { power: POWER_ICON, pin: PIN_ICON, archive: ARCHIVE_ICON };
 
   /// The change card's own glyph: a split view with a file on each side, which
   /// is what a click there opens. It is drawn in the card's header beside the
@@ -2203,22 +2204,23 @@
       status.textContent = entry.status;
       el.appendChild(status);
     }
-    if (entry.button) {
+    const actions = entry.buttons || (entry.button ? [{ label: entry.button, action: entry.buttonAction, icon: entry.icon }] : []);
+    for (const action of actions) {
       const button = document.createElement("button");
       button.type = "button";
       // A button at the row's end is icon-only: it is sized for the glyph it
       // carries, and the words the host sent become its tooltip.
-      button.className = entry.icon ? `dialog-button icon-${entry.icon}` : "dialog-button";
-      button.dataset.action = entry.buttonAction;
+      button.className = action.icon ? `dialog-button icon-${action.icon}` : "dialog-button";
+      button.dataset.action = action.action;
       button.dataset.value = entry.value;
-      if (entry.icon) {
-        button.innerHTML = DIALOG_ICONS[entry.icon] || "";
+      if (action.icon) {
+        button.innerHTML = DIALOG_ICONS[action.icon] || "";
         button.classList.add(`tone-${entry.tone || "muted"}`);
       } else {
-        button.textContent = entry.button;
+        button.textContent = action.label;
       }
-      button.title = entry.button;
-      button.setAttribute("aria-label", entry.button);
+      button.title = action.label;
+      button.setAttribute("aria-label", action.label);
       el.appendChild(button);
     }
     el.title = entry.detail ? `${entry.label} — ${entry.detail}` : entry.label;

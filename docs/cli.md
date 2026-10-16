@@ -1003,6 +1003,14 @@ turns the launch check on or off (asking right now when it turns it on).
 
 ## Memory and instructions
 
+CLI, Desktop and the VS Code extension use the same core memory store. Project
+notes and user preferences are separate from session logs; archiving or deleting
+a session does not remove its memories. Notes are saved through the agent's
+`memory` tool, and the eight most recent applicable notes are included in the
+system prompt; older notes can be searched. Archiving does not extract new notes
+automatically. Reads reload the shared files, and writes use an interprocess lock
+and atomic replacement so simultaneous front ends do not overwrite one another.
+
 Context files are collected by walking every ancestor directory from the
 filesystem root down to the working directory, so nested projects layer their
 instructions:

@@ -2017,53 +2017,12 @@ describe("webview dialogs", () => {
           status: "Current",
           tone: "muted",
           action: "openSession",
-          button: "Delete Fix the flaky test",
-          buttonAction: "sessionDelete",
-          icon: "trash",
+          buttons: [
+            { label: "Pin thread", action: "sessionPin", icon: "pin" },
+            { label: "Archive thread", action: "sessionArchive", icon: "archive" },
+          ],
           kind: "thread",
           current: true,
-        },
-      ],
-      refreshLabel: "",
-      refreshAction: "",
-    },
-  };
-
-  const confirmDelete = {
-    k: "dialog",
-    dialog: {
-      kind: "delete",
-      pin: "header",
-      title: "Delete thread",
-      subtitle: "“Fix the flaky test” and its stored conversation are removed.",
-      note: "This cannot be undone.",
-      count: 0,
-      search: false,
-      query: "",
-      rows: [
-        {
-          value: "fe0031b1",
-          label: "Delete thread",
-          detail: "just now · 195 messages · fe0031b1",
-          status: "",
-          tone: "error",
-          action: "sessionDeleteConfirm",
-          button: "",
-          buttonAction: "",
-          icon: "",
-          kind: "",
-        },
-        {
-          value: "",
-          label: "Cancel",
-          detail: "Keep the thread",
-          status: "",
-          tone: "",
-          action: "dialogClose",
-          button: "",
-          buttonAction: "",
-          icon: "",
-          kind: "",
         },
       ],
       refreshLabel: "",
@@ -2138,7 +2097,7 @@ describe("webview dialogs", () => {
 
     // A listing with no count hides it rather than showing a zero, and closing
     // the listing takes the box — and what was typed in it — with it.
-    send(confirmDelete);
+    send({ k: "dialog", dialog: { ...mcp.dialog, rows: [{ ...mcp.dialog.rows[0], kind: "" }], count: 0, search: false } });
     assert.equal(byId.get("dialog-count")!.hidden, true);
     assert.equal(byId.get("dialog-search")!.hidden, true);
     send(sessions);
@@ -2210,7 +2169,7 @@ describe("webview dialogs", () => {
       },
     });
     assert.equal(byId.get("dialog-list")!.children[0].className, "dialog-row thread");
-    send(confirmDelete);
+    send({ k: "dialog", dialog: { ...mcp.dialog, rows: [{ ...mcp.dialog.rows[0], kind: "" }], count: 0, search: false } });
     assert.equal(byId.get("dialog-list")!.children[0].className, "dialog-row");
   });
 
@@ -2314,44 +2273,30 @@ describe("webview dialogs", () => {
     assert.equal(byId.get("dialog-refresh")!.hidden, true);
   });
 
-  it("paints the trash a session row carries, and posts what it means", () => {
+  it("paints Pin and Archive on a session row, and posts their actions", () => {
     const { byId, posted, send } = loadRenderer();
     send(sessions);
     const row = byId.get("dialog-list")!.children[1];
     const button = row.children[2];
-    assert.equal(button.className, "dialog-button icon-trash tone-muted");
+    assert.equal(button.className, "dialog-button icon-pin tone-muted");
     assert.ok(button.innerHTML.includes("<svg"), button.innerHTML);
-    assert.equal(button.title, "Delete Fix the flaky test");
-    assert.equal(button.dataset.action, "sessionDelete");
+    assert.equal(button.title, "Pin thread");
+    assert.equal(button.dataset.action, "sessionPin");
     assert.equal(button.dataset.value, "fe0031b1");
     // The row itself still resumes the thread; the trash is what deletes it.
     assert.equal(row.dataset.action, "openSession");
+    const archive = row.children[3];
+    assert.equal(archive.className, "dialog-button icon-archive tone-muted");
+    assert.equal(archive.title, "Archive thread");
+    byId.get("dialog")!.fire("click", { target: archive });
+    assert.deepEqual(last(posted), { k: "dialogAction", action: "sessionArchive", value: "fe0031b1" });
 
     byId.get("dialog")!.fire("click", { target: button });
     assert.deepEqual(last(posted), {
       k: "dialogAction",
-      action: "sessionDelete",
+      action: "sessionPin",
       value: "fe0031b1",
     });
-  });
-
-  it("paints the confirmation and posts the row that deletes", () => {
-    const { byId, posted, send } = loadRenderer();
-    send(confirmDelete);
-    assert.equal(byId.get("dialog-title")!.textContent, "Delete thread");
-    const rows = byId.get("dialog-list")!.children;
-    assert.deepEqual(
-      rows.map((row) => row.dataset.action),
-      ["sessionDeleteConfirm", "dialogClose"],
-    );
-    byId.get("dialog")!.fire("click", { target: rows[0] });
-    assert.deepEqual(last(posted), {
-      k: "dialogAction",
-      action: "sessionDeleteConfirm",
-      value: "fe0031b1",
-    });
-    byId.get("dialog")!.fire("click", { target: rows[1] });
-    assert.deepEqual(last(posted), { k: "dialogAction", action: "dialogClose", value: "" });
   });
 
   it("paints the update the CLI's check resolved, and posts its rows", () => {

@@ -232,7 +232,7 @@ button's own `aria-expanded` says — the panel is part of the column rather tha
 window over it, so it is opened and put away the same way. Reading the store is
 all opening does: the rows that switch threads refuse while a turn owns the
 session file, so the listing itself can be read mid-turn. **Oxide: Session
-History** and `/session` in the composer reach the same listing — the listing `oxide sessions list` prints, painted in the panel rather
+History** and `/session` in the composer reach the same listing — the listing `oxide sessions list --json` prints, painted in the panel rather
 than in a QuickPick. The command is the button's own control under another name,
 while `/session` typed in the composer opens the listing (or repaints it if it is
 already up) rather than closing it: a command that names the history should not
@@ -255,14 +255,14 @@ number of threads listed beside it, and the row the panel is showing carries
 **Current** where the others carry their age (on the selection background a
 selected row gets, so it is marked without being moved out of the order it is
 being read in), since "close this thread" would otherwise name nothing. Each row
-carries a trash button that appears on the row the pointer is on — the same
-bargain VS Code makes for a tab's close — asks to confirm, and then deletes the
-thread through `oxide sessions delete <id>`, the way the desktop app's sidebar
-does; deleting the thread the panel is showing starts a new one rather than
-leaving a thread that is gone from the list still on screen. A deletion is
-refused while a turn is running — the turn's CLI appends to that session file as
-it works, so removing it would pull the file out from under the process — and the
-confirmation says so.
+carries Pin/Unpin and Archive buttons, matching Desktop. Pin/archive choices are
+shared through the CLI (`sessions list --json`, `sessions pin`, `sessions unpin`,
+and `sessions archive`), with pinned threads listed first. Archive hides a thread
+and closes it if it is on screen; its session file stays on disk. A thread owned
+by a running turn cannot be archived. The archive notice tells the user to run
+`oxide sessions delete <id>` from its project folder for permanent deletion, or
+`oxide sessions unarchive <id>` to restore it. Neither interface deletes session
+logs.
 
 A project can hold hundreds of threads, so the listing carries a search box
 above the rows. It filters what the store already answered rather than reading it
@@ -505,7 +505,7 @@ and **Continue most recent session**, which would write into the session the
 process is appending to, are answered with a note saying to stop the turn first —
 while a thread's own row is allowed, since reading another thread is the point:
 the run's transcript is parked with the run and the turn keeps going in it. A
-thread the turn is working in cannot be deleted from the listing either. A
+thread the turn is working in cannot be archived from the listing either. A
 history read for a thread (`loadHistory`) lands in the transcript it was read
 for or is dropped, and closing the on-screen thread builds a fresh `Transcript`
 rather than reusing the one the run may still be holding.

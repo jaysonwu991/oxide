@@ -127,6 +127,7 @@ check(
 // front-end that speaks this bridge could reach them — so an arm added here has
 // to be one the page performs or a deliberate addition to this list.
 const unused = [...arms].filter((name) => !performed.has(name)).sort();
+check("reserved permanent session deletion for the CLI", !arms.has("delete_session"));
 check(
   "kept no arm the window cannot perform",
   JSON.stringify(unused) === JSON.stringify(["add_project", "list_sessions", "rename_session"]),

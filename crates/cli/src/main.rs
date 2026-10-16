@@ -388,7 +388,21 @@ enum SessionsAction {
         /// Only show sessions older than this many days
         #[arg(long)]
         older_than: Option<u64>,
+        /// Show archived sessions instead of active sessions
+        #[arg(long)]
+        archived: bool,
+        /// Print session metadata as JSON
+        #[arg(long)]
+        json: bool,
     },
+    /// Pin a saved session in Desktop and the extension
+    Pin { id: String },
+    /// Unpin a saved session
+    Unpin { id: String },
+    /// Hide a saved session without deleting its log
+    Archive { id: String },
+    /// Restore an archived session
+    Unarchive { id: String },
     /// Print one saved session's conversation
     Show {
         /// Session id or path
@@ -687,8 +701,19 @@ async fn main() -> Result<()> {
             Command::Sessions { action } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 match action {
-                    SessionsAction::List { all, older_than } => {
-                        sessions::list(&current_dir, all, older_than)
+                    SessionsAction::List {
+                        all,
+                        older_than,
+                        archived,
+                        json,
+                    } => sessions::list(&current_dir, all, older_than, archived, json),
+                    SessionsAction::Pin { id } => sessions::set_state(&current_dir, &id, "pin"),
+                    SessionsAction::Unpin { id } => sessions::set_state(&current_dir, &id, "unpin"),
+                    SessionsAction::Archive { id } => {
+                        sessions::set_state(&current_dir, &id, "archive")
+                    }
+                    SessionsAction::Unarchive { id } => {
+                        sessions::set_state(&current_dir, &id, "unarchive")
                     }
                     SessionsAction::Show { id, tail, json } => {
                         sessions::show(&current_dir, &id, tail, json)

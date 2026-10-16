@@ -59,7 +59,7 @@ export function buildTurnArgs(options: TurnOptions): string[] {
 
 /// `oxide sessions list` for the current project.
 export function sessionsListArgs(): string[] {
-  return ["sessions", "list"];
+  return ["sessions", "list", "--json"];
 }
 
 /// `oxide sessions show <id> --json`: the stored conversation of one session,
@@ -70,11 +70,9 @@ export function sessionShowArgs(id: string, tail: number): string[] {
   return ["sessions", "show", id, "--tail", String(tail), "--json"];
 }
 
-/// `oxide sessions delete <id> --force`: one thread, with the confirmation
-/// already taken in the panel's own dialog — the CLI would otherwise ask on
-/// stdin, which a front-end has no channel to answer on.
-export function sessionDeleteArgs(id: string): string[] {
-  return ["sessions", "delete", id, "--force"];
+/// Pin and archive preferences are owned by the CLI and shared with Desktop.
+export function sessionActionArgs(id: string, action: "pin" | "unpin" | "archive"): string[] {
+  return ["sessions", action, id];
 }
 
 /// Splits a comma-separated tool list the way `--tools` expects, dropping the
