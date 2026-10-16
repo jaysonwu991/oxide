@@ -32,8 +32,11 @@ project in the shared `approvals.json`, so the terminal and the desktop app stop
 asking for that tool too. `--ask-questions` is the same bargain for the `ask`
 tool — see [Questions a skill asks the user](cli.md#questions-a-skill-asks-the-user).
 
-Non-interactive modes never prompt for project trust: with the `ask` or `never`
-setting they ignore project resources unless `--approve` is passed.
+Non-interactive modes never prompt for project trust. A saved decision applies
+first; without one, `ask` and `never` skip project resources. `--approve` trusts
+the project resources for this run. Tools use the operating-system user's
+filesystem permissions regardless of trust. The extension asks through its own UI and saves
+the decision before starting its RPC process.
 
 ## Session management
 

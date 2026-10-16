@@ -140,11 +140,11 @@ fn draw_trust(frame: &mut Frame, app: &App) {
     ))];
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "This project contains local resources the agent will load and, for",
+        "Trust loads project resources that may change the agent or execute",
         Style::default().fg(app.theme.info),
     )));
     lines.push(Line::from(Span::styled(
-        "plugins, execute. Only trust repositories you have reviewed.",
+        "code. The decision is shared across all front-ends.",
         Style::default().fg(app.theme.info),
     )));
     lines.push(Line::from(""));
@@ -155,7 +155,7 @@ fn draw_trust(frame: &mut Frame, app: &App) {
         )));
     }
     lines.push(Line::from(""));
-    let options = ["Trust and load resources", "Do not load resources"];
+    let options = ["Trust project", "Do not trust project"];
     for (index, label) in options.iter().enumerate() {
         let selected = state.selected == index;
         let style = if selected {

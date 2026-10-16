@@ -482,17 +482,22 @@ composed by the shared core.
 
 Projects may contain local resources that change how the agent behaves or execute
 code — agents, commands, prompts, skills, plugins, `SYSTEM.md`, and
-`APPEND_SYSTEM.md`. Oxide treats the presence of any of these as requiring trust.
-When a project requires trust and no decision has been saved for it (or a parent
-directory), the TUI asks before loading them.
+`APPEND_SYSTEM.md`. The CLI TUI, extension, and desktop automatically ask to
+trust the current project when no decision has been saved for it (or a parent
+directory), even if it has no local resources yet. Trust controls loading these
+resources. As in Pi, file and shell tools can access any filesystem path the
+operating-system user can access, regardless of project trust, including temporary
+files and other projects. The trust shield is accented while the project is trusted.
 
 - `defaultProjectTrust` in `settings.json` controls the fallback: `ask`
   (default), `always`, or `never`.
-- `--approve`/`-a` trusts project resources for one run; `--no-approve` ignores
-  them.
+- `--approve`/`-a` trusts project resources for one run; `--no-approve` skips
+  them. Neither flag changes filesystem access.
 - `/trust [show|off]` saves a decision for the current directory to `trust.json`.
 - Non-interactive modes (`-p`, `--mode json`, `--mode rpc`) never prompt: with
-  the `ask` or `never` setting they ignore project resources unless approved.
+  no saved decision, the `ask` or `never` setting skips project resources.
+  The extension asks in its own UI before its
+  RPC run, and the CLI reads the answer from the shared trust store.
 - Context files (`AGENTS.md`/`CLAUDE.md`) always load, trusted or not.
 
 ## Themes

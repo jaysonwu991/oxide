@@ -1722,6 +1722,11 @@
     el.type = "button";
     el.className = "meta-chip";
     el.dataset.control = control;
+    if (control === "access") {
+      const trusted = label === "access: trusted";
+      el.classList.toggle("active", trusted);
+      el.setAttribute("aria-pressed", String(trusted));
+    }
     el.setAttribute("aria-label", String(label));
     if (control === "model" || control === "reasoning") {
       el.classList.add("setting-chip");

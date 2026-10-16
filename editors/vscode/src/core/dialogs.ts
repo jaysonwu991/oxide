@@ -510,7 +510,7 @@ export function trustDialog(state: { setting: string; saved: boolean | undefined
   return choiceDialog(
     "trust",
     "Project access",
-    "This folder's own .oxide agents, commands, skills and plugins load only when it is trusted. A decision is saved in trust.json, so the terminal and the desktop app read it too.",
+    "Trusting this folder loads its local resources, which can run commands or change how the agent behaves. The decision is saved in trust.json and shared with the CLI and desktop.",
     APPLY_TRUST,
     [
       {

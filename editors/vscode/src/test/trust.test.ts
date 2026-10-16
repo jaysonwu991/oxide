@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 
-import { parseTrustStore, resolveAccess, trustDecision } from "../core/trust";
+import { needsTrustPrompt, parseTrustStore, resolveAccess, trustDecision } from "../core/trust";
 
 const identity = (candidate: string): string => candidate;
 
@@ -85,5 +85,20 @@ describe("trust decisions above the folder", () => {
   it("walks the whole path to the root", () => {
     const decision = trustDecision({ [path.parse("/repo/pkg").root]: true }, "/repo/pkg", identity);
     assert.equal(decision, true);
+  });
+});
+
+describe("automatic trust prompt", () => {
+  it("asks for undecided projects and respects saved decisions and overrides", () => {
+    assert.equal(needsTrustPrompt({ setting: "default", saved: undefined, defaultTrust: "ask" }), true);
+    for (const saved of [true, false]) {
+      assert.equal(needsTrustPrompt({ setting: "default", saved, defaultTrust: "ask" }), false);
+    }
+    for (const setting of ["always", "never"] as const) {
+      assert.equal(needsTrustPrompt({ setting, saved: undefined, defaultTrust: "ask" }), false);
+    }
+    for (const defaultTrust of ["always", "never"] as const) {
+      assert.equal(needsTrustPrompt({ setting: "default", saved: undefined, defaultTrust }), false);
+    }
   });
 });

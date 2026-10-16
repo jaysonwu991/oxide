@@ -65,3 +65,12 @@ export function resolveAccess(input: {
   if (input.saved !== undefined) return input.saved ? "trusted" : "untrusted";
   return input.defaultTrust === "always" ? "trusted" : "untrusted";
 }
+
+/// Every undecided project asks, even before it has local agent resources.
+export function needsTrustPrompt(input: {
+  setting: TrustSetting;
+  saved: boolean | undefined;
+  defaultTrust: "ask" | "always" | "never";
+}): boolean {
+  return input.setting === "default" && input.saved === undefined && input.defaultTrust === "ask";
+}

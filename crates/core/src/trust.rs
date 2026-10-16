@@ -152,6 +152,11 @@ pub fn resolve(
     }
 }
 
+/// Whether an interactive front-end should ask for this project's decision.
+pub fn needs_prompt(store: &TrustStore, cwd: &Path, default: DefaultTrust) -> bool {
+    default == DefaultTrust::Ask && store.decision(cwd).is_none()
+}
+
 /// Whether `cwd`'s own resources load, with no per-run override in play. The
 /// saved decision wins over `defaultProjectTrust`, matching the CLI: a project
 /// trusted once is trusted for every reader of the same store.
@@ -266,6 +271,21 @@ mod tests {
         assert_eq!(store.decision(&root), Some(true));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn undecided_plain_project_prompts_once() {
+        let dir = temp_dir("plain_prompt");
+        let mut store = TrustStore::default();
+        assert!(!requires_trust(&dir));
+        assert!(needs_prompt(&store, &dir, DefaultTrust::Ask));
+        assert!(!needs_prompt(&store, &dir, DefaultTrust::Always));
+        assert!(!needs_prompt(&store, &dir, DefaultTrust::Never));
+        for decision in [true, false] {
+            store.set(&dir, decision);
+            assert!(!needs_prompt(&store, &dir, DefaultTrust::Ask));
+        }
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -1238,11 +1238,6 @@ pub struct Config {
     pub default_project_trust: crate::trust::DefaultTrust,
     #[serde(skip)]
     pub trusted: bool,
-    /// Keep the agent's local file and shell tools inside `cwd`. The CLI sets
-    /// this for every run (including rpc, which powers the VS Code extension);
-    /// the desktop keeps its explicitly multi-project runtime unrestricted.
-    #[serde(skip)]
-    pub project_only: bool,
     /// The local projects this run can reach, named in the system prompt so a
     /// repository elsewhere on the machine is found from the list instead of a
     /// scan of the home directory.
@@ -1639,7 +1634,6 @@ impl Default for Config {
             load_context_files: true,
             default_project_trust: crate::trust::DefaultTrust::default(),
             trusted: true,
-            project_only: false,
             workspaces: crate::workspaces::Workspaces::default(),
         }
     }
@@ -2646,13 +2640,8 @@ impl Config {
             ));
         }
 
-        if self.project_only {
-            sections.push(
-                "# Project boundary\nWork only in the current project. Do not read, search, edit, \
-                 or run commands against another repository or any path outside the project root."
-                    .to_string(),
-            );
-        } else if let Some(section) = self.workspaces.section() {
+        sections.push("# Filesystem access\nFile and shell tools may access all filesystem paths available to this process, including temporary files and other projects. Project trust controls loading local resources; it does not restrict tool access.".to_string());
+        if let Some(section) = self.workspaces.section() {
             sections.push(section);
         }
 
@@ -3031,21 +3020,16 @@ mod tests {
     }
 
     #[test]
-    fn project_only_prompt_hides_other_workspaces_and_states_the_boundary() {
-        let config = Config {
-            project_only: true,
-            ..Config::default()
-        };
-        let prompt = config.compose_system_prompt();
-        assert!(prompt.contains("# Project boundary"), "{prompt}");
-        assert!(
-            prompt.contains("Work only in the current project"),
-            "{prompt}"
-        );
-        assert!(
-            !prompt.contains("ordinary directory with no sandbox"),
-            "{prompt}"
-        );
+    fn filesystem_access_does_not_depend_on_project_trust() {
+        for trusted in [true, false] {
+            let config = Config {
+                trusted,
+                ..Config::default()
+            };
+            let prompt = config.compose_system_prompt();
+            assert!(prompt.contains("all filesystem paths"));
+            assert!(!prompt.contains("Work only in the current project"));
+        }
     }
 
     #[test]

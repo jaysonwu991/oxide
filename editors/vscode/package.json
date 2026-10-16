@@ -326,7 +326,7 @@
             "Pass --no-approve: ignore this workspace's project-local resources."
           ],
           "default": "default",
-          "markdownDescription": "Project trust for the workspace's own resources (`.oxide/agents`, `.oxide/commands`, `.oxide/skills`, `.oxide/plugins`, `SYSTEM.md`, and the Claude Code equivalents). Runs are non-interactive, so nothing is ever prompted."
+          "markdownDescription": "Project trust for the workspace's own resources (`.oxide/agents`, `.oxide/commands`, `.oxide/skills`, `.oxide/plugins`, `SYSTEM.md`, and the Claude Code equivalents). With the default policy, the panel asks automatically when no shared trust decision is saved. Trust controls resource loading; file and shell access follows the operating-system user permissions."
         },
         "oxide.tools": {
           "type": "string",
