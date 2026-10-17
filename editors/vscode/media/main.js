@@ -50,6 +50,7 @@
   const gaugeFill = $("gauge-fill");
   const metaBox = $("meta");
   const modelSettings = $("model-settings");
+  const headerActions = $("actions");
   const chipBox = $("chips");
   const atBox = $("at");
   const branchLabel = $("branch");
@@ -1698,15 +1699,6 @@
       const box = chip.id === "model" || chip.id === "reasoning" ? modelSettings : metaBox;
       box.appendChild(chipNode(chip.label, chip.id, chip.title));
     }
-    for (const [id, label, icon] of [
-      ["permissions", "Tool approvals", '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 7.4V5.6a2.4 2.4 0 0 1 4.8 0v1.8"/><path d="M4.4 7.4h7.2a1.2 1.2 0 0 1 1.2 1.2v4.2a1.2 1.2 0 0 1-1.2 1.2H4.4a1.2 1.2 0 0 1-1.2-1.2V8.6a1.2 1.2 0 0 1 1.2-1.2z"/></svg>'],
-      ["shortcuts", "Keyboard shortcuts", '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M6.4 6.2a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.7.5-.7 1.1v.3M8 11v.01"/></svg>'],
-    ]) {
-      const button = chipNode(label, id, "");
-      button.querySelector(".control-icon").innerHTML = icon;
-      button.title = label;
-      metaBox.appendChild(button);
-    }
     syncSettingDropdown();
     const info = footer.info || "";
     branchLabel.textContent = info;
@@ -2166,9 +2158,17 @@
   }
 
   window.addEventListener("resize", syncSettingDropdown);
+  // A dialog goes away when a reader presses anywhere else, the way its own
+  // Close button does: nothing dims the panel behind it, so the press that
+  // leaves it is the press that meant "not this". A press on a control that
+  // opens one of these (`[data-control]`) is the control's own — it toggles the
+  // picker, or replaces it with another — and closing here as well would undo
+  // what the control just asked for.
   document.addEventListener("click", (event) => {
-    if (dialogBox.hidden || !dialogBox.classList.contains("settings-dropdown")) return;
-    if (event.target?.closest?.(".settings-dropdown, .setting-chip")) return;
+    if (dialogBox.hidden) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (dialogBox.contains(target) || target.closest("[data-control]")) return;
     closeDialog(false);
   });
   dialogBox.addEventListener("keydown", (event) => {
@@ -2347,6 +2347,12 @@
     reviewItem = null;
     reviewBox.hidden = true;
   }
+
+  // The review covers the panel, so a press on the room around it leaves it the
+  // way its ✕ does. A press on a row is the row's own.
+  reviewBox.addEventListener("click", (event) => {
+    if (event.target === reviewBox) closeReview();
+  });
 
   /// Takes the row at `index`, wrapping at either end: walking and clicking are
   /// the same act, which is what shows the file the reader is on.
@@ -2979,6 +2985,11 @@
   }
   metaBox.addEventListener("click", clickSetting);
   modelSettings.addEventListener("click", clickSetting);
+  // The panel's two app-level controls — the tools it allows without asking and
+  // the keyboard shortcuts — live in the header rather than in the composer's
+  // own row, which is the message's: a narrow side bar cannot hold four glyphs
+  // and a model name on one line, and neither of these is about the message.
+  headerActions.addEventListener("click", clickSetting);
 
   // Links open in the browser and paths open in the editor, because a webview
   // cannot navigate or read the workspace itself.

@@ -6416,6 +6416,46 @@ function init() {
   el("image-modal").onclick = (event) => {
     if (event.target === el("image-modal")) closeImage();
   };
+
+  // A dialog is dismissed by a press on the room around it, not only by its own
+  // button: the backdrop is the app, and a press there means "not this". Each
+  // one answers through the button that already means close, cancel or dismiss,
+  // so the teardown a dialog does — a promise resolved as cancelled, a field
+  // cleared, the caret handed back — is the same either way. A dialog whose only
+  // buttons are decisions (the approval a tool waits on, the trust question a
+  // folder waits on) has no such button and so no backdrop to press: a stray
+  // press must not be an answer.
+  const BACKDROP_DISMISS = {
+    "agents-modal": "agents-close",
+    "confirm-modal": "confirm-cancel",
+    "connect-modal": "login-cancel",
+    "create-project-modal": "create-project-cancel",
+    "help-modal": "help-close",
+    "permissions-modal": "permissions-close",
+    "question": "question-dismiss",
+    "rename-modal": "rename-cancel",
+    "themes-modal": "themes-close",
+    "update-modal": "update-close",
+  };
+  document.addEventListener("click", (event) => {
+    const pressed = event.target?.id ? BACKDROP_DISMISS[event.target.id] : null;
+    if (pressed) el(pressed).click();
+  });
+
+  // The three listings that open above the composer have no backdrop of their
+  // own: what is outside them is the rest of the window, so a press anywhere
+  // else closes them. It is taken on the press rather than on its click, since
+  // the click of the control that opens one is still to come — closing there
+  // would shut the listing in the same breath it was asked for.
+  document.addEventListener("mousedown", (event) => {
+    const target = event.target;
+    if (!target || typeof target.id !== "string") return;
+    for (const id of ["projects-modal", "mcps-modal", "sessions-modal"]) {
+      const box = el(id);
+      if (box.hidden || box.contains(target)) continue;
+      box.hidden = true;
+    }
+  });
   el("image-modal").addEventListener("keydown", (event) => {
     if (event.key !== "Tab") return;
     event.preventDefault();

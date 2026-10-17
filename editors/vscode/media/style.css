@@ -125,6 +125,16 @@ button.icon[hidden],
   flex: 0 0 auto;
 }
 
+/* The header carries two kinds of control: the thread's own (a new chat, its
+   history) and the panel's (the tools it allows without asking, its keyboard
+   shortcuts). The hairline is what keeps them from reading as four of a kind. */
+.actions-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+
 code,
 pre,
 .mono {
@@ -1162,13 +1172,19 @@ footer {
   display: none;
 }
 
-/* Turn settings share the composer toolbar. */
+/* The settings the bar carries as glyphs share one quiet group: they hang off
+   a hairline so the row reads as two groups rather than one, and they stay
+   borderless and dim until pointed at, since a row of outlined controls is what
+   made this bar unreadable in a narrow panel. */
 .meta {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 3px;
-  margin-bottom: 6px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 1px;
+  margin: 0 0 0 2px;
+  padding: 0 0 0 5px;
+  border-left: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.22));
 }
 
 .meta:empty {
@@ -1179,20 +1195,24 @@ footer {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
   border: 1px solid transparent;
   background: none;
-  color: var(--vscode-foreground);
+  color: var(--vscode-descriptionForeground);
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.78em;
-  padding: 2px 7px;
-  border-radius: 999px;
+  border-radius: 7px;
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
 }
 
 .meta-chip:hover {
-  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  color: var(--vscode-foreground);
+  border-color: transparent;
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
 }
 
@@ -1489,12 +1509,18 @@ footer {
   color: var(--vscode-foreground);
 }
 
-/* The composer toolbar keeps its settings beside the message action. */
+/* The composer toolbar keeps its settings beside the message action, as one
+   row at every width: the glyphs keep their size and the model chip is the one
+   thing that gives way, its value cut with an ellipsis before the row wraps and
+   leaves a lone glyph on a line of its own. */
 #bar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 0 2px;
+  flex-wrap: nowrap;
+  gap: 3px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 2px 0 0;
 }
 
 /* Attach, stop and send are icon-only; their shape comes from `button.icon`. */
@@ -1502,6 +1528,8 @@ footer {
 #status {
   display: inline-flex;
   align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
   gap: 5px;
   color: var(--vscode-descriptionForeground);
   font-size: 0.82em;
@@ -2460,37 +2488,6 @@ footer {
   padding: 4px 2px 7px;
 }
 
-/* Match the desktop composer: turn settings live in its bottom bar instead of
-   forming a second header above the text box. The full labels stay in tooltips
-   and accessible names; the compact values are what the toolbar shows. */
-#bar {
-  min-height: 30px;
-  padding: 1px 0 0;
-}
-
-.meta {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin: 0;
-  gap: 3px;
-  flex-wrap: wrap;
-}
-
-.meta-chip {
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  padding: 0;
-  border-color: transparent;
-  color: var(--vscode-descriptionForeground);
-  border-radius: 8px;
-}
-
-.meta-chip:hover {
-  color: var(--vscode-foreground);
-  border-color: transparent;
-}
-
 button.icon {
   width: 30px;
   height: 30px;
@@ -2505,10 +2502,6 @@ button.icon {
 .chips .chip {
   border-radius: 10px;
   padding: 3px 5px;
-}
-
-.meta-chip {
-  border-radius: 999px;
 }
 
 .usage,
@@ -2545,13 +2538,52 @@ button.icon {
 }
 
 #send, #stop { flex: none; }
-.model-settings { display: flex; align-items: center; min-width: 0; gap: 2px; }
-.model-settings .setting-chip { width: auto; min-width: 0; padding: 0 5px; gap: 5px; font-family: inherit; font-size: 0.85em; }
-.model-settings .setting-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-settings [data-control="reasoning"] { flex: none; }
-.model-settings .setting-chip { border-radius: 6px; color: var(--vscode-foreground); }
-.model-settings [data-control="reasoning"] { color: var(--vscode-descriptionForeground); }
-.model-settings .selector-caret { width: 12px; height: 12px; color: var(--vscode-descriptionForeground); }
+
+/* The two settings that carry a value end the row beside the action that sends:
+   the model in a chip with a surface of its own, since it is the setting a
+   reader checks before typing, and the effort quieter beside it. The model's
+   value is the row's one elastic thing — it takes the ellipsis and everything
+   else keeps its size — so a long model name narrows the chip instead of
+   pushing a control onto a second line. */
+.model-settings {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 3px;
+}
+.model-settings .setting-chip {
+  width: auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font-family: inherit;
+  font-size: 0.85em;
+}
+.model-settings .setting-chip:hover {
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+.model-settings [data-control="model"] {
+  padding: 0 4px 0 8px;
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  background: var(--vscode-editorWidget-background, transparent);
+  color: var(--vscode-foreground);
+}
+.model-settings [data-control="model"]:hover {
+  border-color: var(--vscode-focusBorder, var(--vscode-panel-border, rgba(128, 128, 128, 0.5)));
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+.model-settings .setting-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-settings [data-control="reasoning"] { flex: none; padding: 0 4px; }
+.model-settings .selector-caret { flex: none; width: 12px; height: 12px; color: var(--vscode-descriptionForeground); }
 .model-settings .selector-caret svg { width: 12px; height: 12px; }
 #dialog.settings-dropdown {
   position: fixed;
@@ -2567,17 +2599,25 @@ button.icon {
 
 .meta-chip[data-control="access"].active {
   color: var(--vscode-textLink-foreground);
+  background: color-mix(in srgb, var(--vscode-textLink-foreground) 14%, transparent);
 }
 
-.context-status { display: flex; align-items: center; gap: 5px; flex: none; font-size: 11px; color: var(--vscode-descriptionForeground); }
+/* The context reading holds the row's end: a ring filled to the percent the
+   thread has used, with the percent spelled out beside it. */
+.context-status { display: flex; align-items: center; gap: 5px; flex: none; margin-left: 1px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
 .context-status:has(.gauge:focus-visible) { outline: 1px solid var(--vscode-focusBorder); outline-offset: 3px; border-radius: 50%; }
-.context-status .gauge { order: -1; width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(currentColor var(--context-angle, 0deg), color-mix(in srgb, currentColor 25%, transparent) 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); }
+.context-status .gauge { order: -1; width: 15px; height: 15px; border-radius: 50%; background: conic-gradient(currentColor var(--context-angle, 0deg), color-mix(in srgb, currentColor 25%, transparent) 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); }
 .context-status .gauge > #gauge-fill { display: none; }
 .context-status:has(.gauge[data-level="warn"]) { color: var(--vscode-editorWarning-foreground); }
 .context-status:has(.gauge[data-level="high"]) { color: var(--vscode-errorForeground); }
 
+/* A narrow side bar keeps the row on one line: the glyphs tighten before
+   anything is dropped and the model's name carries the ellipsis instead. */
 @media (max-width: 420px) {
-  #bar { flex-wrap: wrap; }
-  .meta { flex: 1 1 calc(100% - 40px); }
-  .model-settings { margin-left: auto; }
+  #bar { gap: 2px; }
+  .meta { gap: 0; }
+  .meta-chip { width: 24px; min-width: 24px; height: 24px; border-radius: 6px; }
+  .meta-chip .control-icon svg { width: 14px; height: 14px; }
+  .model-settings .setting-chip { padding: 0 4px; }
+  .model-settings [data-control="model"] { padding: 0 3px 0 6px; }
 }
