@@ -258,6 +258,7 @@ async fn event_loop(
         unbounded_channel::<Result<crate::portkey_usage::Snapshot, String>>();
     let (update_tx, mut update_rx) = unbounded_channel::<update_notice::Notice>();
     let (catalog_tx, mut catalog_rx) = unbounded_channel::<catalog::ModelsByProvider>();
+    let (adopted_tx, mut adopted_rx) = unbounded_channel::<AdoptedCatalog>();
     let (login_tx, login_rx) = unbounded_channel::<LoginEvent>();
     let mut login_rx = Some(login_rx);
     spawn_update_notice(&update_tx, &cwd);
@@ -303,6 +304,9 @@ async fn event_loop(
                         if let Some(provider) = app.pending_login.take() {
                             app.login_attempt += 1;
                             start_device_login(provider, app.login_attempt, &login_tx);
+                        }
+                        if let Some(provider) = app.pending_catalog.take() {
+                            start_catalog_lookup(&adopted_tx, &config, &provider);
                         }
                     }
                     Some(Ok(Event::Paste(text))) => handle_paste(text, &mut app),
@@ -413,6 +417,11 @@ async fn event_loop(
                     // gauge is repainted with the window this run resolves.
                     config.catalog_windows = windows;
                     app.context_limit = context_limit(&config);
+                }
+            }
+            adopted = adopted_rx.recv() => {
+                if let Some(adopted) = adopted {
+                    apply_adopted_catalog(&mut app, &mut config, adopted, &Config::config_path());
                 }
             }
             _ = tick.tick(), if app.busy => {
@@ -4957,6 +4966,72 @@ struct LoginEvent {
     step: LoginStep,
 }
 
+/// A login's catalog response, including reasoning metadata when the model did
+/// not move. Its original selection identifies which session can still use it.
+struct AdoptedCatalog {
+    provider: String,
+    from: String,
+    base_url: String,
+    model: String,
+    reasoning: Option<crate::config::ModelReasoning>,
+}
+
+/// Reads the provider's own listing after a login the dialog has already saved,
+/// off the UI thread: a catalog lookup is a network round trip, and the reader
+/// is back at the prompt. The model it lands on is handed to the event loop
+/// rather than written here, since that loop is the one writer of `config.json`.
+fn start_catalog_lookup(tx: &UnboundedSender<AdoptedCatalog>, config: &Config, provider: &str) {
+    let tx = tx.clone();
+    let mut adopted = config.clone();
+    let provider = crate::auth::canonical_provider(provider);
+    let from = config.model.clone();
+    tokio::spawn(async move {
+        adopted.adopt_provider_catalog().await;
+        let _ = tx.send(AdoptedCatalog {
+            provider,
+            from,
+            base_url: adopted.base_url,
+            model: adopted.model,
+            reasoning: adopted.reasoning_supported,
+        });
+    });
+}
+
+/// Takes the model a login's catalog lookup adopted, when the session is still
+/// on the provider it was read for and still on the model it was read over: a
+/// reader who moved on in the meantime is not dragged back by an answer about a
+/// selection they have left.
+fn apply_adopted_catalog(
+    app: &mut App,
+    config: &mut Config,
+    adopted: AdoptedCatalog,
+    selection_path: &Path,
+) {
+    if crate::auth::canonical_provider(&config.provider) != adopted.provider
+        || config.model != adopted.from
+        || config.base_url != adopted.base_url
+    {
+        return;
+    }
+    let changed = config.model != adopted.model;
+    if changed {
+        config.apply_login_options(&adopted.model, "", "");
+    }
+    config.reasoning_supported = adopted.reasoning;
+    apply_model_state(app, config);
+    app.context_limit = context_limit(config);
+    if changed {
+        if let Err(error) = config.persist_selection_at(selection_path) {
+            app.items.push(ChatItem::Error(format!("{error:#}")));
+        }
+        app.items.push(ChatItem::Info(format!(
+            "model set to {} — what {} serves",
+            config.model, config.provider
+        )));
+        app.auto_scroll = true;
+    }
+}
+
 /// Paints one step of a browser login. The code and URL land in the dialog it
 /// belongs to (a dialog the reader closed is left alone, since nothing is
 /// waiting on it any more), the minted credential moves it on to the settings
@@ -5106,6 +5181,11 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                                     crate::auth::provider_label(&name),
                                     config.model
                                 )));
+                                // What that account really serves is what the
+                                // provider's own listing says, which the event
+                                // loop reads while the reader is back at the
+                                // prompt.
+                                app.pending_catalog = Some(name);
                                 app.status = "ready".to_string();
                                 keep = false;
                             }
@@ -6480,6 +6560,72 @@ mod tests {
         assert_eq!(repair_empty_pasted_image_name("ordinary text"), None);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn login_catalog_refreshes_reasoning_without_changing_the_model() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "test-key");
+        config.model = "account-model".into();
+        let reasoning = crate::config::ModelReasoning {
+            supported: vec![Reasoning::Low, Reasoning::High],
+            default: Some(Reasoning::High),
+        };
+        let adopted = AdoptedCatalog {
+            provider: config.provider.clone(),
+            from: config.model.clone(),
+            base_url: config.base_url.clone(),
+            model: config.model.clone(),
+            reasoning: Some(reasoning.clone()),
+        };
+        let path = approval_dir("catalog-unchanged").join("config.json");
+        apply_adopted_catalog(&mut app, &mut config, adopted, &path);
+        assert_eq!(config.reasoning_supported, Some(reasoning));
+        assert!(app.show_thinking);
+        assert!(!path.exists(), "unchanged selections need no config write");
+    }
+
+    #[test]
+    fn login_catalog_remembers_the_adopted_model_and_resets_effort() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "test-key");
+        config.reasoning = Reasoning::Medium;
+        let adopted = AdoptedCatalog {
+            provider: config.provider.clone(),
+            from: config.model.clone(),
+            base_url: config.base_url.clone(),
+            model: "account-model".into(),
+            reasoning: None,
+        };
+        let path = approval_dir("catalog-adopted").join("config.json");
+        apply_adopted_catalog(&mut app, &mut config, adopted, &path);
+        assert_eq!(config.model_for_provider("deepseek"), "account-model");
+        assert_eq!(config.reasoning, Reasoning::Auto);
+        assert_eq!(app.model, "account-model");
+        assert_eq!(app.context_limit, context_limit(&config));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(saved["provider_models"]["deepseek"], "account-model");
+    }
+
+    #[test]
+    fn login_catalog_does_not_apply_after_the_endpoint_changes() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        let adopted = AdoptedCatalog {
+            provider: config.provider.clone(),
+            from: config.model.clone(),
+            base_url: "https://previous.example/v1".into(),
+            model: "previous-account-model".into(),
+            reasoning: None,
+        };
+        let previous = config.model.clone();
+        let path = approval_dir("catalog-stale").join("config.json");
+        apply_adopted_catalog(&mut app, &mut config, adopted, &path);
+        assert_eq!(config.model, previous);
+        assert!(!path.exists());
     }
 
     #[test]

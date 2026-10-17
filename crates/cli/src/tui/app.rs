@@ -783,6 +783,10 @@ pub struct App {
     /// answer a later one, since both may be polling at once.
     pub login_attempt: u64,
     pub models: Option<ModelsState>,
+    /// A login the key handler saved, whose provider's own catalog the event loop
+    /// then reads: what that account really serves is a network round trip, and
+    /// the dialog that stored the credential is already closed.
+    pub pending_catalog: Option<String>,
     pub sessions: Option<SessionsState>,
     pub marketplaces: Option<MarketplacesState>,
     pub trust: Option<TrustState>,
@@ -981,6 +985,7 @@ impl App {
             pending_login: None,
             login_attempt: 0,
             models: None,
+            pending_catalog: None,
             sessions: None,
             marketplaces: None,
             trust: None,

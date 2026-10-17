@@ -1838,6 +1838,7 @@ function paintQueue() {
 function paintRunningChrome() {
   document.body.classList.toggle("running", state.busy && viewingRun());
   paintLiveChanges();
+  paintDockToggles();
 }
 
 function setBusy() {
@@ -2756,6 +2757,9 @@ function paintLiveChanges() {
 /// for the reader who expands the card: the turn's changes are listed together
 /// by the change card, so the same diff is not painted twice.
 function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } = {}) {
+  // A call that landed may have written a file, which is what the dock's own
+  // Changes row is read out of (see `scheduleProjectChanges`).
+  scheduleProjectChanges();
   if (tool.timer) {
     clearInterval(tool.timer);
     tool.timer = null;
@@ -3317,12 +3321,22 @@ function reviewKey(event) {
 }
 
 let detailsRead = 0;
+// The dock's Changes row is read out of the repository — a listing that walks
+// every file the work tree has changed — so a turn writing files leaves it
+// saying what the tree held when it came up. A call the turn lands is a reason
+// to read it again, paced: a burst of calls is one listing, not one per call.
+let detailsChangesRead = 0;
+const DOCK_CHANGES_SPACING = 2000;
+let detailsChangesDue = 0;
+let detailsChangesTimer = null;
 
 function paintDockToggles() {
-  // The summary belongs to the conversation; Changes takes its place while open.
+  // The dock belongs to the turn: while one runs it reads the project out, and
+  // Changes takes its place while it is open. An idle window has no run to
+  // summarize, so the dock is not there at all rather than standing empty.
   const panel = el("details-panel");
   const wasHidden = panel.hidden;
-  panel.hidden = !state.project || !el("review-modal").hidden;
+  panel.hidden = !state.project || !state.busy || !viewingRun() || !el("review-modal").hidden;
   el("details-toggle").hidden = !state.project;
   el("changes-toggle").setAttribute("aria-expanded", String(!el("review-modal").hidden));
   el("details-toggle").setAttribute("aria-expanded", String(!panel.hidden));
@@ -3346,18 +3360,7 @@ async function refreshProjectDetails() {
   if (!project) return;
   const current = () => read === detailsRead && project === state.project;
   await Promise.all([
-    invoke("repository_changes", { project }).then((changes) => {
-      if (!current()) return;
-      const card = { ...changes, project, repository: true };
-      el("details-stats").innerHTML = statsHtml(changes.added, changes.removed);
-      el("details-changes").title = `${changes.files.length} changed files`;
-      if (reviewState?.card.repository) showRepositoryCard(card);
-    }).catch((error) => {
-      if (!current()) return;
-      el("details-stats").textContent = "";
-      el("details-changes").title = String(error);
-      if (reviewState?.card.repository) el("review-files").replaceChildren(reviewNote(String(error)));
-    }),
+    readProjectChanges(project),
     invoke("mcp_servers", { project }).then((servers) => {
       if (!current()) return;
       const box = el("details-sources");
@@ -3375,6 +3378,47 @@ async function refreshProjectDetails() {
       if (current()) el("details-sources").textContent = `Could not load sources: ${error}`;
     }),
   ]);
+}
+
+/// Reads the Changes row from the repository: what the work tree holds now,
+/// whether a tool call, a formatter or a shell command put it there. The row's
+/// own newest read is what paints it, so a live read while the turn works cannot
+/// be overwritten by the one that opened the dock.
+async function readProjectChanges(project) {
+  const read = ++detailsChangesRead;
+  const current = () => read === detailsChangesRead && project === state.project;
+  try {
+    const changes = await invoke("repository_changes", { project });
+    if (!current()) return;
+    el("details-stats").innerHTML = statsHtml(changes.added, changes.removed);
+    el("details-changes").title = `${changes.files.length} changed files`;
+    if (reviewState?.card.repository) showRepositoryCard({ ...changes, project, repository: true });
+  } catch (error) {
+    if (!current()) return;
+    el("details-stats").textContent = "";
+    el("details-changes").title = String(error);
+    if (reviewState?.card.repository) el("review-files").replaceChildren(reviewNote(String(error)));
+  }
+}
+
+/// Keeps that row in step with a turn that is writing files: the read in the
+/// moment of the call that changed something, and the rest of a burst behind one
+/// timer, so a run editing in a loop reads the repository a few times a second at
+/// most.
+function scheduleProjectChanges() {
+  if (!state.busy || !state.project || el("details-panel").hidden) return;
+  const now = Date.now();
+  if (now >= detailsChangesDue) {
+    detailsChangesDue = now + DOCK_CHANGES_SPACING;
+    readProjectChanges(state.project);
+    return;
+  }
+  if (detailsChangesTimer) return;
+  detailsChangesTimer = setTimeout(() => {
+    detailsChangesTimer = null;
+    detailsChangesDue = Date.now() + DOCK_CHANGES_SPACING;
+    if (state.busy && !el("details-panel").hidden) readProjectChanges(state.project);
+  }, detailsChangesDue - now);
 }
 
 function showRepositoryCard(card) {
@@ -3966,8 +4010,12 @@ async function saveConnect() {
     setStatus("Choose a provider first.");
     return;
   }
+  // A login reads the provider's own catalog before it answers, so the model the
+  // chip names is one that account really serves — which is a round trip, and
+  // this dialog waits on it.
+  setStatus(`Connecting ${provider.label}…`);
   try {
-    await invoke("login", {
+    const outcome = await invoke("login", {
       provider: provider.name,
       key: el("login-key").value || null,
       model: el("login-model").value || null,
@@ -3975,7 +4023,12 @@ async function saveConnect() {
     });
     el("connect-modal").hidden = true;
     el("login-key").value = "";
-    await loadInfo();
+    if (state.project) await loadInfo();
+    else if (outcome?.model) {
+      // No folder to read a window off, so the chip names the model alone.
+      labelControl("model", `model: ${outcome.model}`, "Switch model");
+      el("model-value").textContent = outcome.model;
+    }
     setStatus(`Connected ${provider.label}`);
   } catch (error) {
     setStatus(`Login failed: ${error}`, "error");

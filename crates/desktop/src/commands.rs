@@ -532,6 +532,7 @@ pub async fn login(
         base_url.as_deref(),
         Path::new("."),
     )
+    .await
     .map_err(err)
 }
 
