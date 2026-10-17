@@ -354,6 +354,9 @@ fn project_info_value(config: &Config, project: &Path) -> Value {
         "subscription": config.is_subscription(),
         "hasKey": !config.api_key.is_empty(),
         "trust": trust,
+        "agents": config.ecosystem.agents.iter().map(|agent| json!({
+            "name": agent.name, "description": agent.description,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -550,6 +553,7 @@ pub async fn send_prompt(
     prompt: String,
     session: Option<String>,
     reasoning: Option<String>,
+    agent: Option<String>,
     attachments: Option<Vec<AttachmentInput>>,
 ) -> CmdResult<u64> {
     let run_id = state.next_run.fetch_add(1, Ordering::Relaxed);
@@ -562,6 +566,7 @@ pub async fn send_prompt(
             prompt,
             session,
             reasoning,
+            agent,
             attachments,
         )
         .await;
@@ -577,6 +582,7 @@ async fn drive_turn(
     prompt: String,
     session: Option<String>,
     reasoning: Option<String>,
+    agent: Option<String>,
     attachments: Vec<ContentPart>,
 ) -> anyhow::Result<()> {
     let cwd = PathBuf::from(project);
@@ -598,6 +604,7 @@ async fn drive_turn(
         Some(approver),
         Some(asker),
         reasoning,
+        agent,
         attachments,
     )
     .await?;
@@ -1364,6 +1371,7 @@ pub async fn dispatch(
                 arg(&args, "prompt")?,
                 optional_arg(&args, "session")?,
                 optional_arg(&args, "reasoning")?,
+                optional_arg(&args, "agent")?,
                 optional_arg(&args, "attachments")?,
             )
             .await,

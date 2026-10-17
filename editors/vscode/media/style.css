@@ -2568,3 +2568,16 @@ button.icon {
 .meta-chip[data-control="access"].active {
   color: var(--vscode-textLink-foreground);
 }
+
+.context-status { display: flex; align-items: center; gap: 5px; flex: none; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.context-status:has(.gauge:focus-visible) { outline: 1px solid var(--vscode-focusBorder); outline-offset: 3px; border-radius: 50%; }
+.context-status .gauge { order: -1; width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(currentColor var(--context-angle, 0deg), color-mix(in srgb, currentColor 25%, transparent) 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); }
+.context-status .gauge > #gauge-fill { display: none; }
+.context-status:has(.gauge[data-level="warn"]) { color: var(--vscode-editorWarning-foreground); }
+.context-status:has(.gauge[data-level="high"]) { color: var(--vscode-errorForeground); }
+
+@media (max-width: 420px) {
+  #bar { flex-wrap: wrap; }
+  .meta { flex: 1 1 calc(100% - 40px); }
+  .model-settings { margin-left: auto; }
+}

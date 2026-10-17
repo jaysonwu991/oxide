@@ -36,7 +36,9 @@ pub struct Turn {
 /// `approve` is the interactive approval callback; `None` falls back to
 /// `config.auto_approve`. `ask` is how the model's questions reach the user, and
 /// `None` leaves the `ask` tool out of the run. `reasoning` overrides the stored
-/// value for this run.
+/// value for this run. `agent` selects a discovered agent through the same
+/// configuration path as the CLI's `--agent`.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_turn(
     project: &Path,
     prompt: &str,
@@ -44,11 +46,15 @@ pub async fn start_turn(
     approve: Option<Approver>,
     ask: Option<Asker>,
     reasoning: Option<String>,
+    agent: Option<String>,
     inline: Vec<ContentPart>,
 ) -> Result<Turn> {
     let reasoning_given = reasoning.is_some();
     let mut config = crate::manager::load_project_config_with(project, reasoning)
         .with_context(|| format!("loading configuration for {}", project.display()))?;
+    if let Some(name) = agent.filter(|name| !name.is_empty()) {
+        config.activate_agent(&name)?;
+    }
     config.require_api_key()?;
 
     // A leading `/command` is resolved here exactly as the CLI resolves it for

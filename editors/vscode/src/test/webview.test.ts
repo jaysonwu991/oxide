@@ -504,8 +504,8 @@ const footer = {
   chips: [
     { id: "model", label: "model: glm-5 · 128.0k", title: "Switch the model" },
     { id: "reasoning", label: "thinking: auto" },
-    { id: "agent", label: "agent: review" },
     { id: "access", label: "access: trusted" },
+    { id: "agent", label: "agent: review" },
   ],
   info: "main",
   usage: "↑1.2k · ↓340 · $0.01 · ctx 12%/128.0k (auto)",
@@ -565,7 +565,8 @@ describe("webview footer", () => {
     send(stateMessage());
     const chips = byId.get("model-settings")!.children;
     assert.equal(chips.length, 2);
-    assert.equal(byId.get("meta")!.children.length, 2);
+    assert.deepEqual(byId.get("meta")!.children.map((chip) => chip.dataset.control),
+      ["access", "agent", "permissions", "shortcuts"]);
     assert.equal(chips[0].dataset.control, "model");
     assert.equal(chips[0].children[0].textContent, "glm-5");
     assert.equal(chips[1].children[0].textContent, "Auto");
@@ -668,17 +669,17 @@ describe("webview footer", () => {
   /// panel holds are the editor's, and the chips in the toolbar below are where
   /// they are reached. Nothing is left under the box — the readout that line
   /// carried is the bar's own now, next to the gauge it belongs with.
-  it("carries the branch, the usage and the gauge on the bar above the box", () => {
+  it("keeps branch above the box and pins context beside the send controls", () => {
     const strip = between(shell, '<div id="strip"', '<button id="live-changes"');
     assert.match(strip, /class="composer-strip"/);
-    for (const id of ["branch-wrap", "usage", "gauge"]) {
+    for (const id of ["branch-wrap"]) {
       assert.match(strip, new RegExp(`id="${id}"`), id);
     }
     assert.doesNotMatch(strip, /id="mode-bar"|id="mode-queue"|id="mode-steer"/);
-    assert.ok(
-      strip.indexOf('id="usage"') < strip.indexOf('id="gauge"'),
-      "the readout stands next to the gauge it is measured against",
-    );
+    assert.doesNotMatch(strip, /id="usage"|id="gauge"/);
+    const bar = between(shell, '<div id="bar">', '<div id="dropzone"');
+    assert.ok(bar.indexOf('id="model-settings"') < bar.indexOf('id="usage"'));
+    assert.ok(bar.indexOf('id="gauge"') < bar.indexOf('id="stop"'));
     // The row of facts carries nothing to press.
     const facts = strip.indexOf('<div class="strip-facts">');
     assert.ok(facts >= 0, "the bar still declares the row of facts");
@@ -710,7 +711,9 @@ describe("webview footer", () => {
     assert.equal(byId.get("usage-text")!.getAttribute("aria-label"), `Usage: ${footer.usage}`);
     assert.equal(byId.get("usage-text")!.getAttribute("tabindex"), "0");
     assert.equal(byId.get("usage")!.title, footer.usage);
-    assert.equal(byId.get("usage")!.hidden, false);
+    assert.equal(byId.get("usage")!.hidden, true);
+    assert.equal(byId.get("gauge")!.title, footer.usage);
+    assert.equal(byId.get("gauge")!.getAttribute("aria-label"), `Usage: ${footer.usage}`);
     assert.equal(byId.get("gauge")!.hidden, false);
     assert.equal(byId.get("gauge")!.dataset.level, "ok");
     assert.equal(byId.get("gauge-fill")!.style.width, "12%");
@@ -734,7 +737,7 @@ describe("webview footer", () => {
     assert.equal(byId.get("gauge")!.hidden, true);
     assert.equal(byId.get("usage")!.hidden, true);
     assert.equal(byId.get("branch")!.textContent, "");
-    assert.equal(byId.get("meta")!.children.length, 0);
+    assert.equal(byId.get("meta")!.children.length, 2);
   });
 
   it("escalates the gauge color at the terminal's thresholds", () => {

@@ -71,6 +71,7 @@ export type DialogPin = "header" | "footer";
 /// is painted again from a fresh read when a turn ends, and a confirmation must
 /// not be swapped for a listing the moment it appears.
 export type DialogKind =
+  | "shortcuts"
   | "update"
   | "provider"
   | "logout"

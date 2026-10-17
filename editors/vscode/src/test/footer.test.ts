@@ -53,7 +53,7 @@ describe("footerState", () => {
     assert.equal(chip(state, "reasoning"), "thinking: auto");
     assert.equal(chip(state, "agent"), "agent: default");
     assert.equal(chip(state, "access"), "access: untrusted");
-    assert.deepEqual(state.chips.map((entry) => entry.id), ["model", "reasoning", "agent", "access"]);
+    assert.deepEqual(state.chips.map((entry) => entry.id), ["model", "reasoning", "access", "agent"]);
     assert.match(
       state.chips.find((entry) => entry.id === "reasoning")?.title ?? "",
       /Click to choose a level\./,

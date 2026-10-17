@@ -852,7 +852,6 @@ body.running .composer { border-radius: 16px; }
    has spent and the context it was spent against. The totals are the first of
    them and so take the row's own auto margin, which holds the reading at the end
    after them whether or not the thread has anything to count yet. */
-.composer-strip #usage { margin-left: auto; }
 /* A fact about the folder: its glyph and its value in the row's own dim text,
    rather than a chip the reader would try to press. It is a value rather than a
    sentence, so it never wraps onto a second line — the row is one line of facts
@@ -2147,4 +2146,4 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 }
 
 .dock-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 4; touch-action: none; }
-.dock-resizer:hover, .dock-resizer:focus-visible { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.dock-resizer:focus-visible { outline: 1px solid var(--border); outline-offset: -3px; }

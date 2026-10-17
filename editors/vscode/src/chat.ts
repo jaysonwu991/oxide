@@ -3050,6 +3050,15 @@ export class ChatController {
         return this.setAgent();
       case "access":
         return this.setProjectTrust();
+      case "permissions":
+        return this.showApprovals();
+      case "shortcuts":
+        this.showDialog({
+          kind: "shortcuts", pin: "footer", title: "Keyboard shortcuts",
+          subtitle: "Composer", note: "Enter: send · Shift+Enter: newline · Cmd/Ctrl+Shift+Enter: alternate Queue/Steer mode · Escape: close a dialog or stop",
+          rows: [], count: 0, search: false, query: "", refreshLabel: "", refreshAction: "",
+        });
+        return;
       case "openRun":
         // The strip's own control: the thread a turn is writing into — or the
         // one a finished turn left parked — brought back to the panel with the
