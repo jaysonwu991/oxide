@@ -86,11 +86,15 @@ oxide
 /connect
 ```
 
-Or bring your own key from the environment:
+Or bring a key from the environment. A provider reads the variable its own
+listing names — `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`,
+`GEMINI_API_KEY`, … — or `OXIDE_API_KEY`, which every provider reads, so the
+provider a run uses has to be the one that key belongs to (see
+[docs/configuration.md](docs/configuration.md#providers)):
 
 ```sh
-export OPENAI_API_KEY=sk-...
-oxide
+export OPENAI_API_KEY=sk-...   # or DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, …
+oxide --provider openai        # the provider whose key that is
 ```
 
 Non-interactive:

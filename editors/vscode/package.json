@@ -306,12 +306,15 @@
           "enum": [
             "auto",
             "off",
+            "minimal",
             "low",
             "medium",
-            "high"
+            "high",
+            "xhigh",
+            "max"
           ],
           "default": "auto",
-          "description": "Reasoning effort passed with --reasoning."
+          "description": "Reasoning effort passed with --reasoning. The footer's thinking chip offers the levels the active model's own listing advertises, which may be a narrower set."
         },
         "oxide.projectTrust": {
           "type": "string",

@@ -1915,13 +1915,12 @@
   /// since the CLI is asked for a follow-up turn rather than steering the one in
   /// flight. The desktop app swaps the same two the same way, so the button the
   /// reader is aiming at does not move as the box is typed into.
-  /// The Queue/Steer bar on the composer's own top row: the way a message typed
-  /// while a turn runs is delivered. It is up exactly while there is a turn to
-  /// deliver into in the thread on screen — a run in another thread is reached by
-  /// opening it, and the bar would be a choice about a message this composer
-  /// refuses to send. The marked way is the one Enter sends with, so the key
-  /// hints follow the mark: the marked option carries `Enter`, the other its own
-  /// key, and either can be picked with the pointer.
+  /// The Queue/Steer choice: the way a message typed while a turn runs is
+  /// delivered. It is the corner's own action rather than a bar over the
+  /// composer — the queued messages themselves are the list above the box — and
+  /// the choice is saved by the host, so the tooltip here always names what
+  /// `Enter` will do. A run in another thread is reached by opening it; this
+  /// corner refuses to send into it instead.
   function updateSendState() {
     const hasText = Boolean(input.value.trim()) || pendingCount() > 0;
     // The corner's own actions belong to the thread this composer is showing. A

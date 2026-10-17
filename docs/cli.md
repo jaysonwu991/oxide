@@ -34,9 +34,12 @@ contain the same entry, the platform config directory wins over `~/.oxide/`.
 
 Provider and model CLI flags take precedence over `OXIDE_*` environment
 variables, then `config.json` and provider presets. For API keys, the order is
-`OXIDE_API_KEY`, the selected provider's key variable, `auth.json`, and
-`config.json`; OpenAI-compatible providers also accept `OPENAI_API_KEY` as a
-last fallback. `OXIDE_BASE_URL` overrides the selected provider's base-URL
+`OXIDE_API_KEY`, the selected provider's own key variable, `auth.json`, and
+`config.json`. `OPENAI_API_KEY` is not a cross-provider fallback: a provider in
+the table reads only the variables its entry names, and `OPENAI_API_KEY` is read
+by `openai` itself and by a custom endpoint with no preset behind it (which
+speaks the OpenAI wire), never by the provider a reader happened to switch to.
+`OXIDE_BASE_URL` overrides the selected provider's base-URL
 variable, which overrides the file. Behavior settings live in `config.json`
 (global); `defaultProjectTrust` and `hideThinkingBlock` come from the global
 `settings.json`, while `compaction`, `modelPrices`, `modelContextWindows`,
@@ -400,12 +403,16 @@ Focus: $ARGUMENTS
   isolated subagent context whose result is reported back to the main
   conversation.
 - Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`,
-  `/tree`, `/fork`, `/clone`, `/name`, `/model`, `/reasoning`, `/theme`,
-  `/trust`, `/export`, `/reload`, `/init`, `/connect`, `/logout`, `/models`,
-  `/mcp`, `/plugins`, `/marketplaces`, `/notify`, `/permissions`, `/usage`,
-  `/spend`, `/updates`, `/undo`, `/redo`, `/compact`, `/copy`,
-  `/copy all`, and a skill by its own name (`/rust-conventions`, whose other
-  spelling is `/skill:<name>`). The catalog holds one spelling per command, so
+  `/tree`, `/fork`, `/clone`, `/name`, `/status`, `/model`, `/reasoning`,
+  `/theme`, `/trust`, `/export`, `/reload`, `/init`, `/connect`, `/logout`,
+  `/models`, `/mcp`, `/plugins`, `/marketplaces`, `/notify`, `/permissions`,
+  `/usage`, `/spend`, `/updates`, `/undo`, `/redo`, `/compact`, `/attach`,
+  `/copy [all]`, and a skill by its own name (`/rust-conventions`, whose other
+  spelling is `/skill:<name>`). Shared with the desktop app and the VS Code
+  panel through `crate::commands`: `/help`, `/mcp`, `/model`, `/reasoning`,
+  `/permissions`, `/trust`, `/session`, `/new`, `/usage`, `/attach`, `/connect`
+  and `/logout` — and `/theme` in the desktop app, `/agent` in the panel — while
+  the rest are the terminal's own. The catalog holds one spelling per command, so
   `/help` and the autocomplete list each name once and a word that is not one —
   `/mcps` for `/mcp`, `/login` for `/connect` — is an ordinary message rather
   than a second way to reach a command. After a space,
@@ -431,15 +438,16 @@ Focus: $ARGUMENTS
   `project` or `global`). A command whose frontmatter routes it to an agent or a
   subtask is one of those `prompt` entries: the CLI applies the routing when it
   runs the `/name` prompt, so a client only has to send it. An agent is not a slash command — it is selected
-  with a picker of the front-end's own (`/agent` in the terminal, `--agent` for
-  a run) — so agent files contribute no entry. The desktop app's `/` palette is
+  with a picker of the front-end's own (`/agent` in the VS Code panel,
+  `oxide --agent <name>` for a terminal or desktop run) — so agent files
+  contribute no entry. The desktop app's `/` palette is
   built from the catalog, so its menu and the terminal's autocomplete agree on
   what exists, and the VS Code panel draws the same catalog in its composer — a
   skill's own row in either one sends `/name`, which is what loads it; the panel
   answers the client commands it has an action for from its own code.
   `front_ends` is what keeps a menu honest: each client offers the built-ins it
-  is named in and leaves out the rest (`/permissions` is the terminal's and the
-  desktop app's; `/agent` is the panel's), so a row that appears is one the
+  is named in and leaves out the rest (`/agent` is the panel's; `/theme` is the
+  terminal's and the desktop app's), so a row that appears is one the
   client performs rather than one it answers with a "not available here" note.
   `desktop_only` is printed beside it for a client too old to read the new field:
   true when the panel is not among the front-ends that perform the command, which
@@ -1307,8 +1315,10 @@ variable the provider's own documentation uses (`OPENAI_API_KEY`,
 `GEMINI_API_KEY`, `GROQ_API_KEY`, `GITHUB_TOKEN`, … — each is listed with its
 provider in [Configuration reference](configuration.md#providers)) or an
 `api_key` entry in `config.json`; environment variables take precedence over
-`auth.json`. A provider that is not in the table takes its key from
-`<NAME>_API_KEY` (`oxider` → `OXIDER_API_KEY`).
+`auth.json`. A provider that is not in the table declares no variable of its
+own, so it reads `OPENAI_API_KEY` — the OpenAI wire it speaks — or
+`OXIDE_API_KEY`, which any provider accepts; a key stored for it is kept in
+`auth.json` under the name it was given.
 
 See [Configuration reference](configuration.md#configjson) and
 [Providers](configuration.md#providers) for the full list.
@@ -1426,8 +1436,10 @@ oxide --provider portkey --model account-model
 
 `PORTKEY_API_KEY` can also be used for the default setup. `OXIDE_API_KEY` has
 higher precedence; if neither is set and no stored or configured Portkey key
-exists, Oxide accepts `OPENAI_API_KEY` as the generic OpenAI-compatible
-fallback. `PORTKEY_BASE_URL` overrides `base_url`, `OXIDE_BASE_URL` overrides
+exists, the login is refused for a missing key rather than signed with another
+provider's — Portkey's entry names `PORTKEY_API_KEY`, so `OPENAI_API_KEY` is not
+read here (`openai` itself and a custom endpoint are the two that read it).
+`PORTKEY_BASE_URL` overrides `base_url`, `OXIDE_BASE_URL` overrides
 both, `PORTKEY_CONFIG` overrides `portkey_config`, and `PORTKEY_MODELS`
 overrides `model_catalog` with a comma-separated list.
 
@@ -1602,6 +1614,9 @@ Runtime state lives under the platform Oxide config directory:
 - `updates.json` — the newest release of each component the last launch found, so the "update available" notice needs no network wait (override with `OXIDE_UPDATES_FILE`)
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state
+- `desktop/projects.json` — the folders the desktop sidebar lists;
+  `desktop/sessions.json` — the threads it pins and archives, shared with the
+  VS Code panel
 - `portkey-usage.json` — Portkey spend bar settings and API key (mode `0600`, override the path with `OXIDE_USAGE_FILE`)
 - `clipboard/<id>.png` — a picture pasted from the clipboard that named no file, so it has a path to be attached and shown by; retained 7 days
 - `truncated/` — full text of tool outputs that exceeded the line/byte cap, retained 7 days (override with `OXIDE_TRUNCATION_DIR`)

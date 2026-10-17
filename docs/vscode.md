@@ -53,7 +53,7 @@ editors/vscode/
       json.ts         a tolerant JSON object reader
       project.ts      the on-disk state the footer reports
       footer.ts       footer chips, usage line and context gauge
-      sessions.ts     `oxide sessions list` / `--version` parsing
+      sessions.ts     `oxide sessions list` / `oxide --version` parsing
     test/             node:test suites for src/core and the manifest
   media/
     main.js           dependency-free webview renderer (Markdown, diffs, …)
@@ -393,8 +393,10 @@ the `session` header supplies the id reused for the next message with
 with a `quit` frame when `agent_end` arrives, so the process exits on its own.
 
 - **Queue / stop** — a message sent while a turn runs is queued and started
-  after it finishes, unless the bar's mark is on **Steer** (or its key was used),
-  which injects it before the model's next step; **Stop** kills the process
+  after it finishes, unless the saved choice is **Steer** (or
+  `Ctrl+Shift+Enter`/`⌘⇧Enter` was used for that message), which injects it
+  before the model's next step, and a queued message's own **Steer** button
+  moves just that one; **Stop** kills the process
   (SIGTERM, then SIGKILL after 3 s). The session on disk is intact, so the next
   message continues the thread.
 - **Approvals** — with `oxide.askApprovals` on (the default) a turn starts with
@@ -574,13 +576,21 @@ beside its gauge.
   to say, **Send** the moment the box holds something. The corner button does
   not move as the box is typed into; an attachment is something to send too,
   while a context chip on its own is not.
-- **Queue / Steer** — the bar's own top row, up while a turn runs in the thread
-  on screen, the way the desktop app carries it: the marked option is the way
-  `Enter` and **Send** deliver the message, the other is the way `Alt+Enter`
-  does, and a click moves the mark. The key hints travel with the mark, so the
-  marked option always reads `Enter` — **Queue** is the default, which waits for
-  the current response, and **Steer** injects the message before the model's
-  next step.
+- **Queue / Steer** — how a message typed while a turn runs is delivered, and
+  the panel carries it the way the desktop app does: **Queue** (the default)
+  waits for the current response and becomes the next turn after it, **Steer**
+  injects the message before the model's next step. `Enter` and **Send** deliver
+  the saved way, `Ctrl+Shift+Enter` (`⌘⇧Enter` on macOS) sends the other way
+  once without changing it, and the corner button's tooltip always names what
+  `Enter` will do. The choice is toggled from a queued message's own menu (`Use
+  Steer for new messages` / `Use Queue for new messages`), which saves the
+  `oxide.followUpBehavior` setting. What is waiting is listed above the textarea
+  in the composer: a row per queued message, named by its first line, with a
+  **Steer** button that moves that one into the running response, a **Delete**
+  button, and a **More** menu carrying `Move up`, `Move down`, `Edit` (back into
+  the box, which has to be empty for it) and the delivery toggle. The rows can
+  be dragged into another order, and the list is up only while something is
+  queued.
 - **Branch** — the repository the folder sits in, read from `.git/HEAD` rather
   than through the Git extension, so it needs no other extension installed; a
   worktree's or submodule's `gitdir:` pointer is followed to the real HEAD. It is

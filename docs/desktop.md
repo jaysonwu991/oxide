@@ -357,8 +357,9 @@ The regions, top to bottom:
   moment there is — and only **Stop** while that
   turn is running in a thread this composer is not showing, since a message
   typed here would be steered into a run whose reply belongs to the
-  conversation being read. The way a message is delivered is the bar's own, at
-  the top of the composer. Every
+  conversation being read. The way a message is delivered is the composer's own
+  saved Queue/Steer choice, and what is queued waits in the box above the text
+  (see [Queue and Steer](#queue-and-steer)). Every
   control is wired to a plain `click` — each button, native radio/checkbox,
   sidebar/list row, change card, and attachment thumbnail — and no control is
   revealed by hovering it: a `:hover` rule in this window is a highlight (a
@@ -395,8 +396,8 @@ The regions, top to bottom:
   gesture on it stays the click that opens the preview instead of starting the
   drag the engine withholds it for. The
   status and
-  token/cost usage sit just below it. The 📎 button (or a pasted clipboard
-  image) attaches images, PDFs and text files, shown above the input as
+  token/cost usage sit just below it. The **Attach** paperclip (or a pasted
+  clipboard image) attaches images, PDFs and text files, shown above the input as
   thumbnails that open a
   full preview when clicked (or focused and opened with Enter/Space) — the
   preview is closed by the ✕ icon button its siblings carry, which sits in a
@@ -748,13 +749,14 @@ event channel serializes events with
   (`oxide_core::agent::Cancel`): the loop finishes the current step — recording
   a result for any planned tool calls so the session stays a valid
   call/result sequence — and ends cleanly, with a 5-second force-abort fallback
-    if it is stuck. While the turn is active, the **Queue** / **Steer** bar carries
-  the choice. Queue is the safe
+  if it is stuck. While the turn is active, the composer's saved Queue/Steer
+  choice decides what a new message does, and a queued one can be steered from
+  its own row. Queue is the safe
   default: it waits until the current response finishes, then becomes the next
   turn. Steer injects a course correction before the agent's next model step. `steer_run` pushes into the
-  selected follow-up or interleaved steering queue, then the composer returns to
-  Queue so a later message cannot redirect work accidentally
-  ([Queue and Steer](#queue-and-steer)).
+  selected follow-up or interleaved steering queue, and answering a queued row's
+  own **Steer** moves just that message rather than changing the choice a later
+  one follows ([Queue and Steer](#queue-and-steer)).
 - **Reading another thread while a turn runs** — a turn belongs to the thread
   it started in and to no other, and that is kept apart from the thread on
   screen: the run's id and title live in `state.runSession` / `state.runTitle`
@@ -937,34 +939,39 @@ immediately and persists it.
 
 ## Queue and Steer
 
-While a turn runs in the thread on screen, the top row of the composer's bar
-carries the two ways a message typed now can be delivered, each with the key
-that sends it:
+While a turn runs, a message typed into the thread on screen is delivered one of
+two ways, and which one is the composer's own saved choice:
 
-- **Queue** waits for the current response and becomes the next turn after it.
-  It is the safe default, and it is what `Enter` and **Send** do while the mark
-  is on it.
+- **Queue** (the default) waits for the current response and becomes the next
+  turn after it.
 - **Steer** injects the message before the agent's next model step, so a
   correction reaches the model rather than waiting its turn.
 
-The marked option is the one `Enter` and **Send** follow; the other is what its
-own key does, and the key hints travel with the mark, so the marked option always
-reads `Enter` and the other `Alt+Enter`. Clicking either moves the mark, and the
-composer goes back to Queue once a message has gone — a later message cannot
-redirect work by accident.
+`Enter` and **Send** deliver the way the choice is set, and
+`⌘⇧Enter`/`Ctrl+Shift+Enter` sends the other way once without changing it. The
+choice is toggled from a queued message's own menu (`Use Steer for new
+messages` / `Use Queue for new messages`) and kept in the window's local
+storage, so a window that reopens delivers the way it was left rather than
+resetting to Queue.
 
-The bar is up exactly while there is a turn to deliver into in the thread on
-screen. A turn running in another thread is reached by opening it (the header
-names it), and a message typed here is refused rather than steered into a run
-whose reply would land in a conversation nobody is reading.
+What is waiting is listed in the composer itself, above the text box: a row per
+queued message, named by its first line, with a **Steer** button that moves that
+one into the running response, a **Delete** button, and a **More** menu carrying
+`Move up`, `Move down`, `Edit` (back into the box, which has to be empty for it)
+and the delivery toggle. The rows can be dragged into another order, and the
+list is up only while something is queued.
+
+A turn running in another thread is reached by opening it (the header names it),
+and a message typed here is refused rather than steered into a run whose reply
+would land in a conversation nobody is reading.
 
 ## Keyboard shortcuts
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Send — with the marked Queue/Steer way while a turn runs |
+| `Enter` | Send — delivering a message queued while a turn runs the saved way |
 | `Shift+Enter` | Newline |
-| `Alt+Enter` | Send the other way while a turn runs (the unmarked option) |
+| `⌘⇧Enter` / `Ctrl+Shift+Enter` | Deliver this message the other way once while a turn runs |
 | `Shift+Tab` / `Ctrl+R` | Cycle reasoning (the thinking chip opens the level picker) |
 | `Ctrl+K` | Model picker |
 | `Ctrl+/` | Shortcut help |

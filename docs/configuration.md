@@ -110,6 +110,24 @@ oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
 oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION>] [--version <VERSION>] [--force] [--json]
 ```
 
+These print what a front-end draws, through the same core the terminal uses, so
+a client that cannot link `oxide-core` keeps no copy of the tables:
+
+```
+oxide commands [--json]                 # the slash-command catalog
+oxide models [--json] [--active]        # the catalogs of the logged-in providers
+oxide providers [--json]                # every provider, with its credential state
+oxide reasoning [--json] [--refresh] [--model <MODEL>]
+oxide context [--json] [--model <MODEL>] # the window a run resolves, and the key facts
+oxide login <provider> [--key-stdin] [--model <MODEL>] [--base-url <URL>] [--json]
+oxide logout [provider] [--json]
+oxide approvals list|clear [--project <dir>] [--json]
+oxide trust show|set <trusted|untrusted> [--project <dir>] [--json]
+oxide changes show <path> --baseline <rev> [--project <dir>]
+oxide changes undo --baseline <rev> [--after <rev>] [--project <dir>]
+oxide clipboard --json
+```
+
 | Flag | Description |
 | --- | --- |
 | `[PROMPT]...` | Prompt words. `@path` reads a file into the prompt (images and PDFs become attachments). Providing one implies non-interactive mode. |
@@ -124,7 +142,7 @@ oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION
 | `--system-prompt <TEXT>` | Replace the default system prompt for this run. |
 | `--append-system-prompt <TEXT>` | Append text to the system prompt (repeatable). |
 | `--no-context-files` | Disable `AGENTS.md`/`CLAUDE.md` context-file discovery. |
-| `-t, --tools <LIST>` | Allowlist tools (comma-separated, Pi or legacy names). |
+| `-t, --tools <LIST>` | Allowlist tools (comma-separated, by the name the tool is registered under). |
 | `-x, --exclude-tools <LIST>` | Disable tools (comma-separated). |
 | `-a, --approve` | Trust project-local resources for this run. |
 | `--no-approve` | Ignore project-local resources for this run. |
@@ -631,7 +649,9 @@ Runtime state lives under the platform Oxide config directory:
   found, so the launch notice needs no network wait; see `OXIDE_UPDATES_FILE`)
 - Themes: `themes/<name>.json`
 - Desktop projects: `desktop/projects.json` (folders added to the desktop
-  sidebar)
+  sidebar, and the order they are dragged into)
+- Pinned and archived threads: `desktop/sessions.json` (what the desktop
+  sidebar and the VS Code panel's session list mark, shared by both)
 - Approvals: `approvals.json` (tools allowed without prompting, per project;
   shared by the terminal, the desktop app and the VS Code extension)
 - Truncated tool output: `truncated/` (retained 7 days; see
