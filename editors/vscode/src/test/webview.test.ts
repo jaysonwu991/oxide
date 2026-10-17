@@ -711,7 +711,9 @@ describe("webview footer", () => {
     assert.equal(byId.get("usage-text")!.getAttribute("aria-label"), `Usage: ${footer.usage}`);
     assert.equal(byId.get("usage-text")!.getAttribute("tabindex"), "0");
     assert.equal(byId.get("usage")!.title, footer.usage);
-    assert.equal(byId.get("usage")!.hidden, false);
+    assert.equal(byId.get("usage")!.hidden, true);
+    assert.equal(byId.get("gauge")!.title, footer.usage);
+    assert.equal(byId.get("gauge")!.getAttribute("aria-label"), `Usage: ${footer.usage}`);
     assert.equal(byId.get("gauge")!.hidden, false);
     assert.equal(byId.get("gauge")!.dataset.level, "ok");
     assert.equal(byId.get("gauge-fill")!.style.width, "12%");

@@ -1609,10 +1609,11 @@ check(
   "kept the context reading at the row's end, in the color of the level",
   /\n\.context-ring \{[^}]*display: inline-flex;/.test(sheet) &&
     !/\n\.context-ring \{[^}]*margin-left: auto;/.test(sheet) &&
-    /\.composer-strip #usage \{ margin-left: auto; \}/.test(sheet) &&
+    !/\.composer-strip #usage/.test(sheet) &&
     !/\.strip-end/.test(`${shell}\n${sheet}`) &&
     shellAt('id="usage"') < shellAt('id="context-percent"') &&
-    strip.includes('id="usage"') &&
+    !strip.includes('id="usage"') &&
+    shellAt('id="reasoning-value"') < shellAt('id="usage"') &&
     !strip.includes('id="context-percent"') &&
     shellAt('id="reasoning-value"') < shellAt('id="context-ring"') &&
     shellAt('id="context-percent"') < shellAt('id="stop"') &&
@@ -1630,7 +1631,7 @@ const badgeRow = shell.slice(shellAt('id="status"'), shellAt('id="send"'));
 check(
   "shipped the status badge in the composer's own row",
   shellAt('class="composer-strip"') < shellAt('id="status"') &&
-    !badgeRow.includes('id="usage"') &&
+    badgeRow.includes('id="usage"') &&
     shellAt('id="status"') < shellAt('id="send"') &&
     !shell.includes('id="status-icon"') &&
     /id="status"[^>]*role="status"/.test(badgeRow),

@@ -1718,10 +1718,11 @@
     usageText.setAttribute("tabindex", "0");
     usageText.setAttribute("aria-label", footer.usage ? `Usage: ${footer.usage}` : "No usage reported");
     usageRow.title = footer.usage || "";
-    usageRow.hidden = !footer.usage;
-    gauge.hidden = percent === null;
+    usageRow.hidden = true;
+    gauge.hidden = !footer.usage && percent === null;
     gauge.dataset.level = footer.level || "ok";
-    gauge.title = percent === null ? "" : `${percent}% of the context window used`;
+    gauge.title = footer.usage || (percent === null ? "No usage reported" : `${percent}% of the context window used`);
+    gauge.setAttribute("aria-label", `Usage: ${gauge.title}`);
     gauge.style.background = `conic-gradient(currentColor ${percent === null ? 0 : Math.min(percent, 100) * 3.6}deg, color-mix(in srgb, currentColor 25%, transparent) 0)`;
     gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
   }

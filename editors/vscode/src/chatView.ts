@@ -398,8 +398,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <span class="spacer"></span>
       <div id="model-settings" class="model-settings" aria-label="Model and reasoning"></div>
       <div class="context-status">
-      <span id="usage" class="usage"><span id="usage-text" role="note" tabindex="0"></span></span>
-      <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
+      <span id="usage" class="usage" hidden><span id="usage-text" role="note" tabindex="0"></span></span>
+      <span id="gauge" class="gauge" role="img" tabindex="0" hidden><span id="gauge-fill"></span></span>
       </div>
       <button id="stop" class="icon danger run-control composer-action" hidden title="Stop the running turn (Esc)" aria-label="Stop"><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
       <button id="send" class="icon primary composer-action" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
