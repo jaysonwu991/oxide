@@ -1209,6 +1209,7 @@ check(
     app.state.runSession === "6f3031b2beef" &&
     app.state.pendingSends[0]?.prompt === "queued while running" &&
     app.state.parked?.session === "6f3031b2beef" &&
+    elementFor("details-panel").hidden === true &&
     elementFor("queue-list").hidden === true &&
     elementFor("run-banner").hidden === false &&
     elementFor("run-banner-text").textContent === "A turn is running in “Fix the sidebar”",
@@ -1242,6 +1243,7 @@ check(
     app.state.session === "6f3031b2beef" &&
     app.state.parked === null &&
     elementFor("run-banner").hidden === true &&
+    elementFor("details-panel").hidden === false &&
     !calls.some(([name]) => name === "session_messages"),
   `${app.state.project} / ${app.state.session} / ${app.state.parked} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
@@ -4095,6 +4097,16 @@ check(
     elementFor("details-sources").children.length === servers.length &&
     elementFor("details-toggle").getAttribute("aria-expanded") === "true",
 );
+const dockSession = app.state.session;
+app.state.runSession = "dock-running";
+app.state.session = "another-thread";
+await app.openProjectDetails();
+check("hid the dock while reading another thread in the same project", elementFor("details-panel").hidden);
+app.state.session = "dock-running";
+await app.openProjectDetails();
+check("restored the dock on returning to the running thread", !elementFor("details-panel").hidden);
+app.state.session = dockSession;
+app.state.runSession = null;
 // The row is read out of the repository, so a run writing files after the dock
 // came up is read again as its calls land, rather than left saying what the tree
 // held before the turn started.

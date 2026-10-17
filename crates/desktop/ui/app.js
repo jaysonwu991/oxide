@@ -3302,7 +3302,7 @@ function paintDockToggles() {
   // summarize, so the dock is not there at all rather than standing empty.
   const panel = el("details-panel");
   const wasHidden = panel.hidden;
-  panel.hidden = !state.busy || !el("review-modal").hidden;
+  panel.hidden = !state.busy || !viewingRun() || !el("review-modal").hidden;
   el("changes-toggle").setAttribute("aria-expanded", String(!el("review-modal").hidden));
   el("details-toggle").setAttribute("aria-expanded", String(!panel.hidden));
   if (wasHidden && !panel.hidden) return refreshProjectDetails();

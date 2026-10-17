@@ -421,7 +421,7 @@ async fn event_loop(
             }
             adopted = adopted_rx.recv() => {
                 if let Some(adopted) = adopted {
-                    apply_adopted_catalog(&mut app, &mut config, adopted);
+                    apply_adopted_catalog(&mut app, &mut config, adopted, &Config::config_path());
                 }
             }
             _ = tick.tick(), if app.busy => {
@@ -4966,13 +4966,14 @@ struct LoginEvent {
     step: LoginStep,
 }
 
-/// The answer a login's own catalog lookup brought back: the model the account
-/// really serves, and the two facts that say whether it is still this session's
-/// to apply — the provider, and the model it was adopted in place of.
+/// A login's catalog response, including reasoning metadata when the model did
+/// not move. Its original selection identifies which session can still use it.
 struct AdoptedCatalog {
     provider: String,
     from: String,
+    base_url: String,
     model: String,
+    reasoning: Option<crate::config::ModelReasoning>,
 }
 
 /// Reads the provider's own listing after a login the dialog has already saved,
@@ -4985,13 +4986,14 @@ fn start_catalog_lookup(tx: &UnboundedSender<AdoptedCatalog>, config: &Config, p
     let provider = crate::auth::canonical_provider(provider);
     let from = config.model.clone();
     tokio::spawn(async move {
-        if adopted.adopt_provider_catalog().await {
-            let _ = tx.send(AdoptedCatalog {
-                provider,
-                from,
-                model: adopted.model,
-            });
-        }
+        adopted.adopt_provider_catalog().await;
+        let _ = tx.send(AdoptedCatalog {
+            provider,
+            from,
+            base_url: adopted.base_url,
+            model: adopted.model,
+            reasoning: adopted.reasoning_supported,
+        });
     });
 }
 
@@ -4999,21 +5001,35 @@ fn start_catalog_lookup(tx: &UnboundedSender<AdoptedCatalog>, config: &Config, p
 /// on the provider it was read for and still on the model it was read over: a
 /// reader who moved on in the meantime is not dragged back by an answer about a
 /// selection they have left.
-fn apply_adopted_catalog(app: &mut App, config: &mut Config, adopted: AdoptedCatalog) {
+fn apply_adopted_catalog(
+    app: &mut App,
+    config: &mut Config,
+    adopted: AdoptedCatalog,
+    selection_path: &Path,
+) {
     if crate::auth::canonical_provider(&config.provider) != adopted.provider
         || config.model != adopted.from
+        || config.base_url != adopted.base_url
     {
         return;
     }
-    config.model = adopted.model;
-    refresh_reasoning(config);
-    let _ = config.persist_selection_at(&Config::config_path());
+    let changed = config.model != adopted.model;
+    if changed {
+        config.apply_login_options(&adopted.model, "", "");
+    }
+    config.reasoning_supported = adopted.reasoning;
     apply_model_state(app, config);
-    app.items.push(ChatItem::Info(format!(
-        "model set to {} — what {} serves",
-        config.model, config.provider
-    )));
-    app.auto_scroll = true;
+    app.context_limit = context_limit(config);
+    if changed {
+        if let Err(error) = config.persist_selection_at(selection_path) {
+            app.items.push(ChatItem::Error(format!("{error:#}")));
+        }
+        app.items.push(ChatItem::Info(format!(
+            "model set to {} — what {} serves",
+            config.model, config.provider
+        )));
+        app.auto_scroll = true;
+    }
 }
 
 /// Paints one step of a browser login. The code and URL land in the dialog it
@@ -6544,6 +6560,72 @@ mod tests {
         assert_eq!(repair_empty_pasted_image_name("ordinary text"), None);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn login_catalog_refreshes_reasoning_without_changing_the_model() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "test-key");
+        config.model = "account-model".into();
+        let reasoning = crate::config::ModelReasoning {
+            supported: vec![Reasoning::Low, Reasoning::High],
+            default: Some(Reasoning::High),
+        };
+        let adopted = AdoptedCatalog {
+            provider: config.provider.clone(),
+            from: config.model.clone(),
+            base_url: config.base_url.clone(),
+            model: config.model.clone(),
+            reasoning: Some(reasoning.clone()),
+        };
+        let path = approval_dir("catalog-unchanged").join("config.json");
+        apply_adopted_catalog(&mut app, &mut config, adopted, &path);
+        assert_eq!(config.reasoning_supported, Some(reasoning));
+        assert!(app.show_thinking);
+        assert!(!path.exists(), "unchanged selections need no config write");
+    }
+
+    #[test]
+    fn login_catalog_remembers_the_adopted_model_and_resets_effort() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        config.apply_provider("deepseek", "test-key");
+        config.reasoning = Reasoning::Medium;
+        let adopted = AdoptedCatalog {
+            provider: config.provider.clone(),
+            from: config.model.clone(),
+            base_url: config.base_url.clone(),
+            model: "account-model".into(),
+            reasoning: None,
+        };
+        let path = approval_dir("catalog-adopted").join("config.json");
+        apply_adopted_catalog(&mut app, &mut config, adopted, &path);
+        assert_eq!(config.model_for_provider("deepseek"), "account-model");
+        assert_eq!(config.reasoning, Reasoning::Auto);
+        assert_eq!(app.model, "account-model");
+        assert_eq!(app.context_limit, context_limit(&config));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(saved["provider_models"]["deepseek"], "account-model");
+    }
+
+    #[test]
+    fn login_catalog_does_not_apply_after_the_endpoint_changes() {
+        let mut app = test_app();
+        let mut config = Config::default();
+        let adopted = AdoptedCatalog {
+            provider: config.provider.clone(),
+            from: config.model.clone(),
+            base_url: "https://previous.example/v1".into(),
+            model: "previous-account-model".into(),
+            reasoning: None,
+        };
+        let previous = config.model.clone();
+        let path = approval_dir("catalog-stale").join("config.json");
+        apply_adopted_catalog(&mut app, &mut config, adopted, &path);
+        assert_eq!(config.model, previous);
+        assert!(!path.exists());
     }
 
     #[test]
