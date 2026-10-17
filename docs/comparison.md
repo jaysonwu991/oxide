@@ -13,14 +13,14 @@ so check each project's documentation for the current details.
 | Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, desktop app, VS Code extension | Terminal CLI, IDE (VS Code, Cursor) | Terminal, desktop, IDE, web | Terminal, IDE, desktop, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `AGENTS.md` + `~/.codex/config.toml` | `opencode.json` + `AGENTS.md` | `CLAUDE.md` + `.claude/` |
 | Subagents | `--agent`, `task`, command routing | Subagents | Agents | Subagents, background agents |
-| Reasoning effort | `auto` / `off` / `low` / `medium` / `high` (Shift+Tab, `--reasoning`) | `--reasoning-effort` (model-dependent) | Model-dependent | Extended thinking |
+| Reasoning effort | `auto` / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`, narrowed to the levels the model's own listing advertises (Shift+Tab, `--reasoning`) | `--reasoning-effort` (model-dependent) | Model-dependent | Extended thinking |
 | Slash commands | `.oxide/commands` + `.oxide/prompts`, `agent`/`subtask` routing | Commands (`~/.codex/prompts`, `prompts/`) | Commands | Commands |
 | Skills | `SKILL.md` | `SKILL.md` | Agent Skills | Skills |
 | MCP servers | stdio + HTTP + OAuth, managed with `oxide mcp` | MCP servers (`codex mcp`, config.toml) | MCP servers | MCP servers |
 | Plugins / hooks | Hooks + plugin packages & marketplaces | — | Plugins | Hooks, plugins, Agent SDK |
 | LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | — | Built in (LSP servers) | — |
 | Undo file changes | Shadow-git `/undo`, `/redo` | Git checkpoints (`codex checkpoint`) | `/undo`, `/redo` | Git / checkpoints |
-| Sessions | Pi-style JSONL trees, `-c` / `-r`, `/session` / `/tree` / `/fork` / `/clone` | Sessions (`codex --resume`) | Sessions, share links | Sessions across surfaces |
+| Sessions | Pi-style JSONL trees, `-c` / `-r`, `/session` / `/tree` / `/fork` / `/clone`, pin/archive in the shared store | Sessions (`codex --resume`) | Sessions, share links | Sessions across surfaces |
 | Project trust | `trust.json`, `--approve` / `/trust` | Sandbox + approval modes | — | — |
 | Themes | Built-in `dark` / `light`, custom `.oxide/themes` | Built-in themes (`codex themes`) | Themes | — |
 | Context management | Auto-compaction + branch summarization | Auto-compaction | Auto-compaction + DCP plugin | Auto-compaction |

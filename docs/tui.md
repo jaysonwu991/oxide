@@ -13,11 +13,14 @@ oxide
 /connect
 ```
 
-Or provide credentials through the environment:
+Or provide credentials through the environment: a provider reads the variable
+its own listing names (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`,
+`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, …) or `OXIDE_API_KEY`, which every
+provider reads, so the run has to be on the provider that key belongs to.
 
 ```sh
-export OPENAI_API_KEY=sk-...
-oxide
+export OPENAI_API_KEY=sk-...   # or DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, …
+oxide --provider openai        # the provider whose key that is
 ```
 
 ## Layout

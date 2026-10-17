@@ -1,4 +1,5 @@
-//! Non-interactive saved-session management: list, delete, compact, and merge.
+//! Non-interactive saved-session management: list, show, delete, compact,
+//! merge, and the pin/archive state the desktop app and the panel share.
 
 use crate::compact;
 use crate::config::Config;

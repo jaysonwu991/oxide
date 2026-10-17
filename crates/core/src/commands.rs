@@ -14,8 +14,9 @@
 //! none of its own.
 //!
 //! An agent is not a slash command: a client selects one through its own agent
-//! picker (`/agent` in the terminal, `--agent` for a run), so agent files
-//! contribute no entry here. The routing a command's frontmatter declares
+//! picker (`/agent` in the VS Code panel, `--agent` for a terminal or desktop
+//! run), so agent files contribute no entry here. The routing a command's
+//! frontmatter declares
 //! (`agent:`, `subtask:`) is resolved by the CLI when it runs the `/name`
 //! prompt, so a client that only sends the prompt needs no entry for it.
 

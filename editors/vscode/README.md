@@ -30,7 +30,7 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
 - **Editor actions**: explain, fix, or ask about a selection; attach a file,
   a selection, or an image to the chat.
 - **Sessions**: continue the project's latest session, or pick one from the
-  CLI's own list with **Oxide: Resume Session…** or `/session` in the message
+  CLI's own list with **Oxide: Session History** or `/session` in the message
   box — the list opens in the panel, hanging under the header, not a native
   picker, with **New chat** as its first row to close the thread on screen and
   go back to the new-chat page.
@@ -59,9 +59,12 @@ curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh |
 cargo install --path crates/cli
 ```
 
-Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
-`/connect` there. The extension reads the resulting `auth.json` and
-`config.json` — it never asks for a key itself.
+Provider logins live in the CLI's own store, and either front-end can write
+one: **Oxide: Connect Provider…** (or `/connect` in the message box) draws the
+same provider table the terminal's `/connect` does and runs the CLI's own
+`oxide login`, so the resulting `auth.json` and `config.json` are the ones a
+terminal or the desktop app reads. **Oxide: Open Terminal (TUI)** is the other
+door, if you would rather use the picker there.
 
 ## Getting started
 
@@ -87,7 +90,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
    the project's threads under the header — both
    inside the panel, with a server's power switch or
    the thread a row names acting where it was asked (the same lists **Oxide:
-   MCP Servers…** and **Oxide: Resume Session…** open from the palette). The
+   MCP Servers…** and **Oxide: Session History** open from the palette). The
    thread row you are in is marked **Current**, and **New chat** above the list
    closes it and starts you on a fresh page.
 6. Click a thumbnail in the attachment strip to see the full-size image before
@@ -118,7 +121,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | **Oxide: Focus Input** | Move the caret between the editor and the message box (`Ctrl+Esc` / `Cmd+Esc`). |
 | **Oxide: Insert File Reference** | Write the file you have open — or the selection in it — into the message box as an `@path` reference (`Alt+K`). |
 | **Oxide: New Chat** | Close the thread on screen and go back to the new-chat page; the next message starts a thread of its own. |
-| **Oxide: Resume Session…** | Pick from this project's sessions (or continue the latest), in a list inside the panel. |
+| **Oxide: Session History** | Pick from this project's sessions (or continue the latest), in a list inside the panel — the same listing `/session` opens. |
 | **Oxide: Continue Last Session** | Continue the most recent session on the next message. |
 | **Oxide: Stop** | Cancel the running turn (the session keeps what it has written). |
 | **Oxide: Add File or Selection to Chat** | Attach the selection or the whole file as context (`Ctrl+Alt+A` / `Cmd+Alt+A`); on an image or PDF in the explorer, it attaches the file as media instead. |
@@ -127,6 +130,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | **Oxide: Fix Selection** | Attach the selection and ask for a minimal fix. |
 | **Oxide: Review Working Tree Changes** | Review the uncommitted changes without modifying files. |
 | **Oxide: Open Terminal (TUI)** | Run the interactive `oxide` TUI in a terminal, for `/connect` and `/models`. |
+| **Oxide: Connect Provider…** | Draw the CLI's provider table and connect one, the way the terminal's `/connect` does: the key is typed into VS Code's password box, written to the CLI's own `oxide login` on stdin, and stored where every front-end reads it. `/connect` in the message box opens the same dialog, and `/logout` lists the providers a credential can be forgotten from. |
 | **Oxide: MCP Servers…** | List the MCP servers this project loads and connect or disconnect them; typing `/mcp` in the composer opens the same list above the composer. |
 | **Oxide: Check for Updates...** | Report the newest oxide CLI release and offer to install it, by running the CLI's own `oxide update --check --json` and then `oxide update` if you take it. The extension itself updates from the Marketplace. |
 | **Oxide: Show Output Channel** | The command line, prompt, stderr and event log of each turn. |
@@ -139,7 +143,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | `oxide.binaryPath` | `oxide` | The binary to run. A bare name is looked up on `PATH`, then in `~/.local/bin` and `~/.cargo/bin`. |
 | `oxide.model` | *(empty)* | `--model`. Empty uses the model from Oxide `config.json`; the in-panel picker loads the active provider's complete catalog through `oxide models --json --active`, falls back to remembered models if it cannot refresh, and accepts a custom ID. |
 | `oxide.agent` | *(empty)* | `--agent`, loaded from the workspace's `.oxide/agents`. |
-| `oxide.reasoning` | `auto` | `--reasoning`: `auto`, `off`, `low`, `medium`, `high`. |
+| `oxide.reasoning` | `auto` | `--reasoning`: `auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. The footer's thinking chip walks the levels the active model's own listing advertises (read through `oxide reasoning --json`), so a model that accepts only some of them offers only those. |
 | `oxide.projectTrust` | `default` | `always` passes `--approve`, `never` passes `--no-approve`; `default` follows `trust.json`/`defaultProjectTrust`. |
 | `oxide.tools` | *(empty)* | `--tools` allowlist, e.g. `read,grep,find,ls` for a read-only run. |
 | `oxide.excludeTools` | *(empty)* | `--exclude-tools` denylist. |
@@ -147,6 +151,7 @@ Provider logins live in the CLI: run **Oxide: Open Terminal (TUI)** and use
 | `oxide.showThinking` | `true` | Show `✦ Thinking` blocks. |
 | `oxide.autoContext` | `true` | Track the file you are editing as a chip in the composer, sent with the next message as context. The chip follows the file and the lines selected in it, and both are read when the message goes, so unsaved edits are included and a selection sends just the lines it names; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. |
 | `oxide.askApprovals` | `true` | `--ask-approvals`: ask in the transcript before running a tool a permission rule gates. **Always allow** is remembered per project in the shared `approvals.json`. Off passes `--no-ask-approvals`. Either flag is passed explicitly, so this setting decides for panel runs (the shared `settings.json` key still decides for the terminal). |
+| `oxide.followUpBehavior` | `queue` | How a message typed while a turn runs is delivered: `queue` waits for the current response and becomes the next turn, `steer` injects it before the model's next step. `Enter` and **Send** follow it, `Ctrl+Shift+Enter` (`⌘⇧Enter`) sends the other way once, and a queued message's own menu toggles it. |
 | `oxide.notifyOnFinish` | `true` | Notify when a run finishes while the panel is hidden, naming the thread by its title. |
 
 ## Notes and limits

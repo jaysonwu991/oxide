@@ -728,11 +728,11 @@ button.details-row:hover { color: var(--accent); }
    top, with the box's own top border as the line between them. It is narrower than
    the box and centered on it — 24px narrower, the 12px the box pads each side —
    so its edges stand where the box's own text column does and the box reads as the
-   wider of the two, in a narrow window as much as a wide one. It is a column, so
-   the Queue/Steer bar can sit on top of the folder's own facts while a turn runs;
-   the facts themselves are about where the turn runs rather than about the message,
-   so they are read before anything is typed below them — the window's own status
-   is the row inside the box, beside the controls. */
+   wider of the two, in a narrow window as much as a wide one. It carries the
+   folder's own facts and nothing that belongs to the message — the queue lives
+   inside the box above the text, and the window's own status is the row inside
+   the box, beside the controls — so what is read there is about where the turn
+   runs, before anything is typed below it. */
 .composer-strip {
   width: calc(100% - 24px);
   max-width: 756px;

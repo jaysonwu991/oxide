@@ -1,7 +1,7 @@
 //! Persistent memory across sessions: entries are
 //! stored per project (keyed by git remote or project root) and per user, and
 //! retrieved with a dependency-free lexical (tf-idf) search. The store lives
-//! under `~/.config/Oxide/memory/`, never inside the repository.
+//! under `memory/` in the Oxide config directory, never inside the repository.
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
