@@ -1751,6 +1751,13 @@ check(
     shellAt('id="reasoning"') > shellAt('id="connect"'),
   `foot: ${idsIn(sidebarFoot)} · composer: ${idsIn(composerLeft)}`,
 );
+check(
+  "ordered composer utilities as provider, access, agents, approvals and shortcuts",
+  ["attach", "connect", "trust", "agents", "permissions", "help"].every((id, index, ids) =>
+    index === 0 || composerLeft.indexOf(`id="${ids[index - 1]}"`) < composerLeft.indexOf(`id="${id}"`),
+  ),
+  idsIn(composerLeft),
+);
 // Utility controls stay icon-only; model and reasoning expose their values.
 for (const [id, title, label] of [
   ["attach", "Attach images or PDFs (paste with the platform paste shortcut)", "Attach images or PDFs"],

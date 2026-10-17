@@ -504,8 +504,8 @@ const footer = {
   chips: [
     { id: "model", label: "model: glm-5 · 128.0k", title: "Switch the model" },
     { id: "reasoning", label: "thinking: auto" },
-    { id: "agent", label: "agent: review" },
     { id: "access", label: "access: trusted" },
+    { id: "agent", label: "agent: review" },
   ],
   info: "main",
   usage: "↑1.2k · ↓340 · $0.01 · ctx 12%/128.0k (auto)",
@@ -565,7 +565,8 @@ describe("webview footer", () => {
     send(stateMessage());
     const chips = byId.get("model-settings")!.children;
     assert.equal(chips.length, 2);
-    assert.equal(byId.get("meta")!.children.length, 4);
+    assert.deepEqual(byId.get("meta")!.children.map((chip) => chip.dataset.control),
+      ["access", "agent", "permissions", "shortcuts"]);
     assert.equal(chips[0].dataset.control, "model");
     assert.equal(chips[0].children[0].textContent, "glm-5");
     assert.equal(chips[1].children[0].textContent, "Auto");

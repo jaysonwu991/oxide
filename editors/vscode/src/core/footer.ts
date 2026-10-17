@@ -97,17 +97,17 @@ export function footerState(input: FooterInput): FooterState {
         title: `Reasoning effort (--reasoning): ${reasoningChoices(input).join(" → ")}. Click to choose a level.`,
       }]),
       {
+        id: "access",
+        label: `access: ${input.access}`,
+        title: accessTitle(input),
+      },
+      {
         id: "agent",
         label: `agent: ${input.agent || "default"}`,
         title:
           input.agentCount > 0
             ? `Subagent this chat runs with (--agent). ${input.agentCount} discovered. Click to pick one.`
             : "Subagent this chat runs with (--agent). No agents were found in this project or the global config. Click to type one.",
-      },
-      {
-        id: "access",
-        label: `access: ${input.access}`,
-        title: accessTitle(input),
       },
     ],
     info: input.branch,
