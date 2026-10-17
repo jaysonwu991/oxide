@@ -124,8 +124,11 @@ pub struct LoginOutcome {
 /// Connects a provider the way the desktop app's Connect dialog and
 /// `oxide login` both do: stores the credential it was given (or reuses the
 /// stored one), switches the selection to the provider, and applies the model
-/// and endpoint the caller named without disturbing the ones it did not.
-pub fn login_provider(
+/// and endpoint the caller named without disturbing the ones it did not. The
+/// provider's own catalog is then read once — what the account really serves and
+/// the effort levels of the model it lands on — so a fresh connection does not
+/// start on a preset default the provider has moved past.
+pub async fn login_provider(
     provider: &str,
     key: &str,
     model: Option<&str>,
@@ -139,7 +142,12 @@ pub fn login_provider(
     let mut config = crate::config::Config::load(cwd, None, None, None, None)?;
     let (name, credential) = resolve_login(provider, key)?;
     apply_login_choice(&mut config, &name, &credential, model, base_url);
+    // The credential is stored first, so a provider that cannot be listed still
+    // leaves the reader connected.
     config.persist_selection_at(&crate::config::Config::config_path())?;
+    if config.adopt_provider_catalog().await {
+        config.persist_selection_at(&crate::config::Config::config_path())?;
+    }
     Ok(LoginOutcome {
         label: provider_label(&name).to_string(),
         local: is_local(&name),
@@ -553,6 +561,7 @@ mod tests {
             provider: "portkey".to_string(),
             model: "gpt-4o".to_string(),
             base_url: "https://gateway.example/v1".to_string(),
+            api_key: "pk-test".to_string(),
             ..Default::default()
         };
 

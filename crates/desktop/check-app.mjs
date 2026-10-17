@@ -823,6 +823,16 @@ const invoke = async (command, args = {}) => {
       return String(args.project || "").trim()
         ? catalog
         : catalog.filter((entry) => entry.source === "builtin");
+    case "login":
+      // The core answers with the provider's own catalog already read: the model
+      // it names is one that account serves, which is not always the one the
+      // dialog asked for.
+      return {
+        provider: args.provider,
+        label: "Anthropic",
+        model: args.model || "claude-sonnet-4-5",
+        local: false,
+      };
     case "read_clipboard":
       return clipboardAnswer;
     case "reasoning_levels":
@@ -975,7 +985,7 @@ console.log("launch");
 // folder when they pick one.
 await nextTick();
 check("opened on no project", app.state.project === null, String(app.state.project));
-check("showed the project summary on launch", !elementFor("details-panel").hidden);
+check("left the project summary off for a window with no run", elementFor("details-panel").hidden);
 check(
   "marked no project as the active one",
   elementFor("projects-tree").children.every(
@@ -1199,6 +1209,7 @@ check(
     app.state.runSession === "6f3031b2beef" &&
     app.state.pendingSends[0]?.prompt === "queued while running" &&
     app.state.parked?.session === "6f3031b2beef" &&
+    elementFor("details-panel").hidden === true &&
     elementFor("queue-list").hidden === true &&
     elementFor("run-banner").hidden === false &&
     elementFor("run-banner-text").textContent === "A turn is running in “Fix the sidebar”",
@@ -1232,6 +1243,7 @@ check(
     app.state.session === "6f3031b2beef" &&
     app.state.parked === null &&
     elementFor("run-banner").hidden === true &&
+    elementFor("details-panel").hidden === false &&
     !calls.some(([name]) => name === "session_messages"),
   `${app.state.project} / ${app.state.session} / ${app.state.parked} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
@@ -4072,14 +4084,50 @@ check(
 );
 repositoryChanges = { files: [file("src/agent.rs", "modified", 4, 1)], added: 4, removed: 1 };
 calls.length = 0;
-await app.openProjectDetails();
+// The dock is the run's: an idle window has no summary standing on it, and a
+// turn raises it with the project read out while it works.
+app.closeReview();
+check("left the summary off while the window was idle", elementFor("details-panel").hidden);
+app.setBusy();
+await reviewTick();
 check(
-  "opened project details with repository counts and real sources",
+  "raised the summary with the run it belongs to",
   !elementFor("details-panel").hidden && elementFor("review-modal").hidden &&
     elementFor("details-stats").innerHTML.includes("+4") &&
     elementFor("details-sources").children.length === servers.length &&
     elementFor("details-toggle").getAttribute("aria-expanded") === "true",
 );
+const dockSession = app.state.session;
+app.state.runSession = "dock-running";
+app.state.session = "another-thread";
+await app.openProjectDetails();
+check("hid the dock while reading another thread in the same project", elementFor("details-panel").hidden);
+app.state.session = "dock-running";
+await app.openProjectDetails();
+check("restored the dock on returning to the running thread", !elementFor("details-panel").hidden);
+app.state.session = dockSession;
+app.state.runSession = null;
+// The row is read out of the repository, so a run writing files after the dock
+// came up is read again as its calls land, rather than left saying what the tree
+// held before the turn started.
+const dockSpacing = Number(/const DOCK_CHANGES_SPACING = (\d+);/.exec(source)?.[1] || 2000);
+const dockReads = projectCalls("repository_changes").length;
+repositoryChanges = { files: [file("src/agent.rs", "modified", 9, 2)], added: 9, removed: 2 };
+const dockEdit = app.startTool("edit", JSON.stringify({ path: "src/agent.rs", edits: [{ oldText: "a", newText: "b" }] }));
+app.finishTool(dockEdit, "Successfully replaced 1 block(s) in src/agent.rs.", {
+  diff: { path: "src/agent.rs", text: "+  a\n-  b" },
+});
+// A call inside the spacing is answered by the paced read, so wait past it
+// rather than the one tick a call outside it is read on.
+await new Promise((resolve) => setTimeout(resolve, dockSpacing + 200));
+check(
+  "read the Changes row again as the run wrote a file",
+  projectCalls("repository_changes").length > dockReads &&
+    elementFor("details-stats").innerHTML.includes("+9") &&
+    elementFor("details-stats").innerHTML.includes("−2"),
+  `${projectCalls("repository_changes").length} reads / ${elementFor("details-stats").innerHTML}`,
+);
+repositoryChanges = { files: [file("src/agent.rs", "modified", 4, 1)], added: 4, removed: 1 };
 elementFor("details-view-sources").click();
 await reviewTick();
 check("opened source management without replacing the project panel", !elementFor("mcps-modal").hidden && !elementFor("details-panel").hidden);
@@ -4105,11 +4153,17 @@ await app.openRepositoryChanges();
 check("reported a repository read failure", elementFor("review-files").children[0].textContent.includes("not in a Git repository"));
 repositoryError = null;
 app.closeReview();
-check("restored the idle summary when Changes closed", !elementFor("details-panel").hidden);
-await app.openProjectDetails();
-check("kept the summary visible when its header button was pressed", !elementFor("details-panel").hidden);
+check(
+  "brought the summary back with its own run when Changes closed",
+  !elementFor("details-panel").hidden,
+);
+app.setIdle();
+check("took the summary away with the run it belongs to", elementFor("details-panel").hidden);
 await app.openRepositoryChanges();
-check("hid the summary for idle Changes", elementFor("details-panel").hidden);
+check(
+  "kept an idle window free of the summary while Changes stood",
+  elementFor("details-panel").hidden && !elementFor("review-modal").hidden,
+);
 app.setBusy();
 check(
   "kept the summary hidden as a run started with Changes open",
@@ -4122,11 +4176,20 @@ check(
   "hid the running summary when Changes opened",
   elementFor("details-panel").hidden && !elementFor("review-modal").hidden,
 );
+await app.openProjectDetails();
+check(
+  "traded Changes for the summary on its own header button",
+  !elementFor("details-panel").hidden && elementFor("review-modal").hidden &&
+    elementFor("details-toggle").getAttribute("aria-expanded") === "true",
+);
 app.setIdle();
-check("hid the summary when the run ended with Changes open", elementFor("details-panel").hidden);
-app.closeReview();
+check("hid the summary when the run ended", elementFor("details-panel").hidden);
 document.fire("keydown", { key: "Escape" });
-check("kept the summary after Escape closed Changes", !elementFor("details-panel").hidden);
+check(
+  "left the summary off after Escape closed Changes with no run",
+  elementFor("details-panel").hidden &&
+    elementFor("details-toggle").getAttribute("aria-expanded") === "false",
+);
 
 // Undo puts the project back to the run's own baseline, which the payload
 // carried, rather than to the repository's last commit.
@@ -7478,7 +7541,13 @@ check(
 calls.length = 0;
 el("login-key").value = "sk-ant-test";
 el("login-model").value = "claude-sonnet-4-5";
-await app.saveConnect();
+const connecting = app.saveConnect();
+check(
+  "said what the dialog was waiting on while the provider's catalog is read",
+  status() === "Connecting Anthropic…",
+  status(),
+);
+await connecting;
 const loginCall = calls.find(([name]) => name === "login");
 check(
   "connected the provider the search left selected",
@@ -7491,6 +7560,21 @@ check(
     status() === "Connected Anthropic",
   `${JSON.stringify(loginCall)} / ${status()}`,
 );
+// A window with no folder open has no window to read the chip's own line off,
+// so the model the login landed on is what the chip names — the reader who
+// connects before picking a folder is not left with the previous model on it.
+const openProject = app.state.project;
+app.state.project = null;
+el("login-key").value = "sk-ant-test";
+el("login-model").value = "";
+await app.saveConnect();
+check(
+  "named the model a login landed on with no folder open",
+  el("model-value").textContent === "claude-sonnet-4-5" &&
+    String(el("model").title).includes("model: claude-sonnet-4-5"),
+  `${el("model-value").textContent} / ${el("model").title}`,
+);
+app.state.project = openProject;
 // A filter that matches nothing leaves nothing to connect, and Save says so
 // rather than connecting whatever was selected before the search.
 calls.length = 0;
