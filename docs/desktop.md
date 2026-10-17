@@ -970,6 +970,7 @@ whose reply would land in a conversation nobody is reading.
 | `Ctrl+/` | Shortcut help |
 | `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the thread standing at that place in the Projects tree |
 | `Escape` | Close any dialog; a question is dismissed, which the agent is told rather than left waiting |
+| Click outside a dialog | The same as closing it: the backdrop answers through the dialog's own Close, Cancel or Dismiss, so its teardown is the one either way. The two dialogs whose buttons are the decision — a tool's approval, a folder's trust question — are not dismissed this way, since a stray press must not be an answer |
 
 ## Slash commands
 

@@ -264,6 +264,15 @@ class StubElement {
     this.parentNode = null;
   }
 
+  // Whether a node sits inside this one, which is what tells a press that left a
+  // listing from a press inside it.
+  contains(node) {
+    for (let each = node; each; each = each.parentNode) {
+      if (each === this) return true;
+    }
+    return false;
+  }
+
   /// The element's own text and markup, then its children, one line each, so a
   /// failure names what was painted.
   outline() {
@@ -964,7 +973,7 @@ vm.runInThisContext(
     " updateChips, openReasoning, loadInfo," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
-    " renderMarkdown, SCROLLBAR_LINGER, setUsage, setStatus, paintStatus };\n",
+    " renderMarkdown, SCROLLBAR_LINGER, setUsage, setStatus, paintStatus, confirmDialog };\n",
 );
 
 const app = globalThis.__app;
@@ -3177,6 +3186,76 @@ check(
   "closed a dialog from its own button",
   elementFor("help-modal").hidden === true,
   String(elementFor("help-modal").hidden),
+);
+
+// A dialog goes away from the room around it as well as from its own button: the
+// backdrop is the app, and a press there means "not this". The press answers
+// through the button the dialog already has, so its own teardown runs either way.
+elementFor("help-modal").hidden = false;
+document.fire("click", press({ target: elementFor("help-modal") }));
+check(
+  "closed a dialog from the room around it",
+  elementFor("help-modal").hidden === true,
+  String(elementFor("help-modal").hidden),
+);
+elementFor("help-modal").hidden = false;
+const inTheDialog = new StubElement("div");
+inTheDialog.parentNode = elementFor("help-modal");
+document.fire("click", press({ target: inTheDialog }));
+check(
+  "kept a dialog a press landed inside",
+  elementFor("help-modal").hidden === false,
+  String(elementFor("help-modal").hidden),
+);
+elementFor("help-modal").hidden = true;
+
+// The buttons a dialog exists to offer are not a backdrop's to press: a tool
+// waiting on an approval is answered by one of its three, and a press outside it
+// answers nothing.
+elementFor("approval").hidden = false;
+document.fire("click", press({ target: elementFor("approval") }));
+check(
+  "answered nothing for a press outside the approval",
+  elementFor("approval").hidden === false,
+  String(elementFor("approval").hidden),
+);
+elementFor("approval").hidden = true;
+
+// The confirm dialog's Cancel is what the backdrop presses, so the promise the
+// caller is waiting on settles as cancelled instead of hanging.
+const confirmed = app.confirmDialog("Delete thread", "This cannot be undone.");
+document.fire("click", press({ target: elementFor("confirm-modal") }));
+check(
+  "cancelled the confirm dialog from the room around it",
+  (await confirmed) === false && elementFor("confirm-modal").hidden === true,
+  `${elementFor("confirm-modal").hidden}`,
+);
+
+// The listings above the composer have no backdrop: the rest of the window is
+// what is outside them. The press is taken on the mousedown, since the click of
+// the control that opens one is still to come — closing there would shut the
+// listing in the same breath it was asked for.
+elementFor("mcps-modal").hidden = false;
+const inTheListing = new StubElement("button");
+inTheListing.parentNode = elementFor("mcps-modal");
+document.fire("mousedown", press({ target: inTheListing }));
+check(
+  "kept a listing a press landed inside",
+  elementFor("mcps-modal").hidden === false,
+  String(elementFor("mcps-modal").hidden),
+);
+document.fire("mousedown", press({ target: elementFor("transcript") }));
+check(
+  "closed a listing on a press outside it",
+  elementFor("mcps-modal").hidden === true,
+  String(elementFor("mcps-modal").hidden),
+);
+elementFor("sessions-modal").hidden = false;
+document.fire("mousedown", press({ target: elementFor("prompt") }));
+check(
+  "closed the session listing the same way",
+  elementFor("sessions-modal").hidden === true,
+  String(elementFor("sessions-modal").hidden),
 );
 
 // A link opens once per click, and through the app, because the webview cannot

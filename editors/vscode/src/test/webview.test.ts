@@ -206,6 +206,15 @@ class StubElement {
     this.parent = null;
   }
 
+  /// Whether a node sits inside this one, which is what tells a press that left
+  /// a dialog from a press inside it.
+  contains(node: StubElement | null): boolean {
+    for (let each = node; each; each = each.parent) {
+      if (each === this) return true;
+    }
+    return false;
+  }
+
   addEventListener(kind: string, handler: (event: unknown) => void): void {
     const list = this.listeners.get(kind) ?? [];
     list.push(handler);
@@ -566,7 +575,7 @@ describe("webview footer", () => {
     const chips = byId.get("model-settings")!.children;
     assert.equal(chips.length, 2);
     assert.deepEqual(byId.get("meta")!.children.map((chip) => chip.dataset.control),
-      ["access", "agent", "permissions", "shortcuts"]);
+      ["access", "agent"]);
     assert.equal(chips[0].dataset.control, "model");
     assert.equal(chips[0].children[0].textContent, "glm-5");
     assert.equal(chips[1].children[0].textContent, "Auto");
@@ -641,6 +650,49 @@ describe("webview footer", () => {
     assert.equal(last(posted).action, "dialogClose");
     assert.equal(byId.get("model-settings")!.children[0].getAttribute("aria-expanded"), "false");
     assert.match(style, /#dialog\.settings-dropdown\s*\{\s*position: fixed;/);
+  });
+
+  /// A listing is dismissed by a press anywhere outside it, the way its Close
+  /// button dismisses it: nothing dims the panel behind it, so a press there
+  /// means the reader has moved on. A press inside it — a row, its search box —
+  /// leaves it alone, and so does a press on a control that opens a picker,
+  /// since closing there would undo what that press just asked for.
+  it("closes a listing on a press outside it, not on the one that opens one", () => {
+    const { byId, send, fireDocument, posted } = loadRenderer();
+    send(stateMessage());
+    send({
+      k: "dialog",
+      dialog: {
+        kind: "sessions",
+        pin: "footer",
+        title: "Sessions",
+        subtitle: "",
+        note: "",
+        count: 0,
+        search: true,
+        query: "",
+        rows: [],
+        refreshLabel: "",
+        refreshAction: "",
+      },
+    });
+    const box = byId.get("dialog")!;
+    assert.equal(box.hidden, false);
+    // The stub reads ids out of the shell rather than parsing it, so the nesting
+    // the markup gives the listing's own box is declared here.
+    byId.get("dialog-list")!.parent = box;
+    fireDocument("click", { target: byId.get("dialog-list")! });
+    assert.equal(box.hidden, false, "a press inside the listing keeps it");
+    fireDocument("click", { target: byId.get("model-settings")!.children[0] });
+    assert.equal(box.hidden, false, "a press on a control that opens a picker keeps it");
+    const count = posted.filter((message) => message.k === "dialogAction").length;
+    fireDocument("click", { target: byId.get("transcript")! });
+    assert.equal(box.hidden, true);
+    assert.equal(last(posted).action, "dialogClose");
+    assert.equal(posted.filter((message) => message.k === "dialogAction").length, count + 1);
+    // Nothing left open takes nothing with it.
+    fireDocument("click", { target: byId.get("transcript")! });
+    assert.equal(posted.filter((message) => message.k === "dialogAction").length, count + 1);
   });
 
   it("focuses the selected reasoning, walks choices and restores the selector on Escape", () => {
@@ -737,7 +789,9 @@ describe("webview footer", () => {
     assert.equal(byId.get("gauge")!.hidden, true);
     assert.equal(byId.get("usage")!.hidden, true);
     assert.equal(byId.get("branch")!.textContent, "");
-    assert.equal(byId.get("meta")!.children.length, 2);
+    // Nothing is left in the bar that is not a setting the host handed over: the
+    // two app-level controls are the header's, so an empty footer empties it.
+    assert.equal(byId.get("meta")!.children.length, 0);
   });
 
   it("escalates the gauge color at the terminal's thresholds", () => {
@@ -761,12 +815,38 @@ describe("webview composer", () => {
   });
 
   it("renders the header and composer actions as icon buttons", () => {
-    for (const id of ["new-session", "resume-session", "attach", "send", "stop"]) {
+    for (const id of ["new-session", "resume-session", "approvals", "shortcuts", "attach", "send", "stop"]) {
       assert.match(shell, new RegExp(`id="${id}" class="icon`), id);
     }
     // Stop is the one icon that turns red: it ends the turn rather than
     // opening something.
     assert.match(shell, /id="stop" class="icon danger run-control composer-action"/);
+  });
+
+  /// The composer's own row is the message's: attach, the two settings a reader
+  /// checks before typing and the action that sends. The two app-level controls
+  /// — the tools allowed without asking, and the keyboard shortcuts — are the
+  /// header's, since a narrow side bar cannot hold four glyphs and a model name
+  /// on one line without cutting the name to `deepse…`.
+  it("keeps the app-level controls in the header and posts what they name", () => {
+    const header = between(shell, '<div id="actions">', "</header>");
+    for (const [id, control] of [["approvals", "permissions"], ["shortcuts", "shortcuts"]]) {
+      assert.match(header, new RegExp(`id="${id}"[^>]*data-control="${control}"`), id);
+    }
+    const bar = between(shell, '<div id="bar">', '<div id="dropzone"');
+    assert.doesNotMatch(bar, /id="approvals"|id="shortcuts"/, "the bar keeps the message's own controls");
+    const { byId, posted } = loadRenderer();
+    // The stub reads ids out of the shell rather than parsing it, so the data
+    // attribute the markup carries is what this sets by hand.
+    const approvals = byId.get("approvals")!;
+    approvals.dataset.control = "permissions";
+    const shortcuts = byId.get("shortcuts")!;
+    shortcuts.dataset.control = "shortcuts";
+    const actions = byId.get("actions")!;
+    actions.fire("click", { target: approvals });
+    assert.equal(last(posted).control, "permissions");
+    actions.fire("click", { target: shortcuts });
+    assert.equal(last(posted).control, "shortcuts");
   });
 
   /// The full-size preview is the desktop app's: a ✕ in a head row above the
@@ -3342,6 +3422,18 @@ describe("webview review", () => {
     open();
     send(stateMessage());
     assert.equal(byId.get("review")!.hidden, true);
+  });
+
+  /// The sheet covers the panel, so a press on the room around it leaves it the
+  /// way its ✕ does. A press on a row is the row's own and keeps it up.
+  it("closes when the room around it is pressed", () => {
+    const { byId, open } = reviewed();
+    open();
+    const sheet = byId.get("review")!;
+    sheet.fire("click", { target: byId.get("review-files")! });
+    assert.equal(sheet.hidden, false, "a press on the listing keeps it");
+    sheet.fire("click", { target: sheet });
+    assert.equal(sheet.hidden, true);
   });
 });
 

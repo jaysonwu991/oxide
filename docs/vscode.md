@@ -366,7 +366,10 @@ tooltip and its name for a screen reader. The webview only builds the rows and
 posts the clicked one's action back as a `dialogAction`; it decides nothing about
 what a click means, the same way a footer chip posts the control id it carries.
 Neither dialog covers the panel with a backdrop, so a click inside one keeps it
-open: it is dismissed by its Close icon, by <kbd>Esc</kbd>, or by picking a row.
+open: it is dismissed by its Close icon, by <kbd>Esc</kbd>, by a click anywhere
+outside it, or by picking a row. The click that opens a picker is that picker's
+own — a chip that is pressed while a listing is up replaces it rather than
+leaving the reader with neither.
 
 ## Image previews
 
@@ -989,9 +992,9 @@ the same triple for a single row.
 
 A card also carries **Review**, which opens the turn's files over the panel
 without leaving the chat. It is the card's own rows again — the badge, path and
-`+`/`−` detail — with the arrows walking them with wraparound, and <kbd>Esc</kbd>
-or the ✕ closing it, so the review and the listing behind it cannot disagree
-about what a turn changed. The diff is not painted there: the row it lands on
+`+`/`−` detail — with the arrows walking them with wraparound, and <kbd>Esc</kbd>,
+the ✕ or a click on the backdrop closing it, so the review and the listing behind
+it cannot disagree about what a turn changed. The diff is not painted there: the row it lands on
 opens that file in VS Code's own diff editor, which already draws both sides with
 per-side line numbers and word-level marks. The panel's rows are therefore not a
 second listing to keep in step, and nothing in the webview renders a diff of its
@@ -1244,7 +1247,12 @@ user-facing tables. The footer's chips are shortcuts into the same actions:
 `setModel`, `setAgent`, `setReasoning` and `setProjectTrust` are reached from a
 chip click and from the palette, so the two entry points never drift. Session
 history stays in the header (and is also reachable through `/session` and the
-command palette), rather than duplicating another control in the footer.
+command palette), rather than duplicating another control in the footer. The
+header carries the two controls that belong to the panel rather than to the
+message — the tools it allows without asking (`oxide approvals`) and its
+keyboard shortcuts — after a rule of their own: the composer's bottom row is one
+line at every width, and four glyphs beside a model name left the name cut to
+`deepse…` in a narrow side bar.
 
 ## Development and testing
 

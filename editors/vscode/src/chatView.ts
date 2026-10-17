@@ -23,6 +23,8 @@ const ICONS = {
   stop: `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg>`,
   refresh: `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   close: `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  lock: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M5.6 7.4V5.6a2.4 2.4 0 0 1 4.8 0v1.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="3.7" y="7.2" width="8.6" height="6.4" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`,
+  help: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.4 6.3a1.65 1.65 0 1 1 2.3 1.55c-.5.22-.7.5-.7 1.05v.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="11.2" r=".8" fill="currentColor"/></svg>`,
 };
 
 interface WebviewMessage {
@@ -344,6 +346,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="actions">
     <button id="new-session" class="icon" title="New chat" aria-label="New chat">${ICONS.new}</button>
     <button id="resume-session" class="icon" title="Session history" aria-label="Session history" aria-expanded="false" aria-controls="dialog">${ICONS.resume}</button>
+    <span class="actions-sep" aria-hidden="true"></span>
+    <button id="approvals" class="icon" data-control="permissions" title="Tool approvals" aria-label="Tool approvals">${ICONS.lock}</button>
+    <button id="shortcuts" class="icon" data-control="shortcuts" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">${ICONS.help}</button>
   </div>
 </header>
 <section id="run-strip" hidden>
