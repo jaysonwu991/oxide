@@ -379,8 +379,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="strip" class="composer-strip">
     <div class="strip-facts">
       <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
-      <span id="usage" class="usage"><span id="usage-text" role="note" tabindex="0"></span></span>
-      <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
     </div>
   </div>
   <button id="live-changes" class="live-changes" type="button" hidden
@@ -399,6 +397,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <span id="status" hidden></span>
       <span class="spacer"></span>
       <div id="model-settings" class="model-settings" aria-label="Model and reasoning"></div>
+      <div class="context-status">
+      <span id="usage" class="usage"><span id="usage-text" role="note" tabindex="0"></span></span>
+      <span id="gauge" class="gauge" hidden><span id="gauge-fill"></span></span>
+      </div>
       <button id="stop" class="icon danger run-control composer-action" hidden title="Stop the running turn (Esc)" aria-label="Stop"><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
       <button id="send" class="icon primary composer-action" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
     </div>

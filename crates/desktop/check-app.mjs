@@ -975,7 +975,7 @@ console.log("launch");
 // folder when they pick one.
 await nextTick();
 check("opened on no project", app.state.project === null, String(app.state.project));
-check("showed the project summary on launch", !elementFor("details-panel").hidden);
+check("hid the project summary on the projectless home screen", elementFor("details-panel").hidden);
 check(
   "marked no project as the active one",
   elementFor("projects-tree").children.every(
@@ -1550,7 +1550,7 @@ check(
     strip.includes('id="project"') &&
     /<span id="project-name"[^>]*>[^<]+<\/span>/.test(strip) &&
     strip.includes('id="git-branch"') &&
-    strip.includes('id="context-ring"') &&
+    !strip.includes('id="context-ring"') &&
     !strip.includes('id="settings"') &&
     shell.indexOf('<div class="composer-strip">') < shell.indexOf('<div id="composer"') &&
     shell.indexOf('<div id="composer"') < shell.indexOf('<textarea id="prompt"') &&
@@ -1580,7 +1580,7 @@ check(
   facts.includes('<span id="git"') &&
     !/id="(git|context-ring)"[^>]*onclick/.test(facts) &&
     /id="git"[^>]*hidden/.test(facts) &&
-    /id="context-ring"[^>]*hidden/.test(facts) &&
+    /id="context-ring"[^>]*hidden/.test(shell) &&
     /<button[^>]*id="project"/.test(facts) &&
     (facts.match(/<button/g) || []).length === 1 &&
     (strip.match(/<button/g) || []).length === 1,
@@ -1601,7 +1601,9 @@ check(
     !/\.strip-end/.test(`${shell}\n${sheet}`) &&
     shellAt('id="usage"') < shellAt('id="context-percent"') &&
     strip.includes('id="usage"') &&
-    strip.includes('id="context-percent"') &&
+    !strip.includes('id="context-percent"') &&
+    shellAt('id="reasoning-value"') < shellAt('id="context-ring"') &&
+    shellAt('id="context-percent"') < shellAt('id="stop"') &&
     !/bits\.push\(`ctx \$\{/.test(source) &&
     /\.context-ring\[data-level="warn"\] \{ color: var\(--tool\); \}/.test(sheet) &&
     /\.context-ring\[data-level="high"\] \{ color: var\(--error\); \}/.test(sheet),
@@ -1753,8 +1755,8 @@ check(
 for (const [id, title, label] of [
   ["attach", "Attach images or PDFs (paste with the platform paste shortcut)", "Attach images or PDFs"],
   ["connect", "Connect a provider", "Connect a provider"],
-  ["trust", "Project trust", "Project trust"],
-  ["permissions", "Saved tool approvals", "Saved tool approvals"],
+  ["trust", "Project access", "Project access"],
+  ["permissions", "Tool approvals", "Tool approvals"],
   ["help", "Keyboard shortcuts", "Keyboard shortcuts"],
 ]) {
   const button = buttonFor(id);
@@ -2713,7 +2715,10 @@ app.state.project = project;
 
 // The message is on its way, so the list has nothing left to complete.
 await typeAt("review @sr");
+app.state.agent = "review";
 await app.send(false);
+check("sent the selected agent through the turn bridge", projectCalls("send_prompt").at(-1)?.[1].agent === "review");
+app.state.agent = "";
 check(
   "closed the list when the message went out",
   atBox.hidden === true && composer.value === "",
@@ -7855,6 +7860,17 @@ check("dismissed reasoning on Tab without cycling the level",
 await app.openReasoning();
 document.fire("click", { target: elementFor("prompt") });
 check("dismissed the reasoning dropdown on an outside click", elementFor("reasoning-modal").hidden);
+
+console.log("composer agents");
+projectInfo = { ...projectFacts(128000), agents: [{ name: "review", description: "Review changes" }] };
+await elementFor("agents").onclick();
+check("opened the agent picker from the composer", !elementFor("agents-modal").hidden && elementFor("agents-list").children.length === 2);
+elementFor("agents-list").children[1].onclick();
+check("selected the discovered agent for subsequent turns", app.state.agent === "review" && elementFor("agents-modal").hidden && document.activeElement === elementFor("agents"));
+await elementFor("agents").onclick();
+elementFor("agents-list").children[0].onclick();
+check("returned to the default agent", app.state.agent === "");
+check("kept dock resizing quiet on hover", !/\.dock-resizer:hover/.test(sheet) && !/id="(?:details|changes)-resizer"[^>]*title=/.test(shell));
 
 console.log("the bridge");
 check(

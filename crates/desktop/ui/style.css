@@ -2147,4 +2147,4 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 }
 
 .dock-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 4; touch-action: none; }
-.dock-resizer:hover, .dock-resizer:focus-visible { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.dock-resizer:focus-visible { outline: 1px solid var(--border); outline-offset: -3px; }

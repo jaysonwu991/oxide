@@ -248,6 +248,7 @@ const state = {
   // before the store catches up, so the name is kept beside the id it belongs to
   // rather than on whichever field held it last.
   heldThread: null,
+  agent: "",
   reasoning: "auto",
   // Whether the reader chose a level in this window, rather than the one the
   // project's config loaded. Only an explicit pick overrides the level a
@@ -1145,6 +1146,10 @@ async function selectProject(project) {
   // reader rather than from the project being left. A switch between folders
   // drops them, since they were meant for the one being left behind.
   const wasOpen = Boolean(state.project);
+  if (state.project !== project.path) {
+    state.agent = "";
+    el("agents").title = "Agents: Default";
+  }
   state.project = project.path;
   state.projectName = project.name;
   // A project reached through Recents or the picker must not become selected
@@ -1257,14 +1262,42 @@ function renderProjectMeta(info) {
   el("project-meta").hidden = notes.length === 0;
 }
 
+async function openAgents() {
+  if (!state.project) { setStatus("Select a project first."); askForProject(); return; }
+  const project = state.project;
+  try {
+    const info = await invoke("project_info", { project });
+    if (state.project !== project) return;
+    const list = el("agents-list");
+    list.replaceChildren();
+    for (const agent of [{ name: "", description: "Default agent" }, ...(info.agents || [])]) {
+      const row = document.createElement("button");
+      row.className = "details-row";
+      row.textContent = agent.name || "Default";
+      row.title = agent.description || agent.name;
+      row.setAttribute("aria-pressed", String(state.agent === agent.name));
+      row.onclick = () => {
+        state.agent = agent.name;
+        el("agents").title = `Agents: ${agent.name || "Default"}`;
+        el("agents-modal").hidden = true;
+        el("agents").focus();
+      };
+      list.appendChild(row);
+    }
+    closeOverlays("agents-modal");
+    el("agents-modal").hidden = false;
+    list.querySelector("button")?.focus();
+  } catch (error) { setStatus(String(error), "error"); }
+}
+
 function updateTrustButton() {
   const button = el("trust");
   if (!button) return;
-  button.hidden = !state.project;
+  button.hidden = false;
   button.classList.toggle("active", Boolean(state.trust && state.trust.trusted));
   const label = state.trust && state.trust.trusted
-    ? "Project trusted · click to review"
-    : "Project resources are not trusted";
+    ? "Project access: trusted · click to review"
+    : "Project access: project resources are not trusted";
   button.title = label;
   button.setAttribute("aria-label", label);
 }
@@ -2423,6 +2456,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
       // used last, which is a thread they never chose — and one the sidebar
       // would go on listing unchanged.
       session: session || "new",
+      agent: state.agent || null,
       reasoning: state.reasoningPicked ? state.reasoning : null,
       attachments: attachments.length ? attachments : null,
     });
@@ -3288,7 +3322,8 @@ function paintDockToggles() {
   // The summary belongs to the conversation; Changes takes its place while open.
   const panel = el("details-panel");
   const wasHidden = panel.hidden;
-  panel.hidden = !el("review-modal").hidden;
+  panel.hidden = !state.project || !el("review-modal").hidden;
+  el("details-toggle").hidden = !state.project;
   el("changes-toggle").setAttribute("aria-expanded", String(!el("review-modal").hidden));
   el("details-toggle").setAttribute("aria-expanded", String(!panel.hidden));
   if (wasHidden && !panel.hidden) return refreshProjectDetails();
@@ -3732,6 +3767,7 @@ const OVERLAYS = [
   "themes-modal",
   "permissions-modal",
   "trust-modal",
+  "agents-modal",
   "confirm-modal",
   "rename-modal",
   "image-modal",
@@ -6146,7 +6182,12 @@ function init() {
   el("themes-close").onclick = () => (el("themes-modal").hidden = true);
   el("permissions-close").onclick = () => (el("permissions-modal").hidden = true);
   el("permissions-clear").onclick = clearApprovals;
-  el("trust").onclick = () => state.trust && showTrust(state.trust);
+  el("trust").onclick = () => {
+    if (!state.project) { setStatus("Select a project first."); askForProject(); return; }
+    if (state.trust) showTrust(state.trust);
+  };
+  el("agents").onclick = openAgents;
+  el("agents-close").onclick = () => { el("agents-modal").hidden = true; el("agents").focus(); };
   el("trust-allow").onclick = () => answerTrust(true);
   el("trust-deny").onclick = () => answerTrust(false);
   el("confirm-cancel").onclick = () => resolveConfirm(false);

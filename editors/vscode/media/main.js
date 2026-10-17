@@ -1698,6 +1698,15 @@
       const box = chip.id === "model" || chip.id === "reasoning" ? modelSettings : metaBox;
       box.appendChild(chipNode(chip.label, chip.id, chip.title));
     }
+    for (const [id, label, icon] of [
+      ["permissions", "Tool approvals", '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 7.4V5.6a2.4 2.4 0 0 1 4.8 0v1.8"/><path d="M4.4 7.4h7.2a1.2 1.2 0 0 1 1.2 1.2v4.2a1.2 1.2 0 0 1-1.2 1.2H4.4a1.2 1.2 0 0 1-1.2-1.2V8.6a1.2 1.2 0 0 1 1.2-1.2z"/></svg>'],
+      ["shortcuts", "Keyboard shortcuts", '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M6.4 6.2a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.7.5-.7 1.1v.3M8 11v.01"/></svg>'],
+    ]) {
+      const button = chipNode(label, id, "");
+      button.querySelector(".control-icon").innerHTML = icon;
+      button.title = label;
+      metaBox.appendChild(button);
+    }
     syncSettingDropdown();
     const info = footer.info || "";
     branchLabel.textContent = info;
@@ -1713,6 +1722,7 @@
     gauge.hidden = percent === null;
     gauge.dataset.level = footer.level || "ok";
     gauge.title = percent === null ? "" : `${percent}% of the context window used`;
+    gauge.style.background = `conic-gradient(currentColor ${percent === null ? 0 : Math.min(percent, 100) * 3.6}deg, color-mix(in srgb, currentColor 25%, transparent) 0)`;
     gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
   }
 
@@ -1727,7 +1737,7 @@
       el.classList.toggle("active", trusted);
       el.setAttribute("aria-pressed", String(trusted));
     }
-    el.setAttribute("aria-label", String(label));
+    el.setAttribute("aria-label", control === "access" ? "Project access" : control === "agent" ? "Agents" : String(label));
     if (control === "model" || control === "reasoning") {
       el.classList.add("setting-chip");
       const value = document.createElement("span");
@@ -1748,7 +1758,8 @@
       icon.innerHTML = CONTROL_ICONS[control] || CONTROL_ICONS.model;
       el.appendChild(icon);
     }
-    el.title = title ? `${label}\n${title}` : `${label} — click to change`;
+    const name = control === "access" ? "Project access" : control === "agent" ? "Agents" : label;
+    el.title = title ? `${name === label ? label : `${name}\n${label}`}\n${title}` : `${name} — click to change`;
     return el;
   }
 
