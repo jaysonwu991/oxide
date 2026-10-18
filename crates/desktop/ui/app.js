@@ -308,10 +308,8 @@ const state = {
   usage: null,
   currentAssistant: null,
   tools: [],
-  // Tool-reported diffs in the active turn. This drives the compact running
-  // summary above the composer; the snapshot-backed card remains authoritative
-  // once the turn finishes.
-  liveChanges: new Map(),
+  // One repository listing feeds every summary and the repository review.
+  repositoryChanges: null,
   currentThinking: null,
   attachments: [],
   mcps: null,
@@ -1811,6 +1809,7 @@ async function openSession(session) {
   // into a node that is no longer on screen.
   clearPaintIdle();
   state.changes = [];
+  state.repositoryChanges = null;
   closeReview();
   updateRunBanner();
   try {
@@ -2146,7 +2145,6 @@ function setBusy() {
     state.runStartedAt = 0;
     startRunClock();
   }
-  state.liveChanges.clear();
   paintRunningChrome();
   updateSendState();
   // The status badge's icon is the state: a turn starting turns it into the
@@ -3033,28 +3031,17 @@ function diffCounts(text) {
   return `+${added} −${removed}`;
 }
 
-function diffCountValues(text) {
-  let added = 0;
-  let removed = 0;
-  for (const line of String(text || "").split("\n")) {
-    if (line.startsWith("+")) added += 1;
-    else if (line.startsWith("-")) removed += 1;
-  }
-  return { added, removed };
+function hasChat() {
+  return Boolean(runFolder() && (state.session || (state.busy && viewingRun())));
 }
 
 function paintLiveChanges() {
   const pill = el("live-changes");
-  pill.hidden = !state.busy || state.liveChanges.size === 0 || !viewingRun();
+  const changes = state.repositoryChanges;
+  pill.hidden = !hasChat() || changes?.project !== runFolder() || !changes.files.length;
   if (pill.hidden) return;
-  let added = 0;
-  let removed = 0;
-  for (const change of state.liveChanges.values()) {
-    added += change.added;
-    removed += change.removed;
-  }
-  const count = state.liveChanges.size;
-  pill.innerHTML = `<span>${count} file${count === 1 ? "" : "s"} changed</span>${statsHtml(added, removed)}`;
+  const count = changes.files.length;
+  pill.innerHTML = `<span>${count} file${count === 1 ? "" : "s"} changed</span>${statsHtml(changes.added, changes.removed)}`;
 }
 
 /// Marks a card finished. A call that changed a file reads as the one line its
@@ -3088,11 +3075,6 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
     tool.diffEl = diffBlock(diff);
     tool.diffEl.hidden = true;
     tool.block.appendChild(tool.diffEl);
-    if (!isError && diff.path) {
-      state.liveChanges.delete(diff.path);
-      state.liveChanges.set(diff.path, { ...diffCountValues(diff.text), tool });
-      paintLiveChanges();
-    }
   }
   tool.inline = Boolean(diff);
   paintTool(tool);
@@ -3636,13 +3618,14 @@ let detailsChangesDue = 0;
 let detailsChangesTimer = null;
 
 function paintDockToggles() {
-  // The dock belongs to the turn: while one runs it reads the project out, and
-  // Changes takes its place while it is open. An idle window has no run to
-  // summarize, so the dock is not there at all rather than standing empty.
+  // The selected chat owns the dock throughout its lifetime. The welcome
+  // page has no chat, even when another conversation is running.
   const panel = el("details-panel");
   const wasHidden = panel.hidden;
-  panel.hidden = !state.project || !state.busy || !viewingRun() || !el("review-modal").hidden;
-  el("details-toggle").hidden = !state.project;
+  panel.hidden = !hasChat() || !el("review-modal").hidden;
+  el("details-toggle").hidden = !hasChat();
+  el("changes-toggle").hidden = !hasChat();
+  paintLiveChanges();
   el("changes-toggle").setAttribute("aria-expanded", String(!el("review-modal").hidden));
   el("details-toggle").setAttribute("aria-expanded", String(!panel.hidden));
   if (wasHidden && !panel.hidden) return refreshProjectDetails();
@@ -3653,17 +3636,18 @@ function openProjectDetails() {
 }
 
 async function refreshProjectDetails() {
-  const project = state.project;
+  const project = runFolder();
   const read = ++detailsRead;
   el("details-project").textContent = project ? projectNameOf(project) : "Choose a project";
-  el("details-stats").textContent = "";
+  const changes = state.repositoryChanges;
+  el("details-stats").innerHTML = changes?.project === project ? statsHtml(changes.added, changes.removed) : "";
   el("details-changes").disabled = !project;
   el("details-more").disabled = !project;
   el("details-branch").hidden = !state.git?.repo || !project;
   el("details-branch").innerHTML = ICONS.branch + `<span>${escapeHtml(project ? state.git?.branch || state.git?.detached || "" : "")}</span>`;
   el("details-sources").textContent = project ? "Loading sources…" : "Select a project to see its sources.";
   if (!project) return;
-  const current = () => read === detailsRead && project === state.project;
+  const current = () => read === detailsRead && project === runFolder();
   await Promise.all([
     readProjectChanges(project),
     invoke("mcp_servers", { project }).then((servers) => {
@@ -3691,18 +3675,25 @@ async function refreshProjectDetails() {
 /// be overwritten by the one that opened the dock.
 async function readProjectChanges(project) {
   const read = ++detailsChangesRead;
-  const current = () => read === detailsChangesRead && project === runFolder();
+  const current = () => read === detailsChangesRead && project === runFolder() && hasChat();
   try {
     const changes = await invoke("repository_changes", { project });
     if (!current()) return;
+    state.repositoryChanges = { ...changes, project };
+    paintLiveChanges();
     el("details-stats").innerHTML = statsHtml(changes.added, changes.removed);
     el("details-changes").title = `${changes.files.length} changed files`;
     if (reviewState?.card.repository) showRepositoryCard({ ...changes, project, repository: true });
   } catch (error) {
     if (!current()) return;
+    state.repositoryChanges = null;
+    paintLiveChanges();
     el("details-stats").textContent = "";
     el("details-changes").title = String(error);
-    if (reviewState?.card.repository) el("review-files").replaceChildren(reviewNote(String(error)));
+    if (reviewState?.card.repository) {
+      el("review-total").innerHTML = "";
+      el("review-files").replaceChildren(reviewNote(String(error)));
+    }
   }
 }
 
@@ -3711,7 +3702,7 @@ async function readProjectChanges(project) {
 /// timer, so a run editing in a loop reads the repository a few times a second at
 /// most.
 function scheduleProjectChanges() {
-  if (!state.busy || !runFolder() || el("details-panel").hidden) return;
+  if (!state.busy || !hasChat()) return;
   const now = Date.now();
   if (now >= detailsChangesDue) {
     detailsChangesDue = now + DOCK_CHANGES_SPACING;
@@ -3722,7 +3713,7 @@ function scheduleProjectChanges() {
   detailsChangesTimer = setTimeout(() => {
     detailsChangesTimer = null;
     detailsChangesDue = Date.now() + DOCK_CHANGES_SPACING;
-    if (state.busy && !el("details-panel").hidden) readProjectChanges(runFolder());
+    if (state.busy && hasChat()) readProjectChanges(runFolder());
   }, detailsChangesDue - now);
 }
 
@@ -3742,6 +3733,7 @@ function showRepositoryCard(card) {
 }
 
 async function openRepositoryChanges() {
+  if (!hasChat()) return;
   el("review-modal").hidden = false;
   el("review-scope").value = "repository";
   el("review-title").textContent = "Changes";
@@ -3749,19 +3741,8 @@ async function openRepositoryChanges() {
   el("review-files").replaceChildren(reviewNote("Reading changes…"));
   paintDockToggles();
   const project = runFolder();
-  const pending = { card: { repository: true, project, files: [] } };
-  reviewState = pending;
-  if (!project) {
-    el("review-files").replaceChildren(reviewNote("Select a project to view changes."));
-    return;
-  }
-  try {
-    const changes = await invoke("repository_changes", { project });
-    if (reviewState !== pending || project !== runFolder()) return;
-    showRepositoryCard({ ...changes, project, repository: true });
-  } catch (error) {
-    if (reviewState === pending) el("review-files").replaceChildren(reviewNote(String(error)));
-  }
+  reviewState = { card: { repository: true, project, files: [] } };
+  await readProjectChanges(project);
 }
 
 function changeReviewScope() {
@@ -6480,13 +6461,7 @@ function init() {
   el("connect").onclick = openConnect;
 
   el("send").onclick = () => send(false);
-  el("live-changes").onclick = () => {
-    const latest = [...state.liveChanges.values()].at(-1)?.tool;
-    if (!latest) return;
-    latest.expanded = true;
-    paintTool(latest);
-    latest.block.scrollIntoView?.({ block: "nearest" });
-  };
+  el("live-changes").onclick = openRepositoryChanges;
   el("queue-list").onclick = (event) => {
     const menu = event.target.closest?.(".queued-more");
     if (menu) {
