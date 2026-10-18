@@ -314,7 +314,7 @@ pre,
   border: 1px solid var(--vscode-input-border, transparent);
   border-radius: 8px;
   padding: 6px 10px;
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-wrap: anywhere;
   max-width: 100%;
 }
@@ -360,68 +360,68 @@ pre,
   border-color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
 }
 
-.assistant .body > :first-child {
+:is(.assistant, .user, .markdown-preview) .body > :first-child {
   margin-top: 0;
 }
 
-.assistant .body > :last-child {
+:is(.assistant, .user, .markdown-preview) .body > :last-child {
   margin-bottom: 0;
 }
 
-.assistant .body p,
-.assistant .body li {
+:is(.assistant, .user, .markdown-preview) .body p,
+:is(.assistant, .user, .markdown-preview) .body li {
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
 
 /* The gaps a reply's own blocks leave: the browser default is a full line, and
    a Markdown answer reads better with its paragraphs closer than that. */
-.assistant .body p {
+:is(.assistant, .user, .markdown-preview) .body p {
   margin: 8px 0;
 }
 
-.assistant .body h1,
-.assistant .body h2,
-.assistant .body h3,
-.assistant .body h4 {
+:is(.assistant, .user, .markdown-preview) .body h1,
+:is(.assistant, .user, .markdown-preview) .body h2,
+:is(.assistant, .user, .markdown-preview) .body h3,
+:is(.assistant, .user, .markdown-preview) .body h4 {
   margin: 12px 0 6px;
   line-height: 1.3;
 }
 
-.assistant .body ul,
-.assistant .body ol {
+:is(.assistant, .user, .markdown-preview) .body ul,
+:is(.assistant, .user, .markdown-preview) .body ol {
   padding-left: 20px;
   margin: 6px 0;
 }
 
-.assistant .body blockquote {
+:is(.assistant, .user, .markdown-preview) .body blockquote {
   margin: 6px 0;
   padding: 0 0 0 8px;
   border-left: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.5));
   color: var(--vscode-descriptionForeground);
 }
 
-.assistant .body hr {
+:is(.assistant, .user, .markdown-preview) .body hr {
   border: none;
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
   margin: 10px 0;
 }
 
-.assistant .body a {
+:is(.assistant, .user, .markdown-preview) .body a {
   color: var(--vscode-textLink-foreground);
 }
 
-.assistant .body a:hover {
+:is(.assistant, .user, .markdown-preview) .body a:hover {
   color: var(--vscode-textLink-activeForeground);
 }
 
-.assistant .body code {
+:is(.assistant, .user, .markdown-preview) .body code {
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
   padding: 0 3px;
   border-radius: 3px;
 }
 
-.assistant .body pre {
+:is(.assistant, .user, .markdown-preview) .body pre {
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
   border-radius: 4px;
   padding: 8px;
@@ -429,20 +429,20 @@ pre,
   margin: 8px 0;
 }
 
-.assistant .body pre code {
+:is(.assistant, .user, .markdown-preview) .body pre code {
   background: none;
   padding: 0;
 }
 
-.assistant .body table {
+:is(.assistant, .user, .markdown-preview) .body table {
   border-collapse: collapse;
   margin: 8px 0;
   display: block;
   overflow-x: auto;
 }
 
-.assistant .body th,
-.assistant .body td {
+:is(.assistant, .user, .markdown-preview) .body th,
+:is(.assistant, .user, .markdown-preview) .body td {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
   padding: 3px 7px;
   text-align: left;
@@ -2351,7 +2351,7 @@ button.dialog-row:focus-visible {
   background: var(--vscode-input-background, rgba(128, 128, 128, 0.14));
 }
 
-.assistant .body pre {
+:is(.assistant, .user, .markdown-preview) .body pre {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
   border-radius: 10px;
   padding: 12px 14px;
@@ -2621,3 +2621,7 @@ button.icon {
   .model-settings .setting-chip { padding: 0 4px; }
   .model-settings [data-control="model"] { padding: 0 3px 0 6px; }
 }
+
+.markdown-preview { margin: 0 12px 8px; min-width: 0; }
+.markdown-preview summary { color: var(--vscode-descriptionForeground); cursor: pointer; font-size: 11px; }
+.markdown-preview .body { max-height: 160px; overflow: auto; padding-right: 10px; font-size: 13px; }

@@ -1271,6 +1271,44 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.disabled, true);
   });
 
+  it("previews Markdown safely, sends its source, and recalls it with Up", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    const source = "# Plan\n\n**bold** and `code`\n\n<script>alert(1)</script>";
+    input.value = source;
+    input.fire("input");
+    assert.equal(byId.get("markdown-preview")!.hidden, false);
+    const html = byId.get("markdown-preview-body")!.innerHTML;
+    assert.ok(html.includes("<h1>Plan</h1>"));
+    assert.ok(html.includes("<strong>bold</strong>"));
+    assert.ok(!html.includes("<script>"));
+    byId.get("send")!.fire("click");
+    assert.deepEqual(last(posted), { k: "send", text: source });
+    assert.equal(byId.get("markdown-preview")!.hidden, true);
+    input.fire("keydown", { key: "ArrowUp", preventDefault() {} });
+    assert.equal(input.value, source);
+    assert.equal(input.selectionStart, source.length);
+    assert.equal(byId.get("markdown-preview")!.hidden, false);
+    input.value = "my draft";
+    input.fire("keydown", { key: "ArrowUp", preventDefault() {} });
+    assert.equal(input.value, "my draft");
+  });
+
+  it("recalls the raw last user message from a resumed chat and isolates chats", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ items: [{ id: 1, kind: "user", text: "**original**" }] }));
+    const input = byId.get("input")!;
+    input.fire("keydown", { key: "ArrowUp", preventDefault() {} });
+    assert.equal(input.value, "**original**");
+    const user = byId.get("transcript")!.querySelector(".msg.user")!;
+    assert.ok(user.children[0].innerHTML.includes("<strong>original</strong>"));
+    input.value = "";
+    send(stateMessage({ sessionId: "other", items: [] }));
+    input.fire("keydown", { key: "ArrowUp", preventDefault() {} });
+    assert.equal(input.value, "");
+  });
+
   it("sends the configured busy behavior", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage({ busy: true, status: "Thinking…", followUpBehavior: "steer" }));

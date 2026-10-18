@@ -1016,7 +1016,7 @@ vm.runInThisContext(
     " updateChips, openReasoning, loadInfo," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
-    " renderMarkdown, SCROLLBAR_LINGER, setUsage, setStatus, paintStatus, confirmDialog };\n",
+    " bubble, renderMarkdown, SCROLLBAR_LINGER, setUsage, setStatus, paintStatus, confirmDialog };\n",
 );
 
 const app = globalThis.__app;
@@ -8307,6 +8307,39 @@ await elementFor("agents").onclick();
 elementFor("agents-list").children[0].onclick();
 check("returned to the default agent", app.state.agent === "");
 check("kept dock resizing quiet on hover", !/\.dock-resizer:hover/.test(sheet) && !/id="(?:details|changes)-resizer"[^>]*title=/.test(shell));
+
+console.log("Markdown composer and prompt recall");
+app.state.project = "/preview-test";
+app.state.session = "preview-test";
+app.closeAt();
+const markdownComposer = elementFor("prompt");
+const markdownSource = "# Plan\n\n**bold** and `code`\n\n<script>alert(1)</script>";
+markdownComposer.value = markdownSource;
+app.updateSendState();
+const previewHtml = elementFor("markdown-preview-body").innerHTML;
+check("rendered a safe live preview while keeping the source editable",
+  !elementFor("markdown-preview").hidden && previewHtml.includes("<h1>Plan</h1>") &&
+  previewHtml.includes("<strong>bold</strong>") && !previewHtml.includes("<script>") &&
+  markdownComposer.value === markdownSource);
+// Stored and parked transcripts both retain the source on the user bubble.
+const recalledUser = app.bubble("user", markdownSource);
+check("rendered sent user Markdown and retained its source",
+  recalledUser.children[1].innerHTML.includes("<strong>bold</strong>") && recalledUser.dataset.prompt === markdownSource);
+elementFor("transcript").appendChild(recalledUser);
+markdownComposer.value = "";
+app.updateSendState();
+check("hid the preview after clearing the source", elementFor("markdown-preview").hidden && elementFor("markdown-preview-body").innerHTML === "");
+let recalledPrevented = false;
+markdownComposer.fire("keydown", { key: "ArrowUp", preventDefault() { recalledPrevented = true; } });
+check("Up recalled the original Markdown from the current transcript",
+  recalledPrevented && markdownComposer.value === markdownSource && markdownComposer.selectionStart === markdownSource.length &&
+  !elementFor("markdown-preview").hidden);
+markdownComposer.value = "my draft";
+markdownComposer.fire("keydown", { key: "ArrowUp", preventDefault() {} });
+check("Up preserved an existing draft", markdownComposer.value === "my draft");
+markdownComposer.value = "";
+markdownComposer.fire("keydown", { key: "ArrowUp", altKey: true, preventDefault() {} });
+check("modified Up did not recall a prompt", markdownComposer.value === "");
 
 console.log("the bridge");
 check(

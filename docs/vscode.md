@@ -1199,9 +1199,15 @@ says so too, so the offer is never the only thing the reader has to go on.
 
 ## Rendering
 
+The composer keeps Markdown source editable and renders a live **Markdown preview**
+below it. Collapse the preview with its heading; clearing or sending the source hides
+it. **Up** in an empty composer recalls the last prompt from the current chat,
+including resumed chats. Existing drafts and open completion menus keep their normal
+keyboard behavior. Recall restores text only, so attachments can be selected again.
+
 `media/main.js` renders the transcript in the webview; it is adapted from the
 desktop app (`crates/desktop/ui/app.js`), so a reply reads the same in both.
-Assistant replies are Markdown (headings, lists, tables, fenced code with
+User messages and assistant replies are Markdown (headings, lists, tables, fenced code with
 lightweight syntax highlighting, inline emphasis/code/links, and auto-linked
 bare URLs). Tool calls are collapsible cards colored by state, with a spinner
 and elapsed time while running, a short per-tool output preview that expands on
