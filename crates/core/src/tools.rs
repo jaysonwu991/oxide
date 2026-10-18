@@ -48,6 +48,13 @@ const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
 /// build routinely runs past two minutes, and timing it out only makes the
 /// agent re-run it (often several times).
 const BUILD_BASH_TIMEOUT_SECS: u64 = 600;
+/// What a shell reports for a command killed by `SIGPIPE` (128 + 13). A
+/// pipeline that writes more than the reader asked for — `ls -lt | head` is
+/// the everyday one — ends this way when the reader exits and the writer is
+/// cut off, which is the command doing exactly what it was asked rather than
+/// failing.
+const SIGPIPE_EXIT: i32 = 141;
+
 /// Appended to a shell command that ran past its timeout. The usual cause is an
 /// unbounded search that walked build output, so the message steers the retry
 /// to a narrower command rather than letting the same one time out again.
@@ -1397,10 +1404,20 @@ fn closest_region(
         return None;
     }
     let width = old_lines.len().min(base_lines.len());
+    // A line counts as shared when it is equal apart from trailing whitespace,
+    // or when one side begins the other for a run long enough to mean it: a
+    // block cut off mid-line — the newline written where the file holds `\n` —
+    // would otherwise score nothing and leave the failure with no region to
+    // name at all.
+    let shared = |base: &str, old: &str| {
+        let (base, old) = (base.trim(), old.trim());
+        let width = base.len().min(old.len());
+        base == old || (width >= 8 && (base.starts_with(old) || old.starts_with(base)))
+    };
     let mut best: Option<(usize, usize)> = None;
     for start in 0..=base_lines.len() - width {
         let score = (0..width)
-            .filter(|&k| base_lines[start + k].text.trim() == old_lines[k].text.trim())
+            .filter(|&k| shared(base_lines[start + k].text, old_lines[k].text))
             .count();
         let better = match best {
             Some((best_score, _)) => score > best_score,
@@ -1418,6 +1435,49 @@ fn closest_region(
         .collect::<Vec<_>>()
         .join("\n");
     Some((start + 1, end, region))
+}
+
+/// The first line where a failed `oldText` differs from the region the file
+/// holds, as its 1-based position and both renderings with control characters
+/// escaped. Two blocks can look identical and still differ — a `\n` typed into
+/// a string literal against the newline the model wrote instead, a tab against
+/// spaces — and a reader comparing them in a transcript cannot see either.
+fn first_differing_line(old: &str, region: &str) -> Option<(usize, String, String)> {
+    let old_lines: Vec<&str> = old.split('\n').collect();
+    let region_lines: Vec<&str> = region.split('\n').collect();
+    for (position, (old_line, base_line)) in old_lines.iter().zip(&region_lines).enumerate() {
+        if match_key(old_line) == match_key(base_line) {
+            continue;
+        }
+        return Some((
+            position + 1,
+            format!("{base_line:?}"),
+            format!("{old_line:?}"),
+        ));
+    }
+    // Every shared line agrees, so the block's own shape is the difference: it
+    // is longer or shorter than the text the file holds there.
+    if old_lines.len() != region_lines.len() {
+        let longer = old_lines.len() > region_lines.len();
+        return Some((
+            old_lines.len().min(region_lines.len()) + 1,
+            if longer {
+                "nothing".to_string()
+            } else {
+                region_lines
+                    .last()
+                    .map_or_else(String::new, |line| format!("{line:?}"))
+            },
+            if longer {
+                old_lines
+                    .last()
+                    .map_or_else(String::new, |line| format!("{line:?}"))
+            } else {
+                "nothing".to_string()
+            },
+        ));
+    }
+    None
 }
 
 /// Strips the `N|` / `N+|` prefixes `read` adds, so a block copied straight out
@@ -1547,12 +1607,17 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         // A literal `1|text` can genuinely exist in a file. Try the text as
         // supplied before treating it as a numbered `read` listing; only a
         // missing literal target enables the prefix-stripping fallback.
-        let (found, copied_listing) = match locate(&base, &raw_old) {
+        let mut searched = raw_old.clone();
+        let (found, copied_listing) = match locate(&base, &searched) {
             ok @ Ok(_) => (ok, false),
             ambiguous @ Err(MatchFailure::Ambiguous(_)) => (ambiguous, false),
-            Err(MatchFailure::Missing(_)) => match strip_line_prefixes(&raw_old) {
-                Some(stripped) if stripped != raw_old => (locate(&base, &stripped), true),
-                _ => (locate(&base, &raw_old), false),
+            Err(MatchFailure::Missing(_)) => match strip_line_prefixes(&searched) {
+                Some(stripped) if stripped != searched => {
+                    let retried = locate(&base, &stripped);
+                    searched = stripped;
+                    (retried, true)
+                }
+                _ => (locate(&base, &searched), false),
             },
         };
         match found {
@@ -1578,10 +1643,24 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
                     .collect::<Vec<_>>()
                     .join(", ")
             )),
-            Err(MatchFailure::Missing(Some((first, last, region)))) => failures.push(format!(
-                "edits[{index}].oldText did not match anything in {path}. The closest text (lines \
-                 {first}-{last}) is:\n{region}\nCopy it exactly, then retry."
-            )),
+            Err(MatchFailure::Missing(Some((first, last, region)))) => {
+                let mut message = format!(
+                    "edits[{index}].oldText did not match anything in {path}. The closest text \
+                     (lines {first}-{last}) is:\n{region}"
+                );
+                // A block that reads identically in a transcript can still carry
+                // a newline where the file holds `\n`, or a tab where it holds
+                // spaces. Naming the first line that differs, with control
+                // characters escaped, is what makes that visible.
+                if let Some((line, in_file, in_block)) = first_differing_line(&searched, &region) {
+                    message.push_str(&format!(
+                        "\nYour line {line} differs: the file holds {in_file} where the block \
+                         holds {in_block}"
+                    ));
+                }
+                message.push_str("\nCopy it exactly, then retry.");
+                failures.push(message);
+            }
             Err(MatchFailure::Missing(None)) => failures.push(format!(
                 "edits[{index}].oldText did not match anything in {path}; check the exact text \
                  (each call edits one file, so split edits for different files into separate \
@@ -3268,13 +3347,29 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         anyhow::bail!("command timed out after {secs}s\n{captured}\n{BASH_TIMEOUT_HINT}");
     };
     let exit = status.code().unwrap_or(-1);
+    // `-o pipefail` is what makes `cargo test | tail` report the test's own
+    // exit rather than `tail`'s, and it also reports SIGPIPE: a reader that
+    // stops early — `head`, a `grep -m` — kills the writer and leaves the
+    // pipeline at 141. That is the command doing what it was asked, so it is
+    // said plainly and not painted as a failure.
+    let reader_closed = exit == SIGPIPE_EXIT && command.contains('|');
     let mut output = finish_bash_output(stdout, stderr, exit)?;
-    if exit != 0 && unresolved_relative_import(&output) {
+    if reader_closed {
+        // The marker the shell's status was written as is the last thing in the
+        // text, so the last occurrence is the one to rewrite — a command that
+        // happens to print `[exit: 141]` itself keeps its own line.
+        if let Some((head, _)) = output.rsplit_once(&format!("[exit: {SIGPIPE_EXIT}]")) {
+            output = format!(
+                "{head}[exit: 0] (a command in the pipeline stopped because its reader closed)"
+            );
+        }
+    }
+    if exit != 0 && !reader_closed && unresolved_relative_import(&output) {
         output.push('\n');
         output.push_str(module_failure_hint(&output, cwd));
     }
     Ok(ToolOutput {
-        is_error: exit != 0,
+        is_error: exit != 0 && !reader_closed,
         ..ToolOutput::text(output)
     })
 }
@@ -4627,6 +4722,72 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A block that looks identical in a transcript can still differ by
+    /// whitespace or by an escape, and "copy it exactly" is not advice a reader
+    /// can follow when the two renderings look the same. The failure names the
+    /// first line that differs, with both sides escaped.
+    #[tokio::test]
+    async fn edit_names_the_line_that_differs_invisibly() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_differs_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        // Tab-indented in the file, space-indented in the block: leading
+        // indentation is deliberately not ignored, so the block is stale.
+        std::fs::write(dir.join("t.rs"), "fn main() {\n\tlet x = 1;\n}\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "t.rs",
+                    "edits": [{ "oldText": "fn main() {\n    let x = 1;\n}", "newText": "x" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("Your line 2 differs:"), "{}", out.text);
+        // Both sides escaped, so a tab is told apart from four spaces.
+        assert!(
+            out.text.contains(r#"the file holds "\tlet x = 1;""#),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains(r#"the block holds "    let x = 1;""#),
+            "{}",
+            out.text
+        );
+
+        // A `\n` inside a string literal against the newline written instead:
+        // the block carries one more line than the file, which is itself the
+        // difference worth naming.
+        std::fs::write(dir.join("e.rs"), "let s = \"a\\nb\";\n").unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({
+                    "path": "e.rs",
+                    "edits": [{ "oldText": "let s = \"a\nb\";", "newText": "x" }]
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("Your line 1 differs:"), "{}", out.text);
+        assert!(out.text.contains(r#"a\\nb"#), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn edit_batches_match_the_original_and_reject_overlaps() {
         let dir = std::env::temp_dir().join(format!("oxide_edit_batch_{}", std::process::id()));
@@ -5468,6 +5629,56 @@ mod tests {
         .await;
         assert!(!ok.is_error, "{}", ok.text);
         assert!(ok.text.ends_with("[exit: 0]"));
+    }
+
+    /// A pipeline whose reader stops early is the command doing what it was
+    /// asked, not a failure: `head` exiting kills the writer with SIGPIPE and
+    /// `-o pipefail` reports 141, which used to paint a good listing red in
+    /// every front-end.
+    #[tokio::test]
+    async fn bash_treats_a_reader_that_closed_as_success() {
+        let cwd = std::env::current_dir().unwrap();
+        let mcp = McpRegistry::default();
+        let out = execute(
+            &call(
+                "bash",
+                json!({ "command": "printf 'row\\n%.0s' {1..10000} | head -2" }),
+            ),
+            &cwd,
+            &mcp,
+            &Progress::default(),
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(out.text.matches("row").count(), 2, "{}", out.text);
+        assert!(
+            out.text.ends_with(
+                "[exit: 0] (a command in the pipeline stopped because its reader closed)"
+            ),
+            "{}",
+            out.text
+        );
+        // A command that fails on its own is still a failure, and so is 141 from
+        // something that never used a pipe.
+        let failed = execute(
+            &call(
+                "bash",
+                json!({ "command": "printf 'x\\n%.0s' {1..10} | head -2; exit 3" }),
+            ),
+            &cwd,
+            &mcp,
+            &Progress::default(),
+        )
+        .await;
+        assert!(failed.is_error, "{}", failed.text);
+        let unpiped = execute(
+            &call("bash", json!({ "command": "exit 141" })),
+            &cwd,
+            &mcp,
+            &Progress::default(),
+        )
+        .await;
+        assert!(unpiped.is_error, "{}", unpiped.text);
     }
 
     #[tokio::test]
