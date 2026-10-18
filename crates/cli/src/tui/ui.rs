@@ -2409,7 +2409,7 @@ fn render_item_themed(
             if empty || !expand_thinking {
                 return;
             }
-            let text = crate::tools::sanitize_terminal_output(text);
+            let text = super::text::sanitize(text);
             // Every row carries the indent, so the body reads as one block; the
             // copy takes it back off the continuations it drew.
             for (segment, join) in wrap(text.trim(), width, 2) {
@@ -3282,7 +3282,7 @@ fn wrapped_with_prefix(
     continuation: Style,
 ) -> Rows {
     let head: String = prefix.iter().map(|span| span.content.as_ref()).collect();
-    let subject = crate::tools::sanitize_terminal_output(subject);
+    let subject = super::text::sanitize(subject);
     let wrapped = wrap(&format!("{head}{subject}"), width, 0);
     let mut out = Rows::default();
     for (index, (line, join)) in wrapped.into_iter().enumerate() {
@@ -3522,7 +3522,7 @@ fn diff_body(
     width: usize,
     theme: &crate::theme::Theme,
 ) -> (Rows, Option<usize>) {
-    let text = crate::tools::sanitize_terminal_output(&diff.text);
+    let text = super::text::sanitize(&diff.text);
     if text.trim().is_empty() {
         return (Rows::default(), None);
     }
@@ -3556,7 +3556,7 @@ fn diff_line_style(line: &str, theme: &crate::theme::Theme) -> Style {
 /// A row that fits is a line of the text; one that does not is continuation
 /// rows, which the copy joins back onto the line they came from.
 fn push_wrapped(lines: &mut Rows, text: &str, width: usize, style: Style) {
-    let text = crate::tools::sanitize_terminal_output(text);
+    let text = super::text::sanitize(text);
     for (segment, join) in wrap(&text, width, 0) {
         lines.push_join(Line::from(Span::styled(segment, style)), join);
     }
@@ -3567,7 +3567,7 @@ fn push_wrapped(lines: &mut Rows, text: &str, width: usize, style: Style) {
 /// the indent the pane drew it with, which the copy takes back off, so the
 /// paragraph is copied as the words it is rather than as the shape it took.
 fn push_indented_wrapped(lines: &mut Rows, text: &str, indent: usize, width: usize, style: Style) {
-    let text = crate::tools::sanitize_terminal_output(text);
+    let text = super::text::sanitize(text);
     let width = width.max(1);
     let indent = indent.min(width.saturating_sub(1));
     for (segment, join) in wrap(&text, width, indent) {
@@ -3743,7 +3743,7 @@ fn push_tool_body(
     expand_tools: bool,
     preview: Preview,
 ) {
-    let readable = readable_output(&crate::tools::sanitize_terminal_output(text));
+    let readable = readable_output(&super::text::sanitize(text));
     let all: Vec<&str> = readable.lines().collect();
     let limit = match preview {
         Preview::Head(limit) | Preview::Tail(limit) => limit,
@@ -6535,6 +6535,41 @@ mod wrap_parity_tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn tabular_tool_output_never_sends_tabs_to_the_terminal() {
+        let output = "vscode (macos-latest)\tpending\t0\thttps://github.com/example/actions/runs/39037330499/job/1174096966\nvscode (ubuntu-latest)\tpending\t0\thttps://github.com/example/actions/runs/39037330499/job/1174096967";
+        for width in [40, 80, 120] {
+            for item in [
+                ChatItem::ToolProgress {
+                    name: "bash".into(),
+                    output: output.into(),
+                },
+                ChatItem::ToolResult {
+                    name: "bash".into(),
+                    args: r#"{"command":"gh pr checks 208"}"#.into(),
+                    output: format!("{output}\n[exit: 8]"),
+                    is_error: true,
+                    diff: None,
+                    millis: 0,
+                },
+            ] {
+                let mut app = App::new("m".into(), "/tmp".into(), Reasoning::Auto);
+                app.items.push(item);
+                let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                assert!(app.lines.iter().all(|line| line.width() < width as usize));
+                for cell in &terminal.backend().buffer().content {
+                    assert!(
+                        !cell.symbol().chars().any(char::is_control),
+                        "control character in terminal cell: {:?}",
+                        cell.symbol()
+                    );
+                }
+                assert!(app.transcript_text().contains("pending"));
+            }
+        }
+    }
 
     /// The rows a wrap produced, which is what the parity check compares.
     fn segments(text: &str, width: usize) -> Vec<String> {

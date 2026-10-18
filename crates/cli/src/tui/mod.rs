@@ -1,6 +1,7 @@
 pub mod app;
 mod markdown;
 mod rows;
+mod text;
 pub mod ui;
 
 use crate::agent::{self, AgentEvent, Runtime};
