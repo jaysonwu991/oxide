@@ -10,6 +10,193 @@
 // desktop app (crates/desktop/ui/app.js) so a reply reads the same in both
 // front-ends.
 
+// One rendered, editable surface. The value/selection facade keeps completion,
+// recall and sending on Markdown while the browser edits the rendered nodes.
+function installMarkdownInput(editor, render) {
+  let source = "";
+  let painted = "";
+  let composing = false;
+  let savedStart = 0;
+  let savedEnd = 0;
+  const history = [""];
+  let historyIndex = 0;
+  const marker = "\uE000oxide-caret\uE001";
+
+  function markdown(node, point = null) {
+    if (node.nodeType === 3) {
+      const text = node.nodeValue || "";
+      return point?.node === node ? text.slice(0, point.offset) + marker + text.slice(point.offset) : text;
+    }
+    const children = Array.from(node.childNodes || []);
+    const parts = children.map((child, i) =>
+      (point?.node === node && point.offset === i ? marker : "") + markdown(child, point),
+    );
+    let text = parts.reduce((all, part) => {
+      if ((node === editor || node.tagName === "BLOCKQUOTE") && /\n$/.test(all) && /^\n/.test(part)) {
+        return all.replace(/\n+$/, "") + "\n\n" + part.replace(/^\n+/, "");
+      }
+      return all + part;
+    }, "");
+    if (point?.node === node && point.offset === children.length) text += marker;
+    const tag = node.tagName;
+    if (tag === "BR") return "\n";
+    if (tag === "STRONG" || tag === "B") return `**${text}**`;
+    if (tag === "EM" || tag === "I") return `*${text}*`;
+    if (tag === "DEL" || tag === "S") return `~~${text}~~`;
+    if (tag === "PRE") return `\n\n\`\`\`${node.dataset.lang || ""}\n${text}\n\`\`\`\n\n`;
+    if (tag === "CODE" && node.parentNode?.tagName !== "PRE") return `\`${text}\``;
+    if (tag === "A") {
+      const url = node.getAttribute("href") || "";
+      return text === url ? text : `[${text}](${url})`;
+    }
+    if (/^H[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
+    if (tag === "BLOCKQUOTE") return `\n\n${text.trim().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
+    if (tag === "LI") {
+      const index = Array.from(node.parentNode.children).indexOf(node) + 1;
+      const prefix = node.parentNode.tagName === "OL" ? `${index}. ` : "- ";
+      return prefix + text.replace(/^☑ /, "[x] ").replace(/^☐ /, "[ ] ") + "\n";
+    }
+    if (tag === "UL" || tag === "OL") return `\n\n${text}\n`;
+    if (tag === "HR") return "\n\n---\n\n";
+    if (tag === "TH" || tag === "TD") return text + " | ";
+    if (tag === "TR") return "| " + text + "\n";
+    if (tag === "THEAD") return text + "| " + Array(children[0]?.children.length || 1).fill("---").join(" | ") + " |\n";
+    if (tag === "TABLE") return `\n\n${text}\n\n`;
+    if (tag === "P") return `\n\n${text}\n\n`;
+    if (tag === "DIV" && node !== editor) return `\n${text || "\n"}`;
+    return text;
+  }
+
+  function read(point = null) {
+    return markdown(editor, point).replace(/\u00a0/g, " ").replace(/^\n+|\n+$/g, "");
+  }
+
+  function selectionOffset(end) {
+    const selection = window.getSelection?.();
+    if (!selection?.rangeCount || !editor.contains(selection.anchorNode)) return end ? savedEnd : savedStart;
+    const range = selection.getRangeAt(0);
+    const node = end ? range.endContainer : range.startContainer;
+    const offset = end ? range.endOffset : range.startOffset;
+    // At the end, retain the caller's exact Markdown (including its spacing).
+    const marked = read({ node, offset });
+    const at = marked.indexOf(marker);
+    if (node === editor && offset === editor.childNodes.length) return source.length;
+    return Math.max(0, at);
+  }
+
+  function pointAt(offset) {
+    if (offset >= source.length) return { node: editor, offset: editor.childNodes.length };
+    const walker = document.createTreeWalker(editor, 5);
+    let best = { node: editor, offset: 0 };
+    let distance = Infinity;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const text = node.nodeType === 3;
+      const count = text ? node.nodeValue.length : node.childNodes.length;
+      const start = read({ node, offset: 0 }).indexOf(marker);
+      const candidate = text ? Math.max(0, Math.min(count, offset - start)) : 0;
+      for (const index of text ? [candidate] : Array.from({ length: count + 1 }, (_, i) => i)) {
+        const at = read({ node, offset: index }).indexOf(marker);
+        if (at < 0 || Math.abs(at - offset) >= distance) continue;
+        best = { node, offset: index };
+        distance = Math.abs(at - offset);
+        if (distance === 0) return best;
+      }
+    }
+    return best;
+  }
+
+  function select(start, end = start) {
+    savedStart = start;
+    savedEnd = end;
+    if (!document.createRange) return;
+    const a = pointAt(start);
+    const b = pointAt(end);
+    const range = document.createRange();
+    range.setStart(a.node, a.offset);
+    range.setEnd(b.node, b.offset);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function paint(caret = null) {
+    editor.innerHTML = source ? render(source) : "";
+    painted = editor.innerHTML;
+    savedStart = savedEnd = caret ?? source.length;
+    if (caret !== null) select(caret);
+  }
+
+  function remember() {
+    if (history[historyIndex] === source) return;
+    history.splice(historyIndex + 1);
+    history.push(source);
+    if (history.length > 100) history.shift();
+    historyIndex = history.length - 1;
+  }
+
+  function commit() {
+    if (composing || editor.innerHTML === painted) return;
+    const selection = window.getSelection?.();
+    const point = selection?.rangeCount && editor.contains(selection.focusNode)
+      ? { node: selection.focusNode, offset: selection.focusOffset } : null;
+    const marked = read(point);
+    const caret = marked.indexOf(marker);
+    source = marked.replace(marker, "");
+    remember();
+    paint(caret < 0 ? null : caret);
+  }
+
+  Object.defineProperties(editor, {
+    value: { configurable: true, get: () => source, set: (value) => {
+      source = String(value);
+      remember();
+      paint();
+    } },
+    selectionStart: { configurable: true, get: () => selectionOffset(false), set: (value) => { savedStart = value; } },
+    selectionEnd: { configurable: true, get: () => selectionOffset(true), set: (value) => { savedEnd = value; } },
+  });
+  editor.setSelectionRange = select;
+  editor.addEventListener("beforeinput", (event) => {
+    if (composing || event.isComposing || !["insertText", "insertLineBreak"].includes(event.inputType)) return;
+    // Applying text to the Markdown model avoids inheriting a code/bold span
+    // when the caret is immediately after its closing delimiter.
+    event.preventDefault();
+    const start = selectionOffset(false);
+    const end = selectionOffset(true);
+    const text = event.inputType === "insertLineBreak" ? "\n" : event.data || "";
+    source = source.slice(0, start) + text + source.slice(end);
+    remember();
+    paint(start + text.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  editor.addEventListener("compositionstart", () => { composing = true; });
+  editor.addEventListener("compositionend", () => { composing = false; commit(); editor.dispatchEvent(new Event("input", { bubbles: true })); });
+  editor.addEventListener("input", commit);
+  editor.addEventListener("keydown", (event) => {
+    if (event.isComposing || composing) return;
+    if (!(event.metaKey || event.ctrlKey) || !["z", "y"].includes(event.key.toLowerCase())) return;
+    event.preventDefault();
+    const redo = event.key.toLowerCase() === "y" || event.shiftKey;
+    historyIndex = Math.max(0, Math.min(history.length - 1, historyIndex + (redo ? 1 : -1)));
+    source = history[historyIndex];
+    paint(source.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  editor.addEventListener("paste", (event) => {
+    if (Array.from(event.clipboardData?.items || []).some((item) => item.kind === "file")) return;
+    const text = event.clipboardData?.getData?.("text/plain");
+    if (text === undefined) return;
+    event.preventDefault();
+    const start = selectionOffset(false);
+    const end = selectionOffset(true);
+    source = source.slice(0, start) + text + source.slice(end);
+    remember();
+    paint(start + text.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 (function () {
   const vscode = acquireVsCodeApi();
   const $ = (id) => document.getElementById(id);
@@ -28,6 +215,7 @@
   const emptyLead = $("empty-lead");
   const suggestions = $("empty-suggestions");
   const input = $("input");
+  installMarkdownInput(input, (text) => renderMarkdown(text, true));
 
   /// What the home state offers a reader with nothing to say yet, each filling
   /// the composer rather than sending: the desktop app's own four, in its own
@@ -356,7 +544,7 @@
 
   /// Renders Markdown for the transcript. Unclosed delimiters stay literal, so
   /// a reply renders cleanly while it is still streaming.
-  function renderMarkdown(text) {
+  function renderMarkdown(text, softBreaks = false) {
     const lines = String(text).split("\n");
     const out = [];
     let i = 0;
@@ -410,7 +598,7 @@
           quote.push(lines[i].replace(/^\s*>\s?/, ""));
           i += 1;
         }
-        out.push(`<blockquote>${renderMarkdown(quote.join("\n"))}</blockquote>`);
+        out.push(`<blockquote>${renderMarkdown(quote.join("\n"), softBreaks)}</blockquote>`);
         continue;
       }
 
@@ -477,7 +665,7 @@
         para.push(lines[i]);
         i += 1;
       }
-      out.push(`<p>${inline(para.join(" "))}</p>`);
+      out.push(`<p>${softBreaks ? para.map(inline).join("<br>") : inline(para.join(" "))}</p>`);
     }
     closeList();
     return out.join("");
@@ -1925,8 +2113,6 @@
   const inputHistoryKey = () => JSON.stringify([currentFolder, currentSession]);
 
   function updateSendState() {
-    $("markdown-preview").hidden = !input.value.trim();
-    $("markdown-preview-body").innerHTML = input.value.trim() ? renderMarkdown(input.value) : "";
     const hasText = Boolean(input.value.trim()) || pendingCount() > 0;
     // The corner's own actions belong to the thread this composer is showing. A
     // turn running in another thread is not this transcript's, so a message
@@ -2158,7 +2344,9 @@
     }
     if (dialogBox.hidden || !dialogBox.classList.contains("settings-dropdown")) return;
     const anchor = (settingControl(dialogBox.dataset.kind) || modelSettings).getBoundingClientRect();
-    dialogBox.style.right = `${Math.max(12, window.innerWidth - anchor.right)}px`;
+    const width = dialogBox.getBoundingClientRect().width;
+    const maxRight = Math.max(12, window.innerWidth - width - 12);
+    dialogBox.style.right = `${Math.min(maxRight, Math.max(12, window.innerWidth - anchor.right))}px`;
     dialogBox.style.bottom = `${window.innerHeight - anchor.top + 8}px`;
     dialogBox.style.maxHeight = `${Math.max(80, Math.min(380, anchor.top - 20))}px`;
   }
@@ -2440,7 +2628,7 @@
 
   // ---------- composer ----------
 
-  /// The composer starts two rows tall (the host's `<textarea rows="2">`) and
+  /// The rendered composer starts two rows tall and
   /// grows with the message, up to a point where scrolling takes over.
   const MAX_INPUT_HEIGHT = 200;
 
@@ -2695,7 +2883,8 @@
     "PageDown",
   ]);
 
-  input.addEventListener("input", () => {
+  input.addEventListener("input", (event) => {
+    if (event.isComposing) return;
     resizeInput();
     updateSendState();
     requestCompletion();
@@ -2710,6 +2899,7 @@
   input.addEventListener("click", () => requestCompletion());
 
   input.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
     if (!atBox.hidden) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -2762,8 +2952,8 @@
     }
   });
 
-  $("markdown-preview").addEventListener("click", (event) => {
-    const link = event.target.closest?.("a[href]");
+  input.addEventListener("click", (event) => {
+    const link = event.target?.closest?.("a[href]");
     if (!link) return;
     event.preventDefault();
     event.stopPropagation();

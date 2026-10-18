@@ -179,7 +179,7 @@ template: |
   **CLI — macOS / Linux**
 
   ```sh
-  curl -fsSL https://raw.githubusercontent.com/$OWNER/$REPOSITORY/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/$OWNER/$REPOSITORY/main/install.sh | sh
   ```
 
   **CLI — Windows (PowerShell)**

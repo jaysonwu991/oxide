@@ -74,6 +74,7 @@ class StubElement {
   constructor(tag = "div", id = "") {
     this.tagName = tag.toUpperCase();
     this.id = id;
+    this.isContentEditable = id === "prompt";
     this.children = [];
     this.style = {};
     this.dataset = {};
@@ -1843,7 +1844,7 @@ check(
     !strip.includes('id="context-ring"') &&
     !strip.includes('id="settings"') &&
     shell.indexOf('<div class="composer-strip">') < shell.indexOf('<div id="composer"') &&
-    shell.indexOf('<div id="composer"') < shell.indexOf('<textarea id="prompt"') &&
+    shell.indexOf('<div id="composer"') < shell.indexOf('<div id="prompt"') &&
     shell.indexOf('id="project"') < shell.indexOf('id="attach"'),
   strip.slice(0, 420),
 );
@@ -1987,8 +1988,8 @@ check(
 // is typed into is not gated behind one in the markup either.
 check(
   "shipped the composer ready to type in",
-  /<textarea id="prompt"/.test(shell) && !/<textarea id="prompt"[^>]*disabled/.test(shell),
-  shell.slice(shell.indexOf('<textarea id="prompt"'), shell.indexOf('<textarea id="prompt"') + 120),
+  /<div id="prompt"/.test(shell) && /<div id="prompt"[^>]*contenteditable="true"/.test(shell),
+  shell.slice(shell.indexOf('<div id="prompt"'), shell.indexOf('<div id="prompt"') + 120),
 );
 check(
   "left the popovers out of the overlays",
@@ -8351,6 +8352,12 @@ check("returned to the default agent", app.state.agent === "");
 check("kept dock resizing quiet on hover", !/\.dock-resizer:hover/.test(sheet) && !/id="(?:details|changes)-resizer"[^>]*title=/.test(shell));
 
 console.log("Markdown composer and prompt recall");
+const renderedInputCode = (code) => {
+  const start = code.indexOf("function installMarkdownInput");
+  return code.slice(start, code.indexOf("\n}\n", start) + 3);
+};
+check("kept rendered input editing identical in Desktop and Extension",
+  renderedInputCode(source) === renderedInputCode(extensionIcons));
 app.state.project = "/preview-test";
 app.state.session = "preview-test";
 app.closeAt();
@@ -8358,9 +8365,9 @@ const markdownComposer = elementFor("prompt");
 const markdownSource = "# Plan\n\n**bold** and `code`\n\n<script>alert(1)</script>";
 markdownComposer.value = markdownSource;
 app.updateSendState();
-const previewHtml = elementFor("markdown-preview-body").innerHTML;
-check("rendered a safe live preview while keeping the source editable",
-  !elementFor("markdown-preview").hidden && previewHtml.includes("<h1>Plan</h1>") &&
+const previewHtml = markdownComposer.innerHTML;
+check("rendered Markdown in the only editable input",
+  /id="prompt"[^>]*contenteditable="true"/.test(shell) && !shell.includes('id="markdown-preview"') && previewHtml.includes("<h1>Plan</h1>") &&
   previewHtml.includes("<strong>bold</strong>") && !previewHtml.includes("<script>") &&
   markdownComposer.value === markdownSource);
 // Stored and parked transcripts both retain the source on the user bubble.
@@ -8370,12 +8377,12 @@ check("rendered sent user Markdown and retained its source",
 elementFor("transcript").appendChild(recalledUser);
 markdownComposer.value = "";
 app.updateSendState();
-check("hid the preview after clearing the source", elementFor("markdown-preview").hidden && elementFor("markdown-preview-body").innerHTML === "");
+check("cleared the rendered input", markdownComposer.innerHTML === "");
 let recalledPrevented = false;
 markdownComposer.fire("keydown", { key: "ArrowUp", preventDefault() { recalledPrevented = true; } });
 check("Up recalled the original Markdown from the current transcript",
   recalledPrevented && markdownComposer.value === markdownSource && markdownComposer.selectionStart === markdownSource.length &&
-  !elementFor("markdown-preview").hidden);
+  markdownComposer.innerHTML.includes("<h1>Plan</h1>"));
 markdownComposer.value = "my draft";
 markdownComposer.fire("keydown", { key: "ArrowUp", preventDefault() {} });
 check("Up preserved an existing draft", markdownComposer.value === "my draft");

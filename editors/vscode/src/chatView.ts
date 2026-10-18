@@ -394,12 +394,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       aria-label="Queued message actions" hidden></div>
     <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden></div>
     <div id="chips" class="chips" hidden></div>
-    <textarea id="input" rows="2" spellcheck="false"
-      placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image"></textarea>
-    <details id="markdown-preview" class="markdown-preview" open hidden>
-      <summary>Markdown preview</summary>
-      <div id="markdown-preview-body" class="body"></div>
-    </details>
+    <div id="input" class="markdown-input body" contenteditable="true" spellcheck="false"
+      role="textbox" aria-multiline="true" aria-label="Message"
+      data-placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image"></div>
     <div id="bar">
       <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach">${ICONS.attach}</button>
       <div id="meta" class="meta" aria-label="Turn settings"></div>

@@ -54,7 +54,7 @@ Claude Code.
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | sh
 ```
 
 Windows (x86_64):

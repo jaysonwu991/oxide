@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install the Oxide CLI.
 #
-#   curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | sh
 #
 # Environment overrides:
 #   OXIDE_VERSION      version to install, with or without a leading "v"

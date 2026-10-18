@@ -233,11 +233,9 @@
           <div id="queue-menu" class="queued-message-menu" role="menu"
             aria-label="Queued message actions" hidden></div>
           <div id="attachments" class="attachments" hidden></div>
-          <textarea id="prompt" placeholder="Ask Oxide…"></textarea>
-          <details id="markdown-preview" class="markdown-preview" open hidden>
-            <summary>Markdown preview</summary>
-            <div id="markdown-preview-body" class="body"></div>
-          </details>
+          <div id="prompt" class="markdown-input body" contenteditable="true"
+            role="textbox" aria-multiline="true" aria-label="Message"
+            data-placeholder="Ask Oxide…"></div>
           <div class="composer-bar">
             <div class="composer-left">
               <button
