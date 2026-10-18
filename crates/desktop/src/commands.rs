@@ -444,6 +444,47 @@ fn project_dir(project: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(project))
 }
 
+// ---------- worktrees ----------
+
+/// The worktrees this project has, newest first. A worktree is a checkout of
+/// the project on its own branch, which a thread runs in while the folder the
+/// reader has open stays as it was.
+pub fn worktrees(project: String) -> CmdResult<Vec<oxide_core::worktree::Worktree>> {
+    let root = project_dir(&project)?;
+    Ok(oxide_core::worktree::Worktrees::open().list(&root))
+}
+
+/// Makes a worktree of the project, or refuses a name already taken. The
+/// branch it lands on is `oxide/<name>`.
+pub async fn create_worktree(
+    project: String,
+    name: Option<String>,
+    base: Option<String>,
+) -> CmdResult<oxide_core::worktree::Worktree> {
+    let root = project_dir(&project)?;
+    let name = name.filter(|name| !name.trim().is_empty());
+    tokio::task::spawn_blocking(move || {
+        oxide_core::worktree::Worktrees::open().create(&root, name.as_deref(), base.as_deref())
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
+/// Removes a worktree's checkout and leaves its branch in the repository.
+pub async fn remove_worktree(
+    project: String,
+    name: String,
+) -> CmdResult<oxide_core::worktree::Worktree> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || {
+        oxide_core::worktree::Worktrees::open().remove(&root, &name)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
 // ---------- sessions ----------
 
 pub async fn list_sessions(project: String, state: &DesktopState) -> CmdResult<Vec<SessionView>> {
@@ -1318,6 +1359,18 @@ pub async fn dispatch(
         "archive_session" => command_value(archive_session(arg(&args, "id")?, &state).await),
         "project_info" => command_value(project_info(arg(&args, "project")?, &state).await),
         "git_info" => command_value(git_info(arg(&args, "project")?)),
+        "worktrees" => command_value(worktrees(arg(&args, "project")?)),
+        "create_worktree" => command_value(
+            create_worktree(
+                arg(&args, "project")?,
+                optional_arg(&args, "name")?,
+                optional_arg(&args, "base")?,
+            )
+            .await,
+        ),
+        "remove_worktree" => {
+            command_value(remove_worktree(arg(&args, "project")?, arg(&args, "name")?).await)
+        }
         "reasoning_levels" => command_value(reasoning_levels(arg(&args, "project")?, &state).await),
         "set_project_trust" => command_value(
             set_project_trust(arg(&args, "project")?, arg(&args, "trusted")?, &state).await,

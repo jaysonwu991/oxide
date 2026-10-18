@@ -11,7 +11,7 @@ pub use oxide_core::{
     agent, approval, approvals, at, auth, catalog, cli, clipboard, commands, compact, config, diff,
     ecosystem, html, llm, lsp, mcp, mcp_config, mcp_oauth, media, memory, notice, notify,
     permission, plugin, plugin_registry, portkey_usage, pricing, runner, session, sessions,
-    snapshots, tools, trust, update_notice,
+    snapshots, title, tools, trust, update_notice, worktree,
 };
 
 use agent::{AgentEvent, Approver, Cancel, Steering};
@@ -148,6 +148,11 @@ struct Cli {
     /// Working directory for the agent
     #[arg(short = 'C', long)]
     cwd: Option<PathBuf>,
+
+    /// Run in a git worktree of the project, making one when it is not there yet
+    /// (`=NAME` names it; without a name it is named after the prompt)
+    #[arg(long, value_name = "NAME", num_args = 0..=1, require_equals = true)]
+    worktree: Option<Option<String>>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -296,9 +301,52 @@ enum Command {
         #[command(subcommand)]
         action: ChangesAction,
     },
+    /// Manage the git worktrees a conversation can run in
+    Worktree {
+        #[command(subcommand)]
+        action: WorktreeAction,
+    },
     /// Read the system clipboard as an attachment for a front-end
     Clipboard {
         /// Print the attachment as JSON (`{"name":…,"dataUrl":…}`, or `null`)
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WorktreeAction {
+    /// List this project's worktrees
+    List {
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Print the listing as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make a worktree of this project
+    Create {
+        /// Name it (defaults to one derived from the project and a free name)
+        name: Option<String>,
+        /// The commit or branch to start from (defaults to `HEAD`)
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Print the worktree as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a worktree's checkout, leaving its branch in the repository
+    Remove {
+        /// The name it was created under
+        name: String,
+        /// Project directory (defaults to the current one)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Print the removed worktree as JSON
         #[arg(long)]
         json: bool,
     },
@@ -815,6 +863,64 @@ async fn main() -> Result<()> {
                 show_context(&current_dir, json, model)
             }
             Command::Providers { json } => list_providers(json),
+            Command::Worktree { action } => {
+                let current_dir = std::env::current_dir().context("resolving current directory")?;
+                match action {
+                    WorktreeAction::List { project, json } => {
+                        let project = project.unwrap_or(current_dir);
+                        let worktrees = worktree::Worktrees::open().list(&project);
+                        if json {
+                            println!("{}", serde_json::to_string(&worktrees)?);
+                        } else if worktrees.is_empty() {
+                            println!(
+                                "No worktrees of {}.\n\nMake one with `oxide worktree create [name]`.",
+                                project.display()
+                            );
+                        } else {
+                            for entry in worktrees {
+                                println!("{}  {}  {}", entry.name, entry.branch, entry.path);
+                            }
+                        }
+                        Ok(())
+                    }
+                    WorktreeAction::Create {
+                        name,
+                        base,
+                        project,
+                        json,
+                    } => {
+                        let project = project.unwrap_or(current_dir);
+                        let entry = worktree::Worktrees::open().create(
+                            &project,
+                            name.as_deref(),
+                            base.as_deref(),
+                        )?;
+                        if json {
+                            println!("{}", serde_json::to_string(&entry)?);
+                        } else {
+                            println!("{}\n{}", entry.path, entry.branch);
+                        }
+                        Ok(())
+                    }
+                    WorktreeAction::Remove {
+                        name,
+                        project,
+                        json,
+                    } => {
+                        let project = project.unwrap_or(current_dir);
+                        let entry = worktree::Worktrees::open().remove(&project, &name)?;
+                        if json {
+                            println!("{}", serde_json::to_string(&entry)?);
+                        } else {
+                            println!(
+                                "Removed {}. Its branch {} is still in the repository.",
+                                entry.path, entry.branch
+                            );
+                        }
+                        Ok(())
+                    }
+                }
+            }
             Command::Clipboard { json } => read_clipboard(json),
             Command::Login {
                 provider,
@@ -862,6 +968,31 @@ async fn main() -> Result<()> {
         Some(path) => path.clone(),
         None => std::env::current_dir().context("resolving current directory")?,
     };
+    // A run asked for a worktree makes one — or opens the one already holding
+    // that name — and runs there: the checkout is the folder everything below
+    // resolves against (the configuration, the session, the snapshots, the
+    // tools), while the project it was made from is what its own resources and
+    // its trust are read from, since a copy of a project is still that project.
+    let mut cwd = cwd;
+    let worktree_project = match cli.worktree.as_ref() {
+        Some(name) => {
+            let requested = name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| worktree_name(&cli.messages));
+            let entry = worktree::Worktrees::open()
+                .ensure(&cwd, requested.as_deref(), None)
+                .with_context(|| format!("making a worktree of {}", cwd.display()))?;
+            eprintln!(
+                "oxide: worktree {} on {} at {}",
+                entry.name, entry.branch, entry.path
+            );
+            cwd = PathBuf::from(&entry.path);
+            Some(PathBuf::from(&entry.project))
+        }
+        None => None,
+    };
+    let trust_cwd = worktree_project.clone().unwrap_or_else(|| cwd.clone());
     // `--mode` selects the output mode, like Pi: `json` or `rpc` (and `print`
     // for compatibility; `-p`/`--print` also selects print mode). There is no
     // permission mode; use `--tools`/`--exclude-tools` for a read-only run.
@@ -904,7 +1035,7 @@ async fn main() -> Result<()> {
     let trust_store = trust::TrustStore::load().unwrap_or_default();
     config.trusted = trust::resolve(
         &trust_store,
-        &cwd,
+        &trust_cwd,
         override_decision,
         config.default_project_trust,
     )
@@ -1054,6 +1185,7 @@ async fn main() -> Result<()> {
             cli.resume && !cli.no_session,
             theme_name,
             override_decision.is_none(),
+            trust_cwd,
         )
         .await
     }
@@ -1709,6 +1841,30 @@ fn parse_mode(value: Option<&str>) -> Result<String> {
     }
 }
 
+/// The name a worktree made for this run is given: the words the prompt opens
+/// with, reduced to the shape a branch may take, so `oxide --worktree "fix the
+/// login bug"` leaves a checkout called `fix-the-login-bug` rather than a
+/// numbered one. A run with no prompt has no words to take a name from, and the
+/// store supplies its own free default.
+fn worktree_name(messages: &[String]) -> Option<String> {
+    // A flag written after the prompt travels in `messages` (the positional is
+    // a trailing var arg), and it is not a word of the request: naming a
+    // checkout `write-a-greeting-file-p` for the `-p` beside it would put a
+    // flag in a branch name. Everything from the first flag on is flag syntax,
+    // its value included, so the name is the prose in front of it.
+    let words: Vec<&str> = messages
+        .iter()
+        .map(String::as_str)
+        .take_while(|message| !message.starts_with('-'))
+        .collect();
+    if words.is_empty() {
+        return None;
+    }
+    let title = title::summarize(&words.join(" "), title::TITLE_LIMIT);
+    let name = worktree::slug(&title);
+    (!name.is_empty()).then_some(name)
+}
+
 fn build_prompt(
     cwd: &Path,
     positional: Vec<String>,
@@ -1974,9 +2130,37 @@ async fn turn_changes(
 mod tests {
     use super::{
         context_view, parse_mode, parse_trust_decision, resolve_auto_approve, turn_changes,
-        ApprovalsAction, Cli, Command, MarketplaceAction, PluginAction, TrustAction,
+        worktree_name, ApprovalsAction, Cli, Command, MarketplaceAction, PluginAction, TrustAction,
     };
     use oxide_core::config::Config;
+
+    /// A worktree made for a run is named after the request, and a flag written
+    /// after the prompt — which travels in `messages`, since the positional is a
+    /// trailing var arg — is not a word of it.
+    #[test]
+    fn a_worktree_is_named_after_the_request_rather_than_its_flags() {
+        let words = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(|part| part.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            worktree_name(&words(&["write a greeting file", "-p"])).as_deref(),
+            Some("write-a-greeting-file")
+        );
+        assert_eq!(
+            worktree_name(&words(&["fix the login bug", "--mode", "json"])).as_deref(),
+            Some("fix-the-login-bug")
+        );
+        // Nothing but flags is no name at all, which leaves the store its own.
+        assert_eq!(worktree_name(&words(&["-p"])), None);
+        assert_eq!(
+            worktree_name(&words(&["--mode", "json", "fix the login bug"])),
+            None
+        );
+        assert_eq!(worktree_name(&words(&[])), None);
+    }
 
     /// What `context --json` answers, which a front-end that cannot link
     /// `oxide-core` reads for three things it cannot resolve itself: the window a

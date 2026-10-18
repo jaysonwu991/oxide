@@ -858,6 +858,46 @@ a file (`write`, `edit`) reads as one line — its header carries the path
 and its state the `+`/`−` counts — and keeps its own diff for the reader who
 clicks it, so the same change is not painted twice.
 
+## Worktrees
+
+A thread can run in a git worktree instead of the folder you have open. A
+worktree is a complete checkout of the project on its own `oxide/<name>`
+branch, so a conversation that edits, builds and tests files leaves the checkout
+you are reading exactly as it was, and the work comes back as a branch you can
+merge or open a pull request from.
+
+- **The composer's own row** carries the control (`#worktree`, the checkout
+  glyph) beside the paperclip. It is an icon with its words in its tooltip, like
+  the rest of that row, and it wears the accent while a worktree is in use —
+  which is the difference between a thread writing to a copy and one writing to
+  the folder itself.
+- **The picker** (`#worktrees-modal`, a popover above the composer like
+  `/mcp` and `/session`) lists the folder's own checkout first and then every
+  worktree, each with its branch and path; the one in use is marked, and each
+  worktree carries its own remove control. **Create worktree** at its foot makes
+  one from the name you type — blank leaves it to the CLI — and the new checkout
+  becomes the one the next thread runs in.
+- **Picking a checkout starts a new thread**: the checkout belongs to the task, so
+  a conversation that was written in one place is not moved to another. A turn
+  that is running refuses the switch, the same way it refuses a new chat or a
+  folder switch.
+- **The bar and the header say where the thread is**: the branch fact reads the
+  checkout the thread runs in (`oxide/fix-login-bug`), and a thread running in a
+  worktree wears its name beside the thread title. The sidebar marks such a
+  thread with the same glyph and lists it under its project — a worktree thread
+  is the project's thread, not a folder of its own — and the thread's card names
+  the checkout above its branch.
+- **Removing one** asks first, then removes the checkout and leaves the branch in
+  the repository. Making a worktree of that name again resumes that branch.
+- **Project trust is the project's**: a worktree is a copy of a folder whose
+  `.oxide/` resources were already decided about, so the shield covers its
+  checkouts too.
+- Worktrees live in the config directory (`worktrees/<project>/<name>/`) rather
+  than beside the project, so they never appear in the project's own `git status`
+  or in a diff you are reading. `oxide_core::worktree` is the store; the desktop
+  reads and writes the same one the terminal's `oxide worktree` and the VS Code
+  panel's **Oxide: Worktrees…** do.
+
 ## Models and reasoning
 
 The composer's own chips expose the same controls the CLI has:

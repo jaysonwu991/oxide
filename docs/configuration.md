@@ -125,6 +125,7 @@ oxide approvals list|clear [--project <dir>] [--json]
 oxide trust show|set <trusted|untrusted> [--project <dir>] [--json]
 oxide changes show <path> --baseline <rev> [--project <dir>]
 oxide changes undo --baseline <rev> [--after <rev>] [--project <dir>]
+oxide worktree list|create|remove [name] [--project <dir>] [--json]
 oxide clipboard --json
 ```
 
@@ -156,6 +157,7 @@ oxide clipboard --json
 | `--fork <PATH\|ID>` | Fork a session file or id into a new session. |
 | `--image <PATH>` | Attach an image, a PDF or a text file (repeatable). |
 | `-C, --cwd <DIR>` | Working directory for the agent. |
+| `--worktree[=NAME]` | Run in a git worktree of the project, making one when it is not there yet. `=NAME` names it (its branch is `oxide/NAME`); without a name it is named after the prompt. |
 
 ## Environment variables
 
@@ -638,6 +640,9 @@ Runtime state lives under the platform Oxide config directory:
 - MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`)
 - Sessions: `sessions/<project>/<timestamp>_<id>.jsonl` (Pi-style entry trees)
 - Snapshots: `snapshots/<project>/` (bare git repo)
+- Worktrees: `worktrees/<project>/<name>/` (a `git worktree` of the project on
+  its own `oxide/<name>` branch, with the listing beside it in
+  `worktrees/<project>/worktrees.json`)
 - Memory: `memory/`
 - Project trust: `trust.json`
 - Plugins: `plugins/` (installed plugin packages, marketplaces, and state)

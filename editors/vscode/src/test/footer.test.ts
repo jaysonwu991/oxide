@@ -47,13 +47,30 @@ function chip(state: ReturnType<typeof footerState>, id: string): string {
 }
 
 describe("footerState", () => {
-  it("labels the model, thinking level, agent and access", () => {
+  it("labels the model, thinking level, checkout, agent and access", () => {
     const state = footerState(input());
     assert.equal(chip(state, "model"), "model: glm-5 · 128k");
     assert.equal(chip(state, "reasoning"), "thinking: auto");
     assert.equal(chip(state, "agent"), "agent: default");
     assert.equal(chip(state, "access"), "access: untrusted");
-    assert.deepEqual(state.chips.map((entry) => entry.id), ["model", "reasoning", "access", "agent"]);
+    // A chat that runs in a worktree says so rather than leaving the reader to
+    // guess which checkout the turn writes to.
+    assert.equal(chip(state, "worktree"), "worktree: local");
+    assert.equal(
+      chip(footerState(input({ worktree: "fix-login-bug" })), "worktree"),
+      "worktree: fix-login-bug",
+    );
+    assert.match(
+      state.chips.find((entry) => entry.id === "worktree")?.title ?? "",
+      /Click to run it in a worktree/,
+    );
+    assert.deepEqual(state.chips.map((entry) => entry.id), [
+      "model",
+      "reasoning",
+      "worktree",
+      "access",
+      "agent",
+    ]);
     assert.match(
       state.chips.find((entry) => entry.id === "reasoning")?.title ?? "",
       /Click to choose a level\./,

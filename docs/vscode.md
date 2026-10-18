@@ -558,6 +558,20 @@ beside its gauge.
   copy of that table used to make the chip report `128k` for a model whose
   window is `1M`. Session history remains
   the history button in the header instead of taking a second footer slot.
+- **Worktree** — the chip says which checkout the chat runs in (`worktree:
+  local` for the folder you have open, `worktree: fix-login-bug` for one of its
+  worktrees — another complete checkout of the project on its own
+  `oxide/<name>` branch). It opens the panel's own **Worktrees** listing, which
+  is the same store the terminal's `oxide worktree` and the desktop app write:
+  the folder's own checkout first, then every worktree with its branch and path,
+  a remove control on each, and **New worktree…**, which asks for a name in VS
+  Code's input box and starts a chat in the checkout it makes. Picking a
+  checkout starts a new chat there rather than moving the one on screen, since
+  the checkout belongs to the task; a running turn refuses the switch. The
+  chat's own commands are then run in that folder — the CLI is spawned with it,
+  so its sessions, snapshots and change cards belong to the checkout — and a
+  thread resumed from the history continues in the folder its own header
+  recorded. **Oxide: Worktrees…** is the same listing from the palette.
 - **Bar** — a bar of its own sitting on the composer's top edge, carrying the
   branch the folder is on and the context gauge at the end of the row, the way
   the desktop app carries its own top row. It is a surface of the theme's widget

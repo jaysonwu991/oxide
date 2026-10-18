@@ -22,6 +22,10 @@ import { emptyUsage, type ReplayEntry, type SentChip, type UsageTotals } from ".
 
 export interface SessionHistory {
   id: string;
+  /// The folder the thread ran in, which is a worktree's checkout when the
+  /// thread was one: resuming it continues there rather than in the folder the
+  /// reader has open.
+  cwd: string;
   /// The thread's own name as the CLI stores it, when it has one.
   name: string;
   /// The thread's turns, oldest first: what was said and what was called.
@@ -116,6 +120,7 @@ export function parseSessionHistory(json: string): SessionHistory | null {
   return {
     id: str(root.id),
     name: str(root.name),
+    cwd: str(root.cwd),
     entries,
     total: num(root.messageCount) || entries.length,
     // Read from the answer rather than counted here: the messages the panel

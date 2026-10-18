@@ -1590,6 +1590,47 @@ change card in the transcript.
   directories the snapshot excludes). Where it is refused there is simply no
   listing for the turn, and the run itself is unaffected.
 
+## Git worktrees
+
+A worktree is another checkout of the project on a branch of its own. A
+conversation that runs in one edits, builds and tests a complete copy while the
+folder you have open stays exactly as it was, and when the work is done it is an
+ordinary `oxide/<name>` branch you can merge, push or open a pull request from.
+
+```sh
+oxide worktree create fix-login          # a checkout on oxide/fix-login
+oxide worktree list                      # every checkout of this project
+oxide worktree remove fix-login          # the folder goes; the branch stays
+oxide --worktree=fix-login "fix the login form"
+oxide --worktree "add a retry to the uploader"   # named after the prompt
+```
+
+- The run's folder is the checkout: the agent's tools, its session, its shadow
+  snapshot and its change listing all belong to it, so a turn in a worktree
+  touches nothing in the folder you have open.
+- `--worktree` makes the checkout when it is not there yet and reopens it when it
+  is, so the second run with the same name continues where the first left off.
+  Without a name, one is taken from the prompt's first words
+  (`write-a-greeting`), and a name that is taken gets the next free one.
+- A worktree is made from `HEAD` unless `--base <ref>` names another commit or
+  branch.
+- `remove` deletes the checkout and leaves its branch in the repository: the
+  commits are the work that was started there. Making a worktree with that name
+  again resumes the branch rather than starting over.
+- Checkouts live under the config directory (`worktrees/<project>/<name>/`)
+  rather than beside the project, so they never appear in the project's own
+  `git status` or in a diff you are reading.
+- Project trust is the project's: a worktree is a copy of a folder whose
+  `.oxide/` resources were already decided about, so `trust set` on the project
+  covers the checkouts made from it. A worktree directory needs a git repository
+  with at least one commit; a plain folder has nothing to branch from and says
+  so.
+- `--json` prints the listing, or the one checkout `create`/`remove` acted on —
+  `{name, branch, path, project, created_at}` — which is how a front-end that
+  cannot link `oxide-core` draws the same store. The desktop app's composer and
+  the VS Code panel's **Oxide: Worktrees…** both read it, and a worktree made in
+  any of the three is listed by the others.
+
 ## Data locations and reset
 
 Runtime state lives under the platform Oxide config directory:

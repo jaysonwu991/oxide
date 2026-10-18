@@ -60,6 +60,11 @@ import {
   SESSION_PIN,
   SESSION_ARCHIVE,
   sessionDialog,
+  WORKTREE_CREATE,
+  WORKTREE_REFRESH,
+  WORKTREE_REMOVE,
+  WORKTREE_SELECT,
+  worktreeDialog,
   reasoningDialog,
   trustDialog,
   undoChangesDialog,
@@ -75,6 +80,15 @@ import {
 import { clipboardArgs, parseClipboardMedia } from "./core/clipboard";
 import { approvalsArgs, approvalsClearArgs, parseApprovals } from "./core/permissions";
 import { mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
+import {
+  parseWorktree,
+  parseWorktrees,
+  worktreeAt,
+  worktreeCreateArgs,
+  worktreeListArgs,
+  worktreeRemoveArgs,
+  type Worktree,
+} from "./core/worktrees";
 import {
   needsKey,
   parseLoginOutcome,
@@ -314,6 +328,10 @@ export class ChatController {
   /// is the run's (which is the state every run starts in), so the two are
   /// compared rather than a flag kept beside them.
   private runTranscript: Transcript | null = null;
+  /// The checkout the parked thread runs in: a worktree belongs to the chat that
+  /// picked it, so the strip's way back to a thread it left returns the panel to
+  /// the folder that thread's next message belongs to.
+  private runWorktree: string | null = null;
   /// What the strip names a left-behind run's thread by: the title the header
   /// showed when the reader moved on (`threadTitle()`), so a thread the store
   /// has not named yet is not the one row written as a bare id.
@@ -416,6 +434,17 @@ export class ChatController {
   private approvalsNote = "";
   private approvalsProbe = 0;
   private sessions: SessionEntry[] = [];
+  /// The worktrees of the folder on screen, and the checkout this chat runs in.
+  /// A worktree is another checkout of the project on its own branch
+  /// (`oxide/<name>`), so a conversation's work stays out of the folder the
+  /// reader has open; `null` is that folder itself. At most one thread runs in a
+  /// checkout at a time, which is why the choice belongs to the chat on screen
+  /// rather than to the folder.
+  private worktrees: Worktree[] = [];
+  private worktree: string | null = null;
+  /// The newest worktree listing asked for: the row's own Recheck and the
+  /// command can both read while the other is in flight.
+  private worktreeProbe = 0;
   /// The filter the open session listing is showing. The rows are the store's
   /// own answer, so the search box only decides which of them are painted —
   /// typing never spawns the CLI again — and the value is held here so a redraw
@@ -731,6 +760,10 @@ export class ChatController {
       defaultTrust: project?.defaultTrust ?? "ask",
       savedTrust: project?.savedTrust,
       branch: project?.branch ?? "",
+      // The checkout this chat runs in, when it is not the folder on screen: a
+      // chat in a worktree writes to a copy of the project, and the footer is
+      // where the panel says which copy.
+      worktree: this.worktree ? this.worktreeName() : null,
       autoCompact: project?.autoCompact ?? true,
       subscription: this.subscription,
       usage: this.transcript.usage,
@@ -927,13 +960,18 @@ export class ChatController {
       this.runTitle = "";
       this.nextChipId = 1;
       this.context = [];
+      // The checkouts belonged to the folder being left: a worktree of one
+      // project is not a folder of another, so the next chat starts in this
+      // project's own tree.
+      this.worktree = null;
+      this.worktrees = [];
       this.broadcast(this.stateMessage());
       this.showNotice(
         `Switched to ${folder.name}: the conversation in ${previous} keeps its own session.`,
       );
     }
     this.activeFolder = folder.uri.fsPath;
-    return folder.uri.fsPath;
+    return this.worktree ?? this.activeFolder;
   }
 
   /// The workspace-relative path the model sees for a file in this workspace.
@@ -955,6 +993,154 @@ export class ChatController {
   /// editor's folder, else the first one.
   workspaceRoot(): string | null {
     return this.folder()?.uri.fsPath ?? null;
+  }
+
+  /// The worktree this chat runs in, by the name the CLI gave it. A checkout a
+  /// listing has not named — the panel resumed a thread in one before the
+  /// listing was read — is named by its folder, which is what the reader would
+  /// call it too.
+  private worktreeName(): string {
+    const path_ = this.worktree;
+    if (!path_) return "";
+    return worktreeAt(this.worktrees, path_)?.name ?? path.basename(path_);
+  }
+
+  /// The worktrees of this project, in the panel: the checkouts a chat can run
+  /// in, beside the folder itself. Picking one starts a chat there — the
+  /// checkout belongs to the task — and removing one leaves its branch in the
+  /// repository.
+  async showWorktrees(): Promise<void> {
+    const folder = this.folder()?.uri.fsPath;
+    if (!folder) {
+      this.showNotice("Open a folder first.", "error");
+      return;
+    }
+    const name = path.basename(folder);
+    const epoch = ++this.worktreeProbe;
+    this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, "Checking checkouts…"));
+    const result = await runCapture(this.binary(), worktreeListArgs(folder), folder);
+    // A read a newer one has superseded paints nothing, and a folder that moved
+    // under it is no longer the one it was about.
+    if (epoch !== this.worktreeProbe || folder !== this.folder()?.uri.fsPath) return;
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not read this project's worktrees: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, failed));
+      return;
+    }
+    this.worktrees = parseWorktrees(result.stdout);
+    // A checkout removed in a terminal is not one this chat can be sent to.
+    if (this.worktree && !worktreeAt(this.worktrees, this.worktree)) this.worktree = null;
+    this.showDialog(worktreeDialog(this.worktrees, this.worktree, name));
+    this.broadcastStatus();
+  }
+
+  /// Runs the next chat in a checkout, or in the folder itself. A turn owns the
+  /// thread it is in, so switching is refused while one runs — the same refusal
+  /// a new chat and a folder switch get.
+  private selectWorktree(value: string): void {
+    const folder = this.folder()?.uri.fsPath;
+    if (!folder) return;
+    if (this.turn) {
+      this.showDialog(
+        worktreeDialog(this.worktrees, this.worktree, path.basename(folder),
+          "A turn is running; stop it before switching checkouts."),
+      );
+      return;
+    }
+    const entry = value ? worktreeAt(this.worktrees, value) : null;
+    if (value && !entry) {
+      this.showNotice("That worktree is no longer there.", "warn");
+      return;
+    }
+    this.worktree = entry ? entry.path : null;
+    this.closeDialog();
+    this.newSession();
+    this.showNotice(
+      entry
+        ? `New chat in the worktree ${entry.name} on ${entry.branch}.`
+        : `New chat in ${path.basename(folder)}'s own folder.`,
+    );
+    this.refreshProject();
+  }
+
+  /// Makes a worktree and starts a chat in it. The name is typed into VS Code's
+  /// own input box: a listing row is a button, and a name is not something a
+  /// button can carry.
+  private async createWorktree(): Promise<void> {
+    const folder = this.folder()?.uri.fsPath;
+    if (!folder) {
+      this.showNotice("Open a folder first.", "error");
+      return;
+    }
+    if (this.turn) {
+      this.showDialog(
+        worktreeDialog(this.worktrees, this.worktree, path.basename(folder),
+          "A turn is running; stop it before making a worktree."),
+      );
+      return;
+    }
+    const name = await vscode.window.showInputBox({
+      title: "New worktree",
+      prompt: "Name the worktree. Its branch is oxide/<name>, and a chat starts in the new checkout.",
+      placeHolder: "fix-login-bug",
+      ignoreFocusOut: true,
+    });
+    if (name === undefined) return;
+    const result = await runCapture(this.binary(), worktreeCreateArgs(folder, name), folder);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not create the worktree: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed));
+      return;
+    }
+    const entry = parseWorktree(result.stdout);
+    if (!entry) {
+      const failed = "The worktree was made, but the CLI did not name it.";
+      this.showNotice(failed, "warn");
+      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed));
+      return;
+    }
+    this.worktrees = [entry, ...this.worktrees.filter((each) => each.path !== entry.path)];
+    this.selectWorktree(entry.path);
+    this.showNotice(`Created the worktree ${entry.name} on ${entry.branch}.`);
+  }
+
+  /// Removes a checkout, leaving its branch in the repository: the commits are
+  /// the work that was started there, and making a worktree of that name again
+  /// resumes it.
+  private async removeWorktree(name: string): Promise<void> {
+    const folder = this.folder()?.uri.fsPath;
+    const entry = this.worktrees.find((each) => each.name === name);
+    if (!folder || !entry) return;
+    if (this.turn) {
+      this.showDialog(
+        worktreeDialog(this.worktrees, this.worktree, path.basename(folder),
+          "A turn is running; stop it before removing a worktree."),
+      );
+      return;
+    }
+    const answer = await vscode.window.showWarningMessage(
+      `Remove the worktree ${entry.name} at ${entry.path}?`,
+      { modal: true },
+      "Remove worktree",
+    );
+    if (answer !== "Remove worktree") return;
+    const result = await runCapture(this.binary(), worktreeRemoveArgs(folder, name), folder);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not remove the worktree: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed));
+      return;
+    }
+    this.worktrees = this.worktrees.filter((each) => each.name !== name);
+    if (this.worktree === entry.path) this.worktree = null;
+    this.showNotice(`Removed ${entry.name}. Its branch ${entry.branch} is still in the repository.`);
+    await this.showWorktrees();
+    this.refreshProject();
   }
 
   /// A file read for a diff preview: inside the workspace, text, and small.
@@ -1904,6 +2090,7 @@ export class ChatController {
     // out of the strip, and the store still holds that thread for the listing.
     this.runTranscript = null;
     this.runTitle = "";
+    this.runWorktree = null;
     this.queue = [];
     this.sessionTitle = null;
     this.continueLast = false;
@@ -2123,6 +2310,10 @@ export class ChatController {
     this.runTranscript = null;
     this.sessionTitle = this.runTitle || null;
     this.runTitle = "";
+    // The thread is read, and continued, in the checkout it was written in:
+    // the panel may have moved to another thread's checkout while it ran.
+    this.worktree = this.runWorktree;
+    this.runWorktree = null;
     this.dropChips();
     this.broadcast(this.stateMessage());
   }
@@ -2162,6 +2353,12 @@ export class ChatController {
     target.replay(history.entries);
     target.usage = history.usage;
     if (history.name) this.sessionTitle = history.name;
+    // The thread runs where its own header says it did: a thread resumed from a
+    // worktree continues in that checkout rather than in the folder the reader
+    // has open, and a thread whose folder this panel cannot reach keeps the
+    // folder it has — the answer names the folder, not a rebuild of it.
+    const folder = this.folder()?.uri.fsPath ?? null;
+    if (history.cwd && folder && history.cwd !== folder) this.worktree = history.cwd;
     this.broadcast(this.stateMessage());
     const tail =
       history.shown < history.total
@@ -2970,6 +3167,14 @@ export class ChatController {
   /// A click inside a dialog: the action a row or its trailing button carries.
   async dialogAction(action: string, value: string): Promise<void> {
     switch (action) {
+      case WORKTREE_REFRESH:
+        return this.showWorktrees();
+      case WORKTREE_SELECT:
+        return this.selectWorktree(value);
+      case WORKTREE_CREATE:
+        return this.createWorktree();
+      case WORKTREE_REMOVE:
+        return this.removeWorktree(value);
       case MCP_REFRESH:
         return this.showMcps();
       case MCP_TOGGLE:
@@ -3052,6 +3257,8 @@ export class ChatController {
         return this.setProjectTrust();
       case "permissions":
         return this.showApprovals();
+      case "worktree":
+        return this.showWorktrees();
       case "shortcuts":
         this.showDialog({
           kind: "shortcuts", pin: "footer", title: "Keyboard shortcuts",
@@ -3355,6 +3562,7 @@ export class ChatController {
   private parkRun(): void {
     if (!this.runTranscript || this.runTranscript !== this.transcript) return;
     this.runTitle = this.threadTitle();
+    this.runWorktree = this.worktree;
   }
 
   /// The thread the strip names and its `Open` opens: the run's while one is in

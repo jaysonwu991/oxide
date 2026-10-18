@@ -2045,7 +2045,9 @@
   const TRASH_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const PIN_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const ARCHIVE_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  const DIALOG_ICONS = { power: POWER_ICON, pin: PIN_ICON, archive: ARCHIVE_ICON };
+  const PLUS_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  const CLOSE_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  const DIALOG_ICONS = { power: POWER_ICON, pin: PIN_ICON, archive: ARCHIVE_ICON, plus: PLUS_ICON, close: CLOSE_ICON };
 
   /// The change card's own glyph: a split view with a file on each side, which
   /// is what a click there opens. It is drawn in the card's header beside the

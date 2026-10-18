@@ -517,6 +517,37 @@ describe("command contributions", () => {
     );
   });
 
+  it("keeps a chat in the checkout it was started in", () => {
+    // A worktree is another checkout of the project on its own branch, so the
+    // folder a turn runs in is the checkout rather than the folder on screen:
+    // every path that asks the controller where a turn goes reads `cwd()`, so
+    // that is where the choice has to be honoured for the CLI to be spawned
+    // there — sessions, snapshots and the change card all follow it.
+    assert.ok(
+      chat.includes("return this.worktree ?? this.activeFolder;"),
+      "the run's folder is the checkout when one is picked",
+    );
+    // The listing and its changes come from the CLI's own store, so a worktree
+    // made in the terminal or the desktop app is listed here too.
+    assert.ok(chat.includes("worktreeListArgs(folder)"), "the listing is the CLI's");
+    assert.ok(chat.includes("parseWorktrees(result.stdout)"), "the rows are the CLI's answer");
+    // A resumed thread continues in the folder its own header recorded, which is
+    // how a worktree thread opened from the history runs there rather than in
+    // the folder the reader happens to have open.
+    assert.ok(
+      chat.includes("history.cwd !== folder"),
+      "a resumed thread keeps its own checkout",
+    );
+    // The checkout belongs to the task: picking one starts a chat rather than
+    // moving the one on screen, and a running turn refuses the switch outright —
+    // its tools are writing in the checkout it began in.
+    const select = chat.slice(chat.indexOf("private selectWorktree(value: string)"));
+    const body = select.slice(0, select.indexOf("private async createWorktree"));
+    assert.ok(body.includes("this.turn"), "a running turn refuses the switch");
+    assert.ok(body.includes("this.newSession()"), "a picked checkout starts a chat");
+    assert.ok(body.includes("this.worktree = entry ? entry.path : null"));
+  });
+
   it("handles every action a dialog row can post", () => {
     // A row carries the action the panel performs for it, and the webview posts
     // that action back verbatim. An action with no case in the controller is a
