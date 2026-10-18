@@ -648,8 +648,23 @@ enum McpAction {
     },
 }
 
+/// How much stack the program is given. A debug build's argument parser — the
+/// derive-built command tree it walks, and the values it hands back — needs
+/// close to a megabyte, which is exactly what Windows gives the main thread: it
+/// overflows there before `--version` can print. The program therefore runs on
+/// a thread sized for it rather than at the platform's default.
+const STACK_BYTES: usize = 8 * 1024 * 1024;
+
+fn main() -> Result<()> {
+    let program = std::thread::Builder::new()
+        .stack_size(STACK_BYTES)
+        .spawn(run)
+        .context("starting oxide")?;
+    program.join().unwrap_or_else(|_| std::process::exit(101))
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         return match command {
