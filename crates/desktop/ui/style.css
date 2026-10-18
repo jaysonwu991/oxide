@@ -1768,7 +1768,10 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .thread-detail-computer { display: flex; margin-left: auto; }
 .thread-detail-age { flex: none; }
 .thread-detail-project,
-.thread-detail-branch { padding-top: 5px; }
+.thread-detail-branch,
+.thread-detail-worktree { padding-top: 5px; }
+.thread-detail-worktree { display: flex; align-items: center; gap: 8px; color: var(--dim); }
+.thread-detail-worktree span:first-child { display: flex; }
 
 .row-remove {
   position: absolute;
@@ -1825,7 +1828,93 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
    their boxes (`::-webkit-scrollbar` at the foot of this sheet). */
 .popover .mcp-list,
 .popover .session-list,
-.popover .project-list { max-height: none; min-height: 0; flex: 1 1 auto; padding: 0 14px 12px; }
+.popover .project-list,
+.popover .worktree-list { max-height: none; min-height: 0; flex: 1 1 auto; padding: 0 14px 12px; }
+
+/* ---------- worktrees ---------- */
+
+/* A worktree is another checkout of the project on its own branch. The composer
+   names the one the next turn runs in, the header says which one the thread on
+   screen is writing to, and the picker lists the checkouts a task can happen in
+   beside the project's own folder. */
+.thread-worktree {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 200px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.thread-worktree[hidden] { display: none; }
+.thread-worktree svg { flex: none; opacity: 0.8; }
+.thread-worktree span { overflow: hidden; text-overflow: ellipsis; }
+
+.worktree-list { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; }
+.worktree-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  /* Room for the row's own remove control, so a press on the name is never a
+     press on the ✕ drawn at the row's end. */
+  padding: 8px 34px 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.worktree-row:hover { background: var(--panel-2); }
+.worktree-row.active { border-color: var(--border); }
+.worktree-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktree-row.local .worktree-label { font-family: inherit; }
+.worktree-detail {
+  color: var(--faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktree-remove { width: 24px; height: 24px; right: 6px; }
+.worktree-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px 14px;
+}
+.worktree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.worktree-create { flex: none; }
+.worktree-create:disabled { opacity: 0.5; }
+.worktree-create:hover { border-color: var(--accent); color: var(--text); }
+/* The sidebar marks a thread that runs in one: the same project holds several
+   checkouts, and a row that does not say which is which is a row that cannot be
+   told from its siblings. */
+.session-worktree { flex: none; display: flex; align-items: center; color: var(--faint); }
 
 /* ---------- MCP servers ---------- */
 

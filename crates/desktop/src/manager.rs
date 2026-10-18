@@ -10,8 +10,10 @@ use anyhow::{Context, Result};
 use oxide_core::config::Config;
 use oxide_core::session::{SessionLog, SessionSummary};
 use oxide_core::trust::TrustStore;
+use oxide_core::worktree::Worktrees;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,6 +58,16 @@ pub struct SessionView {
     #[serde(flatten)]
     pub summary: SessionSummary,
     pub pinned: bool,
+    /// The worktree the thread runs in, when it runs in one: the sidebar names
+    /// the checkout beside the thread, since the same project can hold several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    /// The project a worktree thread belongs to. A thread in a worktree is the
+    /// project's own — it is the same repository — so the sidebar lists it under
+    /// that project rather than as a folder of its own, which is what a row per
+    /// checkout would otherwise become. `None` means the `cwd` is the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -327,9 +339,24 @@ impl DesktopManager {
         Ok(())
     }
 
-    /// Sessions for one project, newest first.
+    /// Sessions for one project, newest first. A worktree of the project keeps
+    /// its own store only when the repository has no remote to key the shared
+    /// one by, so its threads are read as well and merged by id — the same
+    /// thread is never listed twice.
     pub fn sessions_for(&self, project: &Path) -> Result<Vec<SessionSummary>> {
-        SessionLog::list(project)
+        let mut sessions = SessionLog::list(project)?;
+        for entry in oxide_core::worktree::Worktrees::open().list(project) {
+            let Ok(more) = SessionLog::list(Path::new(&entry.path)) else {
+                continue;
+            };
+            for summary in more {
+                if !sessions.iter().any(|each| each.id == summary.id) {
+                    sessions.push(summary);
+                }
+            }
+        }
+        sessions.sort_by_key(|summary| std::cmp::Reverse(summary.modified_at));
+        Ok(sessions)
     }
 
     /// Every session across every project, newest first.
@@ -338,6 +365,16 @@ impl DesktopManager {
     }
 
     pub fn session_views(&self, sessions: Vec<SessionSummary>) -> Result<Vec<SessionView>> {
+        self.session_views_with(sessions, &Worktrees::open())
+    }
+
+    /// The same views over an explicit worktree store, so the checkout a thread
+    /// is listed under can be held by a test with its own.
+    pub(crate) fn session_views_with(
+        &self,
+        sessions: Vec<SessionSummary>,
+        worktrees: &Worktrees,
+    ) -> Result<Vec<SessionView>> {
         let state = oxide_core::session_state::SessionState::load_from(
             &self.store.with_file_name("sessions.json"),
         )?;
@@ -347,9 +384,14 @@ impl DesktopManager {
                 !state.archived(&summary.id)
                     && !self.registry.removed_projects.contains(&summary.cwd)
             })
-            .map(|summary| SessionView {
-                pinned: state.pinned(&summary.id),
-                summary,
+            .map(|summary| {
+                let worktree = worktrees.view(Path::new(&summary.cwd));
+                SessionView {
+                    pinned: state.pinned(&summary.id),
+                    worktree: worktree.as_ref().map(|entry| entry.name.clone()),
+                    project: worktree.map(|entry| entry.project),
+                    summary,
+                }
             })
             .collect();
         views.sort_by_cached_key(|view| (Reverse(view.pinned), Reverse(view.summary.modified_at)));
@@ -379,11 +421,27 @@ impl DesktopManager {
     /// Pure merge of registered projects and session-derived projects. Kept
     /// separate from disk I/O so it can be tested directly.
     pub fn overview_with(&self, sessions: &[SessionSummary]) -> Vec<ProjectView> {
+        self.overview_with_worktrees(sessions, &Worktrees::open())
+    }
+
+    /// The same merge over an explicit worktree store, so the grouping a
+    /// worktree thread gets can be held by a test with its own checkouts.
+    pub(crate) fn overview_with_worktrees(
+        &self,
+        sessions: &[SessionSummary],
+        worktrees: &Worktrees,
+    ) -> Vec<ProjectView> {
         let mut views: Vec<ProjectView> = Vec::new();
+        // Which project each session belongs to: its own checkout, or the
+        // project a worktree thread was made from — a thread in a worktree is
+        // that project's thread, and a row per checkout would list one project
+        // twice under two names.
+        let owners = owners_of(sessions, worktrees);
 
         for project in &self.registry.projects {
             let path = project.path.to_string_lossy().to_string();
-            let (count, last) = session_stats(sessions, &project.path);
+            let key = canonical_string(&project.path);
+            let (count, last) = session_stats(sessions, &owners, &key);
             views.push(ProjectView {
                 id: project.id.clone(),
                 exists: project.path.is_dir(),
@@ -398,26 +456,41 @@ impl DesktopManager {
             });
         }
 
+        let registered: Vec<String> = self
+            .registry
+            .projects
+            .iter()
+            .map(|project| canonical_string(&project.path))
+            .collect();
         for summary in sessions {
-            let path = PathBuf::from(&summary.cwd);
+            let Some(owner) = owners.get(&summary.id) else {
+                continue;
+            };
             if self.registry.removed_projects.contains(&summary.cwd)
-                || views.iter().any(|view| view.path == summary.cwd)
+                || self.registry.removed_projects.contains(owner)
+                || registered.contains(owner)
+                || views
+                    .iter()
+                    .any(|view| canonical_string(Path::new(&view.path)) == *owner)
             {
                 continue;
             }
-            // One row per distinct session cwd not already registered.
-            let (count, last) = session_stats(sessions, &path);
+            // One row per distinct session cwd not already registered. A
+            // worktree thread lists the repository it was made from rather than
+            // the checkout, which is where its work will be merged.
+            let path = PathBuf::from(owner);
+            let (count, last) = session_stats(sessions, &owners, owner);
             views.push(ProjectView {
-                id: summary.cwd.clone(),
+                id: owner.clone(),
                 exists: path.is_dir(),
                 name: display_name(&path),
                 display_path: compact_home_path(&path),
-                path: summary.cwd.clone(),
+                path: owner.clone(),
                 registered: false,
                 session_count: count,
                 last_session_at: last,
                 last_opened_at: None,
-                pinned: self.registry.pinned_projects.contains(&summary.cwd),
+                pinned: self.registry.pinned_projects.contains(owner),
             });
         }
 
@@ -464,8 +537,12 @@ pub fn load_project_config(project: &Path) -> Result<Config> {
 pub fn load_project_config_with(project: &Path, reasoning: Option<String>) -> Result<Config> {
     let mut config = Config::load(project, None, None, None, reasoning)?;
     let store = oxide_core::trust::TrustStore::load().unwrap_or_default();
+    // A worktree is a copy of a project rather than a project of its own: the
+    // decision to trust the folder's own resources was made for the project, so
+    // it is that decision the copy runs under.
+    let trust_root = oxide_core::worktree::Worktrees::trust_root(project);
     config.trusted =
-        oxide_core::trust::resolve(&store, project, None, config.default_project_trust)
+        oxide_core::trust::resolve(&store, &trust_root, None, config.default_project_trust)
             .is_trusted();
     if !config.trusted {
         config.reload_ecosystem(project);
@@ -486,15 +563,17 @@ pub(crate) fn project_trust_with(
     config: &Config,
     project: &Path,
 ) -> ProjectTrust {
-    let required = oxide_core::trust::requires_trust(project);
-    let awaiting = oxide_core::trust::needs_prompt(store, project, config.default_project_trust);
+    let trust_root = oxide_core::worktree::Worktrees::trust_root(project);
+    let required = oxide_core::trust::requires_trust(&trust_root);
+    let awaiting =
+        oxide_core::trust::needs_prompt(store, &trust_root, config.default_project_trust);
     ProjectTrust {
         required,
         trusted: config.trusted,
         awaiting,
         default: config.default_project_trust.label().to_string(),
         resources: if required {
-            oxide_core::trust::project_resources(project)
+            oxide_core::trust::project_resources(&trust_root)
         } else {
             Vec::new()
         },
@@ -504,15 +583,45 @@ pub(crate) fn project_trust_with(
 /// Saves a trust decision for `project`, exactly like the CLI's `/trust`.
 pub fn set_project_trust(project: &Path, trusted: bool) -> Result<()> {
     let mut store = TrustStore::load().unwrap_or_default();
-    store.set(project, trusted);
+    // A worktree's decision is the project's: the copy exists for the length of
+    // a thread, and a decision recorded against it would be lost with it.
+    store.set(
+        &oxide_core::worktree::Worktrees::trust_root(project),
+        trusted,
+    );
     store.save()
 }
 
-fn session_stats(sessions: &[SessionSummary], path: &Path) -> (usize, u64) {
-    let path = path.to_string_lossy();
+/// The project each session belongs to, keyed by session id: its own folder,
+/// or the project a worktree thread was made from. Canonical, so a project
+/// reached through a symlinked path is the same project.
+fn owners_of(sessions: &[SessionSummary], worktrees: &Worktrees) -> HashMap<String, String> {
     sessions
         .iter()
-        .filter(|summary| summary.cwd == path)
+        .map(|summary| {
+            let owner = worktrees
+                .project_of(Path::new(&summary.cwd))
+                .unwrap_or_else(|| PathBuf::from(&summary.cwd));
+            (summary.id.clone(), canonical_string(&owner))
+        })
+        .collect()
+}
+
+fn canonical_string(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+fn session_stats(
+    sessions: &[SessionSummary],
+    owners: &HashMap<String, String>,
+    path: &str,
+) -> (usize, u64) {
+    sessions
+        .iter()
+        .filter(|summary| owners.get(&summary.id).is_some_and(|owner| owner == path))
         .fold((0, 0), |(count, last), summary| {
             (count + 1, last.max(summary.modified_at))
         })
@@ -724,6 +833,81 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         let _ = std::fs::remove_dir_all(persisted.store_path().parent().unwrap());
+    }
+
+    /// A repository with one commit, so a worktree has something to branch
+    /// from.
+    fn repo(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("oxide_desktop_wt_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "oxide@example.com"],
+            vec!["config", "user.name", "Oxide"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            std::process::Command::new("git")
+                .current_dir(&root)
+                .args(&args)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(root.join("README.md"), "hi\n").unwrap();
+        std::process::Command::new("git")
+            .current_dir(&root)
+            .args(["add", "README.md"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .current_dir(&root)
+            .args(["commit", "-m", "first", "--quiet"])
+            .output()
+            .unwrap();
+        root
+    }
+
+    /// A thread that runs in a worktree is the project's thread: it is counted
+    /// under that project and listed there, rather than becoming a folder of its
+    /// own in the sidebar.
+    #[test]
+    fn a_worktree_thread_is_counted_under_its_project() {
+        let store = temp_store();
+        let mut manager = DesktopManager::load_from(store).unwrap();
+        let project = repo("group");
+        let registered = manager.add_project(&project).unwrap();
+        let worktrees = Worktrees::at(
+            std::env::temp_dir().join(format!("oxide_desktop_wt_root_{}", std::process::id())),
+        );
+        let entry = worktrees.create(&project, Some("topic"), None).unwrap();
+
+        let sessions = vec![
+            summary(registered.path.to_string_lossy().as_ref(), 10),
+            summary(&entry.path, 20),
+        ];
+        let views = manager.overview_with_worktrees(&sessions, &worktrees);
+        assert_eq!(views.len(), 1, "{views:?}");
+        assert_eq!(views[0].id, registered.id);
+        assert_eq!(views[0].session_count, 2);
+        assert_eq!(views[0].last_session_at, 20);
+
+        // And the thread itself says which checkout it is in, so the sidebar can
+        // mark its row and the window can send its next message there.
+        let views = manager.session_views_with(sessions, &worktrees).unwrap();
+        let worktree_thread = views.iter().find(|view| view.summary.id == "s20").unwrap();
+        assert_eq!(worktree_thread.worktree.as_deref(), Some("topic"));
+        assert_eq!(
+            worktree_thread.project.as_deref(),
+            Some(project.canonicalize().unwrap().to_string_lossy().as_ref())
+        );
+        let own_thread = views.iter().find(|view| view.summary.id == "s10").unwrap();
+        assert!(own_thread.worktree.is_none());
+        assert!(own_thread.project.is_none());
+        let _ = worktrees.remove(&project, "topic");
+        std::fs::remove_dir_all(&project).ok();
+        let _ = std::fs::remove_dir_all(worktrees.root());
+        let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
     }
 
     #[test]

@@ -16,6 +16,7 @@ import { mcpStateLabel, type McpServerView } from "./mcps";
 import { filterProviders, providerState, type ProviderView } from "./providers";
 import { modelChoiceId } from "./models";
 import { filterSessions, type SessionEntry } from "./sessions";
+import { worktreeAt, type Worktree } from "./worktrees";
 import { updateVsix, type UpdateCheck } from "./updates";
 
 /// How a row's status is colored: the green/amber/red the terminal's `/mcp`
@@ -31,7 +32,7 @@ export type DialogRowKind = "action" | "thread" | "";
 /// The glyphs a row's own button can be painted with. The webview cannot load
 /// VS Code's codicon font, so the few it needs are named here and inlined as
 /// SVG by the renderer — the words the button carries stay in `button`.
-export type DialogIcon = "power" | "pin" | "archive" | "";
+export type DialogIcon = "power" | "pin" | "archive" | "plus" | "close" | "";
 
 export interface DialogRow {
   /// What the row's action posts back — a server name, a session id.
@@ -82,6 +83,7 @@ export type DialogKind =
   | "permissions"
   | "mcp"
   | "sessions"
+  | "worktrees"
   | "undo";
 
 export interface DialogState {
@@ -116,6 +118,16 @@ export interface DialogState {
 export const MCP_TOGGLE = "mcpToggle";
 export const MCP_REFRESH = "mcpRefresh";
 export const OPEN_SESSION = "openSession";
+/// A checkout picked in the worktree listing: the folder the next chat runs in.
+/// Its value is the checkout's path, or the empty string for the project's own
+/// folder.
+export const WORKTREE_SELECT = "worktreeSelect";
+/// The row that makes a worktree: the name is typed into VS Code's own input
+/// box, since a listing row is a button rather than a form.
+export const WORKTREE_CREATE = "worktreeCreate";
+export const WORKTREE_REMOVE = "worktreeRemove";
+/// Reading the listing again, which is the head's own trailing action.
+export const WORKTREE_REFRESH = "worktreeRefresh";
 export const SESSION_PIN = "sessionPin";
 export const SESSION_ARCHIVE = "sessionArchive";
 /// The confirmation a change card's Undo opens, and the row that does the
@@ -599,6 +611,67 @@ export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogS
     ),
     refreshLabel: "Recheck",
     refreshAction: MCP_REFRESH,
+  };
+}
+
+/// The worktrees this project holds, in the panel: the checkout a chat runs in,
+/// beside the folder itself. A worktree is where a conversation's work stays out
+/// of the reader's checkout, and its branch is what carries that work back.
+///
+/// Picking a row starts a chat there rather than moving the one on screen: the
+/// checkout belongs to the task, which is what makes two threads of one project
+/// readable apart. `active` is the checkout the panel is already in, marked the
+/// way the session listing marks the thread it has open.
+export function worktreeDialog(
+  worktrees: readonly Worktree[],
+  active: string | null,
+  projectName: string,
+  note = "",
+): DialogState {
+  const inLocal = !worktreeAt(worktrees, active);
+  const local = row("", "Local checkout", {
+    detail: `${projectName}'s own folder — the checkout you have open`,
+    action: WORKTREE_SELECT,
+    status: inLocal ? "in use" : "",
+    tone: inLocal ? "ok" : "",
+    current: inLocal,
+    kind: "thread",
+  });
+  const rows = worktrees.map((entry) =>
+    row(entry.path, entry.name, {
+      detail: [entry.branch, entry.path].filter(Boolean).join(" · "),
+      action: WORKTREE_SELECT,
+      status: entry.path === active ? "in use" : "",
+      tone: entry.path === active ? "ok" : "",
+      current: entry.path === active,
+      kind: "thread",
+      buttons: [
+        { label: `Remove the worktree ${entry.name}`, action: WORKTREE_REMOVE, icon: "close" },
+      ],
+    }),
+  );
+  return {
+    kind: "worktrees",
+    // The composer's own column: the checkout is chosen where a message is
+    // composed, and the transcript stays readable behind it.
+    pin: "footer",
+    title: "Worktrees",
+    subtitle:
+      "A worktree is another checkout of this project on its own branch (oxide/<name>). A chat runs there while the folder you have open stays as it is; removing one leaves its branch in the repository.",
+    note: note || (worktrees.length ? "" : "No worktrees yet. Make one from the name of the task."),
+    rows: [
+      local,
+      ...rows,
+      row("", "New worktree…", {
+        detail: "Names a checkout and starts a chat in it",
+        action: WORKTREE_CREATE,
+      }),
+    ],
+    count: worktrees.length,
+    search: false,
+    query: "",
+    refreshLabel: "Recheck",
+    refreshAction: WORKTREE_REFRESH,
   };
 }
 

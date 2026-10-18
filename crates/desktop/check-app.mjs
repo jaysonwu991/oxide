@@ -657,6 +657,19 @@ let gitAnswer = {
   detached: "",
 };
 let gitError = null;
+// The worktrees of the folder on screen: what `worktrees` answers, and what
+// `create_worktree`/`remove_worktree` change it to.
+let worktrees = [
+  {
+    name: "fix-login-bug",
+    branch: "oxide/fix-login-bug",
+    path: "/home/dev/Oxide/worktrees/9c1f/fix-login-bug",
+    project: "/home/dev/Projects/oxide",
+    created_at: 1700000100,
+  },
+];
+let worktreesError = null;
+let worktreeCreateError = null;
 let repositoryChanges = { files: [], added: 0, removed: 0 };
 let repositoryError = null;
 // What `session_messages` answers for a stored thread's own totals, and nothing
@@ -855,6 +868,35 @@ const invoke = async (command, args = {}) => {
       if (gitError) throw gitError;
       if (!String(args.project || "").trim()) throw "select a project first";
       return { ...gitAnswer };
+    case "worktrees":
+      if (worktreesError) throw worktreesError;
+      if (!String(args.project || "").trim()) throw "select a project first";
+      return worktrees.map((entry) => ({ ...entry }));
+    case "create_worktree": {
+      if (worktreeCreateError) throw worktreeCreateError;
+      // The core owns the naming: a worktree is named the way a branch can be
+      // spelled, so the picker's rows say what the checkout is really called.
+      const name =
+        String(args.name || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "worktree";
+      const entry = {
+        name,
+        branch: `oxide/${name}`,
+        path: `/home/dev/Oxide/worktrees/9c1f/${name}`,
+        project: args.project,
+        created_at: 1700000200,
+      };
+      worktrees.push(entry);
+      return { ...entry };
+    }
+    case "remove_worktree": {
+      const target = worktrees.find((entry) => entry.name === args.name);
+      if (!target) throw `no worktree named \`${args.name}\``;
+      worktrees = worktrees.filter((entry) => entry.name !== args.name);
+      return { ...target };
+    }
     default:
       return null;
   }
@@ -969,6 +1011,7 @@ vm.runInThisContext(
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
     " loadGit, openProjectDetails, refreshProjectDetails, openRepositoryChanges, changeReviewScope," +
     " loadMcps, openSessions," +
+    " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, loadWorktrees, runFolder," +
     " listedSessions, selectSessionFromTree, archiveSession," +
     " updateChips, openReasoning, loadInfo," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
@@ -1513,6 +1556,203 @@ app.setIdle();
 el("prompt").value = "";
 app.state.reasoning = catalogLevel.reasoning;
 app.state.reasoningPicked = catalogLevel.picked;
+
+// ---------- worktrees ----------
+
+// A worktree is another checkout of the project on its own branch. The picker
+// lists the checkouts a task can happen in beside the folder itself, makes one
+// from the name the reader types, and starts a thread there — so the checkout
+// belongs to the task rather than being switched under a thread already open.
+console.log("worktrees");
+app.setIdle();
+await app.selectProject({ name: "oxide", path: projectRows[0].path, id: projectRows[0].id });
+await nextTick();
+check(
+  "listed the project's worktrees with the folder it runs in",
+  app.state.worktrees.length === 1 &&
+    app.state.worktrees[0].name === "fix-login-bug" &&
+    app.state.worktree === null &&
+    projectCalls("worktrees").some(([, args]) => args.project === projectRows[0].path),
+  `${JSON.stringify(app.state.worktrees.map((entry) => entry.name))} / ${app.state.worktree}`,
+);
+check(
+  "named the checkout in the composer's tooltip rather than its face",
+  elementFor("worktree").title ===
+    "Worktree\nRun a thread in a copy of the project on its own branch" &&
+    elementFor("worktree").getAttribute("aria-label") === "Worktree" &&
+    elementFor("worktree").classList.contains("active") === false,
+  `${elementFor("worktree").title} / ${elementFor("worktree").getAttribute("aria-label")}`,
+);
+app.openWorktrees();
+await nextTick();
+check(
+  "opened the picker on the folder and every worktree",
+  elementFor("worktrees-modal").hidden === false &&
+    elementFor("worktree-list").children.length === 2 &&
+    elementFor("worktree-list").children[0].classList.contains("local") &&
+    /Local checkout/.test(elementFor("worktree-list").children[0].outline()) &&
+    /oxide\/fix-login-bug/.test(elementFor("worktree-list").children[1].outline()),
+  elementFor("worktree-list").outline(),
+);
+// The row's remove control sits inside the row that selects the checkout, so a
+// press on it removes the worktree rather than selecting what it was drawn on.
+check(
+  "kept the row's own remove control inside it",
+  elementFor("worktree-list").children[1].querySelector(".worktree-remove") !== null,
+  elementFor("worktree-list").children[1].outline(),
+);
+calls.length = 0;
+app.selectWorktree(worktrees[0].path);
+await nextTick();
+const linkedGit = projectCalls("git_info");
+check(
+  "made the worktree the folder the next turn runs in",
+  app.state.worktree === worktrees[0].path &&
+    app.runFolder() === worktrees[0].path &&
+    elementFor("worktrees-modal").hidden === true &&
+    elementFor("worktree").classList.contains("active") === true &&
+    elementFor("worktree").getAttribute("aria-label") === "worktree: fix-login-bug" &&
+    linkedGit.length === 1 &&
+    linkedGit[0][1].project === worktrees[0].path,
+  `${app.state.worktree} / ${JSON.stringify(linkedGit.map(([, args]) => args.project))}`,
+);
+check(
+  "named the checkout beside the thread's title",
+  elementFor("thread-worktree").hidden === false &&
+    /fix-login-bug/.test(elementFor("thread-worktree").outline()) &&
+    /worktree fix-login-bug/i.test(String(elementFor("thread-worktree").title)),
+  `${elementFor("thread-worktree").outline()} / ${elementFor("thread-worktree").title}`,
+);
+el("prompt").value = "fix the login form";
+calls.length = 0;
+await app.send(false);
+const inWorktree = projectCalls("send_prompt");
+check(
+  "started the thread in that checkout rather than in the folder",
+  inWorktree.length === 1 && inWorktree[0][1].project === worktrees[0].path,
+  JSON.stringify(inWorktree.map(([, args]) => args.project)),
+);
+app.setIdle();
+
+// A thread's own folder is where it is read back from and continued in, so a
+// thread in a worktree takes the window's next message with it.
+app.state.session = "6f3031b2beef";
+calls.length = 0;
+await app.openSession({
+  id: "6f3031b2beef",
+  cwd: worktrees[0].path,
+  project: projectRows[0].path,
+  worktree: "fix-login-bug",
+});
+const readBack = projectCalls("session_messages");
+check(
+  "read a worktree thread out of the checkout it ran in",
+  readBack.length === 1 &&
+    readBack[0][1].project === worktrees[0].path &&
+    app.state.worktree === worktrees[0].path,
+  `${JSON.stringify(readBack.map(([, args]) => args.project))} / ${app.state.worktree}`,
+);
+
+// Making one from the reader's own name starts a thread in it.
+app.selectWorktree(null);
+await nextTick();
+elementFor("worktree-name").value = "cache the tokens";
+calls.length = 0;
+await app.createWorktree();
+await nextTick();
+const madeWorktree = projectCalls("create_worktree");
+check(
+  "made a worktree from the name that was typed",
+  madeWorktree.length === 1 &&
+    madeWorktree[0][1].name === "cache the tokens" &&
+    madeWorktree[0][1].project === projectRows[0].path &&
+    app.state.worktrees.some((entry) => entry.name === "cache-the-tokens") &&
+    app.state.worktree === "/home/dev/Oxide/worktrees/9c1f/cache-the-tokens" &&
+    elementFor("worktree-name").value === "",
+  `${JSON.stringify(madeWorktree.map(([, args]) => args))} / ${app.state.worktree}`,
+);
+// A worktree that cannot be made is said where the reader asked for it, and the
+// thread on screen keeps the checkout it was already running in.
+worktreeCreateError = "not in a git repository";
+elementFor("worktree-name").value = "nope";
+calls.length = 0;
+await app.createWorktree();
+check(
+  "reported a worktree it could not make without moving the thread",
+  /Could not create the worktree: .*not in a git repository/.test(status()) &&
+    app.state.worktree === "/home/dev/Oxide/worktrees/9c1f/cache-the-tokens",
+  `${status()} / ${app.state.worktree}`,
+);
+worktreeCreateError = null;
+elementFor("worktree-name").value = "";
+
+// Removing one takes the checkout and leaves the branch, which is the work that
+// was started there.
+app.state.session = null;
+app.state.worktree = worktrees[1].path;
+const worktreeRemoval = app.removeWorktree(worktrees[1]);
+await nextTick();
+elementFor("confirm-ok").click();
+await worktreeRemoval;
+await nextTick();
+check(
+  "removed a worktree after asking, and left the checkout alone",
+  projectCalls("remove_worktree").some(([, args]) => args.name === "cache-the-tokens") &&
+    app.state.worktree === null &&
+    !app.state.worktrees.some((entry) => entry.name === "cache-the-tokens"),
+  `${JSON.stringify(projectCalls("remove_worktree").map(([, args]) => args))} / ${app.state.worktree}`,
+);
+// A thread in a worktree is the project's thread: the sidebar lists it under
+// that project, with the checkout on its row, rather than under a folder of its
+// own named after the checkout.
+threads = [
+  ...threads,
+  {
+    id: "6f3031b2cafe",
+    name: "Fix the login form",
+    cwd: "/home/dev/Oxide/worktrees/9c1f/fix-login-bug",
+    project: projectRows[0].path,
+    worktree: "fix-login-bug",
+    created_at: 1700000300,
+    modified_at: 1700000300,
+    message_count: 2,
+    preview: "fix the login form",
+    path: "/home/dev/Oxide/sessions/wt.jsonl",
+  },
+];
+await app.loadSessions();
+const wtRow = elementFor("projects-tree")
+  .querySelectorAll(".session-item")
+  .find((row) => /Fix the login form/.test(row.outline()));
+check(
+  "listed a worktree thread under its project with its checkout on the row",
+  Boolean(wtRow) &&
+    wtRow.querySelector(".session-worktree") !== null &&
+    /worktree fix-login-bug/.test(String(wtRow.title)),
+  wtRow ? `${wtRow.outline()} / ${wtRow.title}` : elementFor("projects-tree").outline(),
+);
+threads = threads.filter((thread) => thread.id !== "6f3031b2cafe");
+await app.loadSessions();
+
+// A checkout removed in a terminal is not one the next message can be sent to.
+worktrees = [];
+calls.length = 0;
+await app.loadWorktrees();
+check(
+  "dropped a selection the project no longer lists",
+  app.state.worktree === null && app.state.worktrees.length === 0,
+  `${app.state.worktree} / ${app.state.worktrees.length}`,
+);
+worktrees = [
+  {
+    name: "fix-login-bug",
+    branch: "oxide/fix-login-bug",
+    path: "/home/dev/Oxide/worktrees/9c1f/fix-login-bug",
+    project: projectRows[0].path,
+    created_at: 1700000100,
+  },
+];
+await app.loadWorktrees();
 
 // ---------- the composer's popovers ----------
 

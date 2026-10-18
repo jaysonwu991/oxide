@@ -234,6 +234,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // The same list `/mcp` opens in the composer, so the picker is reachable
     // from the palette whether or not the user knows the slash command.
     vscode.commands.registerCommand("oxide.mcpServers", guard(() => controller.showMcps())),
+    // The checkouts a chat can run in, which is the panel's own view of
+    // `oxide worktree`: the same store the terminal and the desktop app write,
+    // so a worktree made in one is listed here and the other way round.
+    vscode.commands.registerCommand("oxide.worktrees", guard(() => controller.showWorktrees())),
     // Checking for a newer release is the installed CLI's own check, answered in
     // the panel: the version the terminal's `oxide update` would install, and an
     // install row that runs it. The panel is not a place a binary is replaced

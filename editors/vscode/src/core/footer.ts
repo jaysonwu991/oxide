@@ -9,7 +9,7 @@ import type { Access } from "./trust";
 export type ContextLevel = "ok" | "warn" | "high";
 
 export interface FooterChip {
-  id: "model" | "reasoning" | "agent" | "access";
+  id: "model" | "reasoning" | "agent" | "access" | "worktree";
   label: string;
   title: string;
 }
@@ -40,6 +40,9 @@ export interface FooterInput {
   agent: string;
   /// How many agents were discovered, for the agent chip's tooltip.
   agentCount: number;
+  /// The worktree this chat runs in, when it is one: another checkout of the
+  /// project on its own branch. `null` is the folder the reader has open.
+  worktree?: string | null;
   access: Access;
   trustSetting: TrustSetting;
   /// `defaultProjectTrust`, which decides the access when no decision is saved.
@@ -96,6 +99,13 @@ export function footerState(input: FooterInput): FooterState {
         label: `thinking: ${input.reasoning}`,
         title: `Reasoning effort (--reasoning): ${reasoningChoices(input).join(" → ")}. Click to choose a level.`,
       }]),
+      {
+        id: "worktree",
+        label: `worktree: ${input.worktree || "local"}`,
+        title: input.worktree
+          ? `This chat runs in the worktree ${input.worktree}, not in the folder you have open. Click to switch checkouts.`
+          : "This chat runs in the folder you have open. Click to run it in a worktree of the project instead.",
+      },
       {
         id: "access",
         label: `access: ${input.access}`,

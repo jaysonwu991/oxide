@@ -188,6 +188,12 @@
         "icon": "$(server-process)"
       },
       {
+        "command": "oxide.worktrees",
+        "title": "Worktrees...",
+        "category": "Oxide",
+        "icon": "$(git-branch)"
+      },
+      {
         "command": "oxide.checkForUpdates",
         "title": "Check for Updates...",
         "category": "Oxide",

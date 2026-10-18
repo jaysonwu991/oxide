@@ -48,6 +48,7 @@ pub mod trust;
 pub mod update_notice;
 pub mod updates;
 pub mod workspaces;
+pub mod worktree;
 
 /// A test that points a provider at a stub host writes the process environment,
 /// which every other test in the binary can see. One such test runs at a time.

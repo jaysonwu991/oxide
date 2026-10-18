@@ -61,6 +61,7 @@ pub async fn run(
     open_sessions_picker: bool,
     theme_name: String,
     prompt_for_trust: bool,
+    trust_cwd: PathBuf,
 ) -> Result<()> {
     // Refuse before touching the terminal: with stdin or stdout redirected (a
     // test, a pipe, a CI runner) raw mode has no console to drive and the event
@@ -106,6 +107,7 @@ pub async fn run(
         open_sessions_picker,
         theme_name,
         prompt_for_trust,
+        trust_cwd,
         notices_rx,
     )
     .await;
@@ -134,6 +136,7 @@ async fn event_loop(
     open_sessions_picker: bool,
     theme_name: String,
     prompt_for_trust: bool,
+    trust_cwd: PathBuf,
     mut notices_rx: UnboundedReceiver<Notice>,
 ) -> Result<()> {
     let mut app = App::new(
@@ -166,11 +169,11 @@ async fn event_loop(
 
     let trust_store = crate::trust::TrustStore::load().unwrap_or_default();
     if prompt_for_trust
-        && crate::trust::needs_prompt(&trust_store, &cwd, config.default_project_trust)
+        && crate::trust::needs_prompt(&trust_store, &trust_cwd, config.default_project_trust)
     {
         app.trust = Some(TrustState::new(
-            cwd.display().to_string(),
-            crate::trust::project_resources(&cwd),
+            trust_cwd.display().to_string(),
+            crate::trust::project_resources(&trust_cwd),
         ));
     }
     if !config.trusted {
@@ -297,7 +300,7 @@ async fn event_loop(
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => {
                         handle_key(
-                            key, &mut app, &mut config, &cwd, &mut rx, &mcp, &plugins,
+                            key, &mut app, &mut config, &cwd, &trust_cwd, &mut rx, &mcp, &plugins,
                             snapshots.as_ref(), &lsp, &mut session, &approvals, &models_tx, &mcps_tx,
                             &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx, &update_tx, &paste_tx,
                         );
@@ -595,6 +598,7 @@ fn handle_key(
     app: &mut App,
     config: &mut Config,
     cwd: &Path,
+    trust_cwd: &Path,
     rx: &mut Option<UnboundedReceiver<AgentEvent>>,
     mcp: &Arc<McpRegistry>,
     plugins: &Arc<PluginHost>,
@@ -1487,7 +1491,7 @@ fn handle_key(
                 let requested = raw.strip_prefix("/trust").unwrap_or_default().trim();
                 let mut store = crate::trust::TrustStore::load().unwrap_or_default();
                 if requested == "show" {
-                    let decision = store.decision(cwd);
+                    let decision = store.decision(trust_cwd);
                     app.items.push(ChatItem::Info(format!(
                         "project trust: {}\ndefault: {}",
                         match decision {
@@ -1500,7 +1504,7 @@ fn handle_key(
                     return;
                 }
                 let trusted = !matches!(requested, "off" | "no" | "deny" | "never");
-                store.set(cwd, trusted);
+                store.set(trust_cwd, trusted);
                 match store.save() {
                     Ok(()) => {
                         config.trusted = trusted;

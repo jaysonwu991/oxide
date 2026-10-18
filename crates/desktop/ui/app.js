@@ -172,6 +172,15 @@ const ICONS = {
   chat: glyph('<path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" ' + STROKE_24 + '/>'),
   computer: glyph('<rect x="3" y="4" width="18" height="13" rx="2" ' + STROKE_24 + '/><path d="M8 21h8M12 17v4" ' + STROKE_24 + '/>'),
   branch: glyph('<circle cx="4" cy="3" r="1.5" ' + STROKE_16 + '/><circle cx="4" cy="13" r="1.5" ' + STROKE_16 + '/><circle cx="12" cy="5" r="1.5" ' + STROKE_16 + '/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5" ' + STROKE_16 + '/>', 16),
+  // A worktree: a checkout of this project beside it, on its own branch. Drawn
+  // in the composer's own box, so the row's chip and a thread's badge are the
+  // same mark.
+  worktree: glyph(
+    '<rect x="1.9" y="3.1" width="7.2" height="8.4" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+      '<path d="M11.2 4.9h1.1a1.5 1.5 0 0 1 1.5 1.5v4.2a1.5 1.5 0 0 1-1.5 1.5h-1.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
+      '<path d="M3.8 6.2h3.4M3.8 8.5h2.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+    16,
+  ),
   gear: glyph('<circle cx="12" cy="12" r="3" ' + STROKE_24 + '/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" ' + STROKE_24 + '/>'),
   check: glyph('<path d="m5.6 8 1.5 1.5 3.5-3.5" ' + STROKE_16 + '/>', 16),
   caret: glyph(`<path d="M5.5 8.6 12 14.8l6.5-6.2" ${STROKE_24}/>`),
@@ -277,6 +286,13 @@ const state = {
   // screen, read when the folder changes, when a turn ends and when the reader
   // comes back to the window.
   git: null,
+  // The worktrees of the project on screen, and the one the next turn runs in.
+  // A worktree is another checkout of the project on its own branch, so a
+  // conversation's work stays out of the folder the reader has open; `null` is
+  // that folder itself.
+  worktrees: [],
+  worktree: null,
+  worktreesError: null,
   providers: [],
   // The provider the connect dialog has selected, kept by name rather than by
   // row: the list is filtered as the reader searches, so a row's position says
@@ -1014,7 +1030,7 @@ function renderWelcome() {
 function recentThreads() {
   const listed = new Set((state.projects || []).map((project) => project.path));
   return listedSessions()
-    .filter((session) => !session.unstored && listed.has(session.cwd))
+    .filter((session) => !session.unstored && listed.has(sessionProject(session)))
     .slice(0, MAX_RECENT_THREADS);
 }
 
@@ -1034,7 +1050,14 @@ function recentList(threads) {
     name.textContent = sessionLabel(session);
     const meta = document.createElement("span");
     meta.className = "recent-meta";
-    meta.textContent = [projectNameOf(session.cwd), sessionAge(session.modified_at)]
+    // A worktree thread is named under its project, with the checkout beside it:
+    // the folder is where the conversation belongs and the checkout is where its
+    // files are.
+    meta.textContent = [
+      projectNameOf(sessionProject(session)),
+      session.worktree ? `worktree ${session.worktree}` : "",
+      sessionAge(session.modified_at),
+    ]
       .filter(Boolean)
       .join(" · ");
     row.append(name, meta);
@@ -1159,6 +1182,12 @@ async function selectProject(project) {
   if (sidebarIndex >= SIDEBAR_PROJECT_LIMIT) state.sidebarProjectsExpanded = true;
   state.session = null;
   state.trust = null;
+  // The checkout belonged to the folder being left: a worktree of one project
+  // is not a folder of another, so the next message starts in this project's
+  // own tree until the reader picks one of its worktrees.
+  state.worktree = null;
+  state.worktrees = [];
+  paintWorktreeChip();
   // Follow-ups belong to the parked run, not the folder being viewed. Keep
   // them while the reader looks at another project; `paintQueue` hides them
   // until the run's own thread is opened again.
@@ -1180,7 +1209,7 @@ async function selectProject(project) {
   // with the rest of the row by the reset, and again when the folder's own window
   // arrives.
   loadGit();
-  await Promise.all([loadInfo(), loadSessions(), loadTheme()]);
+  await Promise.all([loadInfo(), loadSessions(), loadTheme(), loadWorktrees()]);
 }
 
 async function loadInfo() {
@@ -1338,6 +1367,7 @@ function updateChips() {
   el("reasoning").hidden = state.supportsReasoning === false;
   el("reasoning-value").textContent = state.reasoning.charAt(0).toUpperCase() + state.reasoning.slice(1);
   updateProjectChip();
+  paintWorktreeChip();
   // A folder switch resets the transcript, which is where the header's own
   // banner is decided.
   updateRunBanner();
@@ -1381,7 +1411,7 @@ function contextLevel(percent) {
 /// turn ends, since a run may switch branch, and when the reader comes back to
 /// the window, since a branch switched in a terminal is theirs to see here.
 async function loadGit() {
-  const project = state.project;
+  const project = runFolder();
   if (!project) {
     state.git = null;
     paintComposerFacts();
@@ -1389,13 +1419,13 @@ async function loadGit() {
   }
   try {
     const info = await invoke("git_info", { project });
-    if (project !== state.project) return;
+    if (project !== runFolder()) return;
     state.git = info || null;
   } catch {
     // A folder whose repository could not be read has no branch to show, which
     // is the same row as a folder that is in no repository at all: the row says
     // what it knows and nothing else.
-    if (project !== state.project) return;
+    if (project !== runFolder()) return;
     state.git = null;
   }
   paintComposerFacts();
@@ -1453,6 +1483,267 @@ function paintComposerFacts() {
   ring.setAttribute("aria-label", `context window: ${label}`);
 }
 
+// ---------- worktrees ----------
+
+/// The folder a turn runs in: the worktree the reader picked, or the project
+/// itself. The branch row, a new thread and the thread being opened all read
+/// this rather than the folder on screen, so a window reading a worktree thread
+/// reads the checkout that thread actually runs in.
+function runFolder() {
+  return state.worktree || state.project;
+}
+
+/// The project a thread belongs to. A thread in a worktree belongs to the
+/// project the checkout was made from — the host names it — and everything that
+/// groups threads reads this rather than the thread's own folder.
+function sessionProject(session) {
+  return session.project || session.cwd;
+}
+
+function worktreeNamed(path) {
+  if (!path) return null;
+  return (state.worktrees || []).find((entry) => entry.path === path) || null;
+}
+
+/// The worktree a folder is, when it is one of the project's: a thread records
+/// the checkout it ran in as its folder, which is how the window knows to send
+/// its next message there.
+function worktreePathFor(folder) {
+  if (!folder || folder === state.project) return null;
+  return worktreeNamed(folder) ? folder : null;
+}
+
+/// The worktree the thread on screen runs in, if it runs in one: the thread's
+/// own checkout when a thread is open, and the one the next message would use
+/// when none is.
+function threadWorktree() {
+  const session = state.session ? sessionById(state.session) : null;
+  return worktreeNamed(session ? session.cwd : state.worktree);
+}
+
+/// Reads the project's worktrees again, keeping why it could not for the
+/// listing's own render to paint. A checkout removed in a terminal is not one
+/// the next message can be sent to, so a selection that is no longer listed is
+/// dropped with it.
+async function loadWorktrees() {
+  if (!state.project) {
+    state.worktrees = [];
+    state.worktreesError = null;
+    paintWorktreeChip();
+    return;
+  }
+  const project = state.project;
+  try {
+    const listed = await invoke("worktrees", { project });
+    if (project !== state.project) return;
+    state.worktrees = Array.isArray(listed) ? listed : [];
+    state.worktreesError = null;
+    if (state.worktree && !worktreeNamed(state.worktree)) state.worktree = null;
+  } catch (error) {
+    if (project !== state.project) return;
+    state.worktrees = [];
+    state.worktreesError = String(error);
+  }
+  paintWorktreeChip();
+  paintThreadWorktree();
+  if (!el("worktrees-modal").hidden) renderWorktrees();
+}
+
+/// The composer's own row: the checkout the next turn runs in. Every control
+/// there is an icon whose words are in its tooltip, so the chip names the
+/// worktree there and wears the accent while one is in use — which is the
+/// difference between a thread that writes to a copy and one that writes to the
+/// folder itself.
+function paintWorktreeChip() {
+  const chip = el("worktree");
+  if (!chip) return;
+  chip.hidden = !state.project;
+  const entry = worktreeNamed(state.worktree);
+  chip.classList.toggle("active", Boolean(entry));
+  const label = entry ? `worktree: ${entry.name}` : "Worktree";
+  chip.title = entry
+    ? `${label}\n${entry.path}\nSwitch the checkout the next turn runs in`
+    : "Worktree\nRun a thread in a copy of the project on its own branch";
+  chip.setAttribute("aria-label", label);
+  paintThreadWorktree();
+}
+
+/// The checkout the thread on screen runs in, beside the thread's name: the
+/// same project can hold several worktrees, and two threads of it are not the
+/// same files.
+function paintThreadWorktree() {
+  const badge = el("thread-worktree");
+  if (!badge) return;
+  const entry = state.project ? threadWorktree() : null;
+  badge.hidden = !entry;
+  if (!entry) {
+    badge.innerHTML = "";
+    return;
+  }
+  badge.innerHTML = `${ICONS.worktree}<span>${escapeHtml(entry.name)}</span>`;
+  badge.title = `Worktree ${entry.name} on ${entry.branch}\n${entry.path}`;
+}
+
+function openWorktrees() {
+  if (!state.project) {
+    setStatus("Select a project first.");
+    askForProject();
+    return;
+  }
+  closeOverlays("worktrees-modal");
+  el("worktrees-modal").hidden = false;
+  el("worktree").setAttribute("aria-expanded", "true");
+  el("worktree-name").value = "";
+  renderWorktrees();
+  loadWorktrees();
+}
+
+function closeWorktrees() {
+  el("worktrees-modal").hidden = true;
+  el("worktree").setAttribute("aria-expanded", "false");
+  el("worktree").focus();
+}
+
+/// The checkouts a thread can run in: the folder itself, then every worktree
+/// the project holds. Picking one is picking the files the next thread works on,
+/// so a thread that is already open is left — the checkout belongs to the task,
+/// which is what makes two threads of one project readable side by side.
+function renderWorktrees() {
+  const box = el("worktree-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (state.worktreesError) {
+    box.innerHTML = `<div class="dialog-empty">Could not read this project's worktrees: ${escapeHtml(state.worktreesError)}</div>`;
+    return;
+  }
+  box.appendChild(worktreeRow(null));
+  for (const entry of state.worktrees || []) box.appendChild(worktreeRow(entry));
+}
+
+function worktreeRow(entry) {
+  // The row is the checkout and the ✕ inside it is the way to remove it, so it
+  // is a row rather than a button: a control inside a control is not one the
+  // page can hand a press to unambiguously.
+  const row = document.createElement("div");
+  row.className = "worktree-row" + (entry ? "" : " local");
+  row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  const selected = entry ? state.worktree === entry.path : !state.worktree;
+  row.classList.toggle("active", selected);
+  row.setAttribute("aria-pressed", String(selected));
+  const name = document.createElement("div");
+  name.className = "worktree-label";
+  name.textContent = entry ? entry.name : "Local checkout";
+  row.appendChild(name);
+  const detail = document.createElement("div");
+  detail.className = "worktree-detail";
+  const folder = state.project ? baseName(state.project) : "";
+  detail.textContent = entry
+    ? `${entry.branch} · ${entry.path}`
+    : `this project's own folder${folder ? ` · ${folder}` : ""}`;
+  row.appendChild(detail);
+  row.title = entry
+    ? `Run a thread in ${entry.name}\n${entry.branch} · ${entry.path}`
+    : "Run a thread in this project's own folder";
+  const take = () => selectWorktree(entry ? entry.path : null);
+  row.onclick = take;
+  row.onkeydown = (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    take();
+  };
+  if (!entry) return row;
+
+  // Removing a checkout is destructive, so it is asked about in the window's own
+  // dialog rather than on the press, and it stays inside the row's own press.
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "row-remove worktree-remove";
+  remove.title = `Remove the worktree ${entry.name}`;
+  remove.setAttribute("aria-label", remove.title);
+  remove.innerHTML = ICONS.close;
+  remove.onclick = (event) => {
+    event.stopPropagation();
+    removeWorktree(entry);
+  };
+  row.appendChild(remove);
+  return row;
+}
+
+function selectWorktree(path) {
+  if (!state.project) return;
+  const entry = worktreeNamed(path);
+  const next = entry ? entry.path : null;
+  if (next === state.worktree) {
+    closeWorktrees();
+    return;
+  }
+  if (!canStartNewChat()) return;
+  state.worktree = next;
+  // The checkout belongs to the task: a thread already on screen was written in
+  // one place, and its next message is not the place to move it to.
+  if (state.session) newChat();
+  paintWorktreeChip();
+  loadGit();
+  setStatus(
+    entry
+      ? `Threads run in the worktree ${entry.name} on ${entry.branch}.`
+      : "Threads run in this project's own folder.",
+  );
+  closeWorktrees();
+}
+
+/// Makes a worktree and starts a thread in it. The name is the reader's, or one
+/// derived from the project when they left it empty; the branch is
+/// `oxide/<name>`.
+async function createWorktree() {
+  if (!state.project) {
+    setStatus("Select a project first.");
+    return;
+  }
+  if (!canStartNewChat()) return;
+  const input = el("worktree-name");
+  const requested = String(input.value || "").trim();
+  const button = el("worktree-create");
+  button.disabled = true;
+  try {
+    const entry = await invoke("create_worktree", {
+      project: state.project,
+      name: requested || null,
+      base: null,
+    });
+    input.value = "";
+    await loadWorktrees();
+    selectWorktree(entry.path);
+    setStatus(`Created the worktree ${entry.name} on ${entry.branch}.`);
+  } catch (error) {
+    setStatus(`Could not create the worktree: ${error}`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function removeWorktree(entry) {
+  if (busyRefusal("removing a worktree")) return;
+  const ok = await confirmDialog(
+    "Remove worktree",
+    `Remove the worktree ${entry.name} at ${entry.path}?\n\nIts branch ${entry.branch} stays in the repository, and making a worktree of that name again resumes it.`,
+    "Remove worktree",
+  );
+  if (!ok) return;
+  try {
+    await invoke("remove_worktree", { project: state.project, name: entry.name });
+    if (state.worktree === entry.path) {
+      state.worktree = null;
+      loadGit();
+    }
+    await loadWorktrees();
+    setStatus(`Removed ${entry.name}. Its branch ${entry.branch} is still in the repository.`);
+  } catch (error) {
+    setStatus(`Could not remove the worktree: ${error}`, "error");
+  }
+}
+
 // ---------- threads ----------
 
 /// Loads the shared session store, keeping why it could not be read for the
@@ -1499,6 +1790,11 @@ async function openSession(session) {
   // what it has painted stays, and its next step goes on painting into it.
   parkRun();
   state.session = session.id;
+  // The thread runs where its own header says it does: a thread in a worktree
+  // is read back from, and continued in, that checkout rather than in the
+  // folder the reader has open.
+  state.worktree = worktreePathFor(session.cwd);
+  paintWorktreeChip();
   // Coming back to a thread the run parked: its own transcript is the thread —
   // with everything the run did while the reader was away, including the reply
   // the store has not been told about yet — so it is handed back rather than
@@ -1518,12 +1814,14 @@ async function openSession(session) {
   closeReview();
   updateRunBanner();
   try {
-    const data = await invoke("session_messages", { project: state.project, id: session.id });
+    const data = await invoke("session_messages", { project: session.cwd, id: session.id });
     const transcript = el("transcript");
     transcript.innerHTML = "";
     renderStoredTranscript(transcript, data.messages);
     scrollDown();
     setThreadTitle(sessionLabel(session));
+    paintThreadWorktree();
+    loadGit();
     if (data.usage) {
       setUsage({
         input: data.usage.input,
@@ -2053,6 +2351,13 @@ async function openRun() {
     const project = state.projects.find((entry) => entry.path === folder);
     if (project) await selectProject(project);
   }
+  // A thread written in a worktree keeps that checkout: the window may have moved
+  // to another thread's folder while it ran, and coming back to it is coming back
+  // to the files its next message belongs to.
+  if (folder) {
+    state.worktree = folder === state.project ? null : folder;
+    paintWorktreeChip();
+  }
   const listed = sessionById(id);
   if (!listed) return;
   if (!listed.unstored) {
@@ -2377,7 +2682,7 @@ async function send(opposite = false) {
       state.pendingSends.push({
         prompt,
         attachments,
-        project: state.project,
+        project: runFolder(),
         session: state.session,
         showBubble: true,
       });
@@ -2403,7 +2708,7 @@ async function send(opposite = false) {
       state.pendingSends.push({
         prompt,
         attachments,
-        project: state.project,
+        project: runFolder(),
         session: state.session,
         showBubble: false,
       });
@@ -2427,10 +2732,10 @@ async function send(opposite = false) {
 /// recorded with it: a message that starts a thread of its own has no id for the
 /// comparison, and two folders both have none.
 async function startPrompt(prompt, attachments, showBubble = true, target = null) {
-  const project = target?.project || state.project;
+  const project = target?.project || runFolder();
   if (!project) return;
   const session = target ? target.session : state.session;
-  const here = project === state.project && session === state.session;
+  const here = project === runFolder() && session === state.session;
   state.sendView = { session, project };
   // The run's own thread and folder, held apart from the ones on screen: the
   // reader may open another thread while it works, and the run keeps writing into
@@ -2942,7 +3247,7 @@ function renderChanges(payload) {
   }
   transcript.appendChild(changesCard(card));
   scrollDown(transcript);
-  if (project === state.project && !el("details-panel").hidden) refreshProjectDetails();
+  if (project === runFolder() && !el("details-panel").hidden) refreshProjectDetails();
 }
 
 /// `+12 −3`; compact turn cards also show a side with zero changed lines.
@@ -3386,7 +3691,7 @@ async function refreshProjectDetails() {
 /// be overwritten by the one that opened the dock.
 async function readProjectChanges(project) {
   const read = ++detailsChangesRead;
-  const current = () => read === detailsChangesRead && project === state.project;
+  const current = () => read === detailsChangesRead && project === runFolder();
   try {
     const changes = await invoke("repository_changes", { project });
     if (!current()) return;
@@ -3406,18 +3711,18 @@ async function readProjectChanges(project) {
 /// timer, so a run editing in a loop reads the repository a few times a second at
 /// most.
 function scheduleProjectChanges() {
-  if (!state.busy || !state.project || el("details-panel").hidden) return;
+  if (!state.busy || !runFolder() || el("details-panel").hidden) return;
   const now = Date.now();
   if (now >= detailsChangesDue) {
     detailsChangesDue = now + DOCK_CHANGES_SPACING;
-    readProjectChanges(state.project);
+    readProjectChanges(runFolder());
     return;
   }
   if (detailsChangesTimer) return;
   detailsChangesTimer = setTimeout(() => {
     detailsChangesTimer = null;
     detailsChangesDue = Date.now() + DOCK_CHANGES_SPACING;
-    if (state.busy && !el("details-panel").hidden) readProjectChanges(state.project);
+    if (state.busy && !el("details-panel").hidden) readProjectChanges(runFolder());
   }, detailsChangesDue - now);
 }
 
@@ -3443,7 +3748,7 @@ async function openRepositoryChanges() {
   el("review-total").innerHTML = "";
   el("review-files").replaceChildren(reviewNote("Reading changes…"));
   paintDockToggles();
-  const project = state.project;
+  const project = runFolder();
   const pending = { card: { repository: true, project, files: [] } };
   reviewState = pending;
   if (!project) {
@@ -3452,7 +3757,7 @@ async function openRepositoryChanges() {
   }
   try {
     const changes = await invoke("repository_changes", { project });
-    if (reviewState !== pending || project !== state.project) return;
+    if (reviewState !== pending || project !== runFolder()) return;
     showRepositoryCard({ ...changes, project, repository: true });
   } catch (error) {
     if (reviewState === pending) el("review-files").replaceChildren(reviewNote(String(error)));
@@ -3806,6 +4111,7 @@ const OVERLAYS = [
   "create-project-modal",
   "projects-modal",
   "mcps-modal",
+  "worktrees-modal",
   "models-modal",
   "reasoning-modal",
   "themes-modal",
@@ -5054,7 +5360,7 @@ function renderSessions() {
     box.innerHTML = `<div class="dialog-empty">Could not read this project's threads: ${escapeHtml(state.sessionsError)}</div>`;
     return;
   }
-  const threads = listedSessions().filter((session) => session.cwd === state.project);
+  const threads = listedSessions().filter((session) => sessionProject(session) === state.project);
   if (!threads.length) {
     box.innerHTML =
       '<div class="dialog-empty">No threads for this project yet. Send a message to start one.</div>';
@@ -5070,7 +5376,11 @@ function renderSessions() {
       (running ? " running" : "");
 
     const name = session.name || session.preview || session.id.slice(0, 8);
-    const meta = [sessionAge(session.modified_at), sessionMessages(session.message_count)]
+    const meta = [
+      session.worktree ? `worktree ${session.worktree}` : "",
+      sessionAge(session.modified_at),
+      sessionMessages(session.message_count),
+    ]
       .filter(Boolean)
       .join(" · ");
 
@@ -6256,6 +6566,15 @@ function init() {
   });
   el("mcps-close").onclick = () => (el("mcps-modal").hidden = true);
   el("mcps-refresh").onclick = () => loadMcps();
+  el("worktree").onclick = openWorktrees;
+  el("worktrees-close").onclick = () => closeWorktrees();
+  el("worktrees-refresh").onclick = () => loadWorktrees();
+  el("worktree-create").onclick = createWorktree;
+  el("worktree-name").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    createWorktree();
+  });
   el("update").onclick = openUpdate;
   // Every step's own way out, which is the step it is on: Dismiss and Later put
   // the dialog away without touching the install, Download in background does
@@ -6290,7 +6609,7 @@ function init() {
   el("details-toggle").onclick = openProjectDetails;
   el("details-more").onclick = () => {
     const project = state.projects.find((project) => project.path === state.project);
-    if (project) showProjectActions(project, listedSessions().filter((session) => session.cwd === project.path), el("details-more"), el("details-more"));
+    if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
   };
   el("details-changes").onclick = openRepositoryChanges;
   el("details-add-source").onclick = openMcps;
@@ -6450,11 +6769,14 @@ function init() {
   document.addEventListener("mousedown", (event) => {
     const target = event.target;
     if (!target || typeof target.id !== "string") return;
-    for (const id of ["projects-modal", "mcps-modal", "sessions-modal"]) {
+    for (const id of ["projects-modal", "mcps-modal", "worktrees-modal", "sessions-modal"]) {
       const box = el(id);
       if (box.hidden || box.contains(target)) continue;
       box.hidden = true;
     }
+    // The worktree chip says whether its listing is up, and this is the one
+    // closing that does not go through the control itself.
+    el("worktree").setAttribute("aria-expanded", String(!el("worktrees-modal").hidden));
   });
   el("image-modal").addEventListener("keydown", (event) => {
     if (event.key !== "Tab") return;
@@ -6560,7 +6882,7 @@ function orderedSessions() {
   const byProject = new Map();
   for (const project of state.projects) byProject.set(project.path, []);
   for (const session of listedSessions()) {
-    const list = byProject.get(session.cwd);
+    const list = byProject.get(sessionProject(session));
     if (list) list.push(session);
   }
   const ordered = [];
@@ -6827,9 +7149,19 @@ async function showThreadDetails(session, row) {
   const folder = document.createElement("span");
   folder.innerHTML = ICONS.folder;
   const projectName = document.createElement("span");
-  projectName.textContent = projectNameOf(session.cwd);
+  projectName.textContent = projectNameOf(sessionProject(session));
   project.append(folder, projectName);
   card.append(head, project);
+  if (session.worktree) {
+    const checkout = document.createElement("div");
+    checkout.className = "thread-detail-worktree";
+    const checkoutIcon = document.createElement("span");
+    checkoutIcon.innerHTML = ICONS.worktree;
+    const checkoutName = document.createElement("span");
+    checkoutName.textContent = session.worktree;
+    checkout.append(checkoutIcon, checkoutName);
+    card.appendChild(checkout);
+  }
   placeSidebarCard(card, row);
   try {
     const info = await invoke("git_info", { project: session.cwd });
@@ -6903,8 +7235,12 @@ async function renderProjectsTree() {
   }
   
   for (const session of listedSessions()) {
-    if (sessionsByProject[session.cwd]) {
-      sessionsByProject[session.cwd].push(session);
+    // A thread in a worktree is the project's own thread: the host names the
+    // project it was made from, so it is listed under that project rather than
+    // under a row of its own per checkout.
+    const project = sessionProject(session);
+    if (sessionsByProject[project]) {
+      sessionsByProject[project].push(session);
     }
   }
   
@@ -7067,10 +7403,23 @@ async function renderProjectsTree() {
         (running ? " running" : "");
 
       const label = sessionLabel(session);
+      // A thread that runs in a worktree says so on its row: the project's own
+      // folder and its checkouts hold different files, and two threads of one
+      // project are only readable apart if the row says which is which.
+      if (session.worktree) {
+        const checkout = document.createElement("span");
+        checkout.className = "session-worktree";
+        checkout.title = `Runs in the worktree ${session.worktree}`;
+        checkout.setAttribute("aria-hidden", "true");
+        checkout.innerHTML = ICONS.worktree;
+        sessionItem.appendChild(checkout);
+      }
       const sessionName = document.createElement("div");
       sessionName.className = "name";
       sessionName.textContent = label;
-      sessionItem.title = running ? `${label} — a turn is running` : label;
+      sessionItem.title = `${
+        session.worktree ? `${label} — worktree ${session.worktree}` : label
+      }${running ? " — a turn is running" : ""}`;
       sessionItem.appendChild(sessionName);
 
       if (running) {
@@ -7178,7 +7527,9 @@ async function renderProjectsTree() {
     const name = document.createElement("div");
     name.className = "name";
     name.textContent = sessionLabel(session);
-    row.title = `${sessionLabel(session)} — ${projectNameOf(session.cwd)}`;
+    row.title = `${sessionLabel(session)} — ${
+      session.worktree ? `worktree ${session.worktree}` : projectNameOf(sessionProject(session))
+    }`;
     row.appendChild(name);
     if (session.id === state.runSession) {
       const spinner = document.createElement("span");
@@ -7195,10 +7546,11 @@ async function renderProjectsTree() {
 async function selectSessionFromTree(session) {
   if (!session) return;
 
-  const projectSessions = listedSessions().filter((candidate) => candidate.cwd === session.cwd);
+  const project = sessionProject(session);
+  const projectSessions = listedSessions().filter((candidate) => sessionProject(candidate) === project);
   if (projectSessions.findIndex((candidate) => candidate.id === session.id) >= SIDEBAR_THREAD_LIMIT) {
-    const project = state.projects.find((candidate) => candidate.path === session.cwd);
-    if (project) state.expandedSidebarProjects.add(project.id);
+    const owner = state.projects.find((candidate) => candidate.path === project);
+    if (owner) state.expandedSidebarProjects.add(owner.id);
   }
 
   // The thread on screen whose store entry has not been written yet is the one
@@ -7214,8 +7566,8 @@ async function selectSessionFromTree(session) {
 
   // Switch to the session's project first if different, so `session_messages`
   // is queried against the right project and the composer is enabled.
-  const project = state.projects.find((p) => p.path === session.cwd);
-  if (project && project.path !== state.project) await selectProject(project);
+  const owner = state.projects.find((p) => p.path === sessionProject(session));
+  if (owner && owner.path !== state.project) await selectProject(owner);
 
   window.history.replaceState({}, "", `?session=${session.id}`);
   await openSession(session);
@@ -7230,6 +7582,8 @@ function clearSelectedProject() {
   state.projectName = "";
   state.session = null;
   state.trust = null;
+  state.worktree = null;
+  state.worktrees = [];
   // Nothing is open, so there is no repository to name and no window to measure
   // a request against: the row keeps the folder chip, which is the way into one.
   state.git = null;
