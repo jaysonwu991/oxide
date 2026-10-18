@@ -15,7 +15,7 @@ use crate::tui::rows::{Join, RowLink, Rows};
 /// Renders `text` as styled rows that fit `width` columns, keeping `indent`
 /// columns free on the first line for a prefix that shares it.
 fn render_body(text: &str, width: usize, indent: usize, palette: &Palette) -> Rows {
-    let text = crate::tools::sanitize_terminal_output(text);
+    let text = super::text::sanitize(text);
     let blocks = parse_blocks(&text, palette);
     let mut renderer = Renderer::new(width, palette);
     renderer.first_width = Some(width.saturating_sub(indent));
