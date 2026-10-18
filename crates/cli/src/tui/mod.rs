@@ -1319,14 +1319,14 @@ fn handle_key(
                 app.steering = crate::agent::Steering::new();
                 app.follow_ups = crate::agent::Steering::new();
                 app.queued_attachments.clear();
-                match SessionLog::create(cwd) {
-                    Ok(log) => {
-                        app.items
-                            .push(ChatItem::Info(format!("new session {}", log.id())));
-                        *session = Some(log);
-                    }
-                    Err(err) => app.items.push(ChatItem::Error(format!("session: {err:#}"))),
-                }
+                // The log is written when the first message is (see
+                // `ensure_session`), so a session opened and left without one
+                // never becomes a row in the picker with nothing to resume.
+                *session = None;
+                app.session_name = None;
+                app.items.push(ChatItem::Info(
+                    "new session — the next message starts it".to_string(),
+                ));
                 return;
             }
             if raw == "/session" {

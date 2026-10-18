@@ -903,6 +903,30 @@ describe("Transcript", () => {
     assert.ok(long.endsWith("word…"), long);
   });
 
+  it("takes a pasted path out of the title", () => {
+    // The cases `title.rs` asserts, so the two rules stay in step.
+    assert.equal(
+      summarizeTitle(
+        "/Users/jayson/Library/Application Support/Oxide/clipboard/a1b2c3.png Redesign this card",
+      ),
+      "Redesign this card",
+    );
+    assert.equal(summarizeTitle("/tmp/shot.png What is wrong here?"), "What is wrong here?");
+    // A path the sentence is about is part of the request, not a paste.
+    assert.equal(
+      summarizeTitle("Fix /Users/jayson/src/main.rs first"),
+      "Fix /Users/jayson/src/main.rs first",
+    );
+    // A message that is nothing but a paste is named by the file itself rather
+    // than by the directory the clipboard wrote it in.
+    assert.equal(
+      summarizeTitle("/Users/jayson/Library/Application Support/Oxide/clipboard/a1b2c3.png"),
+      "a1b2c3.png",
+    );
+    assert.equal(summarizeTitle("https://example.com/docs/design.md"), "design.md");
+    assert.equal(summarizeTitle("https://example.com/design.md#part-two please"), "please");
+  });
+
   it("carries the current state for a repainted view", () => {
     const transcript = new Transcript();
     transcript.apply({ type: "session", id: "s" });

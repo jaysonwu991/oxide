@@ -12,12 +12,23 @@
 pub const TITLE_LIMIT: usize = 64;
 
 /// Condenses `text` into a one-line title, or `""` when it carries nothing a
-/// title could be made of.
+/// title could be made of. A title never opens with what a paste put there: the
+/// pasted path is the paste's, and the request is the line's own words.
 pub fn summarize(text: &str, max: usize) -> String {
-    match first_prose_line(text) {
-        Some(line) => bounded(&line, max),
-        None => String::new(),
+    let Some(line) = first_prose_line(text) else {
+        return String::new();
+    };
+    // A message can open with what a paste put there — a clipboard image's own
+    // path, a copied address — which names no task at all: those words are the
+    // paste's, and what follows them is the request. A message that is nothing
+    // but a paste is named by the file it pasted.
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let span = leading_location(&words);
+    let prose = words[span..].join(" ");
+    if span == 0 || prose.chars().any(char::is_alphanumeric) {
+        return bounded(&prose, max);
     }
+    bounded(&pasted_name(&words[..span]), max)
 }
 
 /// Cleans the model's one-line session title before it is persisted. The model
@@ -37,24 +48,89 @@ pub fn generated(text: &str, max: usize) -> String {
         .trim_matches(|ch| matches!(ch, '\'' | '"' | '“' | '”'))
         .trim()
         .to_string();
-    title = title
-        .split_whitespace()
-        .filter(|word| !looks_like_location(word))
-        .collect::<Vec<_>>()
-        .join(" ");
+    title = without_locations(&title);
     if !title.chars().any(char::is_alphanumeric) {
         return String::new();
     }
     bounded(&title, max)
 }
 
-fn looks_like_location(word: &&str) -> bool {
-    let word = word.trim_matches(|ch: char| {
+/// `line` with the paths and addresses taken out, whitespace collapsed: a title
+/// the model wrote should name the task, not where its file happens to live.
+fn without_locations(line: &str) -> String {
+    line.split_whitespace()
+        .filter(|word| !looks_like_location(word))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The leading run of words that is one pasted path or address, or `0` when the
+/// line does not open with one. A clipboard image is saved under a folder whose
+/// name can hold a space, so the run goes on while the words after the first
+/// still read as part of the path and ends at the file name.
+fn leading_location(words: &[&str]) -> usize {
+    let Some(first) = words.first() else {
+        return 0;
+    };
+    if !looks_like_location(first) {
+        return 0;
+    }
+    // A word that already names a file ends the paste there.
+    if has_extension(unquoted(first)) {
+        return 1;
+    }
+    let mut span = 1;
+    while let Some(word) = words.get(span) {
+        let word = unquoted(word);
+        let named = has_extension(word);
+        if !named && !word.contains('/') && !word.contains('\\') {
+            break;
+        }
+        span += 1;
+        if named {
+            break;
+        }
+    }
+    span
+}
+
+/// Whether a word ends in a file name's extension (`a.png`, `SKILL.md`), which
+/// is where a path stops.
+fn has_extension(word: &str) -> bool {
+    let Some((name, ext)) = word.rsplit_once('.') else {
+        return false;
+    };
+    !name.is_empty()
+        && (1..=8).contains(&ext.len())
+        && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
+}
+
+/// The name of the file a pasted path ends at: the whole run joined, since a
+/// folder in it may have a space of its own.
+fn pasted_name(words: &[&str]) -> String {
+    let joined = words.join(" ");
+    let word = unquoted(&joined);
+    let path = &word[..word.find(['?', '#']).unwrap_or(word.len())];
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    if name.chars().any(char::is_alphanumeric) {
+        name.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// A word with the punctuation a sentence wraps it in taken off.
+fn unquoted(word: &str) -> &str {
+    word.trim_matches(|ch: char| {
         matches!(
             ch,
             '\'' | '"' | '‘' | '’' | '“' | '”' | '(' | ')' | '[' | ']' | ',' | ';'
         )
-    });
+    })
+}
+
+fn looks_like_location(word: &str) -> bool {
+    let word = unquoted(word);
     let lower = word.to_ascii_lowercase();
     lower.starts_with("http://")
         || lower.starts_with("https://")
@@ -241,6 +317,45 @@ mod tests {
                 TITLE_LIMIT
             ),
             "Improve the title"
+        );
+    }
+
+    #[test]
+    fn takes_a_pasted_path_out_of_the_title() {
+        // A clipboard image's path, including the folder names with spaces of
+        // its own, is the paste's rather than the request's.
+        assert_eq!(
+            summarize(
+                "/Users/jayson/Library/Application Support/Oxide/clipboard/a1b2c3.png Redesign this card",
+                TITLE_LIMIT
+            ),
+            "Redesign this card"
+        );
+        assert_eq!(
+            summarize("/tmp/shot.png What is wrong here?", TITLE_LIMIT),
+            "What is wrong here?"
+        );
+        // A path the sentence is about is part of the request, not a paste.
+        assert_eq!(
+            summarize("Fix /Users/jayson/src/main.rs first", TITLE_LIMIT),
+            "Fix /Users/jayson/src/main.rs first"
+        );
+        // A message that is nothing but a paste is named by the file itself
+        // rather than by the directory the clipboard wrote it in.
+        assert_eq!(
+            summarize(
+                "/Users/jayson/Library/Application Support/Oxide/clipboard/a1b2c3.png",
+                TITLE_LIMIT
+            ),
+            "a1b2c3.png"
+        );
+        assert_eq!(
+            summarize("https://example.com/docs/design.md", TITLE_LIMIT),
+            "design.md"
+        );
+        assert_eq!(
+            summarize("https://example.com/design.md#part-two please", TITLE_LIMIT),
+            "please"
         );
     }
 
