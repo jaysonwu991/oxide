@@ -1577,11 +1577,14 @@ check(
   `${JSON.stringify(app.state.worktrees.map((entry) => entry.name))} / ${app.state.worktree}`,
 );
 check(
-  "named the checkout in the composer's tooltip rather than its face",
+  "named the checkout on the row, in the tooltip rather than its face until it is one",
   elementFor("worktree").title ===
     "Worktree\nRun a thread in a copy of the project on its own branch" &&
     elementFor("worktree").getAttribute("aria-label") === "Worktree" &&
-    elementFor("worktree").classList.contains("active") === false,
+    elementFor("worktree").classList.contains("active") === false &&
+    elementFor("worktree").hidden === false &&
+    elementFor("worktree-name").hidden === true &&
+    elementFor("worktree-name").textContent === "",
   `${elementFor("worktree").title} / ${elementFor("worktree").getAttribute("aria-label")}`,
 );
 app.openWorktrees();
@@ -1613,6 +1616,8 @@ check(
     elementFor("worktrees-modal").hidden === true &&
     elementFor("worktree").classList.contains("active") === true &&
     elementFor("worktree").getAttribute("aria-label") === "worktree: fix-login-bug" &&
+    elementFor("worktree-name").hidden === false &&
+    elementFor("worktree-name").textContent === "fix-login-bug" &&
     linkedGit.length === 1 &&
     linkedGit[0][1].project === worktrees[0].path,
   `${app.state.worktree} / ${JSON.stringify(linkedGit.map(([, args]) => args.project))}`,
@@ -1851,7 +1856,9 @@ check(
 // The row's own facts are readouts rather than controls — the branch is a fact
 // about the folder and the context reading is a reading — each with its words in a
 // tooltip rather than a handler; the folder chip beside them is the row's one
-// control.
+// control, and the checkout the thread runs in is the other: the one fact about
+// the folder that opens a picker, drawn as a fact rather than as a chip so it
+// does not read as one of the message's own settings.
 const facts = strip.slice(
   strip.indexOf('<div class="strip-facts">'),
   strip.lastIndexOf('        </div>'),
@@ -1873,9 +1880,28 @@ check(
     /id="git"[^>]*hidden/.test(facts) &&
     /id="context-ring"[^>]*hidden/.test(shell) &&
     /<button[^>]*id="project"/.test(facts) &&
-    (facts.match(/<button/g) || []).length === 1 &&
-    (strip.match(/<button/g) || []).length === 1,
+    /<button[^>]*id="worktree"/.test(facts) &&
+    /id="worktree"[^>]*aria-haspopup="dialog"/.test(facts) &&
+    /id="worktree"[^>]*aria-controls="worktrees-modal"/.test(facts) &&
+    !/id="worktree"/.test(
+      shell.slice(shellAt('class="composer-left"'), shellAt('class="composer-right"')),
+    ) &&
+    (facts.match(/<button/g) || []).length === 2 &&
+    (strip.match(/<button/g) || []).length === 2,
   facts.slice(0, 420),
+);
+// The checkout is drawn as a fact rather than as a chip: no box of its own on the
+// row, the row's own dim text until it is pointed at, the accent while a thread
+// writes to a copy, and held at the row's other end by an auto margin the way the
+// totals hold the context reading at the end of the row inside the box.
+check(
+  "drew the checkout as a fact of the folder that opens its picker",
+  /\.fact-button \{[^}]*margin-left: auto;[^}]*border: 0;[^}]*background: none;/s.test(sheet) &&
+    /\.fact-button:hover \{ color: var\(--text\); \}/.test(sheet) &&
+    /\.fact-button\.active \{ color: var\(--accent\); \}/.test(sheet) &&
+    /#worktree-name \{[^}]*text-overflow: ellipsis;/s.test(sheet) &&
+    source.includes('name.textContent = entry ? entry.name : ""'),
+  sheet.slice(sheet.indexOf(".fact-button {"), sheet.indexOf(".fact-button {") + 260),
 );
 // The context reading ends the row, held there by the totals that share it: what
 // the chat has spent takes the row's own auto margin and the reading rides after

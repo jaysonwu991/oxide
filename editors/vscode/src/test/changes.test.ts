@@ -40,6 +40,7 @@ const noState = {
   footer: {
     chips: [],
     info: "",
+    worktree: { name: "", title: "" },
     usage: "",
     percent: 0,
     level: "ok" as const,

@@ -1163,6 +1163,8 @@ footer {
    element has to be turned off explicitly. */
 .usage[hidden],
 .branch-wrap[hidden],
+#worktree[hidden],
+#worktree-name[hidden],
 .chips[hidden],
 .at-list[hidden],
 .gauge[hidden],
@@ -1743,6 +1745,43 @@ body.running #composer { border-radius: 16px; }
 
 #branch {
   flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The checkout the chat runs in is a fact of the folder like the branch, so it is
+   drawn as one rather than as a box on the row inside the box — but it is the one
+   fact that opens a picker, so it is a button wearing the fact's own text: no
+   border, no surface, dim until it is pointed at, and the theme's link color while
+   a thread writes to a copy. It reads at the row's other end, held there by the
+   auto margin the sidebar's own facts share. */
+.fact-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  max-width: 50%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.fact-button:hover { color: var(--vscode-foreground); }
+
+.fact-button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+.fact-button.active { color: var(--vscode-textLink-foreground); }
+
+#worktree-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

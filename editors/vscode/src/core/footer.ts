@@ -1,5 +1,6 @@
-// The footer: the chips the composer shows under the input, plus the usage line
-// and the context gauge. The labels are computed here rather than in the
+// The footer: the chips the composer shows under the input, the checkout the
+// chat runs in and the branch beside it on the bar above the box, plus the usage
+// line and the context gauge. The labels are computed here rather than in the
 // webview, so the footer reads the same in both panes and is unit tested.
 
 import type { TrustSetting } from "./args";
@@ -9,8 +10,17 @@ import type { Access } from "./trust";
 export type ContextLevel = "ok" | "warn" | "high";
 
 export interface FooterChip {
-  id: "model" | "reasoning" | "agent" | "access" | "worktree";
+  id: "model" | "reasoning" | "agent" | "access";
   label: string;
+  title: string;
+}
+
+/// The checkout the chat runs in: a worktree is a copy of the project on its own
+/// branch, and the bar above the box names it at the row's other end, opposite
+/// that branch. An empty `name` is the folder the reader has open, which the
+/// branch already names.
+export interface FooterWorktree {
+  name: string;
   title: string;
 }
 
@@ -18,6 +28,9 @@ export interface FooterState {
   chips: FooterChip[];
   /// The branch, shown dim on the right of the chip row. Empty outside a repo.
   info: string;
+  /// The checkout the chat runs in, read at the bar's other end: the one control
+  /// there, since a worktree is picked rather than read.
+  worktree: FooterWorktree;
   /// The cumulative usage line. Empty until the provider reports usage.
   usage: string;
   /// Context used by the last request, for the gauge.
@@ -100,13 +113,6 @@ export function footerState(input: FooterInput): FooterState {
         title: `Reasoning effort (--reasoning): ${reasoningChoices(input).join(" → ")}. Click to choose a level.`,
       }]),
       {
-        id: "worktree",
-        label: `worktree: ${input.worktree || "local"}`,
-        title: input.worktree
-          ? `This chat runs in the worktree ${input.worktree}, not in the folder you have open. Click to switch checkouts.`
-          : "This chat runs in the folder you have open. Click to run it in a worktree of the project instead.",
-      },
-      {
         id: "access",
         label: `access: ${input.access}`,
         title: accessTitle(input),
@@ -120,6 +126,16 @@ export function footerState(input: FooterInput): FooterState {
             : "Subagent this chat runs with (--agent). No agents were found in this project or the global config. Click to type one.",
       },
     ],
+    // The checkout belongs to the folder rather than to the message, so it is
+    // read on the bar above the box beside the branch it is on: a chat in a
+    // worktree writes to a copy of the project, and the bar is where the panel
+    // says which copy.
+    worktree: {
+      name: input.worktree || "",
+      title: input.worktree
+        ? `This chat runs in the worktree ${input.worktree}, not in the folder you have open. Click to switch checkouts.`
+        : "This chat runs in the folder you have open. Click to run it in a worktree of the project instead.",
+    },
     info: input.branch,
     usage: usageLine(input),
     percent,

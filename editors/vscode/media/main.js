@@ -243,6 +243,9 @@ function installMarkdownInput(editor, render) {
   const atBox = $("at");
   const branchLabel = $("branch");
   const branchWrap = $("branch-wrap");
+  const stripBox = $("strip");
+  const worktreeButton = $("worktree");
+  const worktreeName = $("worktree-name");
   const attachButton = $("attach");
   const composer = $("composer");
   const liveChangesPill = $("live-changes");
@@ -1876,9 +1879,9 @@ function installMarkdownInput(editor, render) {
   }
 
   /// The footer the extension host composes: compact controls in the composer's
-  /// own toolbar, plus the usage line, branch and context gauge below it.
-  /// Everything is a string by the time it gets here, so this function only
-  /// paints.
+  /// own toolbar, the checkout and the branch it is on the bar above the box, and
+  /// the usage line and context gauge beside the action that sends. Everything is
+  /// a string by the time it gets here, so this function only paints.
   function setFooter(footer) {
     if (!footer) return;
     metaBox.innerHTML = "";
@@ -1892,6 +1895,18 @@ function installMarkdownInput(editor, render) {
     branchLabel.textContent = info;
     branchLabel.title = info ? `Current branch: ${info}` : "";
     branchWrap.hidden = !info;
+    // The checkout the chat runs in is a fact of the folder like the branch, so
+    // it is read on the bar above the box rather than as one of the message's
+    // own controls: it names the worktree only while a thread writes to a copy,
+    // and wears the accent then so the row says which copy at a glance.
+    const worktree = footer.worktree || { name: "", title: "" };
+    worktreeName.textContent = worktree.name || "";
+    worktreeName.hidden = !worktree.name;
+    worktreeButton.hidden = !currentFolder;
+    worktreeButton.classList.toggle("active", Boolean(worktree.name));
+    const worktreeLabel = worktree.name ? `worktree: ${worktree.name}` : "Worktree";
+    worktreeButton.setAttribute("aria-label", worktreeLabel);
+    worktreeButton.title = worktree.title ? `${worktreeLabel}\n${worktree.title}` : worktreeLabel;
     const percent = typeof footer.percent === "number" ? footer.percent : null;
     usageText.textContent = percent === null ? "—" : `${percent}%`;
     usageText.title = footer.usage || "";
@@ -3202,6 +3217,9 @@ function installMarkdownInput(editor, render) {
   }
   metaBox.addEventListener("click", clickSetting);
   modelSettings.addEventListener("click", clickSetting);
+  // The checkout's own control lives on the bar above the box: it opens the
+  // panel's worktree listing, which is the same picker the footer chip opened.
+  stripBox.addEventListener("click", clickSetting);
   // The panel's two app-level controls — the tools it allows without asking and
   // the keyboard shortcuts — live in the header rather than in the composer's
   // own row, which is the message's: a narrow side bar cannot hold four glyphs

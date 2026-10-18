@@ -867,6 +867,32 @@ body.running .composer { border-radius: 16px; }
   font-size: 11.5px;
 }
 .fact svg { display: block; flex: none; }
+/* The checkout is a fact of the folder like the branch, so it is drawn as one
+   rather than as a box on the row inside the box — but it is the one fact that
+   opens a picker, so it is a button wearing the fact's own text: no border, no
+   surface, dim until it is pointed at, and the accent while a thread writes to
+   a copy of the project. It reads at the row's other end, held there by the
+   auto margin the totals take on the box's own row. */
+.fact-button {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.fact-button:hover { color: var(--text); }
+.fact-button.active { color: var(--accent); }
+.fact-button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+#worktree-name {
+  max-width: 160px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 /* The branch is the fact that gives way when the row runs out of room — it is the
    name that can be arbitrarily long — and it gives way before the chip that says
    where the message goes, so that chip keeps its own name as long as the row can

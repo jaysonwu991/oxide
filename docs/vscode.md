@@ -558,10 +558,12 @@ beside its gauge.
   copy of that table used to make the chip report `128k` for a model whose
   window is `1M`. Session history remains
   the history button in the header instead of taking a second footer slot.
-- **Worktree** — the chip says which checkout the chat runs in (`worktree:
-  local` for the folder you have open, `worktree: fix-login-bug` for one of its
-  worktrees — another complete checkout of the project on its own
-  `oxide/<name>` branch). It opens the panel's own **Worktrees** listing, which
+- **Worktree** — the bar above the box says which checkout the chat runs in,
+  beside the branch it is on: the checkout's glyph with `fix-login-bug` while a
+  chat writes to one of the project's worktrees — another complete checkout on
+  its own `oxide/<name>` branch — and the glyph alone while it writes to the
+  folder you have open, which the branch already names. It is the bar's one
+  control, and clicking it opens the panel's own **Worktrees** listing, which
   is the same store the terminal's `oxide worktree` and the desktop app write:
   the folder's own checkout first, then every worktree with its branch and path,
   a remove control on each, and **New worktree…**, which asks for a name in VS
@@ -576,8 +578,9 @@ beside its gauge.
   checkout in use starts a new local chat, while refreshing the listing keeps
   an existing thread in its recorded folder even if the checkout is missing.
 - **Bar** — a bar of its own sitting on the composer's top edge, carrying the
-  branch the folder is on and the context gauge at the end of the row, the way
-  the desktop app carries its own top row. It is a surface of the theme's widget
+  branch the folder is on, with the checkout the chat runs in at the row's other
+  end, the way the desktop app carries its own top row. It is a surface of the
+  theme's widget
   colour with the box's top border as the line between them, and it is narrower
   than the box and centered on it — 20px narrower, the 10px the box pads each
   side, so its edges stand where the box's own text column does and the box reads
