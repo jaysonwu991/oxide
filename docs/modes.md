@@ -63,7 +63,10 @@ oxide sessions merge <a> <b> --summarize   # summarize the second session first
 summarization pass per session so a stale session resumes from a small summary
 plus its most recent messages instead of replaying the full transcript. `show`
 takes `--tail <n>` for just the newest messages and `--json` for the object a
-front-end draws. See
+front-end draws. Every listing leaves out a session nothing was ever sent in —
+a log a front-end opened and left has no title and nothing to resume — and
+`/new` in the terminal starts one with the next message rather than with the
+command. See
 [Data locations and reset](cli.md#data-locations-and-reset).
 
 Desktop and the extension offer Pin/Unpin and Archive. Archiving preserves the

@@ -353,7 +353,9 @@ impl SessionLog {
         Self::open(path).ok()
     }
 
-    /// Lists persisted sessions for a project, newest first.
+    /// Lists persisted sessions for a project, newest first. A log that never
+    /// carried a user message is not a session yet, so it is left out rather
+    /// than listed under an empty title the reader cannot resume.
     pub fn list(cwd: &Path) -> Result<Vec<SessionSummary>> {
         Self::list_in(&project_dir(cwd))
     }
@@ -502,7 +504,7 @@ impl SessionLog {
             .and_then(|metadata| metadata.modified().ok())
             .map(system_time_secs)
             .unwrap_or_else(|| parse_iso(&self.header.timestamp).unwrap_or(0));
-        let (message_count, preview) =
+        let (message_count, _, preview) =
             leaf_digest(&state.entries, state.leaf_id.as_deref(), &state.by_id);
         Ok(SessionSummary {
             id: self.header.id.clone(),
@@ -907,28 +909,33 @@ fn leaf_indices_with(
 }
 
 /// The message count and preview of a leaf path without cloning the entries
-/// themselves, which is what a picker needs and all it should pay for.
+/// themselves, which is what a picker needs and all it should pay for. The flag
+/// says whether the conversation ever took a user message: a log that holds
+/// none is one a run was opened for and nothing was ever sent in.
 fn leaf_digest(
     entries: &[Entry],
     leaf_id: Option<&str>,
     by_id: &HashMap<String, usize>,
-) -> (usize, String) {
+) -> (usize, bool, String) {
     let mut count = 0;
+    let mut asked = false;
     let mut preview = String::new();
-    let mut found_preview = false;
     for index in leaf_indices_with(entries, leaf_id, by_id) {
         let Entry::Message(message) = &entries[index] else {
             continue;
         };
         count += 1;
-        if !found_preview && message.message.role == "user" {
+        if message.message.role != "user" {
+            continue;
+        }
+        if !asked {
+            asked = true;
             if let Some(text) = message.message.display() {
                 preview = preview_text(&text);
-                found_preview = true;
             }
         }
     }
-    (count, preview)
+    (count, asked, preview)
 }
 
 fn latest_name(entries: &[Entry]) -> Option<String> {
@@ -996,17 +1003,23 @@ fn read_session(path: &Path) -> Result<(SessionHeader, SessionState)> {
 }
 
 /// The picker metadata for one session file, or `None` when it cannot be read
-/// as a session (a corrupt file, a partial write). The preview and the message
-/// count need the entries, so this parses the whole file; `list_in` runs these
-/// across cores rather than one after another. `modified_at` is the mtime the
-/// caller already stat'd, falling back to the header's timestamp so a file
-/// whose metadata is unreadable is still ordered and listed.
+/// as a session (a corrupt file, a partial write) or never carried a user
+/// message: a log a front-end opened and nothing was sent in is not a thread,
+/// and listing it would offer a row with no title and nothing to resume. The
+/// preview and the message count need the entries, so this parses the whole
+/// file; `list_in` runs these across cores rather than one after another.
+/// `modified_at` is the mtime the caller already stat'd, falling back to the
+/// header's timestamp so a file whose metadata is unreadable is still ordered
+/// and listed.
 fn summarize_session(path: &Path, modified_at: Option<u64>) -> Option<SessionSummary> {
     let (header, state) = read_session(path).ok()?;
     let modified_at = modified_at.unwrap_or_else(|| parse_iso(&header.timestamp).unwrap_or(0));
     let name = latest_name(&state.entries);
-    let (message_count, preview) =
+    let (message_count, asked, preview) =
         leaf_digest(&state.entries, state.leaf_id.as_deref(), &state.by_id);
+    if !asked {
+        return None;
+    }
     Some(SessionSummary {
         id: header.id,
         name,
@@ -1615,6 +1628,25 @@ mod tests {
         assert_eq!(sessions[0].id, log.id());
         assert_eq!(sessions[0].message_count, 2);
         assert_eq!(sessions[0].preview, "first user message");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn a_session_nothing_was_sent_in_is_not_listed() {
+        let dir = temp_dir("list_empty");
+        let cwd = temp_dir("list_empty_proj");
+        let empty = SessionLog::create_in(&dir, &cwd).unwrap();
+        let used = SessionLog::create_in(&dir, &cwd).unwrap();
+        used.append(&Message::user("say hi")).unwrap();
+
+        // A log a front-end opened and left is not a thread: it has no title and
+        // nothing to resume, so every listing (and `--continue`) leaves it out.
+        let sessions = SessionLog::list_in(&dir).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, used.id());
+        assert!(empty.path().exists());
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();

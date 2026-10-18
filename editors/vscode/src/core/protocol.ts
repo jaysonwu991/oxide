@@ -456,12 +456,84 @@ const BLOCK_MARKER = /^(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)+/;
 /// Condenses a message into a one-line title: the first line that carries
 /// prose (a fence, a rule or a table row says nothing on its own, and a
 /// fenced block's contents are a listing rather than a title), with the
-/// Markdown markers stripped and the whitespace collapsed. The result is cut
-/// at a word boundary so it never ends mid-word.
+/// Markdown markers stripped, a leading pasted path or address taken out, and
+/// the whitespace collapsed. The result is cut at a word boundary so it never
+/// ends mid-word.
 export function summarizeTitle(text: string, max = TITLE_LIMIT): string {
   const line = titleLine(text);
   if (!line) return "";
-  return bound(line, max);
+  // A message can open with what a paste put there — a clipboard image's own
+  // path, a copied address — which names no task at all: those words are the
+  // paste's, and what follows them is the request. A message that is nothing
+  // but a paste is named by the file it pasted.
+  const parts = words(line);
+  const span = leadingLocation(parts);
+  const prose = parts.slice(span).join(" ");
+  if (span === 0 || /[\p{L}\p{N}]/u.test(prose)) return bound(prose, max);
+  return bound(pastedName(parts.slice(0, span)), max);
+}
+
+/// A word with the punctuation a sentence wraps it in taken off.
+function unquoted(word: string): string {
+  return word.replace(/^['"‘’“”()[\].,;]+/, "").replace(/['"‘’“”()[\].,;]+$/, "");
+}
+
+/// Whether a word is a path or an address rather than part of what was asked.
+function looksLikeLocation(word: string): boolean {
+  const text = unquoted(word);
+  const lower = text.toLowerCase();
+  return (
+    lower.startsWith("http://") ||
+    lower.startsWith("https://") ||
+    lower.startsWith("file://") ||
+    text.startsWith("/") ||
+    text.startsWith("~/") ||
+    (text.length >= 3 && text[1] === ":" && (text[2] === "/" || text[2] === "\\"))
+  );
+}
+
+/// The leading run of words that is one pasted path or address, or `0` when the
+/// line does not open with one. A clipboard image is saved under a folder whose
+/// name can hold a space, so the run goes on while the words after the first
+/// still read as part of the path and ends at the file name.
+function leadingLocation(parts: string[]): number {
+  const first = parts[0];
+  if (!first || !looksLikeLocation(first)) return 0;
+  // A word that already names a file ends the paste there.
+  if (hasExtension(unquoted(first))) return 1;
+  let span = 1;
+  while (span < parts.length) {
+    const word = unquoted(parts[span]);
+    const named = hasExtension(word);
+    if (!named && !word.includes("/") && !word.includes("\\")) break;
+    span += 1;
+    if (named) break;
+  }
+  return span;
+}
+
+/// Whether a word ends in a file name's extension (`a.png`, `SKILL.md`), which
+/// is where a path stops.
+function hasExtension(word: string): boolean {
+  const dot = word.lastIndexOf(".");
+  if (dot <= 0) return false;
+  const ext = word.slice(dot + 1);
+  return ext.length >= 1 && ext.length <= 8 && /^[A-Za-z0-9]+$/.test(ext);
+}
+
+/// The name of the file a pasted path ends at: the whole run joined, since a
+/// folder in it may have a space of its own.
+function pastedName(parts: string[]): string {
+  const text = unquoted(parts.join(" "));
+  const cut = text.search(/[?#]/);
+  const path = cut === -1 ? text : text.slice(0, cut);
+  const segments = path.split(/[\\/]/);
+  const name = segments[segments.length - 1] ?? "";
+  return /[\p{L}\p{N}]/u.test(name) ? name : "";
+}
+
+function words(line: string): string[] {
+  return line.split(/\s+/).filter(Boolean);
 }
 
 /// The first line of `text` that reads as prose, with its Markdown taken off:
