@@ -304,7 +304,7 @@ impl Worktrees {
             let output = Command::new("git")
                 .current_dir(&repo)
                 .arg("--no-optional-locks")
-                .args(["worktree", "remove", "--force", &entry.path])
+                .args(["worktree", "remove", &entry.path])
                 .output()
                 .context("running git worktree remove")?;
             if !output.status.success() {
@@ -609,6 +609,26 @@ mod tests {
         // The branch is resumed rather than refused when the name comes back.
         let again = store.create(&project, Some("gone"), None).unwrap();
         assert_eq!(again.branch, "oxide/gone");
+        cleanup(&project);
+    }
+
+    #[test]
+    fn removing_refuses_uncommitted_work_and_keeps_the_registry() {
+        let (project, store) = worktrees("dirty-remove");
+        let entry = store.create(&project, Some("dirty"), None).unwrap();
+        let checkout = Path::new(&entry.path);
+        std::fs::write(checkout.join("README.md"), "work in progress\n").unwrap();
+        assert!(store.remove(&project, "dirty").is_err());
+        assert_eq!(store.find(&project, "dirty"), Some(entry.clone()));
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("README.md")).unwrap(),
+            "work in progress\n"
+        );
+        git(checkout, &["checkout", "--", "README.md"]).unwrap();
+        std::fs::write(checkout.join("untracked.txt"), "new work\n").unwrap();
+        assert!(store.remove(&project, "dirty").is_err());
+        assert!(checkout.join("untracked.txt").is_file());
+        assert_eq!(store.find(&project, "dirty"), Some(entry));
         cleanup(&project);
     }
 

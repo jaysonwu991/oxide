@@ -53,6 +53,7 @@ const BUILD_BASH_TIMEOUT_SECS: u64 = 600;
 /// the everyday one — ends this way when the reader exits and the writer is
 /// cut off, which is the command doing exactly what it was asked rather than
 /// failing.
+#[cfg(unix)]
 const SIGPIPE_EXIT: i32 = 141;
 
 /// Appended to a shell command that ran past its timeout. The usual cause is an
@@ -1443,41 +1444,25 @@ fn closest_region(
 /// a string literal against the newline the model wrote instead, a tab against
 /// spaces — and a reader comparing them in a transcript cannot see either.
 fn first_differing_line(old: &str, region: &str) -> Option<(usize, String, String)> {
-    let old_lines: Vec<&str> = old.split('\n').collect();
-    let region_lines: Vec<&str> = region.split('\n').collect();
-    for (position, (old_line, base_line)) in old_lines.iter().zip(&region_lines).enumerate() {
-        if match_key(old_line) == match_key(base_line) {
-            continue;
+    let mut old_lines = old.split('\n');
+    let mut region_lines = region.split('\n');
+    let mut position = 0;
+    loop {
+        position += 1;
+        let old_line = old_lines.next();
+        let base_line = region_lines.next();
+        match (old_line, base_line) {
+            (None, None) => return None,
+            (Some(old), Some(base)) if match_key(old) == match_key(base) => continue,
+            _ => {
+                return Some((
+                    position,
+                    base_line.map_or_else(|| "nothing".to_string(), |line| format!("{line:?}")),
+                    old_line.map_or_else(|| "nothing".to_string(), |line| format!("{line:?}")),
+                ))
+            }
         }
-        return Some((
-            position + 1,
-            format!("{base_line:?}"),
-            format!("{old_line:?}"),
-        ));
     }
-    // Every shared line agrees, so the block's own shape is the difference: it
-    // is longer or shorter than the text the file holds there.
-    if old_lines.len() != region_lines.len() {
-        let longer = old_lines.len() > region_lines.len();
-        return Some((
-            old_lines.len().min(region_lines.len()) + 1,
-            if longer {
-                "nothing".to_string()
-            } else {
-                region_lines
-                    .last()
-                    .map_or_else(String::new, |line| format!("{line:?}"))
-            },
-            if longer {
-                old_lines
-                    .last()
-                    .map_or_else(String::new, |line| format!("{line:?}"))
-            } else {
-                "nothing".to_string()
-            },
-        ));
-    }
-    None
 }
 
 /// Strips the `N|` / `N+|` prefixes `read` adds, so a block copied straight out
@@ -1607,17 +1592,17 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         // A literal `1|text` can genuinely exist in a file. Try the text as
         // supplied before treating it as a numbered `read` listing; only a
         // missing literal target enables the prefix-stripping fallback.
-        let mut searched = raw_old.clone();
+        let mut searched = raw_old;
         let (found, copied_listing) = match locate(&base, &searched) {
             ok @ Ok(_) => (ok, false),
             ambiguous @ Err(MatchFailure::Ambiguous(_)) => (ambiguous, false),
-            Err(MatchFailure::Missing(_)) => match strip_line_prefixes(&searched) {
+            missing @ Err(MatchFailure::Missing(_)) => match strip_line_prefixes(&searched) {
                 Some(stripped) if stripped != searched => {
                     let retried = locate(&base, &stripped);
                     searched = stripped;
                     (retried, true)
                 }
-                _ => (locate(&base, &searched), false),
+                _ => (missing, false),
             },
         };
         match found {
@@ -3293,6 +3278,8 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         );
     }
     let secs = bash_timeout_secs(args, command);
+    #[cfg(unix)]
+    let pipeline_status_path = stream_temp_path("pipeline-status");
 
     #[cfg(windows)]
     let mut shell = {
@@ -3303,9 +3290,25 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     #[cfg(not(windows))]
     let mut shell = {
         let mut shell = tokio::process::Command::new("bash");
-        shell
-            .args(["--noprofile", "--norc", "-o", "pipefail", "-c"])
-            .arg(command);
+        shell.args(["--noprofile", "--norc", "-o", "pipefail", "-c"]);
+        #[cfg(unix)]
+        {
+            // Capture the last pipeline before another command overwrites
+            // PIPESTATUS. Explicit exit/exec and errexit skip this suffix;
+            // without evidence of a closed reader their failures stay failures.
+            let script = format!(
+                "{command}\n__oxide_pipeline_status=(\"$?\" \"${{PIPESTATUS[@]}}\")\n\
+                 if (( __oxide_pipeline_status[0] == {SIGPIPE_EXIT} )); then\n\
+                 builtin printf '%s\\n' \"${{__oxide_pipeline_status[@]}}\" > \"$OXIDE_BASH_STATUS\"\n\
+                 fi\n\
+                 exit \"${{__oxide_pipeline_status[0]}}\""
+            );
+            shell
+                .arg(script)
+                .env("OXIDE_BASH_STATUS", &pipeline_status_path);
+        }
+        #[cfg(not(unix))]
+        shell.arg(command);
         shell
     };
     if let Some(path) = project_bash_path(cwd) {
@@ -3337,6 +3340,16 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     };
     let stdout = join_stream(stdout_task, stdout_path).await?;
     let stderr = join_stream(stderr_task, stderr_path).await?;
+    #[cfg(unix)]
+    let pipeline_status = {
+        if status.as_ref().and_then(std::process::ExitStatus::code) == Some(SIGPIPE_EXIT) {
+            let text = std::fs::read_to_string(&pipeline_status_path).unwrap_or_default();
+            std::fs::remove_file(&pipeline_status_path).ok();
+            text
+        } else {
+            String::new()
+        }
+    };
     let Some(status) = status else {
         // Keep whatever the command printed before the timeout: a search or
         // build that was killed mid-run may already have produced the answer,
@@ -3347,25 +3360,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         anyhow::bail!("command timed out after {secs}s\n{captured}\n{BASH_TIMEOUT_HINT}");
     };
     let exit = status.code().unwrap_or(-1);
-    // `-o pipefail` is what makes `cargo test | tail` report the test's own
-    // exit rather than `tail`'s, and it also reports SIGPIPE: a reader that
-    // stops early — `head`, a `grep -m` — kills the writer and leaves the
-    // pipeline at 141. That is the command doing what it was asked, so it is
-    // said plainly and not painted as a failure.
-    // `SIGPIPE` is a Unix signal and `pipefail` is the Unix shell's: the Windows
-    // branch above runs `cmd /c` with neither, so a 141 there is just an exit
-    // code and stays a failure.
-    let reader_closed = cfg!(unix) && exit == SIGPIPE_EXIT && command.contains('|');
-    let mut output = finish_bash_output(stdout, stderr, exit)?;
+    #[cfg(unix)]
+    let reader_closed = exit == SIGPIPE_EXIT && closed_pipeline_reader(&pipeline_status);
+    #[cfg(not(unix))]
+    let reader_closed = false;
+    let mut output = finish_bash_output(stdout, stderr, if reader_closed { 0 } else { exit })?;
     if reader_closed {
-        // The marker the shell's status was written as is the last thing in the
-        // text, so the last occurrence is the one to rewrite — a command that
-        // happens to print `[exit: 141]` itself keeps its own line.
-        if let Some((head, _)) = output.rsplit_once(&format!("[exit: {SIGPIPE_EXIT}]")) {
-            output = format!(
-                "{head}[exit: 0] (a command in the pipeline stopped because its reader closed)"
-            );
-        }
+        output.push_str(" (a command in the pipeline stopped because its reader closed)");
     }
     if exit != 0 && !reader_closed && unresolved_relative_import(&output) {
         output.push('\n');
@@ -3375,6 +3376,24 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         is_error: exit != 0 && !reader_closed,
         ..ToolOutput::text(output)
     })
+}
+
+#[cfg(unix)]
+fn closed_pipeline_reader(text: &str) -> bool {
+    let Some(statuses) = text
+        .lines()
+        .map(str::parse::<i32>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+    else {
+        return false;
+    };
+    statuses.len() >= 3
+        && statuses[0] == SIGPIPE_EXIT
+        && statuses.last() == Some(&0)
+        && statuses[1..]
+            .iter()
+            .all(|&status| status == 0 || status == SIGPIPE_EXIT)
 }
 
 struct StreamCapture {
@@ -5645,10 +5664,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let mcp = McpRegistry::default();
         let out = execute(
-            &call(
-                "bash",
-                json!({ "command": "printf 'row\\n%.0s' {1..10000} | head -2" }),
-            ),
+            &call("bash", json!({ "command": "yes row | head -2" })),
             &cwd,
             &mcp,
             &Progress::default(),
@@ -5684,6 +5700,43 @@ mod tests {
         )
         .await;
         assert!(unpiped.is_error, "{}", unpiped.text);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_does_not_hide_failures_beside_a_pipe() {
+        let cwd = std::env::current_dir().unwrap();
+        let mcp = McpRegistry::default();
+        for command in [
+            "printf '|'; exit 141",
+            "printf x | cat; exit 141",
+            "bash -c 'exit 7' | bash -c 'exit 141' | cat",
+            "printf x | bash -c 'exit 141'",
+            "bash -c 'exit 141' # | just a comment",
+        ] {
+            let out = execute(
+                &call("bash", json!({ "command": command })),
+                &cwd,
+                &mcp,
+                &Progress::default(),
+            )
+            .await;
+            assert!(out.is_error, "{command}: {}", out.text);
+            assert!(out.text.ends_with("[exit: 141]"), "{command}: {}", out.text);
+        }
+    }
+
+    #[test]
+    fn differing_line_names_the_first_extra_line() {
+        assert_eq!(
+            first_differing_line("a\nb\nc", "a"),
+            Some((2, "nothing".into(), "\"b\"".into()))
+        );
+        assert_eq!(
+            first_differing_line("a", "a\nb\nc"),
+            Some((2, "\"b\"".into(), "nothing".into()))
+        );
+        assert_eq!(first_differing_line("a \nb", "a\nb"), None);
     }
 
     #[tokio::test]

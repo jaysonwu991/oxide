@@ -83,6 +83,7 @@ import { mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./
 import {
   parseWorktree,
   parseWorktrees,
+  sessionWorktree,
   worktreeAt,
   worktreeCreateArgs,
   worktreeListArgs,
@@ -1030,8 +1031,8 @@ export class ChatController {
       return;
     }
     this.worktrees = parseWorktrees(result.stdout);
-    // A checkout removed in a terminal is not one this chat can be sent to.
-    if (this.worktree && !worktreeAt(this.worktrees, this.worktree)) this.worktree = null;
+    // Keep the thread's checkout even when it is absent from the listing:
+    // falling back would send its next edits into the workspace folder.
     this.showDialog(worktreeDialog(this.worktrees, this.worktree, name));
     this.broadcastStatus();
   }
@@ -1111,10 +1112,11 @@ export class ChatController {
   /// Removes a checkout, leaving its branch in the repository: the commits are
   /// the work that was started there, and making a worktree of that name again
   /// resumes it.
-  private async removeWorktree(name: string): Promise<void> {
+  private async removeWorktree(value: string): Promise<void> {
     const folder = this.folder()?.uri.fsPath;
-    const entry = this.worktrees.find((each) => each.name === name);
+    const entry = worktreeAt(this.worktrees, value);
     if (!folder || !entry) return;
+    const name = entry.name;
     if (this.turn) {
       this.showDialog(
         worktreeDialog(this.worktrees, this.worktree, path.basename(folder),
@@ -1137,7 +1139,10 @@ export class ChatController {
       return;
     }
     this.worktrees = this.worktrees.filter((each) => each.name !== name);
-    if (this.worktree === entry.path) this.worktree = null;
+    if (this.worktree === entry.path) {
+      this.worktree = null;
+      this.newSession();
+    }
     this.showNotice(`Removed ${entry.name}. Its branch ${entry.branch} is still in the repository.`);
     await this.showWorktrees();
     this.refreshProject();
@@ -2358,7 +2363,7 @@ export class ChatController {
     // has open, and a thread whose folder this panel cannot reach keeps the
     // folder it has — the answer names the folder, not a rebuild of it.
     const folder = this.folder()?.uri.fsPath ?? null;
-    if (history.cwd && folder && history.cwd !== folder) this.worktree = history.cwd;
+    if (folder) this.worktree = sessionWorktree(folder, history.cwd);
     this.broadcast(this.stateMessage());
     const tail =
       history.shown < history.total

@@ -889,6 +889,9 @@ merge or open a pull request from.
   the checkout above its branch.
 - **Removing one** asks first, then removes the checkout and leaves the branch in
   the repository. Making a worktree of that name again resumes that branch.
+  Uncommitted or untracked files prevent removal. Removing the checkout in use
+  starts a new chat in the local folder; refreshing the listing never moves an
+  existing thread into another checkout.
 - **Project trust is the project's**: a worktree is a copy of a folder whose
   `.oxide/` resources were already decided about, so the shield covers its
   checkouts too.

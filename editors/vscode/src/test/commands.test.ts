@@ -535,7 +535,7 @@ describe("command contributions", () => {
     // how a worktree thread opened from the history runs there rather than in
     // the folder the reader happens to have open.
     assert.ok(
-      chat.includes("history.cwd !== folder"),
+      chat.includes("this.worktree = sessionWorktree(folder, history.cwd)"),
       "a resumed thread keeps its own checkout",
     );
     // The checkout belongs to the task: picking one starts a chat rather than

@@ -1510,7 +1510,7 @@ function worktreeNamed(path) {
 /// its next message there.
 function worktreePathFor(folder) {
   if (!folder || folder === state.project) return null;
-  return worktreeNamed(folder) ? folder : null;
+  return folder;
 }
 
 /// The worktree the thread on screen runs in, if it runs in one: the thread's
@@ -1522,9 +1522,9 @@ function threadWorktree() {
 }
 
 /// Reads the project's worktrees again, keeping why it could not for the
-/// listing's own render to paint. A checkout removed in a terminal is not one
-/// the next message can be sent to, so a selection that is no longer listed is
-/// dropped with it.
+/// listing's own render to paint. The selected checkout stays with its thread
+/// even if it disappears: sending that thread into the local folder would put
+/// its next edits in a different tree.
 async function loadWorktrees() {
   if (!state.project) {
     state.worktrees = [];
@@ -1538,7 +1538,6 @@ async function loadWorktrees() {
     if (project !== state.project) return;
     state.worktrees = Array.isArray(listed) ? listed : [];
     state.worktreesError = null;
-    if (state.worktree && !worktreeNamed(state.worktree)) state.worktree = null;
   } catch (error) {
     if (project !== state.project) return;
     state.worktrees = [];
@@ -1735,6 +1734,7 @@ async function removeWorktree(entry) {
     await invoke("remove_worktree", { project: state.project, name: entry.name });
     if (state.worktree === entry.path) {
       state.worktree = null;
+      if (state.session) newChat();
       loadGit();
     }
     await loadWorktrees();

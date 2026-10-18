@@ -1617,6 +1617,8 @@ oxide --worktree "add a retry to the uploader"   # named after the prompt
 - `remove` deletes the checkout and leaves its branch in the repository: the
   commits are the work that was started there. Making a worktree with that name
   again resumes the branch rather than starting over.
+  Git refuses removal when the checkout has uncommitted or untracked files;
+  commit, stash or move that work before removing it.
 - Checkouts live under the config directory (`worktrees/<project>/<name>/`)
   rather than beside the project, so they never appear in the project's own
   `git status` or in a diff you are reading.
