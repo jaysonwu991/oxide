@@ -283,7 +283,8 @@ The regions, top to bottom:
   each side), so its edges stand where the box's own text column does and the box
   reads as the wider of the two in a narrow window as much as a wide one. It
   names where the turn will run: the
-  folder's chip, the branch that folder is on, and the context reading held against
+  folder's chip, the branch that folder is on, the checkout the next turn runs in
+  at the row's other end, and the context reading held against
   its end of the row — and nothing else, since the window's settings stay in the
   sidebar's foot and the box's own row. There is no readout for
   the machine the turn runs on: a folder on
@@ -315,8 +316,12 @@ The regions, top to bottom:
   footer lays its own line out — the two are one group, and the totals are what
   take the row's own auto margin — so a reader comparing the context a thread is
   using against what it has cost finds both in the same place. Beyond that the bar
-  is the folder's chip and the folder's facts: it carries no control of its own, so
-  the window's settings stay where they were — the theme and the release check in
+  is the folder's chip, the checkout and the folder's facts: the checkout is the
+  one fact there that opens a picker (a worktree is picked, not read), so it is a
+  button wearing the fact's own text — the glyph with the checkout's name beside
+  it while a thread writes to a copy, in the accent so the row says which copy at
+  a glance, and the glyph alone otherwise — while every other setting stays where
+  it was — the theme and the release check in
   the sidebar's foot, the rest in the box's own row — rather than being gathered
   onto the bar as well. The
   box's own row is icon-first, the
@@ -326,7 +331,7 @@ The regions, top to bottom:
   **Connect**, a padlock for the saved tool approvals, and a
   circled `?` for the shortcut help, each with the words in its tooltip and its
   `aria-label`. The project chip is the one control on that bar that keeps
-  its words on the face of it — **Choose a project** while none is open, else the
+  its words on the face of it whether or not a project is chosen — **Choose a project** while none is open, else the
   folder's name, accented in the first case the way the model picker marks the row
   in use — because with nothing open it is how a first thread starts rather than a
   value to look up (see
@@ -870,11 +875,13 @@ branch, so a conversation that edits, builds and tests files leaves the checkout
 you are reading exactly as it was, and the work comes back as a branch you can
 merge or open a pull request from.
 
-- **The composer's own row** carries the control (`#worktree`, the checkout
-  glyph) beside the paperclip. It is an icon with its words in its tooltip, like
-  the rest of that row, and it wears the accent while a worktree is in use —
-  which is the difference between a thread writing to a copy and one writing to
-  the folder itself.
+- **The composer's own top row** carries the control (`#worktree`), beside the
+  branch it is on: it is drawn as a fact of the folder rather than as a chip on
+  the row inside the box — the checkout glyph with its name while a worktree is
+  in use, at the other end of the bar — and it wears the accent then, which is
+  the difference between a thread writing to a copy and one writing to the
+  folder itself. Its words are in its tooltip, and it is hidden while no folder
+  is open.
 - **The picker** (`#worktrees-modal`, a popover above the composer like
   `/mcp` and `/session`) lists the folder's own checkout first and then every
   worktree, each with its branch and path; the one in use is marked, and each

@@ -517,6 +517,10 @@ const footer = {
     { id: "agent", label: "agent: review" },
   ],
   info: "main",
+  worktree: {
+    name: "",
+    title: "This chat runs in the folder you have open. Click to run it in a worktree of the project instead.",
+  },
   usage: "↑1.2k · ↓340 · $0.01 · ctx 12%/128.0k (auto)",
   percent: 12,
   level: "ok",
@@ -734,16 +738,17 @@ describe("webview footer", () => {
   });
 
   /// The composer's own top row is a bar of its own on the box's top edge, the
-  /// way the desktop app carries it: the branch the folder is on, with what the
-  /// thread has spent of its window and the gauge that draws the same reading held
-  /// at the row's end. The bar carries no control of its own: the settings this
-  /// panel holds are the editor's, and the chips in the toolbar below are where
-  /// they are reached. Nothing is left under the box — the readout that line
-  /// carried is the bar's own now, next to the gauge it belongs with.
+  /// way the desktop app carries it: the branch the folder is on, with the
+  /// checkout the chat runs in at the row's other end, while what the thread has
+  /// spent of its window and the gauge that draws the same reading stay beside the
+  /// action that sends. The bar's one control is that checkout — a worktree is
+  /// picked rather than read — so every other setting the panel holds stays in the
+  /// toolbar below. Nothing is left under the box — the readout that line carried
+  /// is the bar's own now, next to the gauge it belongs with.
   it("keeps branch above the box and pins context beside the send controls", () => {
     const strip = between(shell, '<div id="strip"', '<button id="live-changes"');
     assert.match(strip, /class="composer-strip"/);
-    for (const id of ["branch-wrap"]) {
+    for (const id of ["branch-wrap", "worktree", "worktree-name"]) {
       assert.match(strip, new RegExp(`id="${id}"`), id);
     }
     assert.doesNotMatch(strip, /id="mode-bar"|id="mode-queue"|id="mode-steer"/);
@@ -751,13 +756,24 @@ describe("webview footer", () => {
     const bar = between(shell, '<div id="bar">', '<div id="dropzone"');
     assert.ok(bar.indexOf('id="model-settings"') < bar.indexOf('id="usage"'));
     assert.ok(bar.indexOf('id="gauge"') < bar.indexOf('id="stop"'));
-    // The row of facts carries nothing to press.
-    const facts = strip.indexOf('<div class="strip-facts">');
-    assert.ok(facts >= 0, "the bar still declares the row of facts");
-    const factsRow = strip.slice(facts);
-    assert.doesNotMatch(factsRow, /<button/, "the folder's facts carry nothing to press");
-    assert.equal((strip.match(/<button/g) ?? []).length, 0);
+    // The row of facts carries one control: the checkout, which opens the
+    // worktree listing. The branch beside it stays a readout.
+    const factsRow = between(strip, '<div class="strip-facts">', '</div>');
+    assert.equal((factsRow.match(/<button/g) ?? []).length, 1, "the row's one control");
+    const control = between(factsRow, '<button id="worktree"', '</button>');
+    assert.match(control, /data-control="worktree"/);
+    assert.match(control, /aria-haspopup="dialog"/);
+    assert.match(control, /aria-controls="dialog"/);
+    assert.match(control, /id="worktree-name"[^>]*hidden/);
+    assert.equal((strip.match(/<button/g) ?? []).length, 1);
     assert.doesNotMatch(shell, /id="footline"/, "nothing is left under the box");
+    // The checkout is drawn as a fact rather than as a box on the row inside the
+    // box: no border, no surface, held at the row's other end by an auto margin,
+    // and the theme's link color while a thread writes to a copy of the project.
+    assert.match(style, /\.fact-button \{[^}]*margin-left: auto;[^}]*border: 0;[^}]*background: none;/s);
+    assert.match(style, /\.fact-button\.active \{ color: var\(--vscode-textLink-foreground\); \}/);
+    assert.match(style, /#worktree-name \{[^}]*text-overflow: ellipsis;/s);
+    assert.match(style, /#worktree\[hidden\],/);
     // The bar is narrower than the box and centered on it, so its edges stand where
     // the box's own text column does (the box's 760px less the 10px it pads each
     // side, or the same 20px off a narrow side bar's own width) and the box reads as
@@ -788,6 +804,44 @@ describe("webview footer", () => {
     assert.equal(byId.get("gauge")!.hidden, false);
     assert.equal(byId.get("gauge")!.dataset.level, "ok");
     assert.equal(byId.get("gauge-fill")!.style.width, "12%");
+  });
+
+  /// The checkout is the one fact on the bar above the box that is a control: it
+  /// names the worktree only while a chat writes to a copy of the project, wears
+  /// the accent then, and posts the control that opens the worktree listing.
+  it("paints the checkout on the bar above the box and posts its control", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ folder: "/w/app" }));
+    const control = byId.get("worktree")!;
+    assert.equal(control.hidden, false, "a folder is open, so the checkout is read");
+    assert.equal(control.classList.contains("active"), false);
+    assert.equal(control.getAttribute("aria-label"), "Worktree");
+    assert.equal(control.title, `Worktree\n${footer.worktree.title}`);
+    assert.equal(byId.get("worktree-name")!.hidden, true);
+    assert.equal(byId.get("worktree-name")!.textContent, "");
+    send(
+      stateMessage({
+        folder: "/w/app",
+        footer: {
+          ...footer,
+          worktree: { name: "fix-login-bug", title: "This chat runs in the worktree fix-login-bug…" },
+        },
+      }),
+    );
+    assert.equal(control.classList.contains("active"), true);
+    assert.equal(byId.get("worktree-name")!.hidden, false);
+    assert.equal(byId.get("worktree-name")!.textContent, "fix-login-bug");
+    assert.equal(control.getAttribute("aria-label"), "worktree: fix-login-bug");
+    assert.equal(control.title, "worktree: fix-login-bug\nThis chat runs in the worktree fix-login-bug…");
+    // The shell's own `data-control` is asserted above; the stub builds the shell
+    // flat, so what the renderer reads off the button is put here.
+    control.dataset.control = "worktree";
+    byId.get("strip")!.fire("click", { target: control });
+    const message = posted.filter((entry) => entry.k === "control").at(-1)!;
+    assert.equal(message.control, "worktree");
+    // No folder open is no checkout to read: the bar keeps the branch alone.
+    send(stateMessage({ folder: null }));
+    assert.equal(control.hidden, true);
   });
 
   /// The branch is clamped so a long one cannot push the usage line out of the

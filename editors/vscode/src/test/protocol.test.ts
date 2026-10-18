@@ -15,7 +15,14 @@ import type { FooterState } from "../core/footer";
 
 /// The status message carries the footer the controller composed, so the checks
 /// below need one; its contents are covered by `footer.test.ts`.
-const footer: FooterState = { chips: [], info: "", usage: "", percent: null, level: "ok" };
+const footer: FooterState = {
+  chips: [],
+  info: "",
+  worktree: { name: "", title: "" },
+  usage: "",
+  percent: null,
+  level: "ok",
+};
 
 /// `assert.ok` is the only node assertion with an assertion signature, so the
 /// discriminated union is narrowed through it.

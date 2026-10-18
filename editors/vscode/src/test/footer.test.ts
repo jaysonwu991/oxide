@@ -53,21 +53,17 @@ describe("footerState", () => {
     assert.equal(chip(state, "reasoning"), "thinking: auto");
     assert.equal(chip(state, "agent"), "agent: default");
     assert.equal(chip(state, "access"), "access: untrusted");
-    // A chat that runs in a worktree says so rather than leaving the reader to
-    // guess which checkout the turn writes to.
-    assert.equal(chip(state, "worktree"), "worktree: local");
-    assert.equal(
-      chip(footerState(input({ worktree: "fix-login-bug" })), "worktree"),
-      "worktree: fix-login-bug",
-    );
-    assert.match(
-      state.chips.find((entry) => entry.id === "worktree")?.title ?? "",
-      /Click to run it in a worktree/,
-    );
+    // A chat that runs in a worktree says so on the bar above the box rather than
+    // on one of the message's own chips, so the reader is never left guessing
+    // which checkout the turn writes to.
+    assert.equal(state.worktree.name, "");
+    assert.match(state.worktree.title, /Click to run it in a worktree/);
+    const linked = footerState(input({ worktree: "fix-login-bug" }));
+    assert.equal(linked.worktree.name, "fix-login-bug");
+    assert.match(linked.worktree.title, /runs in the worktree fix-login-bug/);
     assert.deepEqual(state.chips.map((entry) => entry.id), [
       "model",
       "reasoning",
-      "worktree",
       "access",
       "agent",
     ]);

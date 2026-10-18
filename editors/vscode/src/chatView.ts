@@ -23,6 +23,7 @@ const ICONS = {
   stop: `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg>`,
   refresh: `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   close: `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  worktree: `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="1.9" y="3.1" width="7.2" height="8.4" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M11.2 4.9h1.1a1.5 1.5 0 0 1 1.5 1.5v4.2a1.5 1.5 0 0 1-1.5 1.5h-1.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3.8 6.2h3.4M3.8 8.5h2.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`,
   lock: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M5.6 7.4V5.6a2.4 2.4 0 0 1 4.8 0v1.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="3.7" y="7.2" width="8.6" height="6.4" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`,
   help: `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.4 6.3a1.65 1.65 0 1 1 2.3 1.55c-.5.22-.7.5-.7 1.05v.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="11.2" r=".8" fill="currentColor"/></svg>`,
 };
@@ -384,6 +385,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="strip" class="composer-strip">
     <div class="strip-facts">
       <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
+      <button id="worktree" class="fact fact-button" type="button" data-control="worktree"
+        title="Worktree" aria-label="Worktree" aria-haspopup="dialog" aria-controls="dialog" hidden><span class="foot-icon" aria-hidden="true">${ICONS.worktree}</span><span id="worktree-name" hidden></span></button>
     </div>
   </div>
   <button id="live-changes" class="live-changes" type="button" hidden

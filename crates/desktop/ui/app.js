@@ -1546,9 +1546,10 @@ async function loadWorktrees() {
   if (!el("worktrees-modal").hidden) renderWorktrees();
 }
 
-/// The composer's own row: the checkout the next turn runs in. Every control
-/// there is an icon whose words are in its tooltip, so the chip names the
-/// worktree there and wears the accent while one is in use — which is the
+/// The composer's own top row: the checkout the next turn runs in. It is a fact
+/// of the folder like the branch beside it rather than a control on the row
+/// inside the box, so it is drawn as one and names the worktree in the row's own
+/// dim text, wearing the accent while a thread writes to a copy — which is the
 /// difference between a thread that writes to a copy and one that writes to the
 /// folder itself.
 function paintWorktreeChip() {
@@ -1557,6 +1558,11 @@ function paintWorktreeChip() {
   chip.hidden = !state.project;
   const entry = worktreeNamed(state.worktree);
   chip.classList.toggle("active", Boolean(entry));
+  const name = el("worktree-name");
+  if (name) {
+    name.textContent = entry ? entry.name : "";
+    name.hidden = !entry;
+  }
   const label = entry ? `worktree: ${entry.name}` : "Worktree";
   chip.title = entry
     ? `${label}\n${entry.path}\nSwitch the checkout the next turn runs in`
