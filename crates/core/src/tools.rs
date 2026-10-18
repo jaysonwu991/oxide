@@ -3352,7 +3352,10 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     // stops early — `head`, a `grep -m` — kills the writer and leaves the
     // pipeline at 141. That is the command doing what it was asked, so it is
     // said plainly and not painted as a failure.
-    let reader_closed = exit == SIGPIPE_EXIT && command.contains('|');
+    // `SIGPIPE` is a Unix signal and `pipefail` is the Unix shell's: the Windows
+    // branch above runs `cmd /c` with neither, so a 141 there is just an exit
+    // code and stays a failure.
+    let reader_closed = cfg!(unix) && exit == SIGPIPE_EXIT && command.contains('|');
     let mut output = finish_bash_output(stdout, stderr, exit)?;
     if reader_closed {
         // The marker the shell's status was written as is the last thing in the
@@ -5634,7 +5637,9 @@ mod tests {
     /// A pipeline whose reader stops early is the command doing what it was
     /// asked, not a failure: `head` exiting kills the writer with SIGPIPE and
     /// `-o pipefail` reports 141, which used to paint a good listing red in
-    /// every front-end.
+    /// every front-end. Unix-only, since neither a signal nor `pipefail` exists
+    /// in the shell this tool runs on Windows.
+    #[cfg(unix)]
     #[tokio::test]
     async fn bash_treats_a_reader_that_closed_as_success() {
         let cwd = std::env::current_dir().unwrap();
