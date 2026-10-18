@@ -1758,6 +1758,10 @@ check(
   app.runFolder() === selectedWorktree,
   app.runFolder(),
 );
+await nextTick();
+check("read the changes dock from the resumed thread's checkout",
+  projectCalls("repository_changes").at(-1)?.[1].project === selectedWorktree &&
+    projectCalls("mcp_servers").at(-1)?.[1].project === selectedWorktree);
 el("prompt").value = "keep working in that checkout";
 calls.length = 0;
 await app.send(false);
@@ -3937,7 +3941,10 @@ check(
 // moved — because the turn's changes are listed together by the card above; the
 // diff it kept is there for the reader who clicks the card.
 console.log("an edit tool's card");
+app.state.session = "changes-chat";
+repositoryChanges = { files: [{ path: "src/main.rs", added: 7, removed: 3 }], added: 7, removed: 3 };
 app.setBusy();
+await nextTick();
 const editCard = app.startTool(
   "edit",
   JSON.stringify({ path: "src/main.rs", edits: [{ oldText: "a", newText: "b" }] }),
@@ -3968,11 +3975,12 @@ check(
   editCard.diffEl.innerHTML,
 );
 check(
-  "summarized live file changes above the running composer",
+  "used repository totals rather than the tool diff above the running composer",
   elementFor("live-changes").hidden === false &&
     elementFor("live-changes").innerHTML.includes("1 file changed") &&
-    elementFor("live-changes").innerHTML.includes("+1") &&
-    elementFor("live-changes").innerHTML.includes("−1"),
+    elementFor("live-changes").innerHTML.includes("+7") &&
+    elementFor("live-changes").innerHTML.includes("−3") &&
+    elementFor("details-stats").innerHTML === elementFor("live-changes").innerHTML.slice(elementFor("live-changes").innerHTML.indexOf("</span>") + 7),
   elementFor("live-changes").innerHTML,
 );
 check(
@@ -4010,15 +4018,17 @@ app.finishTool(latestEditCard, "Updated src/main.rs again.", {
   diff: { path: "src/main.rs", text: "+      2  latest" },
 });
 elementFor("live-changes").click();
+await nextTick();
 check(
-  "opened the most recently changed file when a path changed twice",
-  latestEditCard.expanded === true && secondEditCard.expanded === false,
-  `${latestEditCard.expanded} / ${secondEditCard.expanded}`,
+  "opened the same repository review from the composer summary",
+  !elementFor("review-modal").hidden && elementFor("review-scope").value === "repository" &&
+    elementFor("review-total").innerHTML.includes("+7"),
 );
+app.closeReview();
 app.setIdle();
 check(
-  "hid the live change summary when the turn ended",
-  elementFor("live-changes").hidden === true,
+  "kept the change summary when the turn ended",
+  elementFor("live-changes").hidden === false,
   String(elementFor("live-changes").hidden),
 );
 // A card for a call that changed no file is not the one-line form: it keeps the
@@ -4441,10 +4451,10 @@ check(
 );
 repositoryChanges = { files: [file("src/agent.rs", "modified", 4, 1)], added: 4, removed: 1 };
 calls.length = 0;
-// The dock is the run's: an idle window has no summary standing on it, and a
-// turn raises it with the project read out while it works.
+// A chat keeps its dock when idle, running, and reopened from the store.
+app.state.session = "changes-chat";
 app.closeReview();
-check("left the summary off while the window was idle", elementFor("details-panel").hidden);
+check("kept the summary for the idle chat", !elementFor("details-panel").hidden);
 app.setBusy();
 await reviewTick();
 check(
@@ -4458,7 +4468,7 @@ const dockSession = app.state.session;
 app.state.runSession = "dock-running";
 app.state.session = "another-thread";
 await app.openProjectDetails();
-check("hid the dock while reading another thread in the same project", elementFor("details-panel").hidden);
+check("showed the dock while reading another thread in the same project", !elementFor("details-panel").hidden);
 app.state.session = "dock-running";
 await app.openProjectDetails();
 check("restored the dock on returning to the running thread", !elementFor("details-panel").hidden);
@@ -4501,6 +4511,17 @@ check(
     calls.some(([name]) => name === "repository_changes") &&
     calls.some(([name]) => name === "repository_sides"),
 );
+repositoryChanges = { files: [file("src/agent.rs", "modified", 11, 5)], added: 11, removed: 5 };
+const openReviewEdit = app.startTool("bash", JSON.stringify({ command: "format" }));
+app.finishTool(openReviewEdit, "Formatted files.");
+await new Promise((resolve) => setTimeout(resolve, dockSpacing + 200));
+check("refreshed every count while the repository Changes view was open",
+  elementFor("details-panel").hidden && !elementFor("review-modal").hidden &&
+  elementFor("details-stats").innerHTML.includes("+11") &&
+  elementFor("live-changes").innerHTML.includes("+11") &&
+  elementFor("review-total").innerHTML.includes("+11") &&
+  elementFor("review-total").innerHTML.includes("−5"));
+repositoryChanges = { files: [file("src/agent.rs", "modified", 4, 1)], added: 4, removed: 1 };
 elementFor("review-scope").value = "turn";
 app.changeReviewScope();
 await reviewTick();
@@ -4508,6 +4529,7 @@ check("switched back to the turn's own snapshot", elementFor("review-total").inn
 repositoryError = "This project is not in a Git repository.";
 await app.openRepositoryChanges();
 check("reported a repository read failure", elementFor("review-files").children[0].textContent.includes("not in a Git repository"));
+check("cleared stale counts after a repository read failed", elementFor("live-changes").hidden && !elementFor("details-stats").textContent);
 repositoryError = null;
 app.closeReview();
 check(
@@ -4515,7 +4537,7 @@ check(
   !elementFor("details-panel").hidden,
 );
 app.setIdle();
-check("took the summary away with the run it belongs to", elementFor("details-panel").hidden);
+check("kept the summary when the chat completed", !elementFor("details-panel").hidden);
 await app.openRepositoryChanges();
 check(
   "kept an idle window free of the summary while Changes stood",
@@ -4540,13 +4562,33 @@ check(
     elementFor("details-toggle").getAttribute("aria-expanded") === "true",
 );
 app.setIdle();
-check("hid the summary when the run ended", elementFor("details-panel").hidden);
+check("kept the summary when the run ended", !elementFor("details-panel").hidden);
 document.fire("keydown", { key: "Escape" });
 check(
-  "left the summary off after Escape closed Changes with no run",
-  elementFor("details-panel").hidden &&
-    elementFor("details-toggle").getAttribute("aria-expanded") === "false",
+  "kept the completed chat summary after Escape",
+  !elementFor("details-panel").hidden &&
+    elementFor("details-toggle").getAttribute("aria-expanded") === "true",
 );
+
+const completedChat = app.state.session;
+const completedCards = app.state.changes;
+const completedNodes = [...el("transcript").children];
+await app.openSession({ id: "old-changes-chat", cwd: app.state.project, name: "Old changes" });
+await nextTick();
+check("showed matching counts when reopening an old chat",
+  !elementFor("details-panel").hidden && !elementFor("live-changes").hidden &&
+  elementFor("details-stats").innerHTML.includes("+4") &&
+  elementFor("live-changes").innerHTML.includes("+4"));
+app.resetTranscript();
+check("hid both panels and summaries on the welcome page",
+  elementFor("details-panel").hidden && elementFor("review-modal").hidden &&
+  elementFor("live-changes").hidden && elementFor("changes-toggle").hidden &&
+  elementFor("details-toggle").hidden);
+app.state.session = completedChat;
+app.state.changes = completedCards;
+el("transcript").replaceChildren(...completedNodes);
+await app.openProjectDetails();
+await nextTick();
 
 // Undo puts the project back to the run's own baseline, which the payload
 // carried, rather than to the repository's last commit.
