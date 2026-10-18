@@ -13,7 +13,7 @@ use oxide_core::trust::TrustStore;
 use oxide_core::worktree::Worktrees;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -345,12 +345,13 @@ impl DesktopManager {
     /// thread is never listed twice.
     pub fn sessions_for(&self, project: &Path) -> Result<Vec<SessionSummary>> {
         let mut sessions = SessionLog::list(project)?;
+        let mut seen: HashSet<String> = sessions.iter().map(|summary| summary.id.clone()).collect();
         for entry in oxide_core::worktree::Worktrees::open().list(project) {
             let Ok(more) = SessionLog::list(Path::new(&entry.path)) else {
                 continue;
             };
             for summary in more {
-                if !sessions.iter().any(|each| each.id == summary.id) {
+                if seen.insert(summary.id.clone()) {
                     sessions.push(summary);
                 }
             }
@@ -437,11 +438,14 @@ impl DesktopManager {
         // that project's thread, and a row per checkout would list one project
         // twice under two names.
         let owners = owners_of(sessions, worktrees);
+        let stats = session_stats(sessions, &owners);
+        let mut included = HashSet::new();
 
         for project in &self.registry.projects {
             let path = project.path.to_string_lossy().to_string();
             let key = canonical_string(&project.path);
-            let (count, last) = session_stats(sessions, &owners, &key);
+            let (count, last) = stats.get(&key).copied().unwrap_or_default();
+            included.insert(key);
             views.push(ProjectView {
                 id: project.id.clone(),
                 exists: project.path.is_dir(),
@@ -456,22 +460,13 @@ impl DesktopManager {
             });
         }
 
-        let registered: Vec<String> = self
-            .registry
-            .projects
-            .iter()
-            .map(|project| canonical_string(&project.path))
-            .collect();
         for summary in sessions {
             let Some(owner) = owners.get(&summary.id) else {
                 continue;
             };
             if self.registry.removed_projects.contains(&summary.cwd)
                 || self.registry.removed_projects.contains(owner)
-                || registered.contains(owner)
-                || views
-                    .iter()
-                    .any(|view| canonical_string(Path::new(&view.path)) == *owner)
+                || !included.insert(owner.clone())
             {
                 continue;
             }
@@ -479,7 +474,7 @@ impl DesktopManager {
             // worktree thread lists the repository it was made from rather than
             // the checkout, which is where its work will be merged.
             let path = PathBuf::from(owner);
-            let (count, last) = session_stats(sessions, &owners, owner);
+            let (count, last) = stats.get(owner).copied().unwrap_or_default();
             views.push(ProjectView {
                 id: owner.clone(),
                 exists: path.is_dir(),
@@ -596,13 +591,17 @@ pub fn set_project_trust(project: &Path, trusted: bool) -> Result<()> {
 /// or the project a worktree thread was made from. Canonical, so a project
 /// reached through a symlinked path is the same project.
 fn owners_of(sessions: &[SessionSummary], worktrees: &Worktrees) -> HashMap<String, String> {
+    let mut checkouts = HashMap::new();
     sessions
         .iter()
         .map(|summary| {
-            let owner = worktrees
-                .project_of(Path::new(&summary.cwd))
-                .unwrap_or_else(|| PathBuf::from(&summary.cwd));
-            (summary.id.clone(), canonical_string(&owner))
+            let owner = checkouts.entry(&summary.cwd).or_insert_with(|| {
+                let owner = worktrees
+                    .project_of(Path::new(&summary.cwd))
+                    .unwrap_or_else(|| PathBuf::from(&summary.cwd));
+                canonical_string(&owner)
+            });
+            (summary.id.clone(), owner.clone())
         })
         .collect()
 }
@@ -617,14 +616,16 @@ fn canonical_string(path: &Path) -> String {
 fn session_stats(
     sessions: &[SessionSummary],
     owners: &HashMap<String, String>,
-    path: &str,
-) -> (usize, u64) {
-    sessions
-        .iter()
-        .filter(|summary| owners.get(&summary.id).is_some_and(|owner| owner == path))
-        .fold((0, 0), |(count, last), summary| {
-            (count + 1, last.max(summary.modified_at))
-        })
+) -> HashMap<String, (usize, u64)> {
+    let mut stats = HashMap::new();
+    for summary in sessions {
+        if let Some(owner) = owners.get(&summary.id) {
+            let (count, last) = stats.entry(owner.clone()).or_insert((0, 0));
+            *count += 1;
+            *last = (*last).max(summary.modified_at);
+        }
+    }
+    stats
 }
 
 /// Resolves a path typed into the desktop's "Add a folder" field. Expands a

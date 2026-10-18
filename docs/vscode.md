@@ -572,6 +572,9 @@ beside its gauge.
   so its sessions, snapshots and change cards belong to the checkout — and a
   thread resumed from the history continues in the folder its own header
   recorded. **Oxide: Worktrees…** is the same listing from the palette.
+  Removal refuses a checkout with uncommitted or untracked files. Removing the
+  checkout in use starts a new local chat, while refreshing the listing keeps
+  an existing thread in its recorded folder even if the checkout is missing.
 - **Bar** — a bar of its own sitting on the composer's top edge, carrying the
   branch the folder is on and the context gauge at the end of the row, the way
   the desktop app carries its own top row. It is a surface of the theme's widget

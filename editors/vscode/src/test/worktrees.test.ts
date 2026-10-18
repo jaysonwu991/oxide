@@ -11,6 +11,7 @@ import { WORKTREE_CREATE, WORKTREE_REMOVE, WORKTREE_SELECT, worktreeDialog } fro
 import {
   parseWorktree,
   parseWorktrees,
+  sessionWorktree,
   worktreeAt,
   worktreeCreateArgs,
   worktreeHolding,
@@ -25,6 +26,16 @@ const entry = {
   project: "/home/dev/Projects/oxide",
   created_at: 1_700_000_100,
 };
+
+describe("resumed checkout", () => {
+  it("returns to the local folder after a worktree thread", () => {
+    let selected = sessionWorktree(entry.project, entry.path);
+    assert.equal(selected, entry.path);
+    selected = sessionWorktree(entry.project, entry.project);
+    assert.equal(selected, null);
+    assert.equal(sessionWorktree(entry.project, undefined), null);
+  });
+});
 
 describe("worktree arguments", () => {
   it("asks for one project's listing as JSON", () => {

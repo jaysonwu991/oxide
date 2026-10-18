@@ -1690,6 +1690,7 @@ elementFor("worktree-name").value = "";
 // was started there.
 app.state.session = null;
 app.state.worktree = worktrees[1].path;
+app.state.session = "thread-in-removed-worktree";
 const worktreeRemoval = app.removeWorktree(worktrees[1]);
 await nextTick();
 elementFor("confirm-ok").click();
@@ -1699,6 +1700,7 @@ check(
   "removed a worktree after asking, and left the checkout alone",
   projectCalls("remove_worktree").some(([, args]) => args.name === "cache-the-tokens") &&
     app.state.worktree === null &&
+    app.state.session === null &&
     !app.state.worktrees.some((entry) => entry.name === "cache-the-tokens"),
   `${JSON.stringify(projectCalls("remove_worktree").map(([, args]) => args))} / ${app.state.worktree}`,
 );
@@ -1734,15 +1736,38 @@ check(
 threads = threads.filter((thread) => thread.id !== "6f3031b2cafe");
 await app.loadSessions();
 
-// A checkout removed in a terminal is not one the next message can be sent to.
+// A missing listing must not redirect a worktree thread into the local tree.
+const selectedWorktree = worktrees[0].path;
+app.state.worktree = selectedWorktree;
 worktrees = [];
 calls.length = 0;
 await app.loadWorktrees();
 check(
-  "dropped a selection the project no longer lists",
-  app.state.worktree === null && app.state.worktrees.length === 0,
+  "kept the thread's checkout when the listing no longer names it",
+  app.runFolder() === selectedWorktree && app.state.worktrees.length === 0,
   `${app.state.worktree} / ${app.state.worktrees.length}`,
 );
+await app.openSession({
+  id: "missing-worktree-thread",
+  cwd: selectedWorktree,
+  project: projectRows[0].path,
+  name: "Work in a missing checkout",
+});
+check(
+  "resumed a worktree thread in its recorded checkout without a listing",
+  app.runFolder() === selectedWorktree,
+  app.runFolder(),
+);
+el("prompt").value = "keep working in that checkout";
+calls.length = 0;
+await app.send(false);
+check(
+  "sent the resumed thread to its checkout rather than the local folder",
+  projectCalls("send_prompt")[0]?.[1].project === selectedWorktree,
+  JSON.stringify(projectCalls("send_prompt")),
+);
+app.setIdle();
+app.selectWorktree(null);
 worktrees = [
   {
     name: "fix-login-bug",

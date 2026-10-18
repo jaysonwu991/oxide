@@ -100,6 +100,12 @@ export function worktreeAt(list: readonly Worktree[], folder: string | null): Wo
   );
 }
 
+/// A resumed local thread clears the previous checkout just as a worktree
+/// thread selects its own. An absent header cannot establish a new checkout.
+export function sessionWorktree(folder: string, cwd: string | undefined): string | null {
+  return cwd && cwd !== folder ? cwd : null;
+}
+
 /// The checkout a folder belongs to, itself included: a file or a folder inside
 /// a worktree is that worktree's, the way a folder inside a clone is the
 /// clone's.

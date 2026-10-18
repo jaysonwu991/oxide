@@ -989,25 +989,21 @@ async fn run() -> Result<()> {
     // tools), while the project it was made from is what its own resources and
     // its trust are read from, since a copy of a project is still that project.
     let mut cwd = cwd;
-    let worktree_project = match cli.worktree.as_ref() {
-        Some(name) => {
-            let requested = name
-                .clone()
-                .filter(|name| !name.trim().is_empty())
-                .or_else(|| worktree_name(&cli.messages));
-            let entry = worktree::Worktrees::open()
-                .ensure(&cwd, requested.as_deref(), None)
-                .with_context(|| format!("making a worktree of {}", cwd.display()))?;
-            eprintln!(
-                "oxide: worktree {} on {} at {}",
-                entry.name, entry.branch, entry.path
-            );
-            cwd = PathBuf::from(&entry.path);
-            Some(PathBuf::from(&entry.project))
-        }
-        None => None,
-    };
-    let trust_cwd = worktree_project.clone().unwrap_or_else(|| cwd.clone());
+    if let Some(name) = cli.worktree.as_ref() {
+        let requested = name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| worktree_name(&cli.messages));
+        let entry = worktree::Worktrees::open()
+            .ensure(&cwd, requested.as_deref(), None)
+            .with_context(|| format!("making a worktree of {}", cwd.display()))?;
+        eprintln!(
+            "oxide: worktree {} on {} at {}",
+            entry.name, entry.branch, entry.path
+        );
+        cwd = PathBuf::from(&entry.path);
+    }
+    let trust_cwd = worktree::Worktrees::trust_root(&cwd);
     // `--mode` selects the output mode, like Pi: `json` or `rpc` (and `print`
     // for compatibility; `-p`/`--print` also selects print mode). There is no
     // permission mode; use `--tools`/`--exclude-tools` for a read-only run.
@@ -1336,6 +1332,7 @@ fn logout(provider: Option<String>, json_output: bool) -> Result<()> {
 /// terminal's `/trust` and the desktop app write, so a decision made in one
 /// front-end is the one the others read.
 fn show_trust(project: PathBuf, json_output: bool) -> Result<()> {
+    let project = worktree::Worktrees::trust_root(&project);
     let decision = oxide_core::trust::project_decision(&project);
     let trusted = decision.is_trusted();
     if json_output {
@@ -1369,6 +1366,7 @@ fn parse_trust_decision(value: &str) -> Result<bool> {
 }
 
 fn set_trust(project: PathBuf, decision: &str, json_output: bool) -> Result<()> {
+    let project = worktree::Worktrees::trust_root(&project);
     let trusted = parse_trust_decision(decision)?;
     let mut store = oxide_core::trust::TrustStore::load()?;
     store.set(&project, trusted);
