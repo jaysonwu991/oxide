@@ -430,7 +430,7 @@ function find(node: StubElement, className: string): StubElement | null {
   return null;
 }
 
-function loadRenderer(options: { image?: StubImage; now?: () => number } = {}): Harness {
+function loadRenderer(options: { image?: StubImage; now?: () => number; width?: number } = {}): Harness {
   activeElement = null;
   const byId = new Map<string, StubElement>();
   for (const { id, hidden } of shellElements()) {
@@ -469,7 +469,7 @@ function loadRenderer(options: { image?: StubImage; now?: () => number } = {}): 
     window: {
       addEventListener: document.addEventListener,
       matchMedia: () => ({ matches: false }),
-      innerWidth: 1280,
+      innerWidth: options.width ?? 1280,
       innerHeight: 800,
       setTimeout,
       clearTimeout,
@@ -652,6 +652,25 @@ describe("webview footer", () => {
     assert.match(style, /#dialog\.settings-dropdown\s*\{\s*position: fixed;/);
   });
 
+  it("keeps model and reasoning dropdowns inside a narrow panel", () => {
+    const { byId, send, fireDocument } = loadRenderer({ width: 360 });
+    send(stateMessage());
+    const model = modelDialog("glm-5", "zai", "", [{ provider: "zai", model: "glm-5" }]);
+    for (const kind of ["model", "reasoning"]) {
+      send({ k: "dialog", dialog: { ...model, kind } });
+      const box = byId.get("dialog")!;
+      const right = Number.parseFloat(box.style.right);
+      const width = box.getBoundingClientRect().width;
+      assert.ok(360 - right - width >= 12, `${kind} left edge stays inside the panel`);
+      assert.ok(right >= 12, `${kind} right edge stays inside the panel`);
+      const control = byId.get("model-settings")!.children.find((chip) => chip.dataset.control === kind)!;
+      const anchor = control.getBoundingClientRect();
+      control.getBoundingClientRect = () => ({ ...anchor, right: 348 });
+      fireDocument("resize", {});
+      assert.equal(box.style.right, "12px", `${kind} follows its selector after resizing`);
+    }
+  });
+
   /// A listing is dismissed by a press anywhere outside it, the way its Close
   /// button dismisses it: nothing dims the panel behind it, so a press there
   /// means the reader has moved on. A press inside it — a row, its search box —
@@ -810,8 +829,9 @@ describe("webview footer", () => {
 });
 
 describe("webview composer", () => {
-  it("starts two rows tall", () => {
-    assert.match(shell, /id="input" rows="2"/);
+  it("offers a single rendered editable input", () => {
+    assert.match(shell, /id="input"[^>]*contenteditable="true"/);
+    assert.ok(!shell.includes("<textarea"));
   });
 
   it("renders the header and composer actions as icon buttons", () => {
@@ -1271,25 +1291,26 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.disabled, true);
   });
 
-  it("previews Markdown safely, sends its source, and recalls it with Up", () => {
+  it("edits rendered Markdown in one input, sends its source, and recalls it with Up", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage());
     const input = byId.get("input")!;
     const source = "# Plan\n\n**bold** and `code`\n\n<script>alert(1)</script>";
     input.value = source;
     input.fire("input");
-    assert.equal(byId.get("markdown-preview")!.hidden, false);
-    const html = byId.get("markdown-preview-body")!.innerHTML;
+    assert.ok(/id="input"[^>]*contenteditable="true"/.test(shell));
+    assert.ok(!shell.includes('id="markdown-preview"'));
+    const html = input.innerHTML;
     assert.ok(html.includes("<h1>Plan</h1>"));
     assert.ok(html.includes("<strong>bold</strong>"));
     assert.ok(!html.includes("<script>"));
     byId.get("send")!.fire("click");
     assert.deepEqual(last(posted), { k: "send", text: source });
-    assert.equal(byId.get("markdown-preview")!.hidden, true);
+    assert.equal(input.innerHTML, "");
     input.fire("keydown", { key: "ArrowUp", preventDefault() {} });
     assert.equal(input.value, source);
     assert.equal(input.selectionStart, source.length);
-    assert.equal(byId.get("markdown-preview")!.hidden, false);
+    assert.ok(input.innerHTML.includes("<h1>Plan</h1>"));
     input.value = "my draft";
     input.fire("keydown", { key: "ArrowUp", preventDefault() {} });
     assert.equal(input.value, "my draft");

@@ -9,7 +9,7 @@ install, see [configuration.md](configuration.md).
 ### macOS and Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | sh
 ```
 
 The installer detects your OS/arch, downloads the matching release, verifies its
