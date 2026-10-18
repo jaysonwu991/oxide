@@ -396,6 +396,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <div id="chips" class="chips" hidden></div>
     <textarea id="input" rows="2" spellcheck="false"
       placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image"></textarea>
+    <details id="markdown-preview" class="markdown-preview" open hidden>
+      <summary>Markdown preview</summary>
+      <div id="markdown-preview-body" class="body"></div>
+    </details>
     <div id="bar">
       <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach">${ICONS.attach}</button>
       <div id="meta" class="meta" aria-label="Turn settings"></div>

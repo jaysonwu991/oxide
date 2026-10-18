@@ -1350,8 +1350,8 @@
       const wrap = document.createElement("div");
       wrap.className = "msg user";
       const bubble = document.createElement("div");
-      bubble.className = "bubble";
-      bubble.textContent = item.text;
+      bubble.className = "bubble body";
+      bubble.innerHTML = renderMarkdown(item.text);
       wrap.appendChild(bubble);
       if (item.context && item.context.length) {
         const list = document.createElement("div");
@@ -1921,7 +1921,12 @@
   /// the choice is saved by the host, so the tooltip here always names what
   /// `Enter` will do. A run in another thread is reached by opening it; this
   /// corner refuses to send into it instead.
+  const lastInputs = new Map();
+  const inputHistoryKey = () => JSON.stringify([currentFolder, currentSession]);
+
   function updateSendState() {
+    $("markdown-preview").hidden = !input.value.trim();
+    $("markdown-preview-body").innerHTML = input.value.trim() ? renderMarkdown(input.value) : "";
     const hasText = Boolean(input.value.trim()) || pendingCount() > 0;
     // The corner's own actions belong to the thread this composer is showing. A
     // turn running in another thread is not this transcript's, so a message
@@ -2460,6 +2465,7 @@
     const defaultQueue = followUpBehavior === "queue";
     const queue = opposite ? !defaultQueue : defaultQueue;
     const mode = busy && !queue ? "steer" : "queue";
+    lastInputs.set(inputHistoryKey(), text);
     input.value = "";
     closeCompletion();
     resizeInput();
@@ -2726,6 +2732,18 @@
         return;
       }
     }
+    if (event.key === "ArrowUp" && !event.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && input.value === "") {
+      const users = [...entries.values()].filter((entry) => entry.item.kind === "user");
+      const previous = lastInputs.get(inputHistoryKey()) || users.at(-1)?.item.text;
+      if (previous) {
+        event.preventDefault();
+        input.value = previous;
+        input.setSelectionRange(previous.length, previous.length);
+        resizeInput();
+        updateSendState();
+      }
+      return;
+    }
     if (event.key === "Enter" && busy && event.shiftKey && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       submit(true);
@@ -2742,6 +2760,14 @@
       event.preventDefault();
       vscode.postMessage({ k: "stop" });
     }
+  });
+
+  $("markdown-preview").addEventListener("click", (event) => {
+    const link = event.target.closest?.("a[href]");
+    if (!link) return;
+    event.preventDefault();
+    event.stopPropagation();
+    vscode.postMessage({ k: "openUrl", url: link.getAttribute("href") || "" });
   });
 
   // ---------- attachments ----------

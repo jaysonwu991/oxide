@@ -260,7 +260,7 @@ The regions, top to bottom:
 - **Conversation** — a centered 780px column, the width the composer and the
   popovers above it share, so the window's edges line up rather than each row
   measuring itself. User messages are right-aligned
-  bubbles; assistant replies render Markdown and links open in the system
+  bubbles; user messages and assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
   showing the call (e.g. `bash cargo test --all`) — a finished call is a line of
   the transcript rather than a box around it, so a long run reads as a log, and
@@ -272,6 +272,10 @@ The regions, top to bottom:
   stays the text it looks like instead of offering a fold that does nothing, and
   `write`/`edit` results get a colored diff.
 - **Composer** — a floating rounded box holding the message and what goes with it:
+  Markdown source stays editable, with a live **Markdown preview** below it that
+  can be collapsed. An empty box hides the preview; **Up** in an empty box recalls
+  the last prompt from this chat, including a resumed chat, without restoring attachments.
+  Completion menus take priority over recall. The box holds
   the attachment strip, the message box itself and the icon row of chips, with a
   bar of its own sitting on the box's top edge — the way Codex's own composer
   carries its top row, and the way the VS Code panel carries its own. That bar is

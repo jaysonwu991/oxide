@@ -1921,7 +1921,8 @@ function bubble(kind, text, attachments = []) {
   const label = speakerLabel(kind);
   const body = document.createElement("div");
   body.className = "body";
-  body.innerHTML = kind === "assistant" ? renderMarkdown(text) : escapeHtml(text);
+  body.innerHTML = renderMarkdown(text);
+  if (kind === "user") wrap.dataset.prompt = text;
   const images = attachments.filter((attachment) => isPaintableImage(attachment.dataUrl));
   if (images.length) {
     const strip = document.createElement("div");
@@ -1995,7 +1996,13 @@ function resetTurn() {
 
 /// The composer's action while idle is Send. During a run it follows the saved
 /// Queue/Steer preference; Cmd/Ctrl+Shift+Enter inverts it once.
+const lastInputs = new Map();
+const inputHistoryKey = () => JSON.stringify([state.project, state.session]);
+
 function updateSendState() {
+  const source = el("prompt").value;
+  el("markdown-preview").hidden = !source.trim();
+  el("markdown-preview-body").innerHTML = source.trim() ? renderMarkdown(source) : "";
   const hasText =
     el("prompt").value.trim().length > 0 || state.attachments.length > 0;
   // The corner's own actions belong to the thread this composer is showing. A
@@ -2673,6 +2680,7 @@ async function send(opposite = false) {
     }
     const defaultQueue = state.followUpBehavior === "queue";
     const followUp = opposite ? !defaultQueue : defaultQueue;
+    lastInputs.set(inputHistoryKey(), textarea.value);
     textarea.value = "";
     clearAttachments();
     clearWelcome();
@@ -2742,6 +2750,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
   if (here) {
     clearWelcome();
     if (showBubble) {
+      lastInputs.set(inputHistoryKey(), el("prompt").value);
       el("prompt").value = "";
       clearAttachments();
       el("transcript").appendChild(bubble("user", prompt, attachments));
@@ -6765,6 +6774,19 @@ function init() {
     }
     if (paletteKey(event)) {
       event.preventDefault();
+      return;
+    }
+    if (event.key === "ArrowUp" && !event.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && el("prompt").value === "") {
+      const users = [...el("transcript").querySelectorAll(".msg.user")];
+      const previous = lastInputs.get(inputHistoryKey()) || users.at(-1)?.dataset.prompt;
+      if (previous) {
+        event.preventDefault();
+        el("prompt").value = previous;
+        el("prompt").setSelectionRange(previous.length, previous.length);
+        el("prompt").style.height = "auto";
+        el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
+        updateSendState();
+      }
       return;
     }
     if (event.key === "Escape") {
