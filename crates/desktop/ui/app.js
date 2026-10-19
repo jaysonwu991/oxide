@@ -154,6 +154,7 @@ const STROKE_16 =
 const ICONS = {
   // A project's folder and a document the webview cannot paint: the two drawn
   // for this window alone, in the composer's own style.
+  globe: glyph(`<circle cx="12" cy="12" r="9" ${STROKE_24}/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z" ${STROKE_24}/>`),
   folder: glyph(
     `<path d="M20.2 19.4a1.8 1.8 0 0 0 1.8-1.8v-8a1.8 1.8 0 0 0-1.8-1.8h-7.9a1.8 1.8 0 0 1-1.5-.8l-.9-1.4a1.8 1.8 0 0 0-1.5-.8H3.8A1.8 1.8 0 0 0 2 6.6v11a1.8 1.8 0 0 0 1.8 1.8Z" ${STROKE_24}/>`,
   ),
@@ -310,6 +311,7 @@ const state = {
   tools: [],
   // One repository listing feeds every summary and the repository review.
   repositoryChanges: null,
+  detailsOpen: true,
   currentThinking: null,
   attachments: [],
   mcps: null,
@@ -1345,16 +1347,14 @@ function showTrust(trust) {
 async function answerTrust(trusted) {
   if (!state.project) return;
   el("trust-modal").hidden = true;
+  const project = state.project;
   try {
-    const info = await invoke("set_project_trust", { project: state.project, trusted });
+    const info = await invoke("set_project_trust", { project, trusted });
+    if (project !== state.project) return;
     state.trust = info.trust || null;
     renderProjectMeta(info);
     updateTrustButton();
-    setStatus(
-      trusted
-        ? "Project trusted · project resources loaded"
-        : "Project resources left untrusted",
-    );
+    setStatus(trusted ? IDLE_STATUS : "Project resources left untrusted");
   } catch (error) {
     setStatus(`Trust update failed: ${error}`, "error");
   }
@@ -1558,7 +1558,7 @@ function paintWorktreeChip() {
   chip.hidden = !state.project;
   const entry = worktreeNamed(state.worktree);
   chip.classList.toggle("active", Boolean(entry));
-  const name = el("worktree-name");
+  const name = el("worktree-label");
   if (name) {
     name.textContent = entry ? entry.name : "";
     name.hidden = !entry;
@@ -1597,6 +1597,9 @@ function openWorktrees() {
   el("worktrees-modal").hidden = false;
   el("worktree").setAttribute("aria-expanded", "true");
   el("worktree-name").value = "";
+  el("worktree-base").value = "";
+  el("worktree-copy").checked = false;
+  el("worktree-detached").checked = true;
   renderWorktrees();
   loadWorktrees();
 }
@@ -1619,6 +1622,9 @@ function renderWorktrees() {
     box.innerHTML = `<div class="dialog-empty">Could not read this project's worktrees: ${escapeHtml(state.worktreesError)}</div>`;
     return;
   }
+  el("worktree-branch").hidden = !state.worktree;
+  el("worktree-handoff").hidden = !state.session;
+  el("worktree-handoff").textContent = state.worktree ? "Hand off chat to Local" : "Hand off chat to Worktree";
   box.appendChild(worktreeRow(null));
   for (const entry of state.worktrees || []) box.appendChild(worktreeRow(entry));
 }
@@ -1685,7 +1691,13 @@ function selectWorktree(path) {
   state.worktree = next;
   // The checkout belongs to the task: a thread already on screen was written in
   // one place, and its next message is not the place to move it to.
-  if (state.session) newChat();
+  if (state.session) {
+    const attachments = state.attachments;
+    newChat();
+    state.attachments = attachments;
+    renderAttachments();
+    updateSendState();
+  }
   paintWorktreeChip();
   loadGit();
   setStatus(
@@ -1697,8 +1709,7 @@ function selectWorktree(path) {
 }
 
 /// Makes a worktree and starts a thread in it. The name is the reader's, or one
-/// derived from the project when they left it empty; the branch is
-/// `oxide/<name>`.
+/// derived from the project when they left it empty.
 async function createWorktree() {
   if (!state.project) {
     setStatus("Select a project first.");
@@ -1707,18 +1718,26 @@ async function createWorktree() {
   if (!canStartNewChat()) return;
   const input = el("worktree-name");
   const requested = String(input.value || "").trim();
+  const project = state.project;
+  const source = runFolder();
   const button = el("worktree-create");
+  if (button.disabled) return;
   button.disabled = true;
   try {
     const entry = await invoke("create_worktree", {
-      project: state.project,
+      project,
       name: requested || null,
-      base: null,
+      base: String(el("worktree-base").value || "").trim() || null,
+      detached: el("worktree-detached").checked,
+      copyChanges: el("worktree-copy").checked,
+      source,
     });
+    if (project !== state.project) return;
     input.value = "";
     await loadWorktrees();
+    if (!state.worktrees.some((item) => item.path === entry.path)) state.worktrees.push(entry);
     selectWorktree(entry.path);
-    setStatus(`Created the worktree ${entry.name} on ${entry.branch}.`);
+    setStatus(`Created the worktree ${entry.name} at ${entry.branch}.`);
   } catch (error) {
     setStatus(`Could not create the worktree: ${error}`, "error");
   } finally {
@@ -1727,24 +1746,78 @@ async function createWorktree() {
 }
 
 async function removeWorktree(entry) {
+  const project = state.project;
   if (busyRefusal("removing a worktree")) return;
   const ok = await confirmDialog(
     "Remove worktree",
-    `Remove the worktree ${entry.name} at ${entry.path}?\n\nIts branch ${entry.branch} stays in the repository, and making a worktree of that name again resumes it.`,
+    `Remove the worktree ${entry.name} at ${entry.path}?\n\nIts commits will be kept on a branch in the repository. Uncommitted changes prevent removal.`,
     "Remove worktree",
   );
-  if (!ok) return;
+  if (!ok || project !== state.project || busyRefusal("removing a worktree")) return;
   try {
-    await invoke("remove_worktree", { project: state.project, name: entry.name });
+    const removed = await invoke("remove_worktree", { project, name: entry.name });
+    if (project !== state.project) return;
     if (state.worktree === entry.path) {
       state.worktree = null;
       if (state.session) newChat();
       loadGit();
     }
     await loadWorktrees();
-    setStatus(`Removed ${entry.name}. Its branch ${entry.branch} is still in the repository.`);
+    setStatus(`Removed ${entry.name}. Its branch ${removed.branch} is still in the repository.`);
   } catch (error) {
     setStatus(`Could not remove the worktree: ${error}`, "error");
+  }
+}
+
+async function createWorktreeBranch() {
+  if (busyRefusal("creating a branch")) return;
+  const project = state.project;
+  const entry = worktreeNamed(state.worktree);
+  if (!entry) return;
+  const branch = await promptDialog(`oxide/${entry.name}`, "Create branch here");
+  if (!branch || project !== state.project || busyRefusal("creating a branch")) return;
+  try {
+    await invoke("create_worktree_branch", { project, name: entry.name, branch });
+    if (project !== state.project) return;
+    await loadWorktrees();
+    await loadGit();
+    await refreshProjectDetails();
+    setStatus(`Created branch ${branch}.`);
+  } catch (error) {
+    setStatus(`Could not create branch: ${error}`, "error");
+  }
+}
+
+async function handoffSession() {
+  if (!state.session || busyRefusal("handing off this chat")) return;
+  const project = state.project;
+  const id = state.session;
+  const source = runFolder();
+  const toWorktree = !state.worktree;
+  const confirmed = await confirmDialog("Hand off chat", `Move this chat and its changes to ${toWorktree ? "its worktree" : "Local"}? The destination must have no uncommitted changes.`, "Hand off");
+  if (!confirmed || state.session !== id || project !== state.project || busyRefusal("handing off this chat")) return;
+  state.handingOff = true;
+  el("worktree-handoff").disabled = true;
+  setStatus("Moving chat and changes…");
+  try {
+    const result = await invoke("handoff_session", { project, source, id, toWorktree });
+    if (state.session !== id || project !== state.project) return;
+    state.parked = null;
+    await loadWorktrees();
+    await loadSessions();
+    const session = sessionById(id) || { id, cwd: result.cwd, project, name: state.threadTitle };
+    state.applyingHandoff = true;
+    await openSession({ ...session, cwd: result.cwd });
+    state.applyingHandoff = false;
+    closeWorktrees();
+    setStatus(`Chat moved to ${toWorktree ? "Worktree" : "Local"}.`);
+  } catch (error) {
+    setStatus(`Could not hand off chat: ${error}`, "error");
+  } finally {
+    state.handingOff = false;
+    state.applyingHandoff = false;
+    el("worktree-handoff").disabled = false;
+    updateSendState();
   }
 }
 
@@ -1790,6 +1863,7 @@ function repaintWelcome() {
 /// painted into it (see `viewingRun`) — and a card a turn left for this thread
 /// while the reader was elsewhere is painted with it.
 async function openSession(session) {
+  if (state.handingOff && !state.applyingHandoff) return;
   // Leaving the thread a turn is running in parks its transcript with the run:
   // what it has painted stays, and its next step goes on painting into it.
   parkRun();
@@ -1871,6 +1945,10 @@ function resetTranscript() {
 /// stream is read here — so anything that would replace what is on screen, or the
 /// process itself, is refused while one runs.
 function busyRefusal(what) {
+  if (state.handingOff) {
+    setStatus(`Wait for the handoff before ${what}.`);
+    return true;
+  }
   if (!state.busy) return false;
   setStatus(`A turn is running; stop it before ${what}.`);
   return true;
@@ -1924,6 +2002,7 @@ async function newChatFromSidebar() {
 function bubble(kind, text, attachments = []) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${kind}`;
+  wrap.chatAttachments = attachments;
   const label = speakerLabel(kind);
   const body = document.createElement("div");
   body.className = "body";
@@ -2826,6 +2905,7 @@ function openableImage(dataUrl, name) {
 }
 
 async function send(opposite = false) {
+  if (state.handingOff) { busyRefusal("sending a message"); return; }
   const textarea = el("prompt");
   const prompt = textarea.value.trim();
   const attachments = attachmentPayload();
@@ -3134,6 +3214,7 @@ function formatDuration(ms) {
 /// transcript calls it too so a reopened thread reads the same way.
 function createToolCard(name, args) {
   const block = document.createElement("div");
+  block.chatTool = { name, args };
   block.className = "tool running";
   const head = document.createElement("div");
   head.className = "thead";
@@ -3821,7 +3902,7 @@ function paintDockToggles() {
   // page has no chat, even when another conversation is running.
   const panel = el("details-panel");
   const wasHidden = panel.hidden;
-  panel.hidden = !hasChat() || !el("review-modal").hidden;
+  panel.hidden = !state.detailsOpen || !hasChat() || !el("review-modal").hidden;
   el("details-toggle").hidden = !hasChat();
   el("changes-toggle").hidden = !hasChat();
   paintLiveChanges();
@@ -3831,13 +3912,18 @@ function paintDockToggles() {
 }
 
 function openProjectDetails() {
+  state.detailsOpen = true;
   return closeReview();
 }
 
 async function refreshProjectDetails() {
   const project = runFolder();
   const read = ++detailsRead;
-  el("details-project").textContent = project ? projectNameOf(project) : "Choose a project";
+  el("details-project").textContent = state.project ? projectNameOf(state.project) : "Choose a project";
+  el("details-project").title = state.project || "";
+  const checkout = el("details-checkout");
+  checkout.innerHTML = ICONS.worktree + `<span>${escapeHtml(state.worktree ? baseName(state.worktree) : "Local checkout")}</span>`;
+  checkout.title = project || "";
   const changes = state.repositoryChanges;
   el("details-stats").innerHTML = changes?.project === project ? statsHtml(changes.added, changes.removed) : "";
   el("details-changes").disabled = !project;
@@ -3851,21 +3937,78 @@ async function refreshProjectDetails() {
     readProjectChanges(project),
     invoke("mcp_servers", { project }).then((servers) => {
       if (!current()) return;
-      const box = el("details-sources");
-      box.innerHTML = "";
-      for (const server of servers) {
-        const row = document.createElement("button");
-        row.className = "details-row source-row";
-        row.innerHTML = ICONS.power + `<span>${escapeHtml(server.name)}</span>`;
-        row.title = server.status || server.state;
-        row.onclick = openMcps;
-        box.appendChild(row);
-      }
-      if (!servers.length) box.textContent = "No sources connected.";
+      state.sourceServers = { project, servers };
+      paintProjectSources();
     }).catch((error) => {
       if (current()) el("details-sources").textContent = `Could not load sources: ${error}`;
     }),
   ]);
+}
+
+function chatSources() {
+  const sources = new Map();
+  for (const node of el("transcript").children) {
+    for (const attachment of node.chatAttachments || []) {
+      sources.set(attachment.dataUrl, { kind: "attachment", name: attachment.name || "Attachment", attachment });
+    }
+    if (/^(?:webfetch|web_search|websearch|search_query)$/.test(node.chatTool?.name || "")) {
+      sources.set("web", { kind: "web", name: "Web search" });
+    }
+  }
+  if (state.sourceServers?.project === runFolder()) {
+    for (const server of state.sourceServers.servers) sources.set(`mcp:${server.name}`, { kind: "mcp", name: server.name, server });
+  }
+  return [...sources.values()];
+}
+
+function sourceRow(source) {
+  const row = document.createElement("button");
+  row.className = "details-row source-row";
+  row.title = source.name;
+  const attachment = source.attachment;
+  if (attachment && isPaintableImage(attachment.dataUrl)) {
+    const thumbnail = document.createElement("img");
+    thumbnail.className = "source-thumbnail";
+    thumbnail.src = attachment.dataUrl;
+    thumbnail.alt = "";
+    thumbnail.draggable = false;
+    row.appendChild(thumbnail);
+  } else {
+    const icon = document.createElement("span");
+    icon.innerHTML = source.kind === "mcp" ? ICONS.power : source.kind === "web" ? ICONS.globe : ICONS.file;
+    row.appendChild(icon);
+  }
+  const name = document.createElement("span");
+  name.textContent = source.name;
+  row.appendChild(name);
+  if (source.server) {
+    const status = document.createElement("span");
+    status.className = "source-state";
+    status.textContent = source.server.status || source.server.state || "";
+    row.appendChild(status);
+  }
+  row.onclick = () => {
+    if (attachment && isPaintableImage(attachment.dataUrl)) openImage(attachment.dataUrl, attachment.name);
+    else if (source.kind === "mcp") openMcps();
+    else if (attachment) { setStatus(`${attachment.name || "Attachment"} is included in this chat.`); }
+    else openSources();
+  };
+  return row;
+}
+
+function paintProjectSources() {
+  const sources = chatSources();
+  const box = el("details-sources");
+  box.replaceChildren(...sources.slice(0, 5).map(sourceRow));
+  if (!sources.length) box.textContent = "No sources yet.";
+  if (!el("sources-modal").hidden) el("sources-list").replaceChildren(...sources.map(sourceRow));
+}
+
+function openSources() {
+  closeOverlays("sources-modal");
+  el("sources-modal").hidden = false;
+  paintProjectSources();
+  el("sources-close").focus();
 }
 
 /// Reads the Changes row from the repository: what the work tree holds now,
@@ -3880,6 +4023,7 @@ async function readProjectChanges(project) {
     if (!current()) return;
     state.repositoryChanges = { ...changes, project };
     paintLiveChanges();
+    paintProjectSources();
     el("details-stats").innerHTML = statsHtml(changes.added, changes.removed);
     el("details-changes").title = `${changes.files.length} changed files`;
     if (reviewState?.card.repository) showRepositoryCard({ ...changes, project, repository: true });
@@ -4288,6 +4432,7 @@ const OVERLAYS = [
   "approval",
   "question",
   "connect-modal",
+  "sources-modal",
   "create-project-modal",
   "projects-modal",
   "mcps-modal",
@@ -4377,7 +4522,8 @@ function resolveConfirm(value) {
   if (resolve) resolve(value);
 }
 
-function promptDialog(value) {
+function promptDialog(value, title = "Rename thread") {
+  el("rename-title").textContent = title;
   el("rename-input").value = value || "";
   closeOverlays("rename-modal");
   el("rename-modal").hidden = false;
@@ -6745,6 +6891,8 @@ function init() {
   el("worktrees-close").onclick = () => closeWorktrees();
   el("worktrees-refresh").onclick = () => loadWorktrees();
   el("worktree-create").onclick = createWorktree;
+  el("worktree-branch").onclick = createWorktreeBranch;
+  el("worktree-handoff").onclick = handoffSession;
   el("worktree-name").addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
@@ -6781,14 +6929,20 @@ function init() {
     if (!el("review-modal").hidden) closeReview();
     else openRepositoryChanges();
   };
-  el("details-toggle").onclick = openProjectDetails;
+  el("details-toggle").onclick = () => {
+    if (!el("review-modal").hidden) return openProjectDetails();
+    state.detailsOpen = !state.detailsOpen;
+    paintDockToggles();
+  };
   el("details-more").onclick = () => {
     const project = state.projects.find((project) => project.path === state.project);
     if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
   };
   el("details-changes").onclick = openRepositoryChanges;
-  el("details-add-source").onclick = openMcps;
-  el("details-view-sources").onclick = openMcps;
+  el("details-add-source").onclick = () => el("attach-input").click();
+  el("details-view-sources").onclick = openSources;
+  el("sources-close").onclick = () => { el("sources-modal").hidden = true; el("details-view-sources").focus(); };
+  el("sources-manage").onclick = openMcps;
   el("details-changes-icon").innerHTML = ICONS.file;
   el("review-scope").onchange = changeReviewScope;
   el("review-refresh").onclick = changeReviewScope;
@@ -6922,6 +7076,7 @@ function init() {
   // press must not be an answer.
   const BACKDROP_DISMISS = {
     "agents-modal": "agents-close",
+    "sources-modal": "sources-close",
     "confirm-modal": "confirm-cancel",
     "connect-modal": "login-cancel",
     "create-project-modal": "create-project-cancel",

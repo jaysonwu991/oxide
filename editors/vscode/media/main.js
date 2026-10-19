@@ -302,6 +302,7 @@ function installMarkdownInput(editor, render) {
   let elapsedTimer = 0;
   let dirty = new Set();
   let liveChanges = new Map();
+  let liveChangesCard = null;
   let frame = 0;
   /// The change card a review is open on and the file it is showing. The listing
   /// is the card's own, so a review never disagrees with the rows behind it.
@@ -865,6 +866,20 @@ function installMarkdownInput(editor, render) {
 
   function paintLiveChanges() {
     liveChanges = new Map();
+    liveChangesCard = null;
+    for (const entry of entries.values()) {
+      if (entry.item.kind === "user") liveChangesCard = null;
+      if (entry.item.kind === "changes" && !entry.item.undone) liveChangesCard = entry.item;
+    }
+    if (liveChangesCard) {
+      const card = liveChangesCard;
+      liveChangesPill.hidden = !card.rows?.length;
+      const count = card.rows?.length || 0;
+      liveChangesPill.innerHTML = `<span>${count} file${count === 1 ? "" : "s"} changed</span>` +
+        `${card.added ? `<span class="add">+${card.added}</span>` : ""}` +
+        `${card.removed ? `<span class="del">−${card.removed}</span>` : ""}`;
+      return;
+    }
     if (busy && !runAway()) {
       for (const entry of entries.values()) {
         if (entry.item.kind === "user") liveChanges.clear();
@@ -1609,7 +1624,8 @@ function installMarkdownInput(editor, render) {
     else if (item.kind === "tool") paintTool(entry);
     else if (item.kind === "approval") paintApproval(entry);
     else if (item.kind === "question") paintQuestion(entry);
-    else if (item.kind === "changes") paintChanges(entry);
+    else if (item.kind === "changes") { paintChanges(entry); paintLiveChanges(); }
+    if (item.kind === "user") paintLiveChanges();
     scrollDown(keepScroll);
     return entry;
   }
@@ -1737,6 +1753,7 @@ function installMarkdownInput(editor, render) {
         entry.item.undoable = message.undoable;
         entry.item.undone = message.undone;
         paintChanges(entry);
+        paintLiveChanges();
         scrollDown(false);
         return;
       }
@@ -3133,6 +3150,7 @@ function installMarkdownInput(editor, render) {
 
   sendButton.addEventListener("click", () => submit());
   liveChangesPill.addEventListener("click", () => {
+    if (liveChangesCard) { openReview(liveChangesCard); return; }
     const latest = [...liveChanges.values()].at(-1)?.entry;
     if (!latest) return;
     latest.expanded = true;

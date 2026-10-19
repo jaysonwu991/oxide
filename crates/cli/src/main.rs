@@ -332,6 +332,15 @@ enum WorktreeAction {
         /// The commit or branch to start from (defaults to `HEAD`)
         #[arg(long, value_name = "REF")]
         base: Option<String>,
+        /// Keep HEAD detached until a branch is created
+        #[arg(long)]
+        detached: bool,
+        /// Include staged, unstaged and untracked changes
+        #[arg(long)]
+        copy_changes: bool,
+        /// Checkout whose HEAD and changes are used
+        #[arg(long)]
+        source: Option<PathBuf>,
         /// Project directory (defaults to the current one)
         #[arg(long)]
         project: Option<PathBuf>,
@@ -347,6 +356,27 @@ enum WorktreeAction {
         #[arg(long)]
         project: Option<PathBuf>,
         /// Print the removed worktree as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Give a managed checkout a branch
+    Branch {
+        name: String,
+        branch: String,
+        #[arg(long)]
+        project: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Move a chat and its changes between Local and its managed worktree
+    Handoff {
+        id: String,
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        to_worktree: bool,
+        #[arg(long)]
+        project: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -901,15 +931,26 @@ async fn run() -> Result<()> {
                     WorktreeAction::Create {
                         name,
                         base,
+                        detached,
+                        copy_changes,
+                        source,
                         project,
                         json,
                     } => {
                         let project = project.unwrap_or(current_dir);
-                        let entry = worktree::Worktrees::open().create(
-                            &project,
-                            name.as_deref(),
-                            base.as_deref(),
-                        )?;
+                        let store = worktree::Worktrees::open();
+                        let entry = if detached || copy_changes || source.is_some() {
+                            store.create_isolated(
+                                &project,
+                                name.as_deref(),
+                                base.as_deref(),
+                                detached,
+                                source.as_deref(),
+                                copy_changes,
+                            )?
+                        } else {
+                            store.create(&project, name.as_deref(), base.as_deref())?
+                        };
                         if json {
                             println!("{}", serde_json::to_string(&entry)?);
                         } else {
@@ -931,6 +972,44 @@ async fn run() -> Result<()> {
                                 "Removed {}. Its branch {} is still in the repository.",
                                 entry.path, entry.branch
                             );
+                        }
+                        Ok(())
+                    }
+                    WorktreeAction::Branch {
+                        name,
+                        branch,
+                        project,
+                        json,
+                    } => {
+                        let entry = worktree::Worktrees::open().create_branch(
+                            &project.unwrap_or(current_dir),
+                            &name,
+                            &branch,
+                        )?;
+                        if json {
+                            println!("{}", serde_json::to_string(&entry)?);
+                        } else {
+                            println!("{}", entry.branch);
+                        }
+                        Ok(())
+                    }
+                    WorktreeAction::Handoff {
+                        id,
+                        source,
+                        to_worktree,
+                        project,
+                        json,
+                    } => {
+                        let cwd = worktree::Worktrees::open().handoff(
+                            &project.unwrap_or(current_dir),
+                            &source,
+                            &id,
+                            to_worktree,
+                        )?;
+                        if json {
+                            println!("{}", serde_json::json!({ "cwd": cwd }));
+                        } else {
+                            println!("{}", cwd.display());
                         }
                         Ok(())
                     }

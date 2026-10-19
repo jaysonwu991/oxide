@@ -1414,9 +1414,9 @@ async fn run_loop(
                         {
                             if note_verifier(&mut seen_verifications, dispatched, command) {
                                 output.text.push_str(
-                                "\n\n[note: this build or test already ran in this run; its result \
-                                 is unchanged unless you edited files, so there is no need to run it \
-                                 again]",
+                                "\n\n[note: this build or test already ran earlier in this run. \
+                                 Reuse its result only if its inputs have not changed, including \
+                                 changes made by shell commands or other tools.]",
                             );
                             }
                         }
