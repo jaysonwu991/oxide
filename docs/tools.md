@@ -59,6 +59,20 @@ painting its prompt over the interface that started it and reading the keys type
 there. The children that are not commands get the same treatment: an LSP server,
 an MCP server and the plugin host.
 
+On Unix, a simple shell search or pipeline whose only unsuccessful stages are
+`grep`/`rg` returning 1 is a normal empty result. The output retains `[exit: 1]`
+and adds `search returned no matches`, while the tool's error flag stays clear.
+An unsuccessful producer, invalid regex, or failed leading `cd` still fails.
+Compound shell scripts without unambiguous pipeline evidence keep their normal
+failure behavior.
+
+Shell failures caused by unsupported grep repetition counts, unclosed quotes,
+or selecting a package outside the current Cargo workspace carry a specific
+recovery hint. The recursive-search guard recognizes option arguments, so a
+pattern such as `grep -e -retry file` is not mistaken for a recursive flag.
+Repeated-build reminders are conditional: shell commands and other tools may
+have changed the inputs since the previous check.
+
 ## Output limits
 
 Tool results are capped before they enter the model's context. The default cap is

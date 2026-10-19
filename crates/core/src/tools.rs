@@ -3062,16 +3062,47 @@ fn uses_recursive_shell_grep(command: &str) -> bool {
             return false;
         };
 
-        for word in &words[grep_index + 1..] {
+        let mut arguments = words[grep_index + 1..].iter();
+        while let Some(word) = arguments.next() {
             if *word == "--" {
                 return false;
             }
-            if *word == "--recursive" {
+            if matches!(*word, "--recursive" | "--dereference-recursive") {
                 return true;
             }
+            if matches!(
+                *word,
+                "--regexp"
+                    | "--file"
+                    | "--after-context"
+                    | "--before-context"
+                    | "--context"
+                    | "--max-count"
+                    | "--label"
+                    | "--exclude"
+                    | "--include"
+                    | "--exclude-dir"
+                    | "--binary-files"
+                    | "--directories"
+                    | "--devices"
+            ) {
+                arguments.next();
+                continue;
+            }
             if let Some(flags) = word.strip_prefix('-') {
-                if !flags.starts_with('-') && flags.chars().any(|flag| flag == 'r' || flag == 'R') {
-                    return true;
+                if !flags.starts_with('-') {
+                    let mut flags = flags.chars().peekable();
+                    while let Some(flag) = flags.next() {
+                        if flag == 'r' || flag == 'R' {
+                            return true;
+                        }
+                        if matches!(flag, 'e' | 'f' | 'A' | 'B' | 'C' | 'm' | 'd' | 'D') {
+                            if flags.peek().is_none() {
+                                arguments.next();
+                            }
+                            break;
+                        }
+                    }
                 }
                 continue;
             }
@@ -3298,7 +3329,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
             // without evidence of a closed reader their failures stay failures.
             let script = format!(
                 "{command}\n__oxide_pipeline_status=(\"$?\" \"${{PIPESTATUS[@]}}\")\n\
-                 if (( __oxide_pipeline_status[0] == {SIGPIPE_EXIT} )); then\n\
+                 if (( __oxide_pipeline_status[0] == {SIGPIPE_EXIT} || __oxide_pipeline_status[0] == 1 )); then\n\
                  builtin printf '%s\\n' \"${{__oxide_pipeline_status[@]}}\" > \"$OXIDE_BASH_STATUS\"\n\
                  fi\n\
                  exit \"${{__oxide_pipeline_status[0]}}\""
@@ -3342,7 +3373,10 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     let stderr = join_stream(stderr_task, stderr_path).await?;
     #[cfg(unix)]
     let pipeline_status = {
-        if status.as_ref().and_then(std::process::ExitStatus::code) == Some(SIGPIPE_EXIT) {
+        if matches!(
+            status.as_ref().and_then(std::process::ExitStatus::code),
+            Some(SIGPIPE_EXIT | 1)
+        ) {
             let text = std::fs::read_to_string(&pipeline_status_path).unwrap_or_default();
             std::fs::remove_file(&pipeline_status_path).ok();
             text
@@ -3364,18 +3398,145 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     let reader_closed = exit == SIGPIPE_EXIT && closed_pipeline_reader(&pipeline_status);
     #[cfg(not(unix))]
     let reader_closed = false;
+    #[cfg(unix)]
+    let no_matches = exit == 1 && search_returned_no_matches(command, &pipeline_status);
+    #[cfg(not(unix))]
+    let no_matches = false;
     let mut output = finish_bash_output(stdout, stderr, if reader_closed { 0 } else { exit })?;
     if reader_closed {
         output.push_str(" (a command in the pipeline stopped because its reader closed)");
+    }
+    if no_matches {
+        output.push_str(" (search returned no matches)");
     }
     if exit != 0 && !reader_closed && unresolved_relative_import(&output) {
         output.push('\n');
         output.push_str(module_failure_hint(&output, cwd));
     }
+    if exit != 0 && !reader_closed && !no_matches {
+        if let Some(hint) = bash_failure_hint(&output) {
+            output.push('\n');
+            output.push_str(hint);
+        }
+    }
     Ok(ToolOutput {
-        is_error: exit != 0 && !reader_closed,
+        is_error: exit != 0 && !reader_closed && !no_matches,
         ..ToolOutput::text(output)
     })
+}
+
+fn bash_failure_hint(output: &str) -> Option<&'static str> {
+    if output.contains("grep: maximum repetition exceeds")
+        || output.contains("grep: invalid repetition count")
+    {
+        Some("[hint: this grep limits regex repetition counts. Use the `grep` tool with `pattern`, `path`, and `regex: true` for this search; its regex engine supports larger repetition counts.]")
+    } else if output.contains("unexpected EOF while looking for matching") {
+        Some("[hint: close the shell's quotes. Put literal search patterns in single quotes; backticks inside double quotes start command substitution.]")
+    } else if output.contains("package ID specification")
+        && output.contains("did not match any packages")
+    {
+        Some("[hint: the package may be outside this Cargo workspace. Run Cargo with `--manifest-path <package-directory>/Cargo.toml` instead of selecting it with `-p`.]")
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn search_returned_no_matches(command: &str, text: &str) -> bool {
+    let Some(stages) = simple_search_pipeline(command) else {
+        return false;
+    };
+    let Ok(statuses) = text
+        .lines()
+        .map(str::parse::<i32>)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    statuses.len() == stages.len() + 1
+        && statuses[0] == 1
+        && statuses[1..].contains(&1)
+        && stages.iter().zip(&statuses[1..]).all(|(stage, status)| {
+            *status == 0
+                || (*status == 1
+                    && matches!(
+                        shell_word_name(stage.split_whitespace().next().unwrap_or("")),
+                        "grep" | "egrep" | "fgrep" | "rg"
+                    ))
+        })
+}
+
+#[cfg(unix)]
+fn simple_search_pipeline(command: &str) -> Option<Vec<&str>> {
+    let command = command.trim();
+    let mut stages = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut chars = command.char_indices().peekable();
+    let mut previous = None;
+    let mut changed_dir = false;
+    while let Some((index, ch)) = chars.next() {
+        if escaped {
+            escaped = false;
+            previous = Some(ch);
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            previous = Some(ch);
+            continue;
+        }
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some('\'') => {}
+            Some(_) if ch == '$' || ch == '`' => return None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch == '&' && previous == Some('>') => {}
+            None if ch == '&'
+                && chars.peek().is_some_and(|(_, next)| *next == '&')
+                && start == 0 =>
+            {
+                let prefix: Vec<_> = command[..index].split_whitespace().collect();
+                if prefix.len() != 2 || prefix[0] != "cd" {
+                    return None;
+                }
+                chars.next();
+                start = index + 2;
+                changed_dir = true;
+            }
+            None if ch == '|' => {
+                if chars
+                    .peek()
+                    .is_some_and(|(_, next)| *next == '|' || *next == '&')
+                {
+                    return None;
+                }
+                stages.push(command[start..index].trim());
+                start = index + 1;
+            }
+            None if matches!(
+                ch,
+                ';' | '&' | '\n' | '\r' | '(' | ')' | '{' | '}' | '$' | '`' | '#' | '<'
+            ) =>
+            {
+                return None
+            }
+            None => {}
+        }
+        previous = Some(ch);
+    }
+    if quote.is_some() || escaped {
+        return None;
+    }
+    stages.push(command[start..].trim());
+    // A failed leading `cd` has one status. Require a real pipeline so that
+    // its failure cannot be mistaken for the search that never executed.
+    if stages.iter().any(|stage| stage.is_empty()) || (changed_dir && stages.len() < 2) {
+        return None;
+    }
+    Some(stages)
 }
 
 #[cfg(unix)]
@@ -5660,6 +5821,75 @@ mod tests {
     /// in the shell this tool runs on Windows.
     #[cfg(unix)]
     #[tokio::test]
+    async fn bash_recognizes_a_search_with_no_matches_without_hiding_other_failures() {
+        let dir = std::env::temp_dir().join(format!("oxide_search_status_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("input.txt"), "build succeeded\n").unwrap();
+        for command in [
+            "grep '^error' input.txt",
+            "printf 'build succeeded\\n' | grep '^error' | head -40",
+            "cd . && printf 'build succeeded\\n' | grep '^error' | head -40",
+        ] {
+            let out = execute(
+                &call("bash", json!({ "command": command })),
+                &dir,
+                &McpRegistry::default(),
+                &Progress::default(),
+            )
+            .await;
+            assert!(!out.is_error, "{command}: {}", out.text);
+            assert!(
+                out.text.ends_with("[exit: 1] (search returned no matches)"),
+                "{}",
+                out.text
+            );
+        }
+        for command in [
+            "bash -c 'exit 1' | grep '^error' | head -40",
+            "bash -c 'exit 7' | grep '^error'",
+            "grep '[' input.txt",
+            "cd missing && printf x | grep '^error'",
+            "false && grep '^error' input.txt",
+            "! printf x | grep x",
+            "exit 1",
+        ] {
+            let out = execute(
+                &call("bash", json!({ "command": command })),
+                &dir,
+                &McpRegistry::default(),
+                &Progress::default(),
+            )
+            .await;
+            assert!(out.is_error, "{command}: {}", out.text);
+            assert!(
+                !out.text.contains("search returned no matches"),
+                "{command}: {}",
+                out.text
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn shell_errors_from_sessions_have_specific_recovery_hints() {
+        assert!(bash_failure_hint("grep: maximum repetition exceeds 255")
+            .unwrap()
+            .contains("`grep` tool"));
+        assert!(
+            bash_failure_hint("bash: unexpected EOF while looking for matching ``'")
+                .unwrap()
+                .contains("single quotes")
+        );
+        assert!(bash_failure_hint(
+            "error: package ID specification `desktop` did not match any packages"
+        )
+        .unwrap()
+        .contains("--manifest-path"));
+        assert!(bash_failure_hint("error: test failed").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn bash_treats_a_reader_that_closed_as_success() {
         let cwd = std::env::current_dir().unwrap();
         let mcp = McpRegistry::default();
@@ -5908,6 +6138,13 @@ mod tests {
             "env LC_ALL=C command /usr/bin/grep -rn needle ."
         ));
         assert!(uses_recursive_shell_grep("sudo -u root grep -rn needle ."));
+        assert!(uses_recursive_shell_grep(
+            "grep --regexp -retry --recursive ."
+        ));
+        assert!(uses_recursive_shell_grep("grep -efoo -R ."));
+        assert!(uses_recursive_shell_grep(
+            "grep --dereference-recursive needle ."
+        ));
 
         assert!(!uses_recursive_shell_grep("grep needle config.json"));
         assert!(!uses_recursive_shell_grep("printf '%s' value | grep value"));
@@ -5916,6 +6153,12 @@ mod tests {
         assert!(!uses_recursive_shell_grep("echo 'example | grep -r .'"));
         assert!(!uses_recursive_shell_grep("git log --grep latest"));
         assert!(!uses_recursive_shell_grep("grep -- '-r' config.json"));
+        assert!(!uses_recursive_shell_grep("grep -e -retry config.json"));
+        assert!(!uses_recursive_shell_grep("grep -e-r config.json"));
+        assert!(!uses_recursive_shell_grep("grep -f -rules.txt config.json"));
+        assert!(!uses_recursive_shell_grep(
+            "grep --regexp -retry config.json"
+        ));
     }
 
     #[tokio::test]
