@@ -2512,7 +2512,7 @@ footer {
 
 #composer {
   padding: 8px 10px 6px;
-  border-radius: 0 0 16px 16px;
+  border-radius: 16px;
   background: var(--vscode-input-background);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
 }

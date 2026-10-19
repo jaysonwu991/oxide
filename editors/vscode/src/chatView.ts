@@ -383,6 +383,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </main>
 <button id="jump-latest" class="jump-latest" type="button" title="Jump to latest message" aria-label="Jump to latest message" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
 <footer>
+  <button id="live-changes" class="live-changes" type="button" hidden
+    title="View changes" aria-label="View changes"></button>
   <div id="strip" class="composer-strip">
     <div class="strip-facts">
       <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
@@ -390,8 +392,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         title="Worktree" aria-label="Worktree" aria-haspopup="dialog" aria-controls="dialog" hidden><span class="foot-icon" aria-hidden="true">${ICONS.worktree}</span><span id="worktree-name" hidden></span></button>
     </div>
   </div>
-  <button id="live-changes" class="live-changes" type="button" hidden
-    title="View changes" aria-label="View changes"></button>
   <div id="composer">
     <div id="queue" class="queued-messages" aria-label="Queued messages" hidden></div>
     <div id="queue-menu" class="queued-message-menu" role="menu"

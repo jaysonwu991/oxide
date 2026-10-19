@@ -746,7 +746,9 @@ describe("webview footer", () => {
   /// toolbar below. Nothing is left under the box — the readout that line carried
   /// is the bar's own now, next to the gauge it belongs with.
   it("keeps branch above the box and pins context beside the send controls", () => {
-    const strip = between(shell, '<div id="strip"', '<button id="live-changes"');
+    const strip = between(shell, '<div id="strip"', '<div id="composer">');
+    assert.ok(shell.indexOf('id="live-changes"') < shell.indexOf('id="strip"'));
+    assert.match(strip, /<\/div>\s*<\/div>\s*$/);
     assert.match(strip, /class="composer-strip"/);
     for (const id of ["branch-wrap", "worktree", "worktree-name"]) {
       assert.match(strip, new RegExp(`id="${id}"`), id);
@@ -782,7 +784,7 @@ describe("webview footer", () => {
     assert.match(style, /\.composer-strip \{[^}]*max-width: 740px;/s);
     assert.match(style, /#composer \{[^}]*max-width: 760px;/s);
     assert.match(style, /\.composer-strip \{[^}]*border-radius: 16px 16px 0 0;/s);
-    assert.match(style, /#composer \{[^}]*border-radius: 0 0 16px 16px;/s);
+    assert.match(style, /#composer \{[^}]*border-radius: 16px;/s);
     // The readout takes the row's own auto margin, so the gauge rides at the end
     // after it and the branch takes whatever room is left.
     assert.match(style, /\.composer-strip \.usage \{ margin-left: auto; \}/);
