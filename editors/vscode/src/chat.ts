@@ -46,6 +46,8 @@ import {
   CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
+  LANGUAGE_SELECT,
+  languageDialog,
   logoutDialog,
   MCP_REFRESH,
   MCP_TOGGLE,
@@ -131,6 +133,13 @@ import {
 } from "./core/palette";
 import { footerState, reasoningChoices, type FooterState } from "./core/footer";
 import { contextArgs, parseContextWindow, type ContextWindowInfo } from "./core/context";
+import {
+  languageArgs,
+  languageSetArgs,
+  parseLanguageInfo,
+  translate,
+  type LanguageInfo,
+} from "./core/i18n";
 import { projectInfo, sharedSettingsFor, type ProjectDeps, type ProjectInfo } from "./core/project";
 import {
   buildPrompt,
@@ -410,6 +419,13 @@ export class ChatController {
   /// worked out here.
   private contextWindow: number | null = null;
   private contextProbe = 0;
+  /// The language the panel draws and the strings it draws it with, read from
+  /// the CLI — the core's own catalog, so this window and the terminal say the
+  /// same thing — and the newest read of it, so a stale answer cannot repaint
+  /// the panel in a language the reader has already left.
+  private languageInfo: LanguageInfo | null = null;
+  private languageProbe = 0;
+  private languageDirectory: string | null = null;
   /// Whether the credential this folder runs with is a plan rather than a
   /// metered key, which is what the usage line marks ` (sub)`. Read with the
   /// window, since the CLI resolves both from the same config.
@@ -621,6 +637,11 @@ export class ChatController {
   /// built goes to it now, in the order it was asked for.
   noteReady(view: vscode.WebviewView): void {
     this.readyViews.add(view);
+    // The language is the window's rather than a thread's, so the first pane to
+    // listen is what asks for it, and the answer repaints every pane. A pane
+    // opened later reads what that answer left, and the picker re-reads it when
+    // it is opened, since a switch may have been made elsewhere.
+    if (this.languageDirectory === null) void this.refreshLanguage(true);
     const pending = this.pendingComposer;
     this.pendingComposer = [];
     for (const message of pending) void this.push(view, message);
@@ -652,6 +673,7 @@ export class ChatController {
         footer: this.footer(),
         run: this.runThread(),
       }),
+      language: this.languageInfo,
     };
   }
 
@@ -676,6 +698,11 @@ export class ChatController {
   /// on that path: with `--refresh` they cost a provider request, and only the
   /// model's own identity decides them.
   private refreshProject(recheckWindow = false): void {
+    const languageDirectory = this.languageCwd();
+    if (languageDirectory !== this.languageDirectory || recheckWindow) {
+      this.languageInfo = null;
+      void this.refreshLanguage(true);
+    }
     const folder = this.folder();
     if (!folder) {
       // Nothing is open, so nothing of the folder just closed belongs on the
@@ -3282,11 +3309,82 @@ export class ChatController {
         return this.applyDialogSetting("reasoning", value);
       case APPLY_TRUST:
         return this.applyTrust(value);
+      case LANGUAGE_SELECT:
+        return this.selectLanguage(value);
       case CLOSE_DIALOG:
         return this.closeDialog();
       default:
         return;
     }
+  }
+
+  /// Opens the language listing: the languages the CLI offers, with the one in
+  /// use marked. The answer is re-read first, so a switch made in the terminal
+  /// or the desktop app since this window opened is what the rows say.
+  async showLanguage(): Promise<void> {
+    await this.refreshLanguage(false);
+    this.showDialog(languageDialog(this.languageInfo));
+  }
+
+  /// Switches the language every front-end draws. The CLI writes the shared
+  /// `settings.json` key and answers with the catalog, which is what the panel
+  /// then paints — the panel keeps no table of its own.
+  private async selectLanguage(tag: string): Promise<void> {
+    const cwd = this.languageCwd();
+    this.languageDirectory = cwd;
+    const probe = ++this.languageProbe;
+    const result = await runCapture(this.binary(), languageSetArgs(tag), cwd, 20_000);
+    if (probe !== this.languageProbe || cwd !== this.languageCwd()) return;
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      this.showNotice(`Could not switch language: ${detail}`, "error");
+      return;
+    }
+    const info = parseLanguageInfo(result.stdout);
+    if (info) this.languageInfo = info;
+    else await this.refreshLanguage(false);
+    this.showDialog(languageDialog(this.languageInfo));
+    this.broadcast(this.stateMessage());
+  }
+
+  /// The folder a language read or write runs against. The language is the
+  /// window's rather than a thread's, so this answers even with no folder
+  /// open — the composer works then too, and it is drawn in this language.
+  private languageCwd(): string {
+    const folder = this.folder()?.uri.fsPath;
+    if (!folder) return os.homedir();
+    // Resolving a catalog must not switch threads: cwd() can broadcast state
+    // during a folder switch, and stateMessage() resolves the language itself.
+    if (this.activeFolder === folder || this.turn) {
+      return this.worktree ?? this.activeFolder ?? folder;
+    }
+    return folder;
+  }
+
+  /// Reads the language the panel draws and the strings to draw it with. A CLI
+  /// too old to know `oxide language` leaves the English the shell was written
+  /// in, which is what `null` paints.
+  private async refreshLanguage(report: boolean): Promise<void> {
+    const probe = ++this.languageProbe;
+    const cwd = this.languageCwd();
+    this.languageDirectory = cwd;
+    try {
+      const result = await runCapture(this.binary(), languageArgs(), cwd, 10_000);
+      if (result.error || result.code !== 0) return;
+      const info = parseLanguageInfo(result.stdout);
+      if (!info || probe !== this.languageProbe || cwd !== this.languageCwd()) return;
+      this.languageInfo = info;
+      if (report) this.broadcast(this.stateMessage());
+    } catch {
+      // The English the shell was authored in stands.
+    }
+  }
+
+  /// A reading of the catalog for a caller that draws a line of its own — the
+  /// header's title, a notice — so one word of the interface is asked for by
+  /// its key rather than written into this file twice.
+  private t(key: string, fallback: string): string {
+    return translate(this.languageInfo, key, fallback);
   }
 
   /// Turns one server off (or back on) in the file that defines it, then paints
@@ -3330,9 +3428,11 @@ export class ChatController {
         return this.showApprovals();
       case "worktree":
         return this.showWorktrees();
+      case "language":
+        return this.showLanguage();
       case "shortcuts":
         this.showDialog({
-          kind: "shortcuts", pin: "footer", title: "Keyboard shortcuts",
+          kind: "shortcuts", pin: "footer", title: this.t("dialog.help.title", "Keyboard shortcuts"),
           subtitle: "Composer", note: "Enter: send · Shift+Enter: newline · Cmd/Ctrl+Shift+Enter: alternate Queue/Steer mode · Escape: close a dialog or stop",
           rows: [], count: 0, search: false, query: "", refreshLabel: "", refreshAction: "",
         });
@@ -3376,6 +3476,8 @@ export class ChatController {
         return this.newSession();
       case "attach":
         return this.pickFiles();
+      case "language":
+        return this.showLanguage();
       case "usage": {
         const usage = this.footer().usage;
         this.showNotice(usage || "No usage reported yet — the footer fills in per turn.");

@@ -15,6 +15,8 @@ import {
   CHANGES_UNDO_CONFIRM,
   CLOSE_DIALOG,
   CONTINUE_SESSION,
+  LANGUAGE_SELECT,
+  languageDialog,
   logoutDialog,
   MCP_TOGGLE,
   modelDialog,
@@ -1028,5 +1030,51 @@ describe("update dialog", () => {
     assert.equal(install.title, "Could not install the update");
     assert.match(install.subtitle, /\.vsix/);
     assert.equal(install.note, "exit 1");
+  });
+});
+
+describe("the language the panel draws", () => {
+  it("lists each language in itself and marks the one in use", () => {
+    const dialog = languageDialog({
+      language: "zh-CN",
+      languages: [
+        { tag: "en-GB", label: "English (United Kingdom)", nativeLabel: "English (United Kingdom)" },
+        { tag: "zh-CN", label: "Simplified Chinese", nativeLabel: "简体中文" },
+      ],
+      strings: { "language.name": "语言" },
+    });
+    assert.equal(dialog.kind, "language");
+    // The title is the catalog's, since the panel is asking the CLI for the
+    // words in the very answer this dialog was composed from.
+    assert.equal(dialog.title, "语言");
+    assert.deepEqual(
+      dialog.rows.map((row) => row.label),
+      ["English (United Kingdom)", "简体中文"],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.action),
+      [LANGUAGE_SELECT, LANGUAGE_SELECT],
+    );
+    // The mark is state, not a status word a renderer would have to read.
+    assert.deepEqual(
+      dialog.rows.map((row) => row.current),
+      [false, true],
+    );
+    assert.deepEqual(
+      dialog.rows.map((row) => row.tone),
+      ["", "ok"],
+    );
+  });
+
+  it("offers both languages when the CLI has not answered yet", () => {
+    const dialog = languageDialog(null);
+    assert.equal(dialog.title, "Language");
+    assert.deepEqual(
+      dialog.rows.map((row) => row.value),
+      ["en-GB", "zh-CN"],
+    );
+    assert.equal(dialog.rows[0].current, true);
+    assert.equal(dialog.count, 0);
+    assert.equal(dialog.search, false);
   });
 });

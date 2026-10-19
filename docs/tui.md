@@ -51,6 +51,14 @@ An `@path` in the message attaches a file the same way, and a reference to one
 this app may not read is still an attachment: the refusal is reported with the
 grant to give rather than being sent to the model as the text it was typed as.
 
+`/language` draws the interface in British English (the default) or Simplified
+Chinese: `/language zh-CN` switches it for every front-end — the same
+`settings.json` key the desktop app's globe and the VS Code panel's command write
+— and `/language` alone reports the choice. `--language <tag>` sets it for one
+run without writing the setting. The transcript's own labels (a thinking block,
+the queued-message rows, the approval prompt) are part of the interface and
+follow the language; what the model writes and what a tool prints do not.
+
 A context compaction renders as Pi's `[compaction]` block and a branch summary
 as `[branch]`, each folded to a one-line note with `Ctrl+O to expand` until
 `Ctrl+O` shows its text — the same key that unfolds tool output.

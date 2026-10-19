@@ -255,6 +255,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // `oxide worktree`: the same store the terminal and the desktop app write,
     // so a worktree made in one is listed here and the other way round.
     vscode.commands.registerCommand("oxide.worktrees", guard(() => controller.showWorktrees())),
+    // The language the panel, the terminal and the desktop app draw, switched
+    // in one place: the panel writes the shared `settings.json` key through the
+    // CLI, so a choice made here is the terminal's next launch too.
+    vscode.commands.registerCommand("oxide.language", guard(() => controller.showLanguage())),
     // Checking for a newer release is the installed CLI's own check, answered in
     // the panel: the version the terminal's `oxide update` would install, and an
     // install row that runs it. The panel is not a place a binary is replaced

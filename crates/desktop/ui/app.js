@@ -321,6 +321,15 @@ const state = {
   palette: [],
   paletteIndex: 0,
   paletteOpen: false,
+  // The language the window draws, and the strings it draws in it. Both come
+  // from the core (`language`, which reads `settings.json` and hands over the
+  // shared catalog), so this page keeps no table of its own: a key with no
+  // entry yet reads as the English it was written as, which is also what the
+  // window shows before the answer lands.
+  language: "en-GB",
+  strings: {},
+  // The languages the picker offers, as the core last answered with them.
+  languages: [],
   // One card per finished turn that changed something, in the order the turns
   // ran, so a review opened from an older card still reads its own files.
   changes: [],
@@ -333,6 +342,167 @@ const state = {
 };
 
 // ---------- helpers ----------
+
+/// One word of the interface in the language on screen: the translated string
+/// when the core answered with one, else the English this page was written in.
+/// The fallback is what keeps the window whole before the catalog arrives and
+/// in a build whose core has no entry for the key yet.
+function t(key, fallback, vars) {
+  let text = state.strings?.[key] || fallback || "";
+  if (vars) {
+    for (const [name, value] of Object.entries(vars)) {
+      text = text.split(`{${name}}`).join(value);
+    }
+  }
+  return text;
+}
+
+/// The English each translatable node was authored with, kept the first time
+/// the page localizes it so switching languages twice does not translate a
+/// translation.
+const i18nDefaults = new WeakMap();
+
+function authored(node, kind, value) {
+  let entry = i18nDefaults.get(node);
+  if (!entry) {
+    entry = {};
+    i18nDefaults.set(node, entry);
+  }
+  if (!(kind in entry)) entry[kind] = value;
+  return entry[kind];
+}
+
+/// Paints the language the core resolved into every node that names a key, and
+/// remembers the value for the dynamic strings (`t`) the page writes later.
+function applyLanguage(info) {
+  const statusKey = state.statusText === idleStatus() ? "composer.ready"
+    : state.statusText === t("composer.working", "Working…") ? "composer.working" : null;
+  if (info?.language) state.language = info.language;
+  if (Array.isArray(info?.languages)) state.languages = info.languages;
+  state.strings = info?.strings || {};
+  document.documentElement.lang = state.language;
+  for (const node of document.querySelectorAll("[data-i18n]")) {
+    const key = node.dataset.i18n;
+    node.textContent = t(key, authored(node, "text", node.textContent));
+  }
+  for (const node of document.querySelectorAll("[data-i18n-title]")) {
+    const key = node.dataset.i18nTitle;
+    node.title = t(key, authored(node, "title", node.title));
+  }
+  for (const node of document.querySelectorAll("[data-i18n-aria]")) {
+    const key = node.dataset.i18nAria;
+    node.setAttribute(
+      "aria-label",
+      t(key, authored(node, "aria", node.getAttribute("aria-label") || "")),
+    );
+  }
+  for (const node of document.querySelectorAll("[data-i18n-placeholder]")) {
+    const key = node.dataset.i18nPlaceholder;
+    const native = node.tagName === "INPUT" || node.tagName === "TEXTAREA";
+    const text = t(key, authored(node, "placeholder", native ? node.placeholder : node.dataset.placeholder || ""));
+    if (native) node.placeholder = text;
+    else node.dataset.placeholder = text;
+  }
+  // The chips and the prompt are painted after this runs; the placeholder the
+  // empty composer shows is read out of the dataset here.
+  if (el("prompt")) el("prompt").dataset.placeholder = t(
+    "composer.placeholder",
+    el("prompt").dataset.placeholder || "Ask Oxide…",
+  );
+  // The project chip's own words are state, not markup: a folder that is open
+  // is named by its folder, and only the empty chip is a label to translate.
+  updateProjectChip();
+  renderLanguageRows(info);
+  if (statusKey) state.statusText = t(statusKey, statusKey === "composer.ready" ? "Ready" : "Working…");
+  repaintLanguage();
+}
+
+/// Reads the language the core resolved and paints it. The window starts in
+/// English, so a core that cannot answer leaves the page exactly as authored.
+let languageProbe = 0;
+
+async function loadLanguage() {
+  const project = state.project;
+  const probe = ++languageProbe;
+  try {
+    const info = await invoke("language", { project });
+    if (probe !== languageProbe || project !== state.project) return;
+    applyLanguage(info);
+  } catch {
+    // Keep the catalog already on screen when a background read fails.
+  }
+}
+
+/// The rows of the language picker: each language named in itself, with the one
+/// on screen marked. A row writes the choice through the core, which is what
+/// makes it the terminal's and the editor panel's language too, then repaints
+/// the window in it.
+function renderLanguageRows(info) {
+  const list = el("language-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const languages = info?.languages?.length
+    ? info.languages
+    : state.languages.length
+      ? state.languages
+      : [
+          {
+            tag: "en-GB",
+            label: "English (United Kingdom)",
+            nativeLabel: "English (United Kingdom)",
+          },
+          { tag: "zh-CN", label: "Simplified Chinese", nativeLabel: "简体中文" },
+        ];
+  for (const language of languages) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "language-option" + (language.tag === state.language ? " active" : "");
+    row.dataset.language = language.tag;
+    const name = document.createElement("span");
+    name.className = "language-option-name";
+    name.textContent = language.nativeLabel || language.label || language.tag;
+    const tag = document.createElement("span");
+    tag.className = "language-option-tag";
+    tag.textContent = language.tag;
+    const check = document.createElement("span");
+    check.className = "language-option-check";
+    setCheck(check, language.tag === state.language);
+    row.append(name, tag, check);
+    row.onclick = () => switchLanguage(language.tag);
+    list.appendChild(row);
+  }
+}
+
+async function switchLanguage(tag) {
+  if (!tag || tag === state.language) {
+    el("language-modal").hidden = true;
+    return;
+  }
+  try {
+    const project = state.project;
+    const probe = ++languageProbe;
+    const info = await invoke("set_language", { tag, project });
+    if (probe !== languageProbe || project !== state.project) return;
+    applyLanguage(info);
+    el("language-modal").hidden = true;
+  } catch (error) {
+    setStatus(String(error), "error");
+  }
+}
+
+/// Repaints the parts of the window the page writes itself. Called after a
+/// language switch, since a translation the markup carries is already painted
+/// by `applyLanguage`.
+function repaintLanguage() {
+  updateChips();
+  updateSendState();
+  updateTrustButton();
+  paintStatus();
+  paintQueue();
+  repaintWelcome();
+  void renderProjectsTree();
+}
+
 
 function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({
@@ -442,9 +612,10 @@ function paintStatus() {
     el(id).setAttribute("aria-description", text || IDLE_STATUS);
   }
   el("status-text").textContent = text;
-  el("status-text").hidden = text === IDLE_STATUS;
-  badge.hidden = busy || !text || text === IDLE_STATUS;
-  el("stop").title = `Stop the running turn${text && text !== IDLE_STATUS ? ` · ${text}` : ""}`;
+  el("status-text").hidden = text === idleStatus();
+  badge.hidden = busy || !text || text === idleStatus();
+  const stopHint = t("composer.stopHint", "Stop the running turn");
+  el("stop").title = `${stopHint}${text && text !== idleStatus() ? ` · ${text}` : ""}`;
   el("stop").setAttribute("aria-label", el("stop").title);
   badge.title = text;
   badge.setAttribute("aria-label", text || IDLE_STATUS);
@@ -491,6 +662,10 @@ function finishRunClock() {
 /// The word the window is idle under: the words are dropped for it and the icon
 /// speaks, since a row that says `Ready` is a row saying nothing.
 const IDLE_STATUS = "Ready";
+
+/// The idle word in the language on screen, which is what the status row
+/// compares against before it decides the row has nothing to say.
+const idleStatus = () => t("composer.ready", IDLE_STATUS);
 
 /// The tokens the CLI's footer abbreviates with, in its own steps: under a
 /// thousand as they are, then `1.2k`, `123k`, `1.2M`, `66M`. One rule for the
@@ -1379,18 +1554,25 @@ function renderWelcome() {
   mark.className = "welcome-mark";
   mark.innerHTML = ICONS.mark;
   const title = document.createElement("h1");
-  title.textContent = "What should we build?";
+  title.textContent = t("home.title", "What should we build?");
   const hint = document.createElement("p");
   hint.textContent = project
     ? project
     : (state.projects || []).length
-      ? "Pick a folder with the project chip below, or open a recent thread."
-      : "Add a folder to run in — the project chip below, or the + beside Projects.";
+      ? t(
+          "home.pickFolder",
+          "Pick a folder with the project chip below, or open a recent thread.",
+        )
+      : t(
+          "home.addFolder",
+          "Add a folder to run in — the project chip below, or the + beside Projects.",
+        );
   welcome.append(mark, title, hint);
   if (project) {
     const suggestions = document.createElement("div");
     suggestions.className = "suggestions";
-    for (const text of SUGGESTIONS) {
+    for (const [index, english] of SUGGESTIONS.entries()) {
+      const text = t(`home.suggestion${index + 1}`, english);
       const button = document.createElement("button");
       button.dataset.prompt = text;
       button.textContent = text;
@@ -1426,7 +1608,7 @@ function recentList(threads) {
   box.className = "recent";
   const label = document.createElement("div");
   label.className = "recent-label";
-  label.textContent = "Recent threads";
+  label.textContent = t("sidebar.recentThreads", "Recent threads");
   box.appendChild(label);
   for (const session of threads) {
     const row = document.createElement("button");
@@ -1588,7 +1770,7 @@ async function selectProject(project) {
   el("trust-modal").hidden = true;
   updateTrustButton();
   updateChips();
-  setStatus("Ready");
+  setStatus(idleStatus());
   renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
   // The folder moved, so the composer's own top row has to be read again rather
@@ -1625,6 +1807,10 @@ async function loadInfo() {
     // billed, and the usage line says so.
     state.subscription = Boolean(info.subscription);
     state.trust = info.trust || null;
+    // A project may pin its own language in `.oxide/settings.json`, so the
+    // language is read again when the folder changes rather than once per
+    // window.
+    void loadLanguage();
     updateChips();
     void ensureReasoningLevels();
     renderProjectMeta(info);
@@ -1679,7 +1865,7 @@ function renderProjectMeta(info) {
 }
 
 async function openAgents() {
-  if (!state.project) { setStatus("Select a project first."); askForProject(); return; }
+  if (!state.project) { setStatus(t("composer.selectProject", "Select a project first.")); askForProject(); return; }
   const project = state.project;
   try {
     const info = await invoke("project_info", { project });
@@ -1767,13 +1953,13 @@ function updateChips() {
 /// composer's top row, whose remaining auto margin belongs to the context ring.
 function updateProjectChip() {
   const open = Boolean(state.project);
-  const name = open ? projectNameOf(state.project) : "Choose a project";
+  const placeholder = t("composer.chooseProject", "Choose a project");
+  const hint = t("composer.chooseProjectHint", "Pick the folder this window runs in");
+  const name = open ? projectNameOf(state.project) : placeholder;
   el("project-name").textContent = name;
   el("project").classList.toggle("unset", !open);
-  el("project").title = open
-    ? `project: ${name}\nSwitch the folder this window runs in`
-    : "Choose a project\nPick the folder this window runs in";
-  el("project").setAttribute("aria-label", open ? `project: ${name}` : "Choose a project");
+  el("project").title = open ? `project: ${name}\n${hint}` : `${placeholder}\n${hint}`;
+  el("project").setAttribute("aria-label", open ? `project: ${name}` : placeholder);
 }
 
 /// Keep each selector's full value and keyboard hint accessible.
@@ -1976,7 +2162,7 @@ function paintThreadWorktree() {
 
 function openWorktrees() {
   if (!state.project) {
-    setStatus("Select a project first.");
+    setStatus(t("composer.selectProject", "Select a project first."));
     askForProject();
     return;
   }
@@ -2099,7 +2285,7 @@ function selectWorktree(path) {
 /// derived from the project when they left it empty.
 async function createWorktree() {
   if (!state.project) {
-    setStatus("Select a project first.");
+    setStatus(t("composer.selectProject", "Select a project first."));
     return;
   }
   if (!canStartNewChat()) return;
@@ -2161,7 +2347,10 @@ async function createWorktreeBranch() {
   const project = state.project;
   const entry = worktreeNamed(state.worktree);
   if (!entry) return;
-  const branch = await promptDialog(`oxide/${entry.name}`, "Create branch here");
+  const branch = await promptDialog(
+    `oxide/${entry.name}`,
+    t("dialog.worktrees.createBranch", "Create branch here"),
+  );
   if (!branch || project !== state.project || busyRefusal("creating a branch")) return;
   try {
     await invoke("create_worktree_branch", { project, name: entry.name, branch });
@@ -2738,15 +2927,19 @@ function updateSendState() {
   el("stop").hidden = !state.busy || (hasText && here);
   el("send").title = busyHere
     ? state.followUpBehavior === "steer"
-      ? "Steer the active response (Enter)"
-      : "Queue as the next turn (Enter)"
-    : "Send (Enter)";
+      ? t("composer.steerHint", "Steer the active response (Enter)")
+      : t("composer.queueHint", "Queue as the next turn (Enter)")
+    : t("composer.sendHint", "Send (Enter)");
   // The accessible name follows the action the button now performs, the way the
   // panel's own corner does: a screen reader hears Queue or Steer, not the
   // label the button was built with.
   el("send").setAttribute(
     "aria-label",
-    busyHere ? (state.followUpBehavior === "steer" ? "Steer" : "Queue") : "Send",
+    busyHere
+      ? state.followUpBehavior === "steer"
+        ? t("composer.steer", "Steer")
+        : t("composer.queue", "Queue")
+      : t("composer.send", "Send"),
   );
 }
 
@@ -2782,10 +2975,16 @@ function openQueueMenu(trigger, index) {
   queueMenuTrigger = trigger;
   trigger.setAttribute("aria-expanded", "true");
   for (const [action, label, direction] of [
-    ["move", "Move up", -1],
-    ["move", "Move down", 1],
-    ["edit", "Edit", 0],
-    ["behavior", state.followUpBehavior === "queue" ? "Use Steer for new messages" : "Use Queue for new messages", 0],
+    ["move", t("composer.moveUp", "Move up"), -1],
+    ["move", t("composer.moveDown", "Move down"), 1],
+    ["edit", t("composer.edit", "Edit"), 0],
+    [
+      "behavior",
+      state.followUpBehavior === "queue"
+        ? t("composer.useSteer", "Use Steer for new messages")
+        : t("composer.useQueue", "Use Queue for new messages"),
+      0,
+    ],
   ]) {
     const button = document.createElement("button");
     button.type = "button";
@@ -2823,12 +3022,13 @@ function paintQueue() {
     );
     const text = document.createElement("span");
     text.className = "queued-message-text";
-    text.textContent = pending.prompt.split(/\r?\n/, 1)[0] || "Attachment";
+    text.textContent =
+      pending.prompt.split(/\r?\n/, 1)[0] || t("composer.attachment", "Attachment");
     const actions = document.createElement("span");
     actions.className = "queued-message-actions";
     for (const [action, label, direction, icon] of [
-      ["steer", "Steer", 0, `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v2.5A3.5 3.5 0 0 0 5.5 10H14m-3-3 3 3-3 3" ${STROKE_16}/></svg>`],
-      ["delete", "Delete", 0, `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" ${STROKE_24}/></svg>`],
+      ["steer", t("composer.steer", "Steer"), 0, `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v2.5A3.5 3.5 0 0 0 5.5 10H14m-3-3 3 3-3 3" ${STROKE_16}/></svg>`],
+      ["delete", t("common.delete", "Delete"), 0, `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" ${STROKE_24}/></svg>`],
     ]) {
       const button = document.createElement("button");
       button.type = "button";
@@ -3384,7 +3584,7 @@ async function send(opposite = false) {
   // in, which is $HOME on one platform and `/` on another, not a folder the user
   // picked. What was typed stays in the box while the folder is chosen.
   if (!state.project) {
-    setStatus("Select a project first.");
+    setStatus(t("composer.selectProject", "Select a project first."));
     askForProject();
     return;
   }
@@ -3444,7 +3644,7 @@ async function send(opposite = false) {
       await startNextPendingSend();
       return;
     }
-    setStatus("Steering the active response…");
+    setStatus(t("composer.steering", "Steering the active response…"));
     return;
   }
 
@@ -3481,7 +3681,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
   }
   resetTurn();
   setBusy();
-  setStatus("Working…");
+  setStatus(t("composer.working", "Working…"));
   try {
     await reasoningSave;
     state.runId = await invoke("send_prompt", {
@@ -3549,7 +3749,7 @@ async function queueAction(action, index, direction = 0) {
     state.pendingSends.splice(index, 1);
     el("transcript").appendChild(bubble("user", pending.prompt, pending.attachments));
     scrollDown(el("transcript"), true);
-    setStatus("Steering the active response…");
+    setStatus(t("composer.steering", "Steering the active response…"));
   }
   paintQueue();
   updateSendState();
@@ -3558,7 +3758,7 @@ async function queueAction(action, index, direction = 0) {
 async function stop() {
   if (state.runId == null) return;
   await invoke("cancel_run", { runId: state.runId });
-  setStatus("Stopping…");
+  setStatus(t("composer.stopping", "Stopping…"));
 }
 
 function ensureAssistant() {
@@ -4896,6 +5096,7 @@ const OVERLAYS = [
   "models-modal",
   "reasoning-modal",
   "themes-modal",
+  "language-modal",
   "permissions-modal",
   "trust-modal",
   "agents-modal",
@@ -4978,7 +5179,7 @@ function resolveConfirm(value) {
   if (resolve) resolve(value);
 }
 
-function promptDialog(value, title = "Rename thread") {
+function promptDialog(value, title = t("dialog.rename.title", "Rename thread")) {
   el("rename-title").textContent = title;
   el("rename-input").value = value || "";
   closeOverlays("rename-modal");
@@ -5132,7 +5333,7 @@ async function openModels() {
   // otherwise resolve against the directory the app was launched in — the same
   // reason the message box asks for a folder before it sends anything.
   if (!state.project) {
-    setStatus("Select a project first.");
+    setStatus(t("composer.selectProject", "Select a project first."));
     askForProject();
     return;
   }
@@ -5202,7 +5403,7 @@ let reasoningEpoch = 0;
 /// it — `updateChips` is what says which one it is now.
 function openReasoning() {
   if (!state.project) {
-    setStatus("Select a project first.");
+    setStatus(t("composer.selectProject", "Select a project first."));
     return Promise.resolve();
   }
   reasoningReturnFocus = document.activeElement || null;
@@ -5339,6 +5540,23 @@ async function openThemes() {
     box.innerHTML = "";
     showToast(`Themes failed: ${error}`, "error");
   }
+}
+
+/// The language picker: the window's own, the terminal's and the editor
+/// panel's language in one place, since the choice is written to the shared
+/// `settings.json` rather than kept beside this window.
+function openLanguage() {
+  const modal = el("language-modal");
+  const open = modal.hidden;
+  closeOverlays("language-modal");
+  modal.hidden = !open;
+  el("language").setAttribute("aria-expanded", String(open));
+  if (open) renderLanguageRows(null);
+}
+
+function closeLanguage() {
+  el("language-modal").hidden = true;
+  el("language").setAttribute("aria-expanded", "false");
 }
 
 const THEME_SWATCH_SLOTS = ["background", "panel", "accent", "text", "success", "tool"];
@@ -5602,7 +5820,13 @@ function paintUpdate(check) {
   }
   const available = check.updateAvailable === true;
   updateHead(
-    available ? `Update Available (v${check.latest})` : `Oxide ${check.current} is up to date`,
+    available
+      ? t("dialog.update.available", "Update Available (v{version})", {
+          version: check.latest,
+        })
+      : t("dialog.update.current", "Oxide {version} is up to date", {
+          version: check.current,
+        }),
     available
       ? "Installing downloads the release for this machine and puts it in this app's place. " +
           "The app keeps running until it is restarted."
@@ -5622,7 +5846,7 @@ function paintUpdate(check) {
     "update-page": Boolean(check.releaseUrl) && (!install || !check.notes),
     "update-install": install,
   });
-  if (available) el("update-close").textContent = "Dismiss";
+  if (available) el("update-close").textContent = t("common.dismiss", "Dismiss");
   // The button says what it does rather than naming the release again: the
   // dialog's own title already carries the version it is about.
   if (install) el("update-install").textContent = "Update";
@@ -6098,7 +6322,7 @@ function renderMcps() {
 
 async function toggleMcp(server, button) {
   if (!state.project) {
-    setStatus("Select a project first.");
+    setStatus(t("composer.selectProject", "Select a project first."));
     return;
   }
   button.disabled = true;
@@ -6129,7 +6353,7 @@ async function toggleMcp(server, button) {
 /// thread started in one front-end is reachable from the others.
 async function openSessions() {
   if (!state.project) {
-    setStatus("Select a project first.");
+    setStatus(t("composer.selectProject", "Select a project first."));
     return;
   }
   closeOverlays("sessions-modal");
@@ -6252,7 +6476,7 @@ async function runSlashCommand(text) {
       // agent may have something to say about, so it stays a prompt.
       if (args) return false;
       if (!state.project) {
-        setStatus("Select a project first.");
+        setStatus(t("composer.selectProject", "Select a project first."));
         return true;
       }
       await openMcps();
@@ -6263,6 +6487,20 @@ async function runSlashCommand(text) {
     case "theme":
       await openThemes();
       return true;
+    case "language": {
+      // The bare command opens the picker the globe opens; a tag typed after it
+      // is the switch outright, which is what a script or a front-end without a
+      // dialog wants.
+      const wanted = args.trim();
+      if (!wanted) {
+        openLanguage();
+      } else if (wanted.toLowerCase() === state.language.toLowerCase()) {
+        setStatus(t("language.current", "Language: {language}", { language: state.language }));
+      } else {
+        await switchLanguage(wanted);
+      }
+      return true;
+    }
     case "permissions":
       await openPermissions();
       return true;
@@ -6772,7 +7010,7 @@ async function initEvents() {
   await listen("agent-event", (event) => handleEvent(event.payload || {}));
   await listen("agent-end", async (event) => {
     setIdle();
-    setStatus("Ready");
+    setStatus(idleStatus());
     renderChanges(event.payload || {});
     resetTurn();
     // A turn is where the branch the composer's top row reads can change — the
@@ -7188,6 +7426,9 @@ function init() {
   initMessageNavigator();
   initJumpLatest();
   initOverlayScrollbars();
+  // The language is the core's to resolve, so the page asks before it paints
+  // anything of its own; the markup it was authored in stands until then.
+  void loadLanguage();
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
   const newChatBtn = el("new-chat");
@@ -7236,6 +7477,8 @@ function init() {
   window.addEventListener("resize", positionSettingsDropdowns);
   el("model").onclick = () => el("models-modal").hidden ? openModels() : closeModels();
   el("theme").onclick = openThemes;
+  el("language").onclick = openLanguage;
+  el("language-close").onclick = closeLanguage;
   el("permissions").onclick = openPermissions;
   el("help").onclick = toggleHelp;
   el("connect").onclick = openConnect;
@@ -7301,7 +7544,7 @@ function init() {
   el("permissions-close").onclick = () => (el("permissions-modal").hidden = true);
   el("permissions-clear").onclick = clearApprovals;
   el("trust").onclick = () => {
-    if (!state.project) { setStatus("Select a project first."); askForProject(); return; }
+    if (!state.project) { setStatus(t("composer.selectProject", "Select a project first.")); askForProject(); return; }
     if (state.trust) showTrust(state.trust);
   };
   el("agents").onclick = openAgents;
@@ -7516,6 +7759,7 @@ function init() {
     "connect-modal": "login-cancel",
     "create-project-modal": "create-project-cancel",
     "help-modal": "help-close",
+    "language-modal": "language-close",
     "permissions-modal": "permissions-close",
     "question": "question-dismiss",
     "rename-modal": "rename-cancel",
@@ -7639,7 +7883,7 @@ function init() {
   updateChips();
   // The window starts idle: the badge's own icon is what says so, with the word
   // it stands for in its tooltip.
-  setStatus(IDLE_STATUS);
+  setStatus(idleStatus());
   updateSendState();
   renderWelcome();
   paintDockToggles();
@@ -8397,7 +8641,7 @@ function clearSelectedProject() {
   el("trust-modal").hidden = true;
   updateTrustButton();
   updateChips();
-  setStatus("Ready");
+  setStatus(idleStatus());
   paintComposerFacts();
   resetTranscript();
 }

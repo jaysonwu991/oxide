@@ -267,6 +267,10 @@ function installMarkdownInput(editor, render) {
     "Add tests for the most important untested code path.",
     "Review the working tree changes and summarize the risks.",
   ];
+  /// The catalog key each of those is drawn under, so the four are translated
+  /// with the rest of the panel while the English above stays what a CLI with no
+  /// answer paints.
+  const SUGGESTION_KEYS = ["home.suggestion1", "home.suggestion2", "home.suggestion3", "home.suggestion4"];
   const sendButton = $("send");
   const stopButton = $("stop");
   const queueBox = $("queue");
@@ -292,6 +296,57 @@ function installMarkdownInput(editor, render) {
   const liveChangesPill = $("live-changes");
   const dropHint = $("dropzone");
   const titleLabel = $("title");
+
+  /// The language the panel draws: the core's catalog, delivered with the
+  /// state. The webview keeps no words of its own, so a label marked with a key
+  /// is painted in the language the terminal is in, and one the catalog has no
+  /// entry for keeps the English the shell was written in.
+  let strings = {};
+  const authored = new WeakMap();
+
+  function t(key, fallback, vars) {
+    let text = strings[key] || fallback || "";
+    if (vars) {
+      for (const [name, value] of Object.entries(vars)) text = text.split(`{${name}}`).join(value);
+    }
+    return text;
+  }
+
+  function remember(node, kind, value) {
+    let entry = authored.get(node);
+    if (!entry) {
+      entry = {};
+      authored.set(node, entry);
+    }
+    if (!(kind in entry)) entry[kind] = value;
+    return entry[kind];
+  }
+
+  function applyLanguage(language) {
+    strings = language?.strings || {};
+    if (document.documentElement) document.documentElement.lang = language?.language || "en-GB";
+    // A webview always has the DOM; a stub that paints no markup has neither, so
+    // the catalog is still kept for the words this script writes itself.
+    if (typeof document.querySelectorAll !== "function") return;
+    for (const node of document.querySelectorAll("[data-i18n]")) {
+      node.textContent = t(node.dataset.i18n, remember(node, "text", node.textContent));
+    }
+    for (const node of document.querySelectorAll("[data-i18n-title]")) {
+      node.title = t(node.dataset.i18nTitle, remember(node, "title", node.title));
+    }
+    for (const node of document.querySelectorAll("[data-i18n-aria]")) {
+      node.setAttribute(
+        "aria-label",
+        t(node.dataset.i18nAria, remember(node, "aria", node.getAttribute("aria-label") || "")),
+      );
+    }
+    for (const node of document.querySelectorAll("[data-i18n-placeholder]")) {
+      node.dataset.placeholder = t(
+        node.dataset.i18nPlaceholder,
+        remember(node, "placeholder", node.dataset.placeholder || ""),
+      );
+    }
+  }
   const dialogBox = $("dialog");
   const dialogTitle = $("dialog-title");
   const dialogSub = $("dialog-sub");
@@ -1711,14 +1766,19 @@ function installMarkdownInput(editor, render) {
   function paintHome(folder) {
     const open = Boolean(folder);
     emptyLead.textContent = open
-      ? "Ask Oxide to make a change, explain code, or run something."
-      : "Open a folder to run Oxide: sessions and context are per project.";
-    if (open && !suggestions.children.length) {
-      for (const text of SUGGESTIONS) {
+      ? t("panel.homeLead", "Ask Oxide to make a change, explain code, or run something.")
+      : t(
+          "home.openFolder",
+          "Open a folder to run Oxide: sessions and context are per project.",
+        );
+    if (open) {
+      suggestions.innerHTML = "";
+      for (const [index, text] of SUGGESTIONS.entries()) {
+        const label = t(SUGGESTION_KEYS[index], text);
         const button = document.createElement("button");
         button.type = "button";
-        button.dataset.prompt = text;
-        button.textContent = text;
+        button.dataset.prompt = label;
+        button.textContent = label;
         suggestions.appendChild(button);
       }
     }
@@ -1742,6 +1802,10 @@ function installMarkdownInput(editor, render) {
     updateTranscriptFollow(transcript);
     switch (message.k) {
       case "state": {
+        // The language first: everything painted below is a label the catalog
+        // may carry, and the state is the one message that repaints from
+        // scratch.
+        applyLanguage(message.language);
         // The transcript is rebuilt from scratch, so the card a review was
         // opened from may be gone with it.
         closeReview();
@@ -1750,7 +1814,7 @@ function installMarkdownInput(editor, render) {
         transcript.appendChild(empty);
         empty.hidden = message.items.some(isConversation);
         transcript.classList.toggle("hide-thinking", message.showThinking === false);
-        titleLabel.textContent = message.title || "New chat";
+        titleLabel.textContent = message.title || t("panel.newChat", "New chat");
         currentSession = message.sessionId ?? null;
         currentFolder = message.folder ?? null;
         if (message.busy && clockSession == null && clockFolder === currentFolder) {
@@ -1829,7 +1893,7 @@ function installMarkdownInput(editor, render) {
         setFooter(message.footer);
         // The title changes when the first message is sent, before the next
         // `state` message repaints the view, so the header follows the send.
-        titleLabel.textContent = message.title || "New chat";
+        titleLabel.textContent = message.title || t("panel.newChat", "New chat");
         return;
       case "usage":
         if (message.footer) setFooter(message.footer);
@@ -1918,7 +1982,7 @@ function installMarkdownInput(editor, render) {
     statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
     if (busy) {
       statusLabel.hidden = true;
-      stopButton.title = `Stop the running turn (Esc)${label ? ` · ${label}` : ""}`;
+      stopButton.title = `${t("composer.stopHint", "Stop the running turn")} (Esc)${label ? ` · ${label}` : ""}`;
       stopButton.setAttribute("aria-label", stopButton.title);
     }
     updateElapsed(wasBusy && !busy);
@@ -2222,9 +2286,14 @@ function installMarkdownInput(editor, render) {
     sendButton.disabled = !hasText;
     sendButton.hidden = busy && (!hasText || !here);
     stopButton.hidden = !busy || (hasText && here);
-    const action = followUpBehavior === "steer" ? "Steer the active response" : "Queue as the next turn";
-    sendButton.title = busy ? `${action} (Enter)` : "Send (Enter)";
-    sendButton.setAttribute("aria-label", busy ? followUpBehavior === "steer" ? "Steer" : "Queue" : "Send");
+    sendButton.title = busy
+      ? followUpBehavior === "steer"
+        ? t("composer.steerHint", "Steer the active response (Enter)")
+        : t("composer.queueHint", "Queue as the next turn (Enter)")
+      : t("composer.sendHint", "Send (Enter)");
+    sendButton.setAttribute("aria-label", busy
+      ? followUpBehavior === "steer" ? t("composer.steer", "Steer") : t("composer.queue", "Queue")
+      : t("composer.send", "Send"));
     for (const button of [sendButton, stopButton]) {
       button.dataset.level = busy ? "busy" : "info";
       button.setAttribute("aria-description", statusLabel.textContent || "Ready");

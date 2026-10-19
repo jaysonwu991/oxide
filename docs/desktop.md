@@ -980,6 +980,21 @@ launch. The **Theme** dialog lists each theme with a swatch strip of its key
 colors, the theme name, and a ✓ on the active one; selecting a row applies it
 immediately and persists it.
 
+## Language
+
+The window is drawn in British English (the default) or Simplified Chinese. The
+globe in the sidebar's foot opens a row per language, each named in the language
+itself (`English (United Kingdom)`, `简体中文`) with the one in use marked. A row
+writes the `language` key in the shared `settings.json` — the `language`/
+`set_language` commands resolve and write it through `oxide_core::i18n` — so the
+choice the terminal's `/language` and the VS Code panel's **Oxide: Change
+Language...** make is the same one, and the next launch of either follows it.
+The window's own chrome comes from the core's catalog: the static markup carries
+`data-i18n` keys and the page paints them from the command's answer, keeping the
+English each node was authored with as the fallback. What the model writes, what
+a tool prints and what a project configures (agents, commands, skills, prompts)
+stays as authored — the interface is what is translated.
+
 ## Queue and Steer
 
 While a turn runs, a message typed into the thread on screen is delivered one of

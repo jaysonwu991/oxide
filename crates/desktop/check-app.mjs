@@ -656,6 +656,26 @@ const changeSidesError = new Map([
   ["design.md", "the file is no longer in the snapshot"],
 ]);
 let steerAccepted = true;
+// What the bridge answers `language`/`set_language` with: the two languages a
+// picker offers and the strings the window paints. Only the keys a check reads
+// are carried — the real catalog is the core's, and a page with no entry falls
+// back to the English it was authored in.
+let languageRead = null;
+const languageAnswer = {
+  language: "en-GB",
+  languages: [
+    { tag: "en-GB", label: "English (United Kingdom)", nativeLabel: "English (United Kingdom)" },
+    { tag: "zh-CN", label: "Simplified Chinese", nativeLabel: "简体中文" },
+  ],
+  strings: {
+    "en-GB": {},
+    "zh-CN": {
+      "composer.ready": "就绪",
+      "home.title": "我们要构建什么？",
+      "sidebar.newChat": "新建对话",
+    },
+  },
+};
 // What `project_info` answers while a check asks for the folder's own facts,
 // and nothing everywhere else.
 let projectInfo = null;
@@ -860,6 +880,24 @@ const invoke = async (command, args = {}) => {
     case "list_sessions":
     case "list_approvals":
       return [];
+    case "language":
+      if (languageRead) return languageRead;
+      // The language the core resolves, with the shared catalog's strings. The
+      // fixture answers in English so every other check reads the words the page
+      // was authored in; a switch below answers in the other language.
+      return {
+        language: languageAnswer.language,
+        languages: languageAnswer.languages.map((entry) => ({ ...entry })),
+        strings: { ...languageAnswer.strings[languageAnswer.language] },
+      };
+    case "set_language": {
+      languageAnswer.language = String(args.tag || languageAnswer.language);
+      return {
+        language: languageAnswer.language,
+        languages: languageAnswer.languages.map((entry) => ({ ...entry })),
+        strings: { ...languageAnswer.strings[languageAnswer.language] },
+      };
+    }
     case "list_commands":
       // The core answers a projectless ask with the built-ins alone (see
       // `palette_entries`): a command, a prompt template and a skill are read
@@ -1039,7 +1077,7 @@ vm.runInThisContext(
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
-    " showApproval," +
+    " showApproval, loadLanguage, openLanguage, switchLanguage, renderLanguageRows," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
     " updateRunBanner, viewingRun, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
@@ -1944,6 +1982,17 @@ check(
     /\.queued-message \{/.test(sheet),
   shell.slice(shellAt('id="composer"'), shellAt('id="prompt"') + 80),
 );
+// The box opens on two lines, so it reads as somewhere to write a message rather
+// than as a one-line field, and it grows from there up to its own cap. The
+// height of an empty box is the sheet's to give, since the page measures only
+// what has been typed.
+check(
+  "gave the empty composer two lines to open in",
+  /\.composer \.markdown-input \{[^}]*min-height: calc\(2lh \+ 12px\);[^}]*max-height: 220px;/.test(
+    sheet,
+  ),
+  String(sheet.indexOf(".composer .markdown-input")),
+);
 check(
   "left the row's own readouts without handlers",
   facts.includes('<span id="git"') &&
@@ -2492,7 +2541,7 @@ check(
 // the shortcuts dialog, and the handler takes either platform's modifier.
 check(
   "named the shortcut's list in the help dialog and its keys in the handler",
-  /<tr><td>⌘1…⌘9 \/ Ctrl\+1…9<\/td><td>Open the thread at that place in the sidebar<\/td><\/tr>/.test(
+  /<tr><td>⌘1…⌘9 \/ Ctrl\+1…9<\/td><td[^>]*>Open the thread at that place in the sidebar<\/td><\/tr>/.test(
     shell,
   ) && /!event\.ctrlKey && !event\.metaKey/.test(source),
   shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
@@ -2511,7 +2560,7 @@ check(
     newChatButton.includes(`title="New Chat&#10;`) &&
     newChatButton.includes('aria-label="New Chat"') &&
     newChatButton.includes(`<path d="${sharedGlyphs.new}"`) &&
-    /<\/svg>\s*<span>New Chat<\/span>/.test(newChatButton),
+    /<\/svg>\s*<span[^>]*>New Chat<\/span>/.test(newChatButton),
   newChatButton,
 );
 const newProjectButton = buttonFor("create-project-btn-tree");
@@ -5339,7 +5388,7 @@ check(
   "shipped a named dropdown without a modal backdrop",
   /id="reasoning-modal"[^>]*role="dialog"[^>]*aria-labelledby="reasoning-title"/.test(
     shell,
-  ) && !/id="reasoning-modal"[^>]*aria-modal="true"/.test(shell) && /<h2 id="reasoning-title">Reasoning effort<\/h2>/.test(shell),
+  ) && !/id="reasoning-modal"[^>]*aria-modal="true"/.test(shell) && /<h2 id="reasoning-title"[^>]*>Reasoning effort<\/h2>/.test(shell),
   shellAt('aria-labelledby="reasoning-title"'),
 );
 app.state.reasoning = "auto";
@@ -8692,6 +8741,103 @@ jumpTranscript.clientHeight = 400;
 jumpTranscript.scrollTop = 0;
 jumpTranscript.fire("scroll", {});
 check("kept the button hidden for a short chat", elementFor("jump-latest").hidden);
+
+console.log("the language");
+// The window is drawn in the language the core resolves, and the switch is the
+// core's to make: a row writes the shared `settings.json` key through
+// `set_language`, and the page repaints itself in the answer — no table of its
+// own, so the terminal and the panel cannot drift from this window.
+const nativeHint = document.createElement("input");
+nativeHint.dataset.i18nPlaceholder = "composer.placeholder";
+nativeHint.placeholder = "Ask Oxide…";
+const composerHint = document.createElement("div");
+composerHint.dataset.i18nPlaceholder = "composer.placeholder";
+composerHint.dataset.placeholder = "Ask Oxide…";
+const originalQueries = document.querySelectorAll;
+document.querySelectorAll = (selector) => selector === "[data-i18n-placeholder]"
+  ? [nativeHint, composerHint] : originalQueries(selector);
+languageAnswer.strings["zh-CN"]["composer.placeholder"] = "询问 Oxide…";
+app.state.statusText = "Ready";
+const previousProject = app.state.project;
+let finishLanguageRead;
+languageRead = new Promise((resolve) => { finishLanguageRead = resolve; });
+const delayedLanguage = app.loadLanguage();
+languageRead = null;
+finishLanguageRead({ language: "zh-CN", strings: languageAnswer.strings["zh-CN"] });
+await delayedLanguage;
+check("repainted a saved language after the asynchronous startup read",
+  elementFor("status-text").textContent === "就绪" && elementFor("status-text").hidden);
+check("translated native and contenteditable placeholders through their own properties",
+  nativeHint.placeholder === "询问 Oxide…" && composerHint.dataset.placeholder === "询问 Oxide…");
+app.state.statusText = "Connection failed";
+app.state.statusLevel = "error";
+await app.loadLanguage();
+check("kept an existing failure while repainting the language",
+  elementFor("status-text").textContent === "Connection failed" && app.state.statusLevel === "error");
+languageRead = new Promise((resolve) => { finishLanguageRead = resolve; });
+const staleLanguage = app.loadLanguage();
+app.state.project = "/different-project";
+languageRead = null;
+await app.loadLanguage();
+finishLanguageRead({ language: "zh-CN", strings: languageAnswer.strings["zh-CN"] });
+await staleLanguage;
+check("discarded a language response for the project already left",
+  document.documentElement.lang === "en-GB");
+app.state.project = previousProject;
+app.state.statusText = "Ready";
+app.state.statusLevel = "info";
+document.querySelectorAll = originalQueries;
+await app.loadLanguage();
+check(
+  "read the language before it painted its own words",
+  calls.some(([name, args]) => name === "language" && args.project === previousProject) && document.documentElement.lang === "en-GB",
+  document.documentElement.lang,
+);
+elementFor("language").onclick(press());
+check(
+  "opened the language picker with a way out",
+  elementFor("language-modal").hidden === false &&
+    elementFor("language").getAttribute("aria-expanded") === "true",
+  `${elementFor("language-modal").hidden} / ${elementFor("language").getAttribute("aria-expanded")}`,
+);
+const languageRows = elementFor("language-list").children;
+check(
+  "named each language in itself, with the one in use marked",
+  languageRows.length === 2 &&
+    languageRows[1].children[0].textContent === "简体中文" &&
+    languageRows[0].children[1].textContent === "en-GB" &&
+    languageRows[0].className.includes("active") &&
+    !languageRows[1].className.includes("active"),
+  languageRows.map((row) => `${row.children[0].textContent}:${row.className}`).join(", "),
+);
+languageRows[1].onclick(press());
+await nextTick();
+check(
+  "switched through the core rather than a setting of this window's own",
+  calls.some(([name, args]) => name === "set_language" && args.tag === "zh-CN" && args.project === previousProject) &&
+    document.documentElement.lang === "zh-CN" &&
+    elementFor("language-modal").hidden === true,
+  JSON.stringify(calls.filter(([name]) => name === "set_language")),
+);
+check(
+  "repainted the words the page writes itself in the language it was given",
+  elementFor("status-text").textContent === "就绪" &&
+    elementFor("status-text").hidden,
+  `${elementFor("status-text").textContent} / ${elementFor("status-text").hidden}`,
+);
+// Back to English, so a page left on screen is the one this suite was written
+// against.
+app.state.language = "zh-CN";
+elementFor("language").onclick(press());
+elementFor("language-list").children[0].onclick(press());
+await nextTick();
+check(
+  "switched back to the language the app is authored in",
+  document.documentElement.lang === "en-GB" &&
+    elementFor("status-text").textContent === "Ready" &&
+    elementFor("status-text").hidden,
+  `${document.documentElement.lang} / ${elementFor("status-text").textContent}`,
+);
 
 console.log("the bridge");
 check(

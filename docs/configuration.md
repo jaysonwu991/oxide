@@ -181,6 +181,7 @@ oxide clipboard --json
 | `OXIDE_TRUNCATION_DIR` | Directory for saved truncated tool output (default `truncated/` in the config dir). |
 | `OXIDE_NOTIFY_ON_COMPLETE` / `OXIDE_NOTIFY_SOUND` | Override the desktop-notification flags (`/notify`). |
 | `OXIDE_SETTINGS_FILE` | Override the global `settings.json` path the TUI writes. |
+| `OXIDE_LANG` | Interface language for this process: `en-GB` (the default) or `zh-CN`, over the `language` setting. |
 | `OXIDE_CHECK_FOR_UPDATES` | Enable/disable the launch's look for a newer CLI release (`/updates`). |
 | `OXIDE_MODEL_CATALOG` | Enable/disable the launch's look for the provider model catalogs (`modelCatalog` in `settings.json`). |
 | `OXIDE_MODEL_CATALOG_FILE` | Override the `model-catalog.json` path the remembered catalogs are kept in. |
@@ -561,6 +562,39 @@ depend on color alone. For accessible custom themes, keep every foreground
 readable against the terminal background and avoid assigning the same color to
 `success`, `error`, and `tool`. The built-in themes use fixed `#rrggbb` colors
 (not the terminal's own ANSI palette) so they match the desktop app exactly.
+
+## Language
+
+The interface is written in British English and can be drawn in Simplified
+Chinese. One setting decides it — `language` in `settings.json` — and every
+front-end reads that setting, so a switch made in the terminal is the one the
+desktop app and the VS Code panel draw:
+
+```json
+{
+  "language": "zh-CN"
+}
+```
+
+`en-GB` is the default: a machine that has never chosen reads the app as it was
+authored. `zh-CN` translates the interface — buttons, dialogs, statuses, the
+home state and the transcript's own labels. What the model writes, what a tool
+prints and everything a project configures (agents, commands, skills, prompts)
+is the content of the work, not chrome, and stays exactly as authored.
+
+The project's `.oxide/settings.json` wins per key, so a repository can pin its
+own language, and `OXIDE_LANG` overrides both for one process.
+
+How each front-end switches it:
+
+| Front-end | Switch |
+| --- | --- |
+| CLI | `oxide language set zh-CN`, or `/language zh-CN` in the TUI. `oxide language` reports the choice, `--json` prints the catalog a front-end paints. |
+| Desktop app | The globe in the sidebar's foot: a row per language, named in itself, with the one in use marked. |
+| VS Code | **Oxide: Change Language...** in the command palette, or `/language` from the same catalog. |
+
+`--language <en-GB|zh-CN>` sets it for one run without writing the setting, which
+is what a script or a screenshot wants.
 
 ## Sessions and context
 

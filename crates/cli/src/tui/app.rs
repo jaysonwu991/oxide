@@ -817,6 +817,10 @@ pub struct App {
     pub usage_modal: Option<UsageState>,
     pub session_name: Option<String>,
     pub theme: crate::theme::Theme,
+    /// The language the interface is drawn in: `language` in `settings.json`,
+    /// with `OXIDE_LANG` (or the `--language` flag that writes it) overriding it
+    /// for this run and `/language` switching it as it goes.
+    pub lang: crate::i18n::Language,
     pub steering: Steering,
     pub follow_ups: Steering,
     pub expand_tools: bool,
@@ -883,6 +887,17 @@ impl App {
         {
             self.attachments.push(attachment);
         }
+    }
+
+    /// One word of the interface in the language this run draws, so a label is
+    /// asked for by its key rather than written into the panel.
+    pub fn t(&self, key: &str) -> &'static str {
+        crate::i18n::t(self.lang, key)
+    }
+
+    /// [`App::t`] with the sentence's own placeholders filled.
+    pub fn tf(&self, key: &str, vars: &[(&str, &str)]) -> String {
+        crate::i18n::tf(self.lang, key, vars)
     }
 
     fn attach(&mut self, part: ContentPart, path: Option<PathBuf>) -> Option<String> {
@@ -1010,6 +1025,7 @@ impl App {
             usage_modal: None,
             session_name: None,
             theme: crate::theme::Theme::default(),
+            lang: crate::i18n::Language::DEFAULT,
             steering: Steering::new(),
             follow_ups: Steering::new(),
             expand_tools: false,

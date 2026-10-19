@@ -22,8 +22,11 @@ const MAX_ATTACHMENT_ROWS: usize = 4;
 /// is not flush with the terminal's top edge.
 const MESSAGE_TOP_PAD: u16 = 1;
 /// The one-row affordance shown when the reader has scrolled away from the
-/// newest output; clicking it (or pressing End) returns to the bottom.
-const JUMP_TO_END_LABEL: &str = " ↓ Jump to latest message · End ";
+/// newest output; clicking it (or pressing End) returns to the bottom. The row's
+/// own padding is drawn here so the label fills the rectangle it is centered in.
+fn jump_to_end_label(app: &App) -> String {
+    format!(" {} ", app.t("tui.jumpLatest"))
+}
 const MAX_MODEL_ROWS: usize = 10;
 const MAX_SESSION_ROWS: usize = 12;
 const MAX_SUGGESTION_ROWS: usize = 8;
@@ -1972,7 +1975,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD);
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(JUMP_TO_END_LABEL, style))),
+            Paragraph::new(Line::from(Span::styled(jump_to_end_label(app), style))),
             rect,
         );
     }
@@ -2115,7 +2118,7 @@ pub(crate) fn jump_to_end_rect(app: &App, area: Rect) -> Option<Rect> {
     if app.scroll as usize + view >= app.lines.len() {
         return None;
     }
-    let width = JUMP_TO_END_LABEL.chars().count() as u16;
+    let width = text_width(&jump_to_end_label(app)) as u16;
     if width > area.width {
         return None;
     }
@@ -2257,26 +2260,34 @@ fn draw_pending(frame: &mut Frame, app: &App, area: Rect) {
         )));
     };
     for label in steering.iter().take(shown) {
-        push("Steering", label, &mut rows);
+        push(app.t("tui.steering"), label, &mut rows);
     }
     if shown > steering.len() {
         for label in follow_ups.iter().take(shown - steering.len()) {
-            push("Follow-up", label, &mut rows);
+            push(app.t("tui.followUp"), label, &mut rows);
         }
     }
     let hidden = total.saturating_sub(shown);
     if hidden > 0 {
-        let noun = if hidden == 1 { "message" } else { "messages" };
+        let key = if hidden == 1 {
+            "tui.moreQueuedOne"
+        } else {
+            "tui.moreQueued"
+        };
+        let count = hidden.to_string();
         rows.push(Line::from(Span::styled(
-            truncate(&format!(" ⋯ {hidden} more queued {noun}"), width),
+            truncate(&format!(" {}", app.tf(key, &[("count", &count)])), width),
             style,
         )));
     }
     rows.push(Line::from(Span::styled(
         truncate(
             &format!(
-                " ↳ {} to edit all queued messages",
-                crate::tui::dequeue_key_label()
+                " {}",
+                app.tf(
+                    "tui.editQueued",
+                    &[("key", crate::tui::dequeue_key_label())]
+                )
             ),
             width,
         ),
@@ -2335,6 +2346,7 @@ fn sync_lines(app: &mut App, width: usize) {
             app.expand_tools,
             app.show_thinking_blocks,
             &app.theme,
+            app.lang,
             running,
             &mut rendered,
         );
@@ -2362,12 +2374,14 @@ struct Running<'a> {
     subagent: Option<&'a SubagentState>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_item_themed(
     item: &ChatItem,
     width: usize,
     expand_tools: bool,
     expand_thinking: bool,
     theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
     running: Option<Running<'_>>,
     lines: &mut Rows,
 ) {
@@ -2390,8 +2404,12 @@ fn render_item_themed(
             let header_style = Style::default().fg(theme.thinking_text);
             let body_style = header_style.add_modifier(Modifier::ITALIC);
             let label = match millis {
-                Some(millis) => format!("Thought for {}", format_duration(*millis)),
-                None => "Thinking".to_string(),
+                Some(millis) => crate::i18n::tf(
+                    lang,
+                    "tui.thoughtFor",
+                    &[("duration", &format_duration(*millis))],
+                ),
+                None => crate::i18n::t(lang, "tui.thinking").to_string(),
             };
             let mut header = vec![
                 Span::styled("✦ ", header_style),
@@ -2962,6 +2980,7 @@ fn item_lines(
         expand_tools,
         show_thinking,
         theme,
+        crate::i18n::Language::DEFAULT,
         running,
         &mut rows,
     );
@@ -2987,17 +3006,21 @@ fn busy_status_text(app: &App) -> String {
     // rule asks the question instead of the usual working hints.
     if let Some(pending) = &app.pending_approval {
         return format!(
-            " {} approve `{}`? {} · Esc deny ",
+            " {} {} · Esc deny ",
             spinner(app.busy_since),
-            pending.tool,
-            crate::tui::APPROVAL_HINT
+            app.tf(
+                "tui.approve",
+                &[("tool", &pending.tool), ("hint", app.t("tui.approvalHint")),],
+            )
         );
     }
     // The queued messages are named above the box; the rule only carries the
     // working status and, once there is something to send, the two answers.
     let mut text = format!(" {} {} · {secs}s", spinner(app.busy_since), app.status);
     if !app.input.trim().is_empty() || !app.attachments.is_empty() {
-        text.push_str(" · Enter steer · Alt+Enter queue");
+        // The two answers are separated from the phase, so the hint is drawn
+        // with the same leading marker in either language.
+        text.push_str(&format!(" · {}", app.t("tui.steerQueue")));
     }
     text.push(' ');
     text
@@ -4098,6 +4121,7 @@ mod tests {
             false,
             true,
             &crate::theme::Theme::dark(),
+            crate::i18n::Language::DEFAULT,
             None,
             &mut rows,
         );
@@ -4470,6 +4494,13 @@ mod tests {
         assert_eq!(rect.height, 1);
         assert!(rect.x > area.x);
 
+        app.lang = crate::i18n::Language::ZhCn;
+        let label = jump_to_end_label(&app);
+        let rect = jump_to_end_rect(&app, area).expect("Chinese indicator");
+        assert_eq!(usize::from(rect.width), text_width(&label));
+        assert!(usize::from(rect.width) > label.chars().count());
+        assert!(jump_to_end_rect(&app, Rect::new(0, 0, rect.width - 1, 10)).is_none());
+
         // Back at the bottom: it goes away.
         app.scroll = 15;
         assert!(jump_to_end_rect(&app, area).is_none());
@@ -4748,6 +4779,44 @@ mod tests {
             .spans
             .iter()
             .any(|span| span.style.add_modifier.contains(Modifier::ITALIC)));
+    }
+
+    #[test]
+    fn draws_a_thinking_block_in_the_language_the_run_was_given() {
+        // The transcript reads a word from the catalog when the panel is drawn
+        // in another language, while the default run keeps the English it was
+        // authored in (held by the tests around this one).
+        let mut rows = Rows::default();
+        render_item_themed(
+            &ChatItem::Thinking {
+                text: "checking the file".into(),
+                millis: None,
+            },
+            80,
+            false,
+            true,
+            &crate::theme::Theme::dark(),
+            crate::i18n::Language::ZhCn,
+            None,
+            &mut rows,
+        );
+        assert_eq!(line_text(&rows.lines[0]), "✦ 思考中");
+
+        let mut rows = Rows::default();
+        render_item_themed(
+            &ChatItem::Thinking {
+                text: "checking the file".into(),
+                millis: Some(2400),
+            },
+            80,
+            false,
+            true,
+            &crate::theme::Theme::dark(),
+            crate::i18n::Language::ZhCn,
+            None,
+            &mut rows,
+        );
+        assert_eq!(line_text(&rows.lines[0]), "✦ 思考了 2.4s");
     }
 
     #[test]

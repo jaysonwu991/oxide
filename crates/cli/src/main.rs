@@ -9,7 +9,7 @@ mod update;
 // paths keep resolving with the same names as before the workspace split.
 pub use oxide_core::{
     agent, approval, approvals, at, auth, catalog, cli, clipboard, commands, compact, config, diff,
-    ecosystem, html, llm, lsp, mcp, mcp_config, mcp_oauth, media, memory, notice, notify,
+    ecosystem, html, i18n, llm, lsp, mcp, mcp_config, mcp_oauth, media, memory, notice, notify,
     permission, plugin, plugin_registry, portkey_usage, pricing, runner, session, sessions,
     snapshots, title, tools, trust, update_notice, worktree,
 };
@@ -81,6 +81,10 @@ struct Cli {
     /// Theme name for the TUI (dark, light, or a custom .oxide/themes file)
     #[arg(long = "use-theme", value_name = "NAME")]
     theme: Option<String>,
+
+    /// Interface language for this run: `en-GB` (the default) or `zh-CN`
+    #[arg(long, value_name = "TAG")]
+    language: Option<String>,
 
     /// Trust project-local resources for this run
     #[arg(short = 'a', long = "approve", conflicts_with = "no_approve")]
@@ -320,6 +324,28 @@ enum Command {
         /// Print the attachment as JSON (`{"name":…,"dataUrl":…}`, or `null`)
         #[arg(long)]
         json: bool,
+    },
+    /// Report or change the interface language every front-end draws
+    Language {
+        /// Print the language, the available ones and the strings as JSON
+        #[arg(long, global = true)]
+        json: bool,
+        /// Project directory the settings are read from (defaults to the current one)
+        #[arg(long, global = true, value_name = "DIR")]
+        project: Option<PathBuf>,
+        #[command(subcommand)]
+        action: Option<LanguageAction>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LanguageAction {
+    /// Report the language in use (the default when no command is given)
+    Show,
+    /// Switch the interface language for every front-end
+    Set {
+        /// Language tag: en-GB (the default) or zh-CN
+        tag: String,
     },
 }
 
@@ -705,6 +731,14 @@ fn main() -> Result<()> {
 #[tokio::main]
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    // The language a run was asked for is the override every front-end already
+    // reads (`OXIDE_LANG`), so a flag set here reaches the TUI, a print run and
+    // anything else that resolves the language without each of them being told.
+    if let Some(tag) = cli.language.as_deref() {
+        let language = i18n::Language::parse(tag)
+            .with_context(|| format!("unknown language `{tag}`; use {}", available_languages()))?;
+        std::env::set_var("OXIDE_LANG", language.tag());
+    }
     if let Some(command) = cli.command {
         return match command {
             Command::Mcp { action } => {
@@ -955,6 +989,16 @@ async fn run() -> Result<()> {
                 show_context(&current_dir, json, model)
             }
             Command::Providers { json } => list_providers(json),
+            Command::Language {
+                json,
+                project,
+                action,
+            } => match action {
+                Some(LanguageAction::Set { tag }) => {
+                    set_language(&project_dir(project)?, &tag, json)
+                }
+                Some(LanguageAction::Show) | None => show_language(&project_dir(project)?, json),
+            },
             Command::Worktree { action } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 match action {
@@ -1790,6 +1834,60 @@ fn context_view(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> serde_
     })
 }
 
+/// The languages a picker offers, as one `en-GB or zh-CN` phrase a refusal or a
+/// listing can name.
+fn available_languages() -> String {
+    i18n::Language::ALL
+        .iter()
+        .map(|language| language.tag())
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+/// Reports the interface language this project resolves to, and — with `--json`
+/// — the strings a front-end draws, so a panel that cannot link `oxide-core`
+/// paints the same words the terminal does.
+fn show_language(project: &Path, json_output: bool) -> Result<()> {
+    let described = i18n::describe(project);
+    if json_output {
+        println!("{}", serde_json::to_string(&described)?);
+        return Ok(());
+    }
+    let language = i18n::resolve(project);
+    println!(
+        "language: {} ({})\navailable: {}",
+        language.tag(),
+        language.label(),
+        i18n::Language::ALL
+            .iter()
+            .map(|language| format!("{} — {}", language.tag(), language.native_label()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(())
+}
+
+/// Switches the interface language in the settings every front-end reads, so a
+/// switch made in the terminal is the one the desktop app and the panel draw.
+fn set_language(project: &Path, tag: &str, json_output: bool) -> Result<()> {
+    let language = i18n::Language::parse(tag)
+        .with_context(|| format!("unknown language `{tag}`; use {}", available_languages()))?;
+    i18n::save(language)?;
+    if json_output {
+        println!("{}", serde_json::to_string(&i18n::describe(project))?);
+    } else {
+        println!(
+            "{}",
+            i18n::tf(
+                language,
+                "language.changed",
+                &[("language", language.native_label())]
+            )
+        );
+    }
+    Ok(())
+}
+
 async fn run_print(
     mut config: Config,
     cwd: PathBuf,
@@ -2256,7 +2354,8 @@ async fn turn_changes(
 mod tests {
     use super::{
         context_view, parse_mode, parse_trust_decision, resolve_auto_approve, turn_changes,
-        worktree_name, ApprovalsAction, Cli, Command, MarketplaceAction, PluginAction, TrustAction,
+        worktree_name, ApprovalsAction, Cli, Command, LanguageAction, MarketplaceAction,
+        PluginAction, TrustAction,
     };
     use oxide_core::config::Config;
 
@@ -2724,6 +2823,42 @@ mod tests {
                 model: Some(model),
             }) if model == "glm-5"
         ));
+    }
+
+    /// The language command a front-end that cannot link `oxide-core` reads and
+    /// writes: no subcommand reports it, `--json` prints the strings to paint,
+    /// and `set` names the tag every front-end then reads.
+    #[test]
+    fn parses_the_language_commands() {
+        let cli = Cli::try_parse_from(["oxide", "language"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Language {
+                json: false,
+                project: None,
+                action: None,
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["oxide", "language", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Language { json: true, .. })
+        ));
+
+        let cli = Cli::try_parse_from(["oxide", "language", "set", "zh-CN", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Language {
+                json: true,
+                action: Some(LanguageAction::Set { tag }),
+                ..
+            }) if tag == "zh-CN"
+        ));
+
+        let cli = Cli::try_parse_from(["oxide", "--language", "zh-CN", "hello"]).unwrap();
+        assert_eq!(cli.language.as_deref(), Some("zh-CN"));
+        assert_eq!(cli.messages, vec!["hello"]);
     }
 
     #[test]

@@ -1571,8 +1571,50 @@ pub async fn dispatch(
         "cancel_update" => command_value(cancel_update(arg(&args, "token")?)),
         "launch_update" => command_value(launch_update(&state)),
         "restart_app" => command_value(restart_app(host, &state).await),
+        // The language the window draws: the core resolves it from the shared
+        // settings and hands over the strings, so the page keeps no catalog of
+        // its own and a switch reaches the terminal and the panel too.
+        "language" => command_value(Ok::<Value, String>(language(optional_arg(
+            &args, "project",
+        )?))),
+        "set_language" => command_value(set_language(
+            optional_arg(&args, "project")?,
+            arg(&args, "tag")?,
+        )),
         _ => Err(format!("unknown desktop command `{command}`")),
     }
+}
+
+/// The folder a language read or write is resolved against: the one on screen
+/// when the window sent it, else this process's own, so a window that has not
+/// opened a folder yet still draws the language `settings.json` names.
+fn language_cwd(project: Option<String>) -> PathBuf {
+    project
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
+}
+
+/// The language the window draws and the strings it draws it with.
+fn language(project: Option<String>) -> Value {
+    oxide_core::i18n::describe(&language_cwd(project))
+}
+
+/// Switches the language every front-end reads, answering with the listing the
+/// window then paints — so the page repaints from the core's own catalog rather
+/// than from a choice it kept.
+fn set_language(project: Option<String>, tag: String) -> CmdResult<Value> {
+    let cwd = language_cwd(project);
+    let choice = oxide_core::i18n::Language::parse(&tag).ok_or_else(|| {
+        let options = oxide_core::i18n::Language::ALL
+            .iter()
+            .map(|language| language.tag())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("unknown language `{tag}`; use {options}")
+    })?;
+    oxide_core::i18n::save(choice).map_err(err)?;
+    Ok(oxide_core::i18n::describe(&cwd))
 }
 
 #[cfg(test)]
@@ -1593,6 +1635,37 @@ mod tests {
             !project_info_value(&metered, Path::new("."))["subscription"]
                 .as_bool()
                 .expect("the flag travels")
+        );
+    }
+
+    /// The window's language switch writes the shared `settings.json`, so a tag
+    /// this build does not have is refused with the ones it does rather than
+    /// written through and read back as the default.
+    #[test]
+    fn refuses_a_language_this_build_does_not_have() {
+        let refused = set_language(None, "fr".to_string()).unwrap_err();
+        assert!(refused.contains("en-GB"), "{refused}");
+        assert!(refused.contains("zh-CN"), "{refused}");
+    }
+
+    /// The language the window draws is the core's answer: the tag in use, the
+    /// ones a picker offers, and the strings to paint — the same catalog the
+    /// terminal reads, so a word cannot differ between the two front-ends.
+    #[test]
+    fn hands_the_window_the_languages_and_their_strings() {
+        let described = language(None);
+        // The machine's own settings decide which language that is, so the test
+        // holds the answer against the language it names rather than against
+        // one this machine happens to read.
+        let tag = described["language"].as_str().expect("a language tag");
+        let in_use = oxide_core::i18n::Language::parse(tag).expect("a language this build has");
+        assert_eq!(
+            described["languages"].as_array().map(Vec::len),
+            Some(oxide_core::i18n::Language::ALL.len())
+        );
+        assert_eq!(
+            described["strings"]["composer.send"],
+            oxide_core::i18n::t(in_use, "composer.send")
         );
     }
 

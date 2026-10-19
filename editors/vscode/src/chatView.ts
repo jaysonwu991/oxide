@@ -345,11 +345,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <header id="header">
   <span id="title">New chat</span>
   <div id="actions">
-    <button id="new-session" class="icon" title="New chat" aria-label="New chat">${ICONS.new}</button>
-    <button id="resume-session" class="icon" title="Session history" aria-label="Session history" aria-expanded="false" aria-controls="dialog">${ICONS.resume}</button>
+    <button id="new-session" class="icon" title="New chat" aria-label="New chat" data-i18n-title="panel.newChat" data-i18n-aria="panel.newChat">${ICONS.new}</button>
+    <button id="resume-session" class="icon" title="Session history" aria-label="Session history" aria-expanded="false" aria-controls="dialog" data-i18n-title="panel.sessionHistory" data-i18n-aria="panel.sessionHistory">${ICONS.resume}</button>
     <span class="actions-sep" aria-hidden="true"></span>
-    <button id="approvals" class="icon" data-control="permissions" title="Tool approvals" aria-label="Tool approvals">${ICONS.lock}</button>
-    <button id="shortcuts" class="icon" data-control="shortcuts" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">${ICONS.help}</button>
+    <button id="approvals" class="icon" data-control="permissions" title="Tool approvals" aria-label="Tool approvals" data-i18n-title="composer.permissions" data-i18n-aria="composer.permissions">${ICONS.lock}</button>
+    <button id="shortcuts" class="icon" data-control="shortcuts" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" data-i18n-title="composer.help" data-i18n-aria="composer.help">${ICONS.help}</button>
   </div>
 </header>
 <section id="run-strip" hidden>
@@ -381,15 +381,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode rpc</code>, so a tool that needs your approval waits for an answer here.</p>
   </div>
 </main>
-<button id="jump-latest" class="jump-latest" type="button" title="Jump to latest message" aria-label="Jump to latest message" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+<button id="jump-latest" class="jump-latest" type="button" title="Jump to latest message" aria-label="Jump to latest message" data-i18n-title="topbar.jumpLatest" data-i18n-aria="topbar.jumpLatest" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
 <footer>
   <button id="live-changes" class="live-changes" type="button" hidden
-    title="View changes" aria-label="View changes"></button>
+    title="View changes" aria-label="View changes" data-i18n-title="topbar.viewChanges" data-i18n-aria="topbar.viewChanges"></button>
   <div id="strip" class="composer-strip">
     <div class="strip-facts">
       <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
       <button id="worktree" class="fact fact-button" type="button" data-control="worktree"
-        title="Worktree" aria-label="Worktree" aria-haspopup="dialog" aria-controls="dialog" hidden><span class="foot-icon" aria-hidden="true">${ICONS.worktree}</span><span id="worktree-name" hidden></span></button>
+        title="Worktree" aria-label="Worktree" aria-haspopup="dialog" aria-controls="dialog" data-i18n-title="composer.worktree" data-i18n-aria="composer.worktree" hidden><span class="foot-icon" aria-hidden="true">${ICONS.worktree}</span><span id="worktree-name" hidden></span></button>
     </div>
   </div>
   <div id="composer">
@@ -399,10 +399,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden></div>
     <div id="chips" class="chips" hidden></div>
     <div id="input" class="markdown-input body" contenteditable="true" spellcheck="false"
-      role="textbox" aria-multiline="true" aria-label="Message"
-      data-placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image"></div>
+      role="textbox" aria-multiline="true" aria-label="Message" data-i18n-aria="composer.message"
+      data-placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image" data-i18n-placeholder="panel.placeholder"></div>
     <div id="bar">
-      <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach">${ICONS.attach}</button>
+      <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach" data-i18n-title="panel.attachHint" data-i18n-aria="composer.attach">${ICONS.attach}</button>
       <div id="meta" class="meta" aria-label="Turn settings"></div>
       <span id="status" hidden></span>
       <span class="spacer"></span>
@@ -411,8 +411,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <span id="usage" class="usage" hidden><span id="usage-text" role="note" tabindex="0"></span></span>
       <span id="gauge" class="gauge" role="img" tabindex="0" hidden><span id="gauge-fill"></span></span>
       </div>
-      <button id="stop" class="icon danger run-control composer-action" hidden title="Stop the running turn (Esc)" aria-label="Stop"><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
-      <button id="send" class="icon primary composer-action" disabled title="Send (Enter)" aria-label="Send">${ICONS.send}</button>
+      <button id="stop" class="icon danger run-control composer-action" hidden title="Stop the running turn (Esc)" aria-label="Stop" data-i18n-title="composer.stop" data-i18n-aria="composer.stop"><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
+      <button id="send" class="icon primary composer-action" disabled title="Send (Enter)" aria-label="Send" data-i18n-title="composer.sendHint" data-i18n-aria="composer.send">${ICONS.send}</button>
     </div>
     <div id="dropzone" hidden><span>Drop files to attach</span></div>
   </div>

@@ -63,7 +63,8 @@ export type PanelAction =
   | "session"
   | "new"
   | "attach"
-  | "usage";
+  | "usage"
+  | "language";
 
 /// How many rows a bare `/` offers. The catalog is small, but a project with
 /// hundreds of commands should not hand the view every one of them.
@@ -235,6 +236,10 @@ export function panelCommand(name: string): PanelAction | null {
       return "attach";
     case "usage":
       return "usage";
+    // The language is the one setting all three front-ends share, so the panel
+    // switches it through the CLI rather than keeping a copy of its own.
+    case "language":
+      return "language";
     default:
       return null;
   }

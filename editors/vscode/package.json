@@ -194,6 +194,12 @@
         "icon": "$(git-branch)"
       },
       {
+        "command": "oxide.language",
+        "title": "Change Language...",
+        "category": "Oxide",
+        "icon": "$(globe)"
+      },
+      {
         "command": "oxide.checkForUpdates",
         "title": "Check for Updates...",
         "category": "Oxide",
