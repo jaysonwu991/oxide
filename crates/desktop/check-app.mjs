@@ -1576,8 +1576,10 @@ check(
 );
 projectInfo = null;
 el("prompt").value = "carry on";
+el("prompt").style.height = "200px";
 calls.length = 0;
 await app.send(false);
+check("reset the expanded composer after sending", el("prompt").value === "" && el("prompt").style.height === "auto");
 const carried = projectCalls("send_prompt");
 check(
   "sent the next turn with that level rather than the folder's own",
@@ -5623,8 +5625,10 @@ app.setBusy();
 app.state.runId = 42;
 elementFor("prompt").value = "run this after your current answer";
 app.updateSendState();
+elementFor("prompt").style.height = "200px";
 elementFor("send").onclick({ detail: 1 });
 await nextTick();
+check("reset the expanded composer after queueing", el("prompt").value === "" && el("prompt").style.height === "auto");
 check(
   "queued new context for the next response by default",
   projectCalls("steer_run").length === 0 &&

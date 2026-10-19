@@ -2523,7 +2523,7 @@ footer {
 }
 
 #input {
-  min-height: 40px;
+  min-height: calc(1lh + 11px);
   padding: 4px 2px 7px;
 }
 
@@ -2662,6 +2662,6 @@ button.icon {
 }
 
 .markdown-input { white-space: pre-wrap; overflow-y: auto; outline: none; min-width: 0; }
-.markdown-input:empty::before { content: attr(data-placeholder); color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); }
+.markdown-input:empty::before { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; content: attr(data-placeholder); color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); }
 .markdown-input > :first-child { margin-top: 0; }
 .markdown-input > :last-child { margin-bottom: 0; }

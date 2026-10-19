@@ -934,7 +934,7 @@ body.running .composer { border-radius: 16px; }
   padding: 4px 2px 8px;
   color: var(--text);
   font: inherit;
-  min-height: 40px;
+  min-height: calc(1lh + 12px);
   max-height: 220px;
 }
 .attachments {
@@ -2263,7 +2263,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 
 
 .markdown-input { white-space: pre-wrap; overflow-y: auto; outline: none; min-width: 0; }
-.markdown-input:empty::before { content: attr(data-placeholder); color: var(--dim); }
+.markdown-input:empty::before { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; content: attr(data-placeholder); color: var(--dim); }
 .markdown-input > :first-child { margin-top: 0; }
 .markdown-input > :last-child { margin-bottom: 0; }
 

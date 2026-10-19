@@ -2440,7 +2440,9 @@ function installMarkdownInput(editor, render) {
 
   function markdown(node, point = null) {
     if (node.nodeType === 3) {
-      const text = node.nodeValue || "";
+      const raw = node.nodeValue || "";
+      // Preserve typed newlines when read() strips paragraph wrapper newlines.
+      const text = node.parentNode?.hasAttribute?.("data-editor-tail") ? raw.replace(/\n/g, "\uE002") : raw;
       return point?.node === node ? text.slice(0, point.offset) + marker + text.slice(point.offset) : text;
     }
     const children = Array.from(node.childNodes || []);
@@ -2455,6 +2457,7 @@ function installMarkdownInput(editor, render) {
     }, "");
     if (point?.node === node && point.offset === children.length) text += marker;
     const tag = node.tagName;
+    if (node.hasAttribute?.("data-editor-padding")) return "";
     if (tag === "BR") return "\n";
     if (tag === "STRONG" || tag === "B") return `**${text}**`;
     if (tag === "EM" || tag === "I") return `*${text}*`;
@@ -2463,7 +2466,7 @@ function installMarkdownInput(editor, render) {
     if (tag === "CODE" && node.parentNode?.tagName !== "PRE") return `\`${text}\``;
     if (tag === "A") {
       const url = node.getAttribute("href") || "";
-      return text === url ? text : `[${text}](${url})`;
+      return text.replace(marker, "") === url ? text : `[${text}](${url})`;
     }
     if (/^H[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
     if (tag === "BLOCKQUOTE") return `\n\n${text.trim().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
@@ -2484,7 +2487,7 @@ function installMarkdownInput(editor, render) {
   }
 
   function read(point = null) {
-    return markdown(editor, point).replace(/\u00a0/g, " ").replace(/^\n+|\n+$/g, "");
+    return markdown(editor, point).replace(/\u00a0/g, " ").replace(/^\n+|\n+$/g, "").replace(/\uE002/g, "\n");
   }
 
   function selectionOffset(end) {
@@ -2501,7 +2504,10 @@ function installMarkdownInput(editor, render) {
   }
 
   function pointAt(offset) {
-    if (offset >= source.length) return { node: editor, offset: editor.childNodes.length };
+    if (offset >= source.length && editor.lastChild) {
+      const tail = editor.querySelector?.("[data-editor-tail]");
+      if (tail) return { node: tail.firstChild, offset: tail.firstChild.nodeValue.length };
+    }
     const walker = document.createTreeWalker(editor, 5);
     let best = { node: editor, offset: 0 };
     let distance = Infinity;
@@ -2537,7 +2543,25 @@ function installMarkdownInput(editor, render) {
   }
 
   function paint(caret = null) {
-    editor.innerHTML = source ? render(source) : "";
+    editor.style.height = "auto";
+    // Markdown ignores trailing blank lines. Keep the editable suffix outside
+    // its renderer, with a final caret stop outside any link or code span.
+    const whitespace = source.match(/\s*$/)[0];
+    const body = source.slice(0, source.length - whitespace.length);
+    editor.innerHTML = body ? render(body) : "";
+    if (source && document.createTextNode) {
+      const tail = document.createElement("span");
+      tail.setAttribute("data-editor-tail", "");
+      tail.appendChild(document.createTextNode(whitespace));
+      const last = editor.lastChild;
+      const container = last?.tagName === "P" ? last : editor;
+      container.appendChild(tail);
+      if (whitespace.includes("\n")) {
+        const padding = document.createElement("br");
+        padding.setAttribute("data-editor-padding", "");
+        container.appendChild(padding);
+      }
+    }
     painted = editor.innerHTML;
     savedStart = savedEnd = caret ?? source.length;
     if (caret !== null) select(caret);

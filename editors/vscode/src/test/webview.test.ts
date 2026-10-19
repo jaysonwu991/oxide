@@ -1339,7 +1339,9 @@ describe("webview composer", () => {
     const input = byId.get("input")!;
     input.value = "explain this repo";
     input.fire("input");
+    input.style.height = "200px";
     byId.get("send")!.fire("click");
+    assert.notEqual(input.style.height, "200px");
     assert.deepEqual(last(posted), { k: "send", text: "explain this repo" });
     assert.equal(input.value, "");
     assert.equal(byId.get("send")!.disabled, true);
