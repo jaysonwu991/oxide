@@ -390,7 +390,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
   <button id="live-changes" class="live-changes" type="button" hidden
-    title="Show the latest file change" aria-label="Show the latest file change"></button>
+    title="View changes" aria-label="View changes"></button>
   <div id="composer">
     <div id="queue" class="queued-messages" aria-label="Queued messages" hidden></div>
     <div id="queue-menu" class="queued-message-menu" role="menu"

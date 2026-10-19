@@ -479,6 +479,59 @@ impl SessionLog {
         &self.header.cwd
     }
 
+    pub fn relocate(&mut self, cwd: &Path) -> Result<()> {
+        self.relocate_in(&project_dir(cwd), cwd)
+    }
+
+    fn relocate_in(&mut self, directory: &Path, cwd: &Path) -> Result<()> {
+        let bytes = std::fs::read(&self.path)?;
+        let newline = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .context("session header has no newline")?;
+        let mut header = self.header.clone();
+        header.cwd = cwd.display().to_string();
+        std::fs::create_dir_all(directory)?;
+        let destination = directory.join(self.path.file_name().context("session has no filename")?);
+        let shared_store = destination == self.path;
+        anyhow::ensure!(
+            shared_store || !destination.exists(),
+            "a session with this id already exists in the destination"
+        );
+        let temporary = directory.join(format!(".handoff-{}", new_id()));
+        let result = (|| -> Result<()> {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)?;
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&Entry::Session(header.clone()))?
+            )?;
+            file.write_all(&bytes[newline + 1..])?;
+            file.sync_all()?;
+            drop(file);
+            if shared_store {
+                std::fs::rename(&temporary, &destination)?;
+                return Ok(());
+            }
+            // Linking publishes a complete log without overwriting another one.
+            std::fs::hard_link(&temporary, &destination)?;
+            if let Err(error) = std::fs::remove_file(&self.path) {
+                let _ = std::fs::remove_file(&destination);
+                return Err(error.into());
+            }
+            Ok(())
+        })();
+        let _ = std::fs::remove_file(temporary);
+        result?;
+        self.path = destination;
+        self.header = header;
+        Ok(())
+    }
+
     /// Sets a human-readable display name via a `session_info` entry.
     pub fn set_name(&self, name: &str) -> Result<()> {
         let entry = Entry::SessionInfo(SessionInfoEntry {
@@ -1201,6 +1254,38 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relocating_preserves_the_id_history_and_name_without_leaving_a_duplicate() {
+        let root = temp_dir("relocate");
+        let mut log = SessionLog::create_in(&root.join("source"), Path::new("/local")).unwrap();
+        log.append(&Message::user("keep my history")).unwrap();
+        log.set_name("My chat").unwrap();
+        let id = log.id().to_string();
+        let old = log.path.clone();
+        let original = std::fs::read_to_string(&old).unwrap();
+        log.relocate_in(&root.join("target"), Path::new("/worktree"))
+            .unwrap();
+        assert_eq!(log.id(), id);
+        assert_eq!(log.cwd(), "/worktree");
+        assert!(!old.exists());
+        assert_eq!(log.name().as_deref(), Some("My chat"));
+        let moved = std::fs::read_to_string(&log.path).unwrap();
+        assert_eq!(
+            moved.split_once('\n').unwrap().1,
+            original.split_once('\n').unwrap().1
+        );
+        let reopened = SessionLog::open(log.path.clone()).unwrap();
+        assert_eq!(reopened.messages().unwrap().len(), 1);
+        assert_eq!(reopened.id(), id);
+        let shared_path = log.path.clone();
+        log.relocate_in(&root.join("target"), Path::new("/local"))
+            .unwrap();
+        assert_eq!(log.path, shared_path);
+        assert_eq!(SessionLog::open(shared_path).unwrap().cwd(), "/local");
+        assert_eq!(log.messages().unwrap().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("oxide_sess_{tag}_{}", std::process::id()));

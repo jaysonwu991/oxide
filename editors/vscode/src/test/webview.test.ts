@@ -3697,7 +3697,7 @@ describe("webview tool card", () => {
     assert.match(pill.innerHTML, /1 file changed/);
     assert.match(pill.innerHTML, /\+2/);
     assert.match(pill.innerHTML, /−1/);
-    assert.match(style, /\.live-changes \{[^}]*border-radius: 999px;/s);
+    assert.match(style, /\.live-changes \{[^}]*border-radius: 14px;/s);
     assert.match(
       style,
       /\.live-changes \{[^}]*display: flex;[^}]*width: max-content;[^}]*margin: 0 auto 8px;/s,
@@ -3717,6 +3717,26 @@ describe("webview tool card", () => {
     assert.equal(toolCards[1].classList.contains("expanded"), false);
 
     send({ k: "status", status: "Ready", busy: false, queued: 0, queue: [] });
+    assert.equal(pill.hidden, true);
+  });
+
+  it("keeps snapshot totals after completion and opens the whole review", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    send({ k: "push", item: { id: 3, kind: "user", text: "edit using a shell" } });
+    send({ k: "push", item: {
+      id: 4, kind: "changes", title: "Edited 1 file", totals: "+7 −2", added: 7, removed: 2,
+      baseline: "abc", after: "def", project: "/w/app", more: null, undoable: true, undone: false,
+      rows: [{ path: "README.md", status: "modified", letter: "M", detail: "+7 −2", title: "README.md", index: 0 }],
+    } });
+    const pill = byId.get("live-changes")!;
+    assert.equal(pill.hidden, false);
+    assert.match(pill.innerHTML, /1 file changed/);
+    assert.match(pill.innerHTML, /\+7/);
+    assert.match(pill.innerHTML, /−2/);
+    pill.fire("click");
+    assert.equal(byId.get("review")!.hidden, false);
+    send({ k: "changes", id: 4, undone: true, undoable: false });
     assert.equal(pill.hidden, true);
   });
 

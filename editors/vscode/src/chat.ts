@@ -60,6 +60,8 @@ import {
   SESSION_PIN,
   SESSION_ARCHIVE,
   sessionDialog,
+  WORKTREE_BRANCH,
+  WORKTREE_HANDOFF,
   WORKTREE_CREATE,
   WORKTREE_REFRESH,
   WORKTREE_REMOVE,
@@ -86,6 +88,8 @@ import {
   sessionWorktree,
   worktreeAt,
   worktreeCreateArgs,
+  worktreeBranchArgs,
+  worktreeHandoffArgs,
   worktreeListArgs,
   worktreeRemoveArgs,
   type Worktree,
@@ -446,6 +450,7 @@ export class ChatController {
   /// The newest worktree listing asked for: the row's own Recheck and the
   /// command can both read while the other is in flight.
   private worktreeProbe = 0;
+  private handingOff = false;
   /// The filter the open session listing is showing. The rows are the store's
   /// own answer, so the search box only decides which of them are painted —
   /// typing never spawns the CLI again — and the value is held here so a redraw
@@ -1033,7 +1038,7 @@ export class ChatController {
     this.worktrees = parseWorktrees(result.stdout);
     // Keep the thread's checkout even when it is absent from the listing:
     // falling back would send its next edits into the workspace folder.
-    this.showDialog(worktreeDialog(this.worktrees, this.worktree, name));
+    this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, "", this.transcript.sessionId));
     this.broadcastStatus();
   }
 
@@ -1041,6 +1046,7 @@ export class ChatController {
   /// thread it is in, so switching is refused while one runs — the same refusal
   /// a new chat and a folder switch get.
   private selectWorktree(value: string): void {
+    if (this.handingOff) return;
     const folder = this.folder()?.uri.fsPath;
     if (!folder) return;
     if (this.turn) {
@@ -1084,12 +1090,21 @@ export class ChatController {
     }
     const name = await vscode.window.showInputBox({
       title: "New worktree",
-      prompt: "Name the worktree. Its branch is oxide/<name>, and a chat starts in the new checkout.",
+      prompt: "Name this isolated checkout. Leave blank to generate a name.",
       placeHolder: "fix-login-bug",
       ignoreFocusOut: true,
     });
     if (name === undefined) return;
-    const result = await runCapture(this.binary(), worktreeCreateArgs(folder, name), folder);
+    const base = await vscode.window.showInputBox({ title: "Starting branch or commit", value: "HEAD", ignoreFocusOut: true });
+    if (base === undefined) return;
+    const mode = await vscode.window.showQuickPick(["Detached HEAD", "New oxide/<name> branch"], { title: "Worktree mode", ignoreFocusOut: true });
+    if (!mode) return;
+    const copy = await vscode.window.showQuickPick(["Start from committed files", "Include uncommitted changes"], { title: "Local changes", ignoreFocusOut: true });
+    if (!copy || this.turn || this.handingOff || folder !== this.folder()?.uri.fsPath) return;
+    const result = await runCapture(this.binary(), worktreeCreateArgs(folder, name, {
+      base, source: this.cwd() || folder, detached: mode === "Detached HEAD", copyChanges: copy === "Include uncommitted changes",
+    }), folder);
+    if (folder !== this.folder()?.uri.fsPath) return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not create the worktree: ${detail}`;
@@ -1146,6 +1161,59 @@ export class ChatController {
     this.showNotice(`Removed ${entry.name}. Its branch ${entry.branch} is still in the repository.`);
     await this.showWorktrees();
     this.refreshProject();
+  }
+
+  private async createWorktreeBranch(): Promise<void> {
+    const folder = this.folder()?.uri.fsPath;
+    const entry = worktreeAt(this.worktrees, this.worktree);
+    if (!folder || !entry || this.turn || this.handingOff) return;
+    const branch = await vscode.window.showInputBox({ title: "Create branch here", value: `oxide/${entry.name}`, ignoreFocusOut: true });
+    if (!branch || this.turn || folder !== this.folder()?.uri.fsPath) return;
+    const result = await runCapture(this.binary(), worktreeBranchArgs(folder, entry.name, branch), folder);
+    if (result.error || result.code !== 0) {
+      this.showNotice(`Could not create branch: ${result.error || firstLine(result.stderr)}`, "error");
+      return;
+    }
+    await this.showWorktrees();
+    this.refreshProject();
+  }
+
+  private async handoffSession(): Promise<void> {
+    const folder = this.folder()?.uri.fsPath;
+    const source = this.cwd();
+    const id = this.transcript.sessionId;
+    if (!folder || !source || !id || this.turn || this.handingOff) return;
+    const toWorktree = !this.worktree;
+    const target = this.transcript;
+    const answer = await vscode.window.showWarningMessage(
+      `Move this chat and its changes to ${toWorktree ? "Worktree" : "Local"}? The destination must have no uncommitted changes.`,
+      { modal: true }, "Hand off",
+    );
+    if (answer !== "Hand off" || this.turn || target !== this.transcript || folder !== this.folder()?.uri.fsPath) return;
+    this.handingOff = true;
+    this.showNotice("Moving chat and changes…");
+    try {
+      const result = await runCapture(this.binary(), worktreeHandoffArgs(folder, source, id, toWorktree), folder);
+      if (result.error || result.code !== 0) throw new Error(result.error || firstLine(result.stderr));
+      const moved = JSON.parse(result.stdout) as { cwd?: string };
+      if (!moved.cwd) throw new Error("The CLI did not name the destination checkout.");
+      if (target !== this.transcript || folder !== this.folder()?.uri.fsPath) return;
+      this.worktree = sessionWorktree(folder, moved.cwd);
+      this.runTranscript = null;
+      this.runWorktree = null;
+      const title = this.threadTitle() || "Chat";
+      this.transcript = this.newTranscript();
+      this.transcript.sessionId = id;
+      await this.loadHistory(id, title);
+      await this.showWorktrees();
+      this.refreshProject();
+      this.showNotice(`Chat moved to ${toWorktree ? "Worktree" : "Local"}.`);
+    } catch (error) {
+      this.showNotice(`Could not hand off chat: ${String(error)}`, "error");
+    } finally {
+      this.handingOff = false;
+      this.broadcastStatus();
+    }
   }
 
   /// A file read for a diff preview: inside the workspace, text, and small.
@@ -1611,6 +1679,7 @@ export class ChatController {
 
   /// Sends a message, starting a turn or choosing how it joins a running one.
   async send(text: string, busyMode?: "queue" | "steer"): Promise<void> {
+    if (this.handingOff) { this.showNotice("Wait for the chat handoff to finish.", "warn"); return; }
     const message = text.trim();
     if (!message && !this.contextCount) return;
     // The built-ins are the panel's own draws — the footer's chips under another
@@ -2083,6 +2152,7 @@ export class ChatController {
   /// message starts a session of its own rather than appending to the one that
   /// was open), and the view paints the welcome page it starts on.
   newSession(): void {
+    if (this.handingOff) return;
     if (this.turn) {
       // Resetting now would apply the running process's later events to the new
       // thread and drop the session id it is about to report.
@@ -2253,6 +2323,7 @@ export class ChatController {
   /// offers the same way — a turn owns the conversation it is writing into, and a
   /// message typed while it is elsewhere is refused rather than steered into it.
   private async openSession(value: string): Promise<void> {
+    if (this.handingOff) return;
     if (value === NEW_SESSION) {
       if (this.turn) {
         this.showSessions("A turn is running; stop it before starting a new chat.");
@@ -3180,6 +3251,10 @@ export class ChatController {
         return this.createWorktree();
       case WORKTREE_REMOVE:
         return this.removeWorktree(value);
+      case WORKTREE_BRANCH:
+        return this.createWorktreeBranch();
+      case WORKTREE_HANDOFF:
+        return this.handoffSession();
       case MCP_REFRESH:
         return this.showMcps();
       case MCP_TOGGLE:

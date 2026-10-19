@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { WORKTREE_CREATE, WORKTREE_REMOVE, WORKTREE_SELECT, worktreeDialog } from "../core/dialogs";
+import { WORKTREE_BRANCH, WORKTREE_HANDOFF, WORKTREE_CREATE, WORKTREE_REMOVE, WORKTREE_SELECT, worktreeDialog } from "../core/dialogs";
 import {
   parseWorktree,
   parseWorktrees,
@@ -17,6 +17,8 @@ import {
   worktreeHolding,
   worktreeListArgs,
   worktreeRemoveArgs,
+  worktreeBranchArgs,
+  worktreeHandoffArgs,
 } from "../core/worktrees";
 
 const entry = {
@@ -38,6 +40,13 @@ describe("resumed checkout", () => {
 });
 
 describe("worktree arguments", () => {
+  it("creates an isolated checkout from an explicit base and source", () => {
+    assert.deepEqual(worktreeCreateArgs("/w/app", "fix", { base: "main", source: "/w/app", detached: true, copyChanges: true }),
+      ["worktree", "create", "fix", "--base", "main", "--source", "/w/app", "--copy-changes", "--detached", "--project", "/w/app", "--json"]);
+    assert.deepEqual(worktreeBranchArgs("/w/app", "fix", "oxide/fix"), ["worktree", "branch", "fix", "oxide/fix", "--project", "/w/app", "--json"]);
+    assert.deepEqual(worktreeHandoffArgs("/w/app", "/w/copy", "chat", false), ["worktree", "handoff", "chat", "--source", "/w/copy", "--project", "/w/app", "--json"]);
+    assert.ok(worktreeHandoffArgs("/w/app", "/w/app", "chat", true).includes("--to-worktree"));
+  });
   it("asks for one project's listing as JSON", () => {
     assert.deepEqual(worktreeListArgs("/w/app"), [
       "worktree",
@@ -138,6 +147,14 @@ describe("worktreeAt", () => {
 
 describe("worktreeDialog", () => {
   const list = parseWorktrees([entry]);
+  it("offers handoff for the current chat and branch creation in a worktree", () => {
+    const local = worktreeDialog(list, null, "oxide", "", "chat");
+    assert.equal(local.rows.find((row) => row.action === WORKTREE_HANDOFF)?.label, "Hand off chat to Worktree");
+    assert.equal(local.rows.some((row) => row.action === WORKTREE_BRANCH), false);
+    const copy = worktreeDialog(list, entry.path, "oxide", "", "chat");
+    assert.equal(copy.rows.find((row) => row.action === WORKTREE_HANDOFF)?.label, "Hand off chat to Local");
+    assert.equal(copy.rows.find((row) => row.action === WORKTREE_BRANCH)?.value, entry.path);
+  });
 
   it("lists the folder itself, the checkouts, and the way to make one", () => {
     const dialog = worktreeDialog(list, null, "oxide");

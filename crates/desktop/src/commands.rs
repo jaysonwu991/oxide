@@ -454,17 +454,27 @@ pub fn worktrees(project: String) -> CmdResult<Vec<oxide_core::worktree::Worktre
     Ok(oxide_core::worktree::Worktrees::open().list(&root))
 }
 
-/// Makes a worktree of the project, or refuses a name already taken. The
-/// branch it lands on is `oxide/<name>`.
+/// Makes an isolated checkout at the requested commit. Desktop checkouts
+/// default to detached HEAD; a named branch can be created when ready.
 pub async fn create_worktree(
     project: String,
     name: Option<String>,
     base: Option<String>,
+    detached: bool,
+    copy_changes: bool,
+    source: Option<String>,
 ) -> CmdResult<oxide_core::worktree::Worktree> {
     let root = project_dir(&project)?;
     let name = name.filter(|name| !name.trim().is_empty());
     tokio::task::spawn_blocking(move || {
-        oxide_core::worktree::Worktrees::open().create(&root, name.as_deref(), base.as_deref())
+        oxide_core::worktree::Worktrees::open().create_isolated(
+            &root,
+            name.as_deref(),
+            base.as_deref(),
+            detached,
+            source.as_deref().map(std::path::Path::new),
+            copy_changes,
+        )
     })
     .await
     .map_err(err)?
@@ -483,6 +493,41 @@ pub async fn remove_worktree(
     .await
     .map_err(err)?
     .map_err(err)
+}
+
+pub async fn create_worktree_branch(
+    project: String,
+    name: String,
+    branch: String,
+) -> CmdResult<oxide_core::worktree::Worktree> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || {
+        oxide_core::worktree::Worktrees::open().create_branch(&root, &name, &branch)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
+pub async fn handoff_session(
+    project: String,
+    source: String,
+    id: String,
+    to_worktree: bool,
+    state: &DesktopState,
+) -> CmdResult<Value> {
+    let runs = state.runs.lock().await;
+    if !runs.is_empty() {
+        return Err("Stop the running turn before handing off a chat.".to_string());
+    }
+    let root = project_dir(&project)?;
+    let destination = tokio::task::spawn_blocking(move || {
+        oxide_core::worktree::Worktrees::open().handoff(&root, Path::new(&source), &id, to_worktree)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    Ok(json!({ "cwd": destination }))
 }
 
 // ---------- sessions ----------
@@ -1365,12 +1410,33 @@ pub async fn dispatch(
                 arg(&args, "project")?,
                 optional_arg(&args, "name")?,
                 optional_arg(&args, "base")?,
+                optional_arg(&args, "detached")?.unwrap_or(true),
+                optional_arg(&args, "copyChanges")?.unwrap_or(false),
+                optional_arg(&args, "source")?,
             )
             .await,
         ),
         "remove_worktree" => {
             command_value(remove_worktree(arg(&args, "project")?, arg(&args, "name")?).await)
         }
+        "create_worktree_branch" => command_value(
+            create_worktree_branch(
+                arg(&args, "project")?,
+                arg(&args, "name")?,
+                arg(&args, "branch")?,
+            )
+            .await,
+        ),
+        "handoff_session" => command_value(
+            handoff_session(
+                arg(&args, "project")?,
+                arg(&args, "source")?,
+                arg(&args, "id")?,
+                arg(&args, "toWorktree")?,
+                &state,
+            )
+            .await,
+        ),
         "reasoning_levels" => command_value(reasoning_levels(arg(&args, "project")?, &state).await),
         "set_project_trust" => command_value(
             set_project_trust(arg(&args, "project")?, arg(&args, "trusted")?, &state).await,

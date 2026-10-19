@@ -560,8 +560,7 @@ beside its gauge.
   the history button in the header instead of taking a second footer slot.
 - **Worktree** — the bar above the box says which checkout the chat runs in,
   beside the branch it is on: the checkout's glyph with `fix-login-bug` while a
-  chat writes to one of the project's worktrees — another complete checkout on
-  its own `oxide/<name>` branch — and the glyph alone while it writes to the
+  chat writes to one of the project's worktrees — another complete checkout with its own HEAD — and the glyph alone while it writes to the
   folder you have open, which the branch already names. It is the bar's one
   control, and clicking it opens the panel's own **Worktrees** listing, which
   is the same store the terminal's `oxide worktree` and the desktop app write:
@@ -1452,3 +1451,9 @@ it resolves versions from its own releases only (the prefix avoids the CLI's
 `v*` tags and its drafter). The draft already carries the tag to push. Pushing
 that tag runs `.github/workflows/vscode.yml`, which builds the VSIX with
 `pnpm run package` and attaches `oxide-vscode-<version>.vsix` to the release.
+
+### Worktree lifecycle
+
+The Worktrees picker also offers **Create branch here** and **Hand off chat to Local / Worktree** for the current chat. New checkouts can start from a branch or commit, use detached HEAD, and include local changes. Handoff retains the chat’s identity and returns it to the same managed checkout on later moves. The destination must be clean; failures restore the checkouts, with recovery refs retained under `refs/oxide/handoffs/`. Ignored setup files follow `.worktreeinclude` and the automatic ignored `AGENTS.override.md` rule shared with Desktop.
+
+The centered change summary above the composer remains available after a turn finishes and opens the complete change review. Its counts come from the turn’s shadow snapshot once the final change card arrives, including files written by shell commands and MCP tools.

@@ -187,6 +187,8 @@ export interface ChangesItem {
   title: string;
   /// The turn's own `+N −N`, or empty when nothing counted.
   totals: string;
+  added?: number;
+  removed?: number;
   /// The revision every file's diff is drawn against.
   baseline: string;
   /// The state the turn left behind, which the CLI's undo checks the work tree
@@ -895,6 +897,8 @@ export class Transcript {
           kind: "changes",
           title: changesTitle(changes.files.length),
           totals: changesTotals(changes.added, changes.removed),
+          added: changes.added,
+          removed: changes.removed,
           baseline: changes.baseline,
           project: changes.project,
           after: changes.after,

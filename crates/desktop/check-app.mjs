@@ -128,6 +128,8 @@ class StubElement {
     for (const node of nodes) this.appendChild(node);
   }
 
+  select() {}
+
   replaceChildren(...nodes) {
     this.children = [];
     this.append(...nodes);
@@ -290,6 +292,9 @@ class StubElement {
 // when it decides what a press is for — a button, a link or a row — so a stub
 // standing in for an element `index.html` defines has to be the element the page
 // makes it. Everything else the app asks for is a stub of its own.
+const pageIds = [...readFileSync(`${here}index.html`, "utf8").matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+check("every page control has a unique id", new Set(pageIds).size === pageIds.length,
+  pageIds.filter((id, index) => pageIds.indexOf(id) !== index).join(", "));
 const pageTags = new Map();
 for (const [, tag, id] of readFileSync(`${here}index.html`, "utf8").matchAll(
   /<(input|textarea|select)\b[^>]*\bid="([^"]+)"/g,
@@ -671,6 +676,7 @@ let worktrees = [
 ];
 let worktreesError = null;
 let worktreeCreateError = null;
+let handoffError = null;
 let repositoryChanges = { files: [], added: 0, removed: 0 };
 let repositoryError = null;
 // What `session_messages` answers for a stored thread's own totals, and nothing
@@ -892,6 +898,16 @@ const invoke = async (command, args = {}) => {
       worktrees.push(entry);
       return { ...entry };
     }
+    case "handoff_session": {
+      if (handoffError) throw handoffError;
+      return { cwd: args.toWorktree ? worktrees[0].path : args.project };
+    }
+    case "create_worktree_branch": {
+      const entry = worktrees.find((item) => item.name === args.name);
+      if (!entry) throw "worktree is gone";
+      entry.branch = args.branch;
+      return { ...entry };
+    }
     case "remove_worktree": {
       const target = worktrees.find((entry) => entry.name === args.name);
       if (!target) throw `no worktree named \`${args.name}\``;
@@ -1012,7 +1028,7 @@ vm.runInThisContext(
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
     " loadGit, openProjectDetails, refreshProjectDetails, openRepositoryChanges, changeReviewScope," +
     " loadMcps, openSessions," +
-    " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, loadWorktrees, runFolder," +
+    " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
     " updateChips, openReasoning, loadInfo," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
@@ -1583,8 +1599,8 @@ check(
     elementFor("worktree").getAttribute("aria-label") === "Worktree" &&
     elementFor("worktree").classList.contains("active") === false &&
     elementFor("worktree").hidden === false &&
-    elementFor("worktree-name").hidden === true &&
-    elementFor("worktree-name").textContent === "",
+    elementFor("worktree-label").hidden === true &&
+    elementFor("worktree-label").textContent === "",
   `${elementFor("worktree").title} / ${elementFor("worktree").getAttribute("aria-label")}`,
 );
 app.openWorktrees();
@@ -1616,8 +1632,8 @@ check(
     elementFor("worktrees-modal").hidden === true &&
     elementFor("worktree").classList.contains("active") === true &&
     elementFor("worktree").getAttribute("aria-label") === "worktree: fix-login-bug" &&
-    elementFor("worktree-name").hidden === false &&
-    elementFor("worktree-name").textContent === "fix-login-bug" &&
+    elementFor("worktree-label").hidden === false &&
+    elementFor("worktree-label").textContent === "fix-login-bug" &&
     linkedGit.length === 1 &&
     linkedGit[0][1].project === worktrees[0].path,
   `${app.state.worktree} / ${JSON.stringify(linkedGit.map(([, args]) => args.project))}`,
@@ -1659,10 +1675,38 @@ check(
   `${JSON.stringify(readBack.map(([, args]) => args.project))} / ${app.state.worktree}`,
 );
 
+const handoffId = app.state.session;
+const moveLocal = app.handoffSession();
+await nextTick();
+elementFor("confirm-ok").click();
+await moveLocal;
+check("handed the same chat to Local", app.state.session === handoffId && app.state.worktree === null);
+const moveBack = app.handoffSession();
+await nextTick();
+elementFor("confirm-ok").click();
+await moveBack;
+check("handed the same chat back to Worktree", app.state.session === handoffId && app.state.worktree === worktrees[0].path);
+const giveBranch = app.createWorktreeBranch();
+await nextTick();
+elementFor("rename-input").value = "oxide/reviewed";
+elementFor("rename-save").click();
+await giveBranch;
+check("created a branch without changing the chat", app.state.session === handoffId && app.state.worktrees[0].branch === "oxide/reviewed");
+handoffError = "destination has uncommitted changes";
+const refusedHandoff = app.handoffSession();
+await nextTick();
+elementFor("confirm-ok").click();
+await refusedHandoff;
+check("kept the chat in place when handoff was refused", app.state.session === handoffId && app.state.worktree === worktrees[0].path && /uncommitted changes/.test(status()));
+handoffError = null;
+
 // Making one from the reader's own name starts a thread in it.
 app.selectWorktree(null);
 await nextTick();
 elementFor("worktree-name").value = "cache the tokens";
+elementFor("worktree-base").value = "main";
+elementFor("worktree-detached").checked = true;
+elementFor("worktree-copy").checked = true;
 calls.length = 0;
 await app.createWorktree();
 await nextTick();
@@ -1671,6 +1715,10 @@ check(
   "made a worktree from the name that was typed",
   madeWorktree.length === 1 &&
     madeWorktree[0][1].name === "cache the tokens" &&
+    madeWorktree[0][1].base === "main" &&
+    madeWorktree[0][1].detached === true &&
+    madeWorktree[0][1].copyChanges === true &&
+    madeWorktree[0][1].source === projectRows[0].path &&
     madeWorktree[0][1].project === projectRows[0].path &&
     app.state.worktrees.some((entry) => entry.name === "cache-the-tokens") &&
     app.state.worktree === "/home/dev/Oxide/worktrees/9c1f/cache-the-tokens" &&
@@ -1899,7 +1947,7 @@ check(
   /\.fact-button \{[^}]*margin-left: auto;[^}]*border: 0;[^}]*background: none;/s.test(sheet) &&
     /\.fact-button:hover \{ color: var\(--text\); \}/.test(sheet) &&
     /\.fact-button\.active \{ color: var\(--accent\); \}/.test(sheet) &&
-    /#worktree-name \{[^}]*text-overflow: ellipsis;/s.test(sheet) &&
+    /#worktree-label \{[^}]*text-overflow: ellipsis;/s.test(sheet) &&
     source.includes('name.textContent = entry ? entry.name : ""'),
   sheet.slice(sheet.indexOf(".fact-button {"), sheet.indexOf(".fact-button {") + 260),
 );
@@ -4482,6 +4530,11 @@ calls.length = 0;
 app.state.session = "changes-chat";
 app.closeReview();
 check("kept the summary for the idle chat", !elementFor("details-panel").hidden);
+elementFor("details-toggle").click();
+check("hid the project card from its header control", elementFor("details-panel").hidden);
+elementFor("details-toggle").click();
+check("restored the project card from its header control", !elementFor("details-panel").hidden);
+
 app.setBusy();
 await reviewTick();
 check(
@@ -4522,11 +4575,22 @@ check(
   `${projectCalls("repository_changes").length} reads / ${elementFor("details-stats").innerHTML}`,
 );
 repositoryChanges = { files: [file("src/agent.rs", "modified", 4, 1)], added: 4, removed: 1 };
+const sourceMessage = document.createElement("div");
+sourceMessage.chatAttachments = [{ name: "reference.png", dataUrl: "data:image/png;base64,iVBORw0KGgo=" }];
+const sourceCall = document.createElement("div");
+sourceCall.chatTool = { name: "webfetch", args: '{"url":"https://example.com"}' };
+elementFor("transcript").append(sourceMessage, sourceCall);
+app.paintProjectSources();
+check("listed the chat's attachment and web source", app.chatSources().some((source) => source.name === "reference.png") && app.chatSources().some((source) => source.name === "Web search"));
+const imageSource = elementFor("details-sources").children.find((row) => row.title === "reference.png");
+imageSource.click();
+check("opened the attachment source preview", !elementFor("image-modal").hidden);
+elementFor("image-modal").hidden = true;
 elementFor("details-view-sources").click();
 await reviewTick();
-check("opened source management without replacing the project panel", !elementFor("mcps-modal").hidden && !elementFor("details-panel").hidden);
+check("opened all chat sources without replacing the project panel", !elementFor("sources-modal").hidden && !elementFor("details-panel").hidden);
 document.fire("keydown", { key: "Escape" });
-check("dismissed source management before the dock behind it", elementFor("mcps-modal").hidden && !elementFor("details-panel").hidden);
+check("dismissed chat sources before the dock behind it", elementFor("sources-modal").hidden && !elementFor("details-panel").hidden);
 elementFor("details-resizer").fire("keydown", { key: "ArrowLeft", preventDefault() {}, stopPropagation() {} });
 check("resized the dock from its keyboard separator", elementFor("details-panel").style.flexBasis === "320px");
 await app.openRepositoryChanges();

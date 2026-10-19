@@ -128,6 +128,8 @@ export const WORKTREE_CREATE = "worktreeCreate";
 export const WORKTREE_REMOVE = "worktreeRemove";
 /// Reading the listing again, which is the head's own trailing action.
 export const WORKTREE_REFRESH = "worktreeRefresh";
+export const WORKTREE_BRANCH = "worktreeBranch";
+export const WORKTREE_HANDOFF = "worktreeHandoff";
 export const SESSION_PIN = "sessionPin";
 export const SESSION_ARCHIVE = "sessionArchive";
 /// The confirmation a change card's Undo opens, and the row that does the
@@ -627,6 +629,7 @@ export function worktreeDialog(
   active: string | null,
   projectName: string,
   note = "",
+  sessionId?: string | null,
 ): DialogState {
   const inLocal = !worktreeAt(worktrees, active);
   const local = row("", "Local checkout", {
@@ -657,11 +660,13 @@ export function worktreeDialog(
     pin: "footer",
     title: "Worktrees",
     subtitle:
-      "A worktree is another checkout of this project on its own branch (oxide/<name>). A chat runs there while the folder you have open stays as it is; removing one leaves its branch in the repository.",
+      "Run a chat in an isolated checkout. Start from a branch or commit, then create a branch or hand the chat back to Local when ready.",
     note: note || (worktrees.length ? "" : "No worktrees yet. Make one from the name of the task."),
     rows: [
       local,
       ...rows,
+      ...(sessionId ? [row("", active ? "Hand off chat to Local" : "Hand off chat to Worktree", { action: WORKTREE_HANDOFF })] : []),
+      ...(active ? [row(active, "Create branch here", { action: WORKTREE_BRANCH })] : []),
       row("", "New worktree…", {
         detail: "Names a checkout and starts a chat in it",
         action: WORKTREE_CREATE,

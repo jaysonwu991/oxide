@@ -869,48 +869,18 @@ clicks it, so the same change is not painted twice.
 
 ## Worktrees
 
-A thread can run in a git worktree instead of the folder you have open. A
-worktree is a complete checkout of the project on its own `oxide/<name>`
-branch, so a conversation that edits, builds and tests files leaves the checkout
-you are reading exactly as it was, and the work comes back as a branch you can
-merge or open a pull request from.
+A chat can run in an isolated Git checkout while the project’s local folder stays in place. Open **Worktrees** from the composer’s checkout control.
 
-- **The composer's own top row** carries the control (`#worktree`), beside the
-  branch it is on: it is drawn as a fact of the folder rather than as a chip on
-  the row inside the box — the checkout glyph with its name while a worktree is
-  in use, at the other end of the bar — and it wears the accent then, which is
-  the difference between a thread writing to a copy and one writing to the
-  folder itself. Its words are in its tooltip, and it is hidden while no folder
-  is open.
-- **The picker** (`#worktrees-modal`, a popover above the composer like
-  `/mcp` and `/session`) lists the folder's own checkout first and then every
-  worktree, each with its branch and path; the one in use is marked, and each
-  worktree carries its own remove control. **Create worktree** at its foot makes
-  one from the name you type — blank leaves it to the CLI — and the new checkout
-  becomes the one the next thread runs in.
-- **Picking a checkout starts a new thread**: the checkout belongs to the task, so
-  a conversation that was written in one place is not moved to another. A turn
-  that is running refuses the switch, the same way it refuses a new chat or a
-  folder switch.
-- **The bar and the header say where the thread is**: the branch fact reads the
-  checkout the thread runs in (`oxide/fix-login-bug`), and a thread running in a
-  worktree wears its name beside the thread title. The sidebar marks such a
-  thread with the same glyph and lists it under its project — a worktree thread
-  is the project's thread, not a folder of its own — and the thread's card names
-  the checkout above its branch.
-- **Removing one** asks first, then removes the checkout and leaves the branch in
-  the repository. Making a worktree of that name again resumes that branch.
-  Uncommitted or untracked files prevent removal. Removing the checkout in use
-  starts a new chat in the local folder; refreshing the listing never moves an
-  existing thread into another checkout.
-- **Project trust is the project's**: a worktree is a copy of a folder whose
-  `.oxide/` resources were already decided about, so the shield covers its
-  checkouts too.
-- Worktrees live in the config directory (`worktrees/<project>/<name>/`) rather
-  than beside the project, so they never appear in the project's own `git status`
-  or in a diff you are reading. `oxide_core::worktree` is the store; the desktop
-  reads and writes the same one the terminal's `oxide worktree` and the VS Code
-  panel's **Oxide: Worktrees…** do.
+- The picker lists Local and the project’s managed checkouts. Picking a different checkout starts a new chat there.
+- **Create worktree** accepts a name and starting branch or commit. It defaults to detached HEAD; turn that option off for an `oxide/<name>` branch. **Include uncommitted changes** copies staged, unstaged, and untracked files from the current checkout. A failed copy rolls back the new checkout.
+- Ignored setup files are copied only when matched by a repository-root `.worktreeinclude`, using Git ignore patterns. An ignored `AGENTS.override.md` is included automatically. Source symlinks are skipped and existing destination files are never overwritten by this setup step.
+- **Create branch here** gives the current checkout a branch without losing its edits.
+- **Hand off chat to Local / Worktree** moves the existing chat, its staged and unstaged edits, untracked files, and branch ownership. The chat keeps its id, history, name, and usage. Returning to Worktree reuses that chat’s associated checkout.
+- Handoff requires a clean destination and refuses ignored-file collisions. Both checkouts are restored if moving the session fails. Recovery snapshots remain under `refs/oxide/handoffs/`.
+- Creating, switching, removing, and handing off refuse a running turn. Removing a checkout refuses uncommitted work and preserves detached commits on a branch before deleting the checkout.
+- The composer, header, project card, and sidebar identify the checkout the chat runs in. Its changes are reviewed against that checkout, and the project’s trust decision covers its managed worktrees.
+
+The store lives under the config directory at `worktrees/<project>/<name>/`. Desktop and the VS Code extension share `oxide_core::worktree`; the extension reaches it through `oxide worktree` commands.
 
 ## Models and reasoning
 

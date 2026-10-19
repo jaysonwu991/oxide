@@ -26,16 +26,28 @@ export function worktreeListArgs(folder: string): string[] {
 
 /// `oxide worktree create [<name>] --project <folder> --json`. A name that is
 /// blank is left to the CLI, which derives one from the first free default.
-export function worktreeCreateArgs(folder: string, name: string): string[] {
+export function worktreeCreateArgs(folder: string, name: string, options?: { base?: string; source?: string; copyChanges?: boolean; detached?: boolean }): string[] {
   const wanted = name.trim();
   return [
     "worktree",
     "create",
     ...(wanted ? [wanted] : []),
+    ...(options?.base?.trim() ? ["--base", options.base.trim()] : []),
+    ...(options?.source ? ["--source", options.source] : []),
+    ...(options?.copyChanges ? ["--copy-changes"] : []),
+    ...(options?.detached ? ["--detached"] : []),
     "--project",
     folder,
     "--json",
   ];
+}
+
+export function worktreeBranchArgs(folder: string, name: string, branch: string): string[] {
+  return ["worktree", "branch", name, branch, "--project", folder, "--json"];
+}
+
+export function worktreeHandoffArgs(folder: string, source: string, id: string, toWorktree: boolean): string[] {
+  return ["worktree", "handoff", id, "--source", source, ...(toWorktree ? ["--to-worktree"] : []), "--project", folder, "--json"];
 }
 
 /// `oxide worktree remove <name> --project <folder> --json`: the checkout goes,
