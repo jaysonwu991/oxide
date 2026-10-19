@@ -783,18 +783,17 @@ describe("webview footer", () => {
     assert.match(style, /\.composer-strip \{[^}]*width: calc\(100% - 20px\);/s);
     assert.match(style, /\.composer-strip \{[^}]*max-width: 740px;/s);
     assert.match(style, /#composer \{[^}]*max-width: 760px;/s);
-    assert.match(style, /\.composer-strip \{[^}]*border-radius: 16px 16px 0 0;/s);
-    assert.match(style, /#composer \{[^}]*border-radius: 16px;/s);
+    assert.match(style, /\.composer-strip \{[^}]*border-radius: 10px 10px 0 0;/s);
+    assert.match(style, /#composer \{[^}]*border-radius: var\(--surface-radius\);/s);
     // The readout takes the row's own auto margin, so the gauge rides at the end
     // after it and the branch takes whatever room is left.
     assert.match(style, /\.composer-strip \.usage \{ margin-left: auto; \}/);
     assert.doesNotMatch(style, /#footline/);
     // The box opens on two lines: an empty composer reads as somewhere to write
     // a message rather than as a one-line field, and it grows from there. The
-    // later rule is the one in force — it narrows the padding the base rule
-    // gives — so the check reads the last of them.
+    // rule includes its vertical padding, so two text lines remain visible.
     const input = [...style.matchAll(/#input \{[^}]*\}/gs)].at(-1)?.[0] ?? "";
-    assert.match(input, /min-height: calc\(2lh \+ 11px\);/);
+    assert.match(input, /min-height: calc\(2lh \+ 12px\);/);
   });
 
   it("paints the branch, the usage line and the gauge the host hands it", () => {
@@ -1442,7 +1441,7 @@ describe("webview composer", () => {
     assert.equal(queue.hidden, false);
     assert.equal(body.classList.contains("running"), true);
     assert.match(style, /body\.running \.composer-strip \{ display: none; \}/);
-    assert.match(style, /body\.running #composer \{ border-radius: 16px; \}/);
+    assert.match(style, /body\.running #composer \{ border-radius: var\(--surface-radius\); \}/);
     assert.deepEqual(queue.children.slice(0, 2).map((row) => row.children[1].textContent), [
       "first follow-up",
       "second follow-up",
@@ -2699,11 +2698,11 @@ describe("webview dialogs", () => {
     const rule = /#dialog \{[^}]*\}/.exec(style)?.[0] ?? "";
     assert.match(rule, /flex: 0 0 auto;/, "the dialog does not shrink");
     assert.match(rule, /max-height: min\([^)]*\d+px[^)]*\)/, "its cap leaves room for the footer");
-    assert.match(rule, /width: calc\(100% - 40px\);/, "it shares the composer's inset");
+    assert.match(rule, /width: calc\(100% - 20px\);/, "it shares the composer's inset");
     assert.match(rule, /max-width: 760px;/, "it shares the composer's width cap");
     assert.match(rule, /margin: 10px auto 0;/, "the header dialog is centered with breathing room");
     assert.match(rule, /border: var\(--dialog-edge\);/, "the card has a complete outline");
-    assert.match(rule, /border-radius: 8px;/, "all four corners use the same radius");
+    assert.match(rule, /border-radius: var\(--surface-radius\);/, "all four corners use the same radius");
     // Icon-only, with the words as the tooltip and the accessible name: the
     // shell paints each one from its own `ICONS` map.
     for (const [id, label, icon] of [

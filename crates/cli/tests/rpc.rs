@@ -316,6 +316,37 @@ fn without_the_approval_flag_no_prompt_is_emitted() {
     );
 }
 
+#[test]
+fn an_rpc_edit_skips_unchanged_blocks_without_retrying_the_batch() {
+    let project = TempDir::new("project_noop_edit");
+    let config_home = TempDir::new("config_noop_edit");
+    let target = project.path().join("example.txt");
+    std::fs::write(&target, "header\nbefore\n").unwrap();
+    let arguments = json!({"path": target, "edits": [
+        {"oldText": "header", "newText": "header"},
+        {"oldText": "header\nbefore", "newText": "header\nafter"}
+    ]})
+    .to_string();
+    let edit = openai_sse(&[
+        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_0", "function": {"name": "edit", "arguments": arguments}}]}, "finish_reason": null}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ]);
+    let (base_url, server) = serve(vec![edit, answer_body("Done.")]);
+    let mut rpc = start(config_home.path(), project.path(), &base_url, false);
+    let events = run_turn(&mut rpc, "edit the file", &mut Vec::new());
+    let result = events
+        .iter()
+        .find(|event| event["type"] == "tool_execution_end")
+        .unwrap();
+    assert_eq!(result["toolName"], "edit");
+    assert_eq!(result["isError"], false);
+    assert!(result["result"].as_str().unwrap().contains("1 block(s)"));
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "header\nafter\n");
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2, "the batch needed no repair round trip");
+    assert!(requests[1].contains("Successfully replaced 1 block(s)"));
+}
+
 /// VS Code consumes this exact RPC stream. An output-limited tool call is
 /// retried inside the shared core, and only the replacement response may cross
 /// the process boundary into the extension.

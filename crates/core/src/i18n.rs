@@ -692,8 +692,14 @@ mod tests {
 
     #[test]
     fn the_catalog_a_front_end_reads_carries_every_key() {
+        for language in Language::ALL {
+            let entries = catalog(*language);
+            assert_eq!(entries.len(), CATALOG.len());
+            for (key, _, _) in CATALOG {
+                assert_eq!(entries[*key], t(*language, key));
+            }
+        }
         let catalog = catalog(Language::ZhCn);
-        assert_eq!(catalog.len(), CATALOG.len());
         assert_eq!(
             catalog.get("sidebar.projects"),
             Some(&serde_json::Value::String("项目".to_string()))

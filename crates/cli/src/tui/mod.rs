@@ -1523,46 +1523,7 @@ fn handle_key(
                 app.clear_input();
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/language").unwrap_or_default().trim();
-                if requested.is_empty() || requested == "show" {
-                    let names: Vec<&str> = crate::i18n::Language::ALL
-                        .iter()
-                        .map(|language| language.tag())
-                        .collect();
-                    app.items.push(ChatItem::Info(format!(
-                        "{}; available: {}",
-                        app.tf("language.current", &[("language", app.lang.tag())]),
-                        names.join(", ")
-                    )));
-                    return;
-                }
-                match crate::i18n::Language::parse(requested) {
-                    Some(language) => {
-                        match crate::i18n::save(language) {
-                            Ok(()) => {
-                                app.lang = language;
-                                app.invalidate_render_cache();
-                                app.items.push(ChatItem::Info(app.tf(
-                                    "language.changed",
-                                    &[("language", language.native_label())],
-                                )));
-                            }
-                            Err(error) => app.items.push(ChatItem::Error(format!(
-                                "Could not save language: {error:#}"
-                            ))),
-                        }
-                    }
-                    None => {
-                        let names: Vec<&str> = crate::i18n::Language::ALL
-                            .iter()
-                            .map(|language| language.tag())
-                            .collect();
-                        let names = names.join(", ");
-                        app.items.push(ChatItem::Error(app.tf(
-                            "language.unknown",
-                            &[("tag", requested), ("options", &names)],
-                        )));
-                    }
-                }
+                handle_language_command(app, requested);
                 return;
             }
             if raw == "/trust" || raw.starts_with("/trust ") {
@@ -2282,6 +2243,46 @@ fn sync_usage_bar(
         }
         (false, true) => app.usage = None,
         _ => {}
+    }
+}
+
+fn handle_language_command(app: &mut App, requested: &str) {
+    if requested.is_empty() || requested == "show" {
+        let names: Vec<&str> = crate::i18n::Language::ALL
+            .iter()
+            .map(|language| language.tag())
+            .collect();
+        app.items.push(ChatItem::Info(format!(
+            "{}; available: {}",
+            app.tf("language.current", &[("language", app.lang.tag())]),
+            names.join(", ")
+        )));
+        return;
+    }
+    match crate::i18n::Language::parse(requested) {
+        Some(language) => match crate::i18n::save(language) {
+            Ok(()) => {
+                app.lang = language;
+                app.invalidate_render_cache();
+                app.items.push(ChatItem::Info(
+                    app.tf("language.changed", &[("language", language.native_label())]),
+                ));
+            }
+            Err(error) => app.items.push(ChatItem::Error(format!(
+                "Could not save language: {error:#}"
+            ))),
+        },
+        None => {
+            let names: Vec<&str> = crate::i18n::Language::ALL
+                .iter()
+                .map(|language| language.tag())
+                .collect();
+            let names = names.join(", ");
+            app.items.push(ChatItem::Error(app.tf(
+                "language.unknown",
+                &[("tag", requested), ("options", &names)],
+            )));
+        }
     }
 }
 
@@ -7671,6 +7672,20 @@ mod tests {
 
         state.filter = "alpha".to_string();
         assert_eq!(state.selected_session().unwrap().id, "aaa");
+    }
+
+    #[test]
+    fn language_show_reports_the_current_language_without_switching() {
+        for language in crate::i18n::Language::ALL {
+            for requested in ["", "show"] {
+                let mut app = test_app();
+                app.lang = *language;
+                handle_language_command(&mut app, requested);
+                assert_eq!(app.lang, *language);
+                assert!(matches!(app.items.last(), Some(ChatItem::Info(text))
+                    if text.contains(language.tag()) && text.contains("available: en-GB, zh-CN")));
+            }
+        }
     }
 
     #[test]

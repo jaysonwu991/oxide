@@ -191,6 +191,13 @@ function installMarkdownInput(editor, render) {
     selectionEnd: { configurable: true, get: () => selectionOffset(true), set: (value) => { savedEnd = value; } },
   });
   editor.setSelectionRange = select;
+  // A tab owns its undo stack as well as its text: restoring a draft must not
+  // make Undo pull a message out of the tab the reader just left.
+  editor.captureHistory = () => ({ entries: [...history], index: historyIndex });
+  editor.restoreHistory = (saved) => {
+    history.splice(0, history.length, ...(saved?.entries || [source]));
+    historyIndex = saved?.index ?? 0;
+  };
   editor.addEventListener("beforeinput", (event) => {
     if (composing || event.isComposing || !["insertText", "insertLineBreak"].includes(event.inputType)) return;
     // Applying text to the Markdown model avoids inheriting a code/bold span

@@ -3351,7 +3351,14 @@ export class ChatController {
   /// window's rather than a thread's, so this answers even with no folder
   /// open — the composer works then too, and it is drawn in this language.
   private languageCwd(): string {
-    return this.cwd() ?? this.folder()?.uri.fsPath ?? os.homedir();
+    const folder = this.folder()?.uri.fsPath;
+    if (!folder) return os.homedir();
+    // Resolving a catalog must not switch threads: cwd() can broadcast state
+    // during a folder switch, and stateMessage() resolves the language itself.
+    if (this.activeFolder === folder || this.turn) {
+      return this.worktree ?? this.activeFolder ?? folder;
+    }
+    return folder;
   }
 
   /// Reads the language the panel draws and the strings to draw it with. A CLI

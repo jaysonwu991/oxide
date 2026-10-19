@@ -22,6 +22,13 @@ body {
      small `editor.fontSize` cannot shrink the tool output, the diffs and the code
      blocks below what the prose around them uses. Declared here rather than on
      `:root` because VS Code's own variables are not always set that high. */
+  --control-size: 30px;
+  --control-icon-size: 18px;
+  --ui-line-height: 1.4;
+  --surface-radius: 12px;
+  --row-padding: 8px 10px;
+  /* Keep code at least as legible as the surrounding prose. VS Code's theme
+     variables may be declared on body rather than :root. */
   --code-size: max(var(--vscode-font-size, 13px), var(--vscode-editor-font-size, 13px));
   /* The browser default is `normal`, a little over one line height, which reads
      as crammed on a command's output. */
@@ -33,6 +40,7 @@ body {
 button {
   font-family: inherit;
   font-size: inherit;
+  line-height: var(--ui-line-height);
   cursor: pointer;
   border-radius: 3px;
   border: 1px solid transparent;
@@ -70,13 +78,14 @@ button.icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: var(--control-size);
+  height: var(--control-size);
+  flex: none;
   padding: 0;
   color: var(--vscode-descriptionForeground);
   background: transparent;
   border-color: transparent;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 
 button.icon:hover:not(:disabled) {
@@ -95,6 +104,8 @@ button.icon.primary:hover:not(:disabled) {
 
 button.icon svg {
   display: block;
+  width: var(--control-icon-size);
+  height: var(--control-icon-size);
 }
 
 /* Stop: dim like every other icon, red on hover, the way the desktop app's
@@ -1071,14 +1082,17 @@ pre,
 
 .change-row {
   display: flex;
+  flex: 0 0 auto;
   align-items: baseline;
   gap: 6px;
   width: 100%;
-  padding: 3px 8px;
+  min-height: 36px;
+  padding: var(--row-padding);
   border: none;
   background: none;
   color: inherit;
   font: inherit;
+  line-height: var(--ui-line-height);
   text-align: left;
   cursor: pointer;
 }
@@ -1198,9 +1212,9 @@ footer {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  min-width: 26px;
-  height: 26px;
+  width: var(--control-size);
+  min-width: var(--control-size);
+  height: var(--control-size);
   padding: 0;
   border: 1px solid transparent;
   background: none;
@@ -1232,10 +1246,19 @@ footer {
   flex: 0 0 auto;
 }
 
-.control-icon svg,
+.control-icon svg {
+  width: var(--control-icon-size);
+  height: var(--control-icon-size);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .foot-icon svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.3;
@@ -1247,10 +1270,14 @@ footer {
    bordered block, like the desktop app's composer. */
 #composer {
   position: relative;
+  width: 100%;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
-  border-radius: 8px;
+  border-radius: var(--surface-radius);
   background: var(--vscode-input-background);
-  padding: 4px 6px 2px;
+  padding: 10px;
 }
 
 #composer:focus-within {
@@ -1269,11 +1296,11 @@ footer {
   border: none;
   background: transparent;
   color: var(--vscode-input-foreground);
-  padding: 4px 2px 2px;
+  padding: 4px 2px 8px;
   font-family: inherit;
   font-size: inherit;
   line-height: 1.45;
-  min-height: 2.9em;
+  min-height: calc(2lh + 12px);
   max-height: 200px;
   overflow-y: auto;
 }
@@ -1296,13 +1323,15 @@ footer {
   flex-direction: column;
   max-height: 30vh;
   overflow-y: auto;
-  margin: 2px 0 4px;
-  padding-bottom: 4px;
+  margin: 0 0 8px;
+  padding: 4px 0 8px;
+  gap: 4px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
 }
 
 .at-row {
   display: flex;
+  flex: 0 0 auto;
   align-items: baseline;
   gap: 6px;
   width: 100%;
@@ -1310,8 +1339,10 @@ footer {
   background: none;
   color: var(--vscode-foreground);
   text-align: left;
-  padding: 2px 6px;
-  border-radius: 4px;
+  min-height: 32px;
+  padding: 6px 8px;
+  line-height: var(--ui-line-height);
+  border-radius: 6px;
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.9em;
 }
@@ -1342,6 +1373,7 @@ footer {
    — the name stays whole, since that is what the row puts in the box. */
 .cmd-row {
   display: flex;
+  flex: 0 0 auto;
   align-items: baseline;
   gap: 8px;
   width: 100%;
@@ -1349,8 +1381,10 @@ footer {
   background: none;
   color: var(--vscode-foreground);
   text-align: left;
-  padding: 3px 6px;
-  border-radius: 4px;
+  min-height: 32px;
+  padding: 6px 8px;
+  line-height: var(--ui-line-height);
+  border-radius: 6px;
   font-family: inherit;
   font-size: inherit;
   cursor: pointer;
@@ -1521,8 +1555,9 @@ footer {
   flex-wrap: nowrap;
   gap: 3px;
   min-width: 0;
-  min-height: 34px;
-  padding: 2px 0 0;
+  min-height: var(--control-size);
+  margin-top: 4px;
+  padding: 0;
 }
 
 /* Attach, stop and send are icon-only; their shape comes from `button.icon`. */
@@ -1579,7 +1614,7 @@ footer {
    where the box's own text column does — 20px narrower, the 10px the box pads each
    side, in a narrow side bar as much as a wide one. It names the branch the folder
    is on, with what the thread has spent of its window and the gauge that draws the
-   same reading at the end of the row. */
+   same reading beside Send in the toolbar below. */
 .composer-strip {
   display: flex;
   flex-direction: column;
@@ -1588,11 +1623,13 @@ footer {
   max-width: 740px;
   margin-left: auto;
   margin-right: auto;
-  padding: 3px 4px 3px 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  line-height: var(--ui-line-height);
   background: var(--vscode-editorWidget-background, var(--vscode-input-background));
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
   border-bottom: none;
-  border-radius: 16px 16px 0 0;
+  border-radius: 10px 10px 0 0;
   color: var(--vscode-descriptionForeground);
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.75em;
@@ -1601,7 +1638,7 @@ footer {
 /* The active turn uses Codex's compact composer. The project/branch/context
    facts are restored as soon as the turn ends. */
 body.running .composer-strip { display: none; }
-body.running #composer { border-radius: 16px; }
+body.running #composer { border-radius: var(--surface-radius); }
 .live-changes {
   align-self: center;
   display: flex;
@@ -1790,32 +1827,6 @@ body.running #composer { border-radius: 16px; }
   white-space: nowrap;
 }
 
-/* The context gauge: a thin bar next to the percentage, escalating through the
-   same thresholds the terminal footer's context color uses. */
-.gauge {
-  flex: 0 0 auto;
-  width: 38px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
-  overflow: hidden;
-}
-
-.gauge > #gauge-fill {
-  display: block;
-  height: 100%;
-  background: var(--vscode-charts-blue, #4a9eff);
-  transition: width 0.2s linear;
-}
-
-.gauge[data-level="warn"] > #gauge-fill {
-  background: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #ce9178));
-}
-
-.gauge[data-level="high"] > #gauge-fill {
-  background: var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
-}
-
 .spacer {
   flex: 1 1 auto;
 }
@@ -1862,13 +1873,14 @@ body.running #composer { border-radius: 16px; }
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: min(62%, calc(100% - 290px));
-  width: calc(100% - 40px);
+  max-height: min(62%, max(120px, calc(100% - 250px)));
+  width: calc(100% - 20px);
   max-width: 760px;
   margin: 10px auto 0;
-  padding: 8px 4px 6px;
+  padding: 12px 8px 8px;
   border: var(--dialog-edge);
-  border-radius: 8px;
+  border-radius: var(--surface-radius);
+  line-height: var(--ui-line-height);
   background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
 }
@@ -1890,8 +1902,8 @@ body.running #composer { border-radius: 16px; }
 #dialog[data-kind="sessions"].pin-footer {
   max-width: 780px;
   margin: 0 auto 8px;
-  padding: 10px 8px 8px;
-  border-radius: 16px;
+  padding: 12px 8px 8px;
+  border-radius: var(--surface-radius);
 }
 
 #dialog.pin-footer ~ #transcript {
@@ -1911,7 +1923,8 @@ body.running #composer { border-radius: 16px; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 6px;
+  min-height: var(--control-size);
+  padding: 0 4px;
 }
 
 .popover-head h2 {
@@ -1961,7 +1974,8 @@ body.running #composer { border-radius: 16px; }
   width: 100%;
   box-sizing: border-box;
   appearance: none;
-  padding: 3px 22px 3px 7px;
+  min-height: var(--control-size);
+  padding: 5px 30px 5px 8px;
   border: 1px solid var(--vscode-input-border, transparent);
   border-radius: 4px;
   background: var(--vscode-input-background);
@@ -1998,8 +2012,8 @@ body.running #composer { border-radius: 16px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: none;
   border-radius: 3px;
@@ -2031,7 +2045,7 @@ body.running #composer { border-radius: 16px; }
 
 .popover-sub,
 .popover-note {
-  margin: 4px 6px 0;
+  margin: 8px 4px 0;
   color: var(--vscode-descriptionForeground);
   font-size: 0.85em;
 }
@@ -2050,8 +2064,8 @@ body.running #composer { border-radius: 16px; }
 .popover-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin: 8px 0 4px;
+  gap: 4px;
+  margin: 12px 0 0;
   overflow-y: auto;
   min-height: 0;
   flex: 1 1 auto;
@@ -2059,15 +2073,18 @@ body.running #composer { border-radius: 16px; }
 
 .dialog-row {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 8px;
+  min-height: 40px;
+  padding: var(--row-padding);
   border: 1px solid transparent;
   border-radius: 4px;
   background: none;
   color: var(--vscode-foreground);
   font: inherit;
+  line-height: var(--ui-line-height);
   text-align: left;
 }
 
@@ -2080,6 +2097,7 @@ button.dialog-row:focus-visible {
 .dialog-main {
   display: flex;
   flex-direction: column;
+  gap: 3px;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -2123,8 +2141,8 @@ button.dialog-row:focus-visible {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: var(--control-size);
+  height: var(--control-size);
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -2142,6 +2160,8 @@ button.dialog-row:focus-visible {
 
 .dialog-button svg {
   display: block;
+  width: var(--control-icon-size);
+  height: var(--control-icon-size);
 }
 
 /* The switch says which way the server is set, and clicking it turns it over. */
@@ -2277,7 +2297,7 @@ button.dialog-row:focus-visible {
 .review-overlay {
   align-items: flex-start;
   justify-content: center;
-  padding: 8px;
+  padding: 12px;
 }
 
 .review-sheet {
@@ -2286,12 +2306,13 @@ button.dialog-row:focus-visible {
   flex-direction: column;
   width: 100%;
   max-width: 520px;
-  max-height: calc(100vh - 16px);
+  max-height: calc(100vh - 24px);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  border-radius: 10px;
+  border-radius: var(--surface-radius);
+  line-height: var(--ui-line-height);
   background: var(--vscode-editor-background);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
@@ -2301,15 +2322,19 @@ button.dialog-row:focus-visible {
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-  padding: 9px 10px;
+  min-height: 52px;
+  padding: 10px 12px;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
 }
 
 .review-head h2 {
   margin: 0;
-  font-size: 0.95em;
+  font-size: 1em;
   font-weight: 600;
 }
+
+#review-close { margin-left: auto; }
 
 .review-total {
   color: var(--vscode-descriptionForeground);
@@ -2328,6 +2353,7 @@ button.dialog-row:focus-visible {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  padding: 4px 12px 8px;
 }
 
 .review-files .change-row {
@@ -2488,52 +2514,23 @@ button.dialog-row:focus-visible {
 
 .changes-head {
   min-height: 42px;
-  padding: 8px 11px;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
 }
 
 .changes-review,
 .changes-undo {
-  padding: 3px 8px;
-  border-radius: 7px;
+  min-height: var(--control-size);
+  padding: 4px 10px;
+  line-height: var(--ui-line-height);
+  border-radius: 6px;
 }
 
 footer {
   padding: 10px 20px 8px;
   border-top: 0;
   background: var(--vscode-editor-background);
-}
-
-#composer {
-  width: 100%;
-  max-width: 760px;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-#composer {
-  padding: 8px 10px 6px;
-  border-radius: 16px;
-  background: var(--vscode-input-background);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
-}
-
-/* The bar on the box's top edge lifts with the box while the caret is in it, so
-   the two surfaces stay one shape. */
-.composer-strip:has(+ #composer:focus-within) {
-  border-color: var(--vscode-focusBorder);
-}
-
-#input {
-  /* Two lines before anything is typed: the box reads as a place to write a
-     message rather than as a one-line field, and it grows from there. */
-  min-height: calc(2lh + 11px);
-  padding: 4px 2px 7px;
-}
-
-button.icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
 }
 
 .chips {
@@ -2567,11 +2564,6 @@ button.icon {
   border-radius: 2px;
 }
 
-.gauge {
-  width: 30px;
-  height: 3px;
-}
-
 @media (max-width: 520px) {
   #transcript { padding: 14px 10px 8px; }
   footer { padding: 8px 10px 6px; }
@@ -2598,8 +2590,9 @@ button.icon {
 .model-settings .setting-chip {
   width: auto;
   min-width: 0;
-  height: 26px;
-  padding: 0 6px;
+  height: var(--control-size);
+  padding: 0 8px;
+  line-height: var(--ui-line-height);
   gap: 4px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -2646,9 +2639,9 @@ button.icon {
 
 /* The context reading holds the row's end: a ring filled to the percent the
    thread has used, with the percent spelled out beside it. */
-.context-status { display: flex; align-items: center; gap: 5px; flex: none; margin-left: 1px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+.context-status { display: flex; align-items: center; min-height: var(--control-size); gap: 6px; flex: none; margin-left: 1px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
 .context-status:has(.gauge:focus-visible) { outline: 1px solid var(--vscode-focusBorder); outline-offset: 3px; border-radius: 50%; }
-.context-status .gauge { order: -1; width: 15px; height: 15px; border-radius: 50%; background: conic-gradient(currentColor var(--context-angle, 0deg), color-mix(in srgb, currentColor 25%, transparent) 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); }
+.context-status .gauge { order: -1; flex: none; width: var(--control-size); height: var(--control-size); border-radius: 50%; background: conic-gradient(currentColor var(--context-angle, 0deg), color-mix(in srgb, currentColor 25%, transparent) 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); }
 .context-status .gauge > #gauge-fill { display: none; }
 .context-status:has(.gauge[data-level="warn"]) { color: var(--vscode-editorWarning-foreground); }
 .context-status:has(.gauge[data-level="high"]) { color: var(--vscode-errorForeground); }
@@ -2658,8 +2651,6 @@ button.icon {
 @media (max-width: 420px) {
   #bar { gap: 2px; }
   .meta { gap: 0; }
-  .meta-chip { width: 24px; min-width: 24px; height: 24px; border-radius: 6px; }
-  .meta-chip .control-icon svg { width: 14px; height: 14px; }
   .model-settings .setting-chip { padding: 0 4px; }
   .model-settings [data-control="model"] { padding: 0 3px 0 6px; }
 }

@@ -326,7 +326,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "edit",
-            "Edit a single file using targeted text replacement. Put the file path once in the top-level `path`, not inside each edit. Every edits[].oldText must match a unique region of the file. A match is exact first; trailing whitespace differences and the `N|` line numbers that `read` prints are tolerated, so a block copied from a read result still lands. If the text has genuinely changed, the error names the closest region so you can copy it exactly. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+            "Edit a single file using targeted text replacement. Put the file path once in the top-level `path`, not inside each edit. Every edits[].oldText must match a unique region of the file. Replacements that leave the matched text unchanged are validated but skipped. A match is exact first; trailing whitespace differences and the `N|` line numbers that `read` prints are tolerated, so a block copied from a read result still lands. If the text has genuinely changed, the error names the closest region so you can copy it exactly. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1616,7 +1616,9 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
                     &base[range.start..range.end],
                     content,
                 );
-                located.push((index, range, new));
+                if base[range.start..range.end] != new {
+                    located.push((index, range, new));
+                }
             }
             Err(MatchFailure::Ambiguous(lines)) => failures.push(format!(
                 "edits[{index}].oldText matched {} times in {path} (lines {}); include more \
@@ -1680,7 +1682,10 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     }
 
     let final_content = format!("{bom}{base}");
-    std::fs::write(&full, &final_content).with_context(|| format!("writing {}", full.display()))?;
+    if final_content != raw {
+        std::fs::write(&full, &final_content)
+            .with_context(|| format!("writing {}", full.display()))?;
+    }
 
     // Pi's own wording (`coding-agent/src/core/tools/edit.ts`). The redundancy a
     // reader sees is the renderer's to drop, not this result's: Pi keeps the
@@ -1688,7 +1693,7 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     // on success, so a display never restates the path its header already names.
     let output = ToolOutput::text(format!(
         "Successfully replaced {} block(s) in {path}.",
-        edits.len()
+        located.len()
     ));
     match diff::preview(
         &raw.replace("\r\n", "\n"),
@@ -3141,7 +3146,7 @@ fn uses_recursive_shell_grep(command: &str) -> bool {
 
 /// Splits commands only at shell separators outside quotes. Treating a quoted
 /// `| grep -r` example as another pipeline stage would turn data into a command.
-fn shell_segments(command: &str) -> Vec<&str> {
+pub(crate) fn shell_segments(command: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut start = 0;
     let mut quote = None;
@@ -3173,7 +3178,7 @@ fn shell_segments(command: &str) -> Vec<&str> {
 /// Finds the executable token rather than any argument that happens to spell
 /// `grep`. Shell assignments and the common wrappers an agent may put before a
 /// command are skipped; wrapper options are skipped conservatively too.
-fn shell_command_index(words: &[&str]) -> Option<usize> {
+pub(crate) fn shell_command_index(words: &[&str]) -> Option<usize> {
     let mut index = 0;
     while index < words.len() && shell_assignment(words[index]) {
         index += 1;
@@ -5069,6 +5074,74 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_validates_noops_without_blocking_real_replacements() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_noop_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.rs");
+        std::fs::write(&path, "fn run() {\n    work();\n}\n").unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+        let out = execute(
+            &call(
+                "edit",
+                json!({"path": "f.rs", "edits": [
+                    {"oldText": "fn run() {", "newText": "fn run() {"},
+                    {"oldText": "fn run() {\n    work();", "newText": "fn run() {\n    finish();"}
+                ]}),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("1 block(s)"), "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "fn run() {\n    finish();\n}\n"
+        );
+
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let out = execute(
+            &call(
+                "edit",
+                json!({"path": "f.rs", "edits": [
+                    {"oldText": "fn run() {", "newText": "fn run() {"}
+                ]}),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("0 block(s)"), "{}", out.text);
+        assert!(out.diff.is_none());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before
+        );
+
+        // A stale no-op is still an invalid assertion about the original file.
+        let out = execute(
+            &call(
+                "edit",
+                json!({"path": "f.rs", "edits": [
+                    {"oldText": "stale", "newText": "stale"},
+                    {"oldText": "finish();", "newText": "oops();"}
+                ]}),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(out.is_error);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("oops"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
