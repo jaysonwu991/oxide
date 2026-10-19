@@ -2177,7 +2177,7 @@ fn rust_grep(
     // Walking is cheap compared to reading and scanning file contents, so
     // gather the candidates first and fan the reads across the available cores.
     let mut candidates: Vec<PathBuf> = Vec::new();
-    walk(root, &mut |path| {
+    let mut collect = |path: &Path| {
         if let Some(include) = include {
             if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
                 if !glob_match(include, name) {
@@ -2187,8 +2187,15 @@ fn rust_grep(
         }
         candidates.push(path.to_path_buf());
         true
-    });
-    let hits = scan_files(root, &candidates, matcher, context, limit);
+    };
+    let display_root = if root.is_file() {
+        collect(root);
+        root.parent().unwrap_or(root)
+    } else {
+        walk(root, &mut collect);
+        root
+    };
+    let hits = scan_files(display_root, &candidates, matcher, context, limit);
     Ok(finish_hits(hits, limit))
 }
 
@@ -5462,6 +5469,34 @@ mod tests {
         assert!(out.contains("link.txt -> target.txt"), "{out}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rust_grep_fallback_searches_a_single_file() {
+        let dir = std::env::temp_dir().join(format!("oxide_rust_grep_file_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("resolver.test.ts");
+        std::fs::write(&file, "before\nPAGE_TYPE.BOUTIQUE_HOTELS_IN_CITY\nafter\n").unwrap();
+
+        let literal = GrepMatcher::new("BOUTIQUE_HOTELS_IN_CITY", false, false).unwrap();
+        assert_eq!(
+            rust_grep(&file, &literal, None, 0, 10).unwrap(),
+            "resolver.test.ts:2: PAGE_TYPE.BOUTIQUE_HOTELS_IN_CITY"
+        );
+        let regex =
+            GrepMatcher::new("BOUTIQUE_HOTELS_IN_CITY|VILLAS_IN_CITY", true, false).unwrap();
+        assert_eq!(
+            rust_grep(&file, &regex, Some("*.ts"), 1, 10).unwrap(),
+            "resolver.test.ts-1- before\nresolver.test.ts:2: PAGE_TYPE.BOUTIQUE_HOTELS_IN_CITY\nresolver.test.ts-3- after"
+        );
+        assert_eq!(
+            rust_grep(&file, &literal, Some("*.rs"), 0, 10).unwrap(),
+            NO_MATCHES
+        );
+        std::fs::write(&file, b"\0BOUTIQUE_HOTELS_IN_CITY").unwrap();
+        assert_eq!(rust_grep(&file, &literal, None, 0, 10).unwrap(), NO_MATCHES);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
