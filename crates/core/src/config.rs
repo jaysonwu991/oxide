@@ -2856,7 +2856,13 @@ impl Config {
              issue several independent `read`, `grep`, `find`, or `ls` calls in the same step. Use \
              `grep` to locate a symbol or string, then read the surrounding lines. Once a search \
              identifies likely files, inspect those results and act on them instead of repeatedly \
-             rephrasing the same repository-wide search. Only re-read a file after you edit it. \
+             rephrasing the same repository-wide search. `grep` searches literal text by default: \
+             set `regex: true` for alternatives such as `Foo|Bar` or patterns such as `Foo.*Bar`. \
+             If a search finds nothing, check its mode, case and file glob before concluding code \
+             is absent; `*.ts` excludes `*.tsx`. Read the implementation and its related tests \
+             together before changing behavior, and run the smallest relevant test early instead \
+             of discovering a conflicting expectation after a long implementation. Only re-read \
+             a file after you edit it or when you need a region not previously returned. \
              Before you edit a region, read it and copy `oldText` from \
              that result — the `N|` line numbers and trailing whitespace are tolerated, but text \
              that has moved on is not, and a mismatch replies with the closest region to copy. \
@@ -2879,7 +2885,11 @@ impl Config {
              functions such as `nvm` are not loaded. If the project's exact `.nvmrc` version is \
              already installed under `~/.nvm/versions/node`, its bin directory is added to PATH \
              automatically; verify with `node --version` and run the package manager directly \
-             instead of sourcing home-directory startup scripts. Check an installed command's \
+             instead of sourcing home-directory startup scripts. Before installing dependencies \
+             or enabling a package-manager shim, inspect the project's scripts, installed \
+             dependencies and available local binaries; reuse a compatible installed toolchain. \
+             Use `bash`'s `timeout` argument rather than assuming a shell `timeout` binary exists. \
+             Check an installed command's \
              version and `--help` before guessing version-specific flags. Pass `edit.edits` as a \
              JSON array of objects with `oldText` and `newText`, never XML parameter markup. Create a file — including a scratch or \
              verification script — with the `write` tool rather than a shell heredoc, and keep it \
@@ -2923,7 +2933,9 @@ impl Config {
             "# Scope\nKeep every change scoped to what was asked. Before you commit, run \
              `git status` and `git diff --staged` and stage only the paths your work touched with \
              explicit `git add <path>` — never blanket-stage with `git add -A`, `git add --all`, \
-             `git add .`, or `git commit -a`/`-am` in a tree that may hold unrelated edits. Leave \
+             `git add .`, or `git commit -a`/`-am` in a tree that may hold unrelated edits. Inspect \
+             changes without modifying the index: do not use `git add -N .` followed by \
+             `git reset` just to obtain a diff summary; preserve the user's existing staging. Leave \
              local-only and generated files out of commits and pull requests: \
              `.claude/settings.local.json`, `.idea/`, `.vscode/`, `.DS_Store`, editor state, build \
              output, and unrelated lockfile churn. Do not revert someone else's unrelated changes \

@@ -389,7 +389,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
             json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Text or regular expression to search for" },
+                    "pattern": { "type": "string", "description": "Literal text by default. For alternatives such as Foo|Bar or expressions such as Foo.*Bar, also set regex: true" },
                     "path": { "type": "string", "description": "Directory to search in (default: .)" },
                     "glob": { "type": "string", "description": "Glob pattern to restrict which file names are searched (e.g. `*.rs`)" },
                     "ignoreCase": { "type": "boolean", "description": "Case-insensitive search" },
@@ -1962,7 +1962,7 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
 
     // `rg` applies the same search with far less I/O, so prefer it and fall
     // back to the dependency-free walker when it is unavailable.
-    if let Some(output) = rg_grep(
+    let output = if let Some(output) = rg_grep(
         &root,
         pattern,
         include,
@@ -1971,10 +1971,28 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
         limit,
         use_regex,
     ) {
-        return Ok(output);
+        output
+    } else {
+        let matcher = GrepMatcher::new(pattern, use_regex, ignore_case)?;
+        rust_grep(&root, &matcher, include, context, limit)?
+    };
+    // A regex sent in the default literal mode can hide existing code and
+    // tests. Explain the mode without silently changing the search semantics.
+    if output == NO_MATCHES
+        && args.get("regex").is_none()
+        && args.get("use_regex").is_none()
+        && ["|", ".*", r"\b", r"\s", r"\d"]
+            .iter()
+            .any(|syntax| pattern.contains(syntax))
+    {
+        return Ok(format!(
+            "{NO_MATCHES}\n[hint: This was a literal search. The pattern contains regex syntax; \
+             set `regex: true` for alternatives (`Foo|Bar`), wildcards, or character classes. \
+             Escape source-code punctuation when using regex. A literal no-match does not \
+             establish that each alternative is absent.]"
+        ));
     }
-    let matcher = GrepMatcher::new(pattern, use_regex, ignore_case)?;
-    rust_grep(&root, &matcher, include, context, limit)
+    Ok(output)
 }
 
 /// How a `grep` line is matched: a literal substring or a compiled regex.
@@ -5319,6 +5337,64 @@ mod tests {
         assert_eq!(out.text.matches("needle").count(), 2, "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_explains_regex_shaped_literal_misses_without_changing_modes() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_mode_hint_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("noindex-resolver.test.ts"),
+            "it.each([PAGE_TYPE.BOUTIQUE_HOTELS_IN_CITY, PAGE_TYPE.VILLAS_IN_CITY])\n",
+        )
+        .unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+        let pattern = "BOUTIQUE_HOTELS_IN_CITY|VILLAS_IN_CITY";
+        let mut args = json!({ "pattern": pattern, "path": "noindex-resolver.test.ts" });
+
+        let missed = execute(&call("grep", args.clone()), &dir, &mcp, &progress).await;
+        assert!(!missed.is_error, "{}", missed.text);
+        assert!(missed.text.starts_with(NO_MATCHES), "{}", missed.text);
+        assert!(missed.text.contains("regex: true"), "{}", missed.text);
+        assert!(!is_empty_search_result("grep", &missed.text));
+
+        args["regex"] = json!(true);
+        let corrected = execute(&call("grep", args.clone()), &dir, &mcp, &progress).await;
+        assert!(!corrected.is_error, "{}", corrected.text);
+        assert!(
+            corrected.text.contains("noindex-resolver.test.ts:1:"),
+            "{}",
+            corrected.text
+        );
+        assert!(!corrected.text.contains("[hint:"), "{}", corrected.text);
+
+        for mode in ["regex", "use_regex"] {
+            let explicit_literal = execute(
+                &call("grep", json!({ "pattern": pattern, (mode): false })),
+                &dir,
+                &mcp,
+                &progress,
+            )
+            .await;
+            assert_eq!(explicit_literal.text, NO_MATCHES);
+        }
+
+        for pattern in [r"BOUTIQUE.*CITY", r"\bVILLAS", r"\sVILLAS", r"\d+"] {
+            let output = grep(&dir, &json!({ "pattern": pattern })).unwrap();
+            assert!(output.contains("regex: true"), "{output}");
+        }
+        assert_eq!(
+            grep(&dir, &json!({ "pattern": "missing" })).unwrap(),
+            NO_MATCHES
+        );
+
+        std::fs::write(dir.join("literal.txt"), pattern).unwrap();
+        let literal = grep(&dir, &json!({ "pattern": pattern })).unwrap();
+        assert!(literal.contains("literal.txt:1:"), "{literal}");
+        assert!(!literal.contains("[hint:"), "{literal}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
