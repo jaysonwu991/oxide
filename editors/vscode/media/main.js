@@ -10,6 +10,16 @@
 // desktop app (crates/desktop/ui/app.js) so a reply reads the same in both
 // front-ends.
 
+// A scroll event can arrive after the next streamed update. Compare positions
+// before painting too, and never treat content growth as a reader scrolling up.
+function updateTranscriptFollow(transcript) {
+  const top = transcript.scrollTop;
+  const previous = transcript.followScrollTop ?? top;
+  if (top < previous) transcript.followLatest = false;
+  else if (top > previous && transcript.scrollHeight - transcript.clientHeight - top <= 2) transcript.followLatest = true;
+  transcript.followScrollTop = top;
+}
+
 // One rendered, editable surface. The value/selection facade keeps completion,
 // recall and sending on Markdown while the browser edits the rendered nodes.
 function installMarkdownInput(editor, render) {
@@ -24,7 +34,9 @@ function installMarkdownInput(editor, render) {
 
   function markdown(node, point = null) {
     if (node.nodeType === 3) {
-      const text = node.nodeValue || "";
+      const raw = node.nodeValue || "";
+      // Preserve typed newlines when read() strips paragraph wrapper newlines.
+      const text = node.parentNode?.hasAttribute?.("data-editor-tail") ? raw.replace(/\n/g, "\uE002") : raw;
       return point?.node === node ? text.slice(0, point.offset) + marker + text.slice(point.offset) : text;
     }
     const children = Array.from(node.childNodes || []);
@@ -39,6 +51,7 @@ function installMarkdownInput(editor, render) {
     }, "");
     if (point?.node === node && point.offset === children.length) text += marker;
     const tag = node.tagName;
+    if (node.hasAttribute?.("data-editor-padding")) return "";
     if (tag === "BR") return "\n";
     if (tag === "STRONG" || tag === "B") return `**${text}**`;
     if (tag === "EM" || tag === "I") return `*${text}*`;
@@ -47,7 +60,7 @@ function installMarkdownInput(editor, render) {
     if (tag === "CODE" && node.parentNode?.tagName !== "PRE") return `\`${text}\``;
     if (tag === "A") {
       const url = node.getAttribute("href") || "";
-      return text === url ? text : `[${text}](${url})`;
+      return text.replace(marker, "") === url ? text : `[${text}](${url})`;
     }
     if (/^H[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
     if (tag === "BLOCKQUOTE") return `\n\n${text.trim().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
@@ -68,7 +81,7 @@ function installMarkdownInput(editor, render) {
   }
 
   function read(point = null) {
-    return markdown(editor, point).replace(/\u00a0/g, " ").replace(/^\n+|\n+$/g, "");
+    return markdown(editor, point).replace(/\u00a0/g, " ").replace(/^\n+|\n+$/g, "").replace(/\uE002/g, "\n");
   }
 
   function selectionOffset(end) {
@@ -85,7 +98,10 @@ function installMarkdownInput(editor, render) {
   }
 
   function pointAt(offset) {
-    if (offset >= source.length) return { node: editor, offset: editor.childNodes.length };
+    if (offset >= source.length && editor.lastChild) {
+      const tail = editor.querySelector?.("[data-editor-tail]");
+      if (tail) return { node: tail.firstChild, offset: tail.firstChild.nodeValue.length };
+    }
     const walker = document.createTreeWalker(editor, 5);
     let best = { node: editor, offset: 0 };
     let distance = Infinity;
@@ -121,7 +137,25 @@ function installMarkdownInput(editor, render) {
   }
 
   function paint(caret = null) {
-    editor.innerHTML = source ? render(source) : "";
+    editor.style.height = "auto";
+    // Markdown ignores trailing blank lines. Keep the editable suffix outside
+    // its renderer, with a final caret stop outside any link or code span.
+    const whitespace = source.match(/\s*$/)[0];
+    const body = source.slice(0, source.length - whitespace.length);
+    editor.innerHTML = body ? render(body) : "";
+    if (source && document.createTextNode) {
+      const tail = document.createElement("span");
+      tail.setAttribute("data-editor-tail", "");
+      tail.appendChild(document.createTextNode(whitespace));
+      const last = editor.lastChild;
+      const container = last?.tagName === "P" ? last : editor;
+      container.appendChild(tail);
+      if (whitespace.includes("\n")) {
+        const padding = document.createElement("br");
+        padding.setAttribute("data-editor-padding", "");
+        container.appendChild(padding);
+      }
+    }
     painted = editor.innerHTML;
     savedStart = savedEnd = caret ?? source.length;
     if (caret !== null) select(caret);
@@ -327,23 +361,24 @@ function installMarkdownInput(editor, render) {
     return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   }
 
-  /// Whether the view is pinned to the newest line. The reader decides: scrolling
-  /// away stops the follow, coming back to the bottom resumes it. The scroll
-  /// event that reports it is asynchronous, so a message re-measures before it
-  /// grows the content as well (`apply`), and the scroll that follows a delta is
-  /// taken in the frame that paints it — a reply that adds more than the
-  /// tolerance while its paint is still pending would otherwise read as a reader
-  /// who scrolled away, and the view would stop following for the rest of the
-  /// turn.
-  let following = true;
+  transcript.followLatest = true;
+  transcript.followScrollTop = transcript.scrollTop;
 
-  function atBottom() {
-    return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 40;
+  function paintJumpLatest() {
+    const button = $("jump-latest");
+    const away = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 2;
+    button.hidden = !away;
+    if (away) button.style.top = `${Math.max(8, transcript.getBoundingClientRect().bottom - 48)}px`;
   }
 
-  function scrollDown(force) {
-    if (force) following = true;
-    if (following) transcript.scrollTop = transcript.scrollHeight;
+  function scrollDown(force = false) {
+    updateTranscriptFollow(transcript);
+    if (force) transcript.followLatest = true;
+    if (transcript.followLatest !== false) {
+      transcript.scrollTop = transcript.scrollHeight;
+      transcript.followScrollTop = transcript.scrollTop;
+    }
+    paintJumpLatest();
   }
 
   // ---------- inline markdown ----------
@@ -1603,11 +1638,12 @@ function installMarkdownInput(editor, render) {
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
+      updateTranscriptFollow(transcript);
       for (const target of dirty) renderAssistant(target);
       // The scroll that came with this delta ran before this paint, so follow the
       // height it just added; without it the last line of a streamed reply stays
       // under the fold.
-      if (following) transcript.scrollTop = transcript.scrollHeight;
+      scrollDown();
       dirty = new Set();
     });
   }
@@ -1673,7 +1709,7 @@ function installMarkdownInput(editor, render) {
     // Measured before anything grows, so it reflects the frame the reader is
     // looking at rather than the output that has just arrived, and so a scroll
     // whose event has not been dispatched yet is still seen in time.
-    following = atBottom();
+    updateTranscriptFollow(transcript);
     switch (message.k) {
       case "state": {
         // The transcript is rebuilt from scratch, so the card a review was
@@ -2660,7 +2696,7 @@ function installMarkdownInput(editor, render) {
 
   // ---------- composer ----------
 
-  /// The rendered composer starts two rows tall and
+  /// The rendered composer starts one row tall and
   /// grows with the message, up to a point where scrolling takes over.
   const MAX_INPUT_HEIGHT = 200;
 
@@ -3305,8 +3341,14 @@ function installMarkdownInput(editor, render) {
     toggleTool(entry);
   });
 
+  $("jump-latest").addEventListener("click", () => scrollDown(true));
+  transcript.addEventListener("wheel", (event) => {
+    updateTranscriptFollow(transcript);
+    if (event.deltaY < 0 && transcript.scrollTop > 0) transcript.followLatest = false;
+  }, { passive: true });
   transcript.addEventListener("scroll", () => {
-    following = atBottom();
+    updateTranscriptFollow(transcript);
+    paintJumpLatest();
   });
 
   // The pane gets shorter when the composer grows — an attachment chip arrives,
@@ -3315,7 +3357,7 @@ function installMarkdownInput(editor, render) {
   // who was at the bottom is put back on it.
   if (typeof ResizeObserver === "function") {
     new ResizeObserver(() => {
-      if (following) transcript.scrollTop = transcript.scrollHeight;
+      scrollDown();
     }).observe(transcript);
   }
 

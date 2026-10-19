@@ -381,6 +381,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode rpc</code>, so a tool that needs your approval waits for an answer here.</p>
   </div>
 </main>
+<button id="jump-latest" class="jump-latest" type="button" title="Jump to latest message" aria-label="Jump to latest message" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
 <footer>
   <div id="strip" class="composer-strip">
     <div class="strip-facts">

@@ -1339,7 +1339,9 @@ describe("webview composer", () => {
     const input = byId.get("input")!;
     input.value = "explain this repo";
     input.fire("input");
+    input.style.height = "200px";
     byId.get("send")!.fire("click");
+    assert.notEqual(input.style.height, "200px");
     assert.deepEqual(last(posted), { k: "send", text: "explain this repo" });
     assert.equal(input.value, "");
     assert.equal(byId.get("send")!.disabled, true);
@@ -3587,6 +3589,44 @@ describe("webview scrolling", () => {
     // Back at the bottom, the view follows once more.
     transcript.scrollTop = transcript.scrollHeight;
     send({ k: "append", id: 1, field: "text", delta: "one line more. ".repeat(20) });
+    await nextTick();
+    assert.equal(transcript.scrollTop, transcript.scrollHeight);
+  });
+
+  it("pauses on an upward wheel before its scroll event or a pending paint", async () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    transcript.clientHeight = 100;
+    send({ k: "push", item: { id: 1, kind: "assistant", text: "a line. ".repeat(100) } });
+    const top = transcript.scrollTop;
+    send({ k: "append", id: 1, field: "text", delta: "pending output. ".repeat(20) });
+    transcript.fire("wheel", { deltaY: -1 });
+    send({ k: "append", id: 1, field: "text", delta: "more output. ".repeat(20) });
+    await nextTick();
+    assert.equal(transcript.scrollTop, top);
+    assert.equal(byId.get("jump-latest")!.hidden, false);
+    byId.get("jump-latest")!.fire("click");
+    assert.equal(transcript.scrollTop, transcript.scrollHeight);
+    assert.equal(byId.get("jump-latest")!.hidden, true);
+    send({ k: "append", id: 1, field: "text", delta: "follow again. ".repeat(20) });
+    await nextTick();
+    assert.equal(transcript.scrollTop, transcript.scrollHeight);
+  });
+
+  it("keeps a small scroll above the bottom while streaming", async () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    transcript.clientHeight = 100;
+    send({ k: "push", item: { id: 1, kind: "assistant", text: "a line. ".repeat(100) } });
+    const top = transcript.scrollHeight - transcript.clientHeight - 10;
+    transcript.scrollTop = top;
+    send({ k: "append", id: 1, field: "text", delta: "more output. ".repeat(20) });
+    await nextTick();
+    assert.equal(transcript.scrollTop, top);
+    transcript.scrollTop = transcript.scrollHeight;
+    send({ k: "append", id: 1, field: "text", delta: "follow again. ".repeat(20) });
     await nextTick();
     assert.equal(transcript.scrollTop, transcript.scrollHeight);
   });

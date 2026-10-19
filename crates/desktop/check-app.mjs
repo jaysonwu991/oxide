@@ -1576,8 +1576,10 @@ check(
 );
 projectInfo = null;
 el("prompt").value = "carry on";
+el("prompt").style.height = "200px";
 calls.length = 0;
 await app.send(false);
+check("reset the expanded composer after sending", el("prompt").value === "" && el("prompt").style.height === "auto");
 const carried = projectCalls("send_prompt");
 check(
   "sent the next turn with that level rather than the folder's own",
@@ -5623,8 +5625,10 @@ app.setBusy();
 app.state.runId = 42;
 elementFor("prompt").value = "run this after your current answer";
 app.updateSendState();
+elementFor("prompt").style.height = "200px";
 elementFor("send").onclick({ detail: 1 });
 await nextTick();
+check("reset the expanded composer after queueing", el("prompt").value === "" && el("prompt").style.height === "auto");
 check(
   "queued new context for the next response by default",
   projectCalls("steer_run").length === 0 &&
@@ -8624,6 +8628,22 @@ check("jumped to the bottom and resumed following output", jumpTranscript.scroll
 jumpTranscript.scrollHeight = 1100;
 app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "The next update" } });
 check("followed the response again after jumping", jumpTranscript.scrollTop === 1100);
+jumpTranscript.scrollHeight = 1000;
+jumpTranscript.scrollTop = 600;
+jumpTranscript.fire("scroll", {});
+jumpTranscript.fire("wheel", { deltaY: -1 });
+app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "A chunk before the wheel's scroll event" } });
+check("paused following before an upward wheel scroll lands", jumpTranscript.scrollTop === 600 && jumpTranscript.followLatest === false);
+jumpTranscript.scrollTop = 590;
+jumpTranscript.fire("scroll", {});
+app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "A chunk just above the bottom" } });
+check("kept a small upward scroll while output streams", jumpTranscript.scrollTop === 590 && jumpTranscript.followLatest === false && !elementFor("jump-latest").hidden);
+jumpTranscript.scrollTop = 600;
+jumpTranscript.fire("scroll", {});
+check("resumed following when scrolled back to the bottom", jumpTranscript.followLatest);
+jumpTranscript.scrollTop = 580;
+app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "A chunk before a scrollbar scroll event" } });
+check("noticed a scrollbar move before its scroll event", jumpTranscript.scrollTop === 580 && jumpTranscript.followLatest === false);
 jumpTranscript.scrollHeight = 300;
 jumpTranscript.clientHeight = 400;
 jumpTranscript.scrollTop = 0;
