@@ -652,7 +652,9 @@ fn copy_worktree_includes(source: &Path, destination: &Path) -> Result<()> {
                 "ls-files",
                 "--others",
                 "--ignored",
-                &format!("--exclude-from={}", includes.display()),
+                // Git for Windows cannot read canonical `\\?\` paths here.
+                // The command already runs in the source checkout.
+                "--exclude-from=.worktreeinclude",
                 "-z",
             ],
         )?
@@ -955,6 +957,7 @@ mod tests {
             vec!["config", "user.email", "oxide@example.com"],
             vec!["config", "user.name", "Oxide"],
             vec!["config", "commit.gpgsign", "false"],
+            vec!["config", "core.autocrlf", "false"],
         ] {
             git(&root, &args).unwrap();
         }
