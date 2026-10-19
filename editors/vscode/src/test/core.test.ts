@@ -803,9 +803,10 @@ describe("shared configuration", () => {
   it("reads the provider, model, remembered models and token limits from config.json", () => {
     assert.deepEqual(
       parseConfigSummary(
-        '{"provider":"zai","model":"glm-5","max_tokens":16384,"context_window":1050000,"provider_models":{"zai":"glm-5","openai":"gpt-5"}}',
+        '{"provider":"zai","model":"glm-5","reasoning":"high","max_tokens":16384,"context_window":1050000,"provider_models":{"zai":"glm-5","openai":"gpt-5"}}',
       ),
       {
+        reasoning: "high",
         provider: "zai",
         model: "glm-5",
         models: [
@@ -817,6 +818,7 @@ describe("shared configuration", () => {
       },
     );
     assert.deepEqual(parseConfigSummary("{}"), {
+      reasoning: "auto",
       provider: "",
       model: "",
       models: [],
@@ -851,6 +853,7 @@ describe("shared configuration", () => {
     // known window, falling back to the CLI's own 128k last resort, while the
     // reply cap remains a lower bound.
     const config = (fields: Partial<ConfigSummary> = {}): ConfigSummary => ({
+      reasoning: "auto",
       provider: "",
       model: "",
       models: [],

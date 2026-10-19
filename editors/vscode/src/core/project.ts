@@ -38,8 +38,9 @@ export interface ProjectDeps {
 }
 
 export interface ProjectInfo {
+  reasoning?: string;
   provider: string;
-  /// The model from `config.json` (an `oxide.model` setting wins over it).
+  /// The model from the shared `config.json`.
   model: string;
   models: { provider: string; model: string }[];
   contextWindow: number;
@@ -72,6 +73,7 @@ export function projectInfo(
   );
   const access = resolveAccess({ setting: trust, saved: savedTrust, defaultTrust: settings.defaultTrust });
   return {
+    reasoning: deps.env.OXIDE_REASONING?.trim() || config?.reasoning || "auto",
     provider: config?.provider ?? "",
     model: config?.model ?? "",
     models: config?.models ?? [],

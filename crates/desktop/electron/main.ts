@@ -384,6 +384,13 @@ function installMenu(): void {
         ],
       },
       {
+        label: "File",
+        submenu: [
+          { label: "New Tab", accelerator: "CmdOrCtrl+T", click: () => announceTab("new") },
+          { label: "Close Tab", accelerator: "CmdOrCtrl+W", click: () => announceTab("close") },
+        ],
+      },
+      {
         label: "Edit",
         submenu: [
           { label: "Undo", role: "undo" },
@@ -401,7 +408,7 @@ function installMenu(): void {
           { label: "Minimize", role: "minimize" },
           { label: "Zoom", role: "zoom" },
           { type: "separator" },
-          { label: "Close", role: "close" },
+          { label: "Close Window", role: "close", accelerator: "CmdOrCtrl+Shift+W" },
         ],
       },
     ]),
@@ -418,5 +425,14 @@ function announceCheckUpdates(): void {
   window.webContents.send(
     TO_PAGE,
     JSON.stringify({ type: "message", id: "check-updates", payload: {} }),
+  );
+}
+
+function announceTab(action: "new" | "close"): void {
+  const window = BrowserWindow.getFocusedWindow();
+  if (!window || window.isDestroyed()) return;
+  window.webContents.send(
+    TO_PAGE,
+    JSON.stringify({ type: "message", id: "chat-tab", payload: { action } }),
   );
 }

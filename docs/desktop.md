@@ -11,6 +11,25 @@ shared by every front-end (the CLI, the desktop app, and the VS Code extension),
 with a GUI that can manage **multiple projects** (cross-repo) and show each
 project's session list.
 
+## Layout and navigation
+
+The project summary uses a fixed-width right panel. It hides automatically when
+widening the left sidebar or narrowing the window leaves too little room for the
+chat, and returns when space is available. The sidebar remains resizable.
+
+Use the header's **New tab** button or `⌘T` / `Ctrl+T` to open another chat tab.
+Each tab keeps its draft, attachments and scroll position. `⌘W` / `Ctrl+W` closes
+a tab, and `Ctrl+Tab` / `Ctrl+Shift+Tab` switches tabs. Command-click, Ctrl-click
+or middle-click a sidebar chat to open it in a tab. Closing a tab leaves its
+stored chat intact; an active response continues and remains reachable from its
+sidebar row and running-chat banner.
+
+A rail beside the transcript shows one mark per user message. Hover or focus a
+mark to preview the exchange, then click or press Enter to jump to that message.
+Scrolling away from the bottom reveals a floating down-arrow button above the
+composer. Incoming output preserves your reading position; clicking the button
+returns to the latest message and resumes following the response.
+
 ## Workspace
 
 The repository is a Cargo workspace:

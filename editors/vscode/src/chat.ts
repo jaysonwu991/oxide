@@ -399,7 +399,6 @@ export class ChatController {
   /// compares it so every path that repaints the footer — a setting, a folder,
   /// a login — re-reads them rather than only the attach and the model pick.
   private reasoningIdentity = "";
-  private resettingReasoning = false;
   /// The newest read of them, so a stale answer is dropped rather than
   /// repainting the chip with a model the panel has moved off.
   private reasoningProbe = 0;
@@ -684,7 +683,6 @@ export class ChatController {
       // answered out of what the last one left behind.
       this.project = null;
       this.reasoningIdentity = "";
-      this.resettingReasoning = false;
       this.reasoningLevels = [];
       this.supportsReasoning = undefined;
       this.contextWindow = null;
@@ -696,30 +694,14 @@ export class ChatController {
       folder.uri.fsPath,
       this.trust(),
       this.deps,
-      this.setting<string>("model", ""),
     );
-    // The reasoning levels belong to the active model, which the folder, the
-    // `oxide.model` setting or the provider can change. When the identity
+    // The reasoning levels belong to the active model. When the identity
     // moves, the old model's levels are dropped before the new ones are read,
     // so a failed read leaves the built-in set rather than the previous model's.
-    const identity = `${folder.uri.fsPath}\n${
-      this.setting<string>("model", "").trim() || this.project.model
-    }\n${this.project.provider}`;
+    const identity = `${folder.uri.fsPath}\n${this.project.model}\n${this.project.provider}`;
     const moved = identity !== this.reasoningIdentity;
     if (moved) {
-      const previous = this.reasoningIdentity;
       this.reasoningIdentity = identity;
-      this.resettingReasoning = false;
-      if (previous && previous.split("\n")[0] === folder.uri.fsPath) {
-        this.resettingReasoning = true;
-        void this.updateSetting("reasoning", "auto").finally(() => {
-          if (this.reasoningIdentity !== identity) return;
-          this.resettingReasoning = false;
-          this.broadcast(this.stateMessage());
-        }).catch(() => {
-          this.showNotice("Could not save the reasoning reset.", "error");
-        });
-      }
       this.reasoningLevels = [];
       this.supportsReasoning = undefined;
       this.contextWindow = null;
@@ -753,7 +735,7 @@ export class ChatController {
     const project = this.project;
     const agent = this.setting<string>("agent", "").trim();
     return footerState({
-      model: this.setting<string>("model", "").trim() || project?.model || "",
+      model: project?.model || "",
       provider: project?.provider ?? "",
       contextWindow: this.contextWindow ?? project?.contextWindow ?? 0,
       reasoning: this.currentReasoning(),
@@ -787,7 +769,7 @@ export class ChatController {
     try {
       const result = await runCapture(
         this.binary(),
-        reasoningArgs(refresh, this.setting<string>("model", "")),
+        reasoningArgs(refresh, this.project?.model ?? ""),
         cwd,
         30_000,
       );
@@ -820,7 +802,7 @@ export class ChatController {
     try {
       const result = await runCapture(
         this.binary(),
-        contextArgs(this.setting<string>("model", "")),
+        contextArgs(this.project?.model ?? ""),
         cwd,
         30_000,
       );
@@ -901,18 +883,27 @@ export class ChatController {
   /// Writes a setting where a workspace is available, and to the user's own
   /// settings when there is none (a `.vscode/settings.json` needs a folder).
   private async updateSetting(key: string, value: string): Promise<void> {
+    if (key === "reasoning" || key === "model") {
+      if (!value.trim()) return;
+      const cwd = this.cwd();
+      if (!cwd) throw new Error("Open a folder before choosing a model or reasoning level.");
+      const result = await runCapture(this.binary(), ["select", `--${key}`, value], cwd);
+      if (result.error || result.code !== 0) {
+        throw new Error(result.error || firstLine(result.stderr) || `exit ${result.code}`);
+      }
+      this.refreshProject(true);
+      this.broadcast(this.stateMessage());
+      return;
+    }
     const target = vscode.workspace.workspaceFolders?.length
       ? vscode.ConfigurationTarget.Workspace
       : vscode.ConfigurationTarget.Global;
     const settings = vscode.workspace.getConfiguration("oxide");
-    const changedModel = key === "model" && settings.get<string>(key, "") !== value;
     await settings.update(key, value, target);
-    if (changedModel) await settings.update("reasoning", "auto", target);
   }
 
   private currentReasoning(): string {
-    if (this.resettingReasoning) return "auto";
-    const selected = this.setting<string>("reasoning", "auto");
+    const selected = this.project?.reasoning ?? "auto";
     const levels = reasoningChoices({
       reasoningLevels: this.reasoningLevels,
       supportsReasoning: this.supportsReasoning,
@@ -922,7 +913,7 @@ export class ChatController {
 
   private turnOptions(): TurnOptions {
     return {
-      model: this.setting<string>("model", "").trim(),
+      model: this.project?.model ?? "",
       agent: this.setting<string>("agent", "").trim(),
       reasoning: this.currentReasoning(),
       trust: this.trust(),
@@ -3435,7 +3426,7 @@ export class ChatController {
   }
 
   private showModelDialog(): void {
-    const current = this.setting<string>("model", "").trim();
+    const current = this.project?.model ?? "";
     const configured = this.project?.model ?? "";
     const provider = this.project?.provider ?? "";
     this.showDialog(
@@ -3511,25 +3502,16 @@ export class ChatController {
     await this.updateSetting(key, value.trim());
   }
 
-  /// The model dialog's answer. A model the catalog lists under another provider
-  /// is a switch as well as a choice: the selection lives in `config.json` and
-  /// only the CLI can move it, so the row runs `oxide login <provider> --model
-  /// <model>` — which reuses the credential that provider is already stored with —
-  /// and then leaves the panel's own `oxide.model` override unset, since the
-  /// config now names exactly the model that was picked. A model of the provider
-  /// in use is the panel's setting alone, which is what every other row does.
+  /// Persist provider-qualified picks through the same selection command as the CLI.
   private async applyModel(choice: string): Promise<void> {
     // The row's value is the provider-qualified choice, so the pick resolves to
     // the provider it was listed under even where two of them serve the same id.
     // A model typed into the search box belongs to no provider in the listing and
-    // is the panel's own override for the provider in use.
+    // uses the provider in use.
     const selected = parseModelChoice(this.modelCatalog, choice);
     const picked = selected?.model ?? choice.trim();
-    const active = this.project?.provider ?? "";
     const provider = selected?.provider ?? "";
-    if (!picked || !provider || provider === active) {
-      return this.applyDialogSetting("model", picked);
-    }
+    if (!picked) return;
     this.closeDialog();
     const cwd = this.cwd();
     if (!cwd) {
@@ -3538,25 +3520,17 @@ export class ChatController {
     }
     const result = await runCapture(
       this.binary(),
-      providerLoginArgs(provider, false, picked),
+      ["select", "--model", picked, ...(provider ? ["--provider", provider] : [])],
       cwd,
       30_000,
     );
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
-      this.showNotice(`Could not switch to ${provider}: ${detail}`, "error");
+      this.showNotice(`Could not select model: ${detail}`, "error");
       return;
     }
-    const outcome = parseLoginOutcome(result.stdout);
-    // The provider, its model and its endpoint are what `config.json` selects
-    // now, so the chips and the window are read again from it; the panel's own
-    // override goes, or it would name a model the provider it just left serves.
-    await this.updateSetting("model", "");
-    await this.updateSetting("reasoning", "auto");
     this.refreshProject(true);
-    this.showNotice(
-      `Switched to ${outcome?.label || provider} on ${picked}.`,
-    );
+    this.showNotice(`Model set to ${picked}.`);
     this.onDidChange.fire();
     this.broadcast(this.stateMessage());
   }

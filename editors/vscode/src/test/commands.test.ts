@@ -76,7 +76,7 @@ describe("command contributions", () => {
     // published catalog, which only the CLI reads; keeping a table here is what
     // made the model chip report 128k for a model whose window is 1M.
     assert.ok(
-      chat.includes("contextArgs(this.setting<string>(\"model\", \"\"))"),
+      chat.includes("contextArgs(this.project?.model ?? \"\")"),
       "the probe asks for the window of the model a turn would run with",
     );
     assert.ok(chat.includes("parseContextWindow(result.stdout)"), "and reads the CLI's answer");
@@ -1360,29 +1360,20 @@ describe("command contributions", () => {
     );
   });
 
-  it("takes a model of another provider as a switch, not only a choice", () => {
-    // The selection lives in `config.json` and only the CLI writes it, so a row
-    // from another provider runs a login with the model — reusing whatever
-    // credential that provider has stored — and leaves the panel's own
-    // `oxide.model` unset, so the two cannot name different models.
+  it("saves every model choice through the shared CLI selection command", () => {
     const apply = chat.slice(
       chat.indexOf("private async applyModel("),
       chat.indexOf("private async applyTrust("),
     );
-    assert.ok(apply.includes("providerLoginArgs(provider, false, picked)"), "a login carries the model");
-    assert.ok(apply.includes('await this.updateSetting("model", "")'), "the override is left unset");
-    assert.ok(
-      apply.indexOf('await this.updateSetting("model", "")') > apply.indexOf("runCapture("),
-      "after the switch landed rather than before it",
-    );
-    assert.ok(
-      apply.includes("parseModelChoice(this.modelCatalog, choice)"),
-      "the provider comes from the row's own qualified choice",
-    );
-    assert.ok(
-      apply.includes('return this.applyDialogSetting("model", picked)'),
-      "and the provider in use is still a setting alone",
-    );
+    assert.ok(apply.includes('["select", "--model", picked,'));
+    assert.ok(apply.includes('["--provider", provider]'));
+    assert.ok(apply.includes("parseModelChoice(this.modelCatalog, choice)"));
+    assert.ok(!apply.includes('applyDialogSetting("model"'));
+    assert.ok(apply.includes("this.refreshProject(true)"));
+    const update = chat.slice(chat.indexOf("private async updateSetting("), chat.indexOf("private currentReasoning("));
+    assert.ok(update.includes('["select", `--${key}`, value]'));
+    assert.ok(chat.includes('const selected = this.project?.reasoning ?? "auto"'));
+    assert.ok(extension.includes('new vscode.RelativePattern(configFile(), "config.json")'));
   });
 
   it("saves the trust decision where every front-end reads it", () => {

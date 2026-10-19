@@ -89,16 +89,21 @@
         <div class="topbar-actions">
           <button id="changes-toggle" class="icon" title="View changes" aria-label="View changes" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 9h8M12 5v8M8 17h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
           <button id="details-toggle" class="icon" title="Project details" aria-label="Project details" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="5" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="5" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 6h9M11 12h9M11 18h9M3 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          <button id="new-tab" class="icon" title="New tab (⌘T / Ctrl+T)" aria-label="New tab"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v10M7 12h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         </div>
       </header>
 
+      <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs" hidden></div>
       <div class="main-content">
       <div class="conversation-pane">
       <div id="run-time" class="run-time" role="timer" hidden>
         <span id="run-time-text"></span>
       </div>
 
-      <div id="transcript" class="conversation"></div>
+      <nav id="message-nav" class="message-nav" aria-label="Jump to a message" hidden></nav>
+      <div id="message-preview" class="message-preview" hidden></div>
+      <div id="transcript" class="conversation" role="tabpanel"></div>
+      <button id="jump-latest" class="jump-latest" title="Jump to latest message" aria-label="Jump to latest message" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
 
       <div class="composer-wrap">
         <!-- The folders this window can run in, opened from the composer's own
@@ -338,7 +343,6 @@
       </div>
 
     <aside id="review-modal" class="changes-pane" aria-label="Changes" hidden>
-      <div id="changes-resizer" class="dock-resizer" role="separator" aria-label="Resize Changes pane" aria-orientation="vertical" aria-valuemin="260" aria-valuenow="480" tabindex="0" ></div>
       <div class="review-dialog">
         <div class="dock-title"><h2 id="review-title">Changes</h2>
           <button
@@ -361,7 +365,6 @@
     </aside>
 
     <aside id="details-panel" class="details-pane" aria-label="Project details" hidden>
-      <div id="details-resizer" class="dock-resizer" role="separator" aria-label="Resize project details" aria-orientation="vertical" aria-valuemin="260" aria-valuenow="300" tabindex="0" ></div>
       <div class="details-card">
         <div class="details-head"><span id="details-project"></span><button id="details-more" class="icon" title="Project options" aria-label="Project options" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
         <button id="details-changes" class="details-row"><span id="details-changes-icon" aria-hidden="true"></span><span>Changes</span><span id="details-stats" class="change-stats"></span></button>
@@ -546,6 +549,9 @@
           <tr><td>Shift+Enter</td><td>Newline</td></tr>
           <tr><td>⌘⇧Enter / Ctrl+Shift+Enter</td><td>Use the opposite follow-up behavior once</td></tr>
           <tr><td>⌘V / Ctrl+V</td><td>Attach a clipboard image</td></tr>
+          <tr><td>⌘T / Ctrl+T</td><td>New chat tab</td></tr>
+          <tr><td>⌘W / Ctrl+W</td><td>Close chat tab</td></tr>
+          <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td>Next / previous chat tab</td></tr>
           <tr><td>⌘1…⌘9 / Ctrl+1…9</td><td>Open the thread at that place in the sidebar</td></tr>
           <tr><td>Shift+Tab / Ctrl+R</td><td>Cycle reasoning</td></tr>
           <tr><td>Ctrl+K</td><td>Open the model picker</td></tr>
@@ -640,6 +646,8 @@
         </div>
       </div>
     </div>
+
+    <div id="toast-list" class="toast-list" aria-label="Notifications"></div>
 
     <input id="attach-input" type="file" accept="image/*,application/pdf" multiple hidden />
     <input id="folder-picker-input" type="file" webkitdirectory directory multiple hidden />

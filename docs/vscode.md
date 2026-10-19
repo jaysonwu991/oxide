@@ -727,10 +727,12 @@ row names the provider it belongs to, and taking a row from another one switches
 to it — the row's value is the provider-qualified choice (`models.ts::modelChoiceId`,
 composed and compared rather than split, since a model id may contain the
 separator itself), because two providers can offer the same model id and a row
-carrying the id alone could not say which of them the reader picked — `oxide login <provider> --json --model <model>`, which reuses that
-provider's stored credential and writes the selection to `config.json`, with the
-panel's own `oxide.model` override left unset so the two cannot name different
-models. A provider whose catalog could not be listed is named in the dialog's own
+carrying the id alone could not say which of them the reader picked.
+Every pick runs `oxide select --model <model> [--provider <provider>]`, which
+writes the selection to the shared `config.json`. Reasoning picks use
+`oxide select --reasoning <level>`. The panel watches that file and refreshes
+when the editor regains focus, so choices made in CLI or Desktop appear here.
+The legacy `oxide.model` and `oxide.reasoning` editor settings are no longer used. A provider whose catalog could not be listed is named in the dialog's own
 note rather than dropped, the remembered models stand in when the whole read
 fails, and a model ID typed by hand is still a row (it runs against the provider
 in use, which the row says).

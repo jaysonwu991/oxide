@@ -360,6 +360,8 @@ const servers = [
   },
 ];
 
+let sessionReadGate = null;
+const archivedThreads = new Map();
 const calls = [];
 let mcpsError = null;
 let createError = null;
@@ -744,7 +746,11 @@ const invoke = async (command, args = {}) => {
         row.id === args.id ? { ...row, pinned: args.pinned } : row,
       );
       return threads.map((row) => ({ ...row }));
+    case "unarchive_session":
+      threads.push({ ...archivedThreads.get(args.id), pinned: args.pinned });
+      return threads.map((row) => ({ ...row }));
     case "archive_session":
+      archivedThreads.set(args.id, threads.find((row) => row.id === args.id));
       threads = threads.filter((row) => row.id !== args.id);
       return threads.map((row) => ({ ...row }));
     case "reorder_projects": {
@@ -758,6 +764,11 @@ const invoke = async (command, args = {}) => {
       return projectRows.map((row) => ({ ...row }));
     }
     case "session_messages": {
+      if (sessionReadGate) {
+        const gate = sessionReadGate;
+        sessionReadGate = null;
+        await new Promise((resolve) => { gate.release = resolve; });
+      }
       const target = (threads || []).find((session) => session.id === args.id);
       return {
         header: { id: args.id, name: target?.name || null },
@@ -866,6 +877,8 @@ const invoke = async (command, args = {}) => {
       return clipboardAnswer;
     case "reasoning_levels":
       return { ...reasoningAnswer, reasoningLevels: [...reasoningAnswer.reasoningLevels] };
+    case "set_project_trust":
+      return { ...projectInfo, trust: { required: true, trusted: args.trusted } };
     case "project_info":
       // A folder's own facts are answered only where a check needs what a real
       // answer sets — the sections above set that state themselves, since the
@@ -969,7 +982,7 @@ globalThis.window = {
       );
     },
   },
-  innerWidth: 1280,
+  innerWidth: 1600,
   innerHeight: 900,
   // The window keeps the listeners the page puts on it, so a check can fire the
   // one event only the reader can cause — coming back to the window.
@@ -1033,10 +1046,12 @@ vm.runInThisContext(
     " updateChips, openReasoning, loadInfo," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
-    " bubble, renderMarkdown, SCROLLBAR_LINGER, setUsage, setStatus, paintStatus, confirmDialog };\n",
+    " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
+    " bubble, renderMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog };\n",
 );
 
 const app = globalThis.__app;
+const toastText = () => elementFor("toast-list").children.at(-1)?.children[0]?.textContent;
 const status = () => String(elementFor("status-text").textContent);
 const projectCalls = (command) => calls.filter(([name]) => name === command);
 /// Delivers an event to the app the way the host does (`event.payload`).
@@ -1172,7 +1187,7 @@ check(
   blankHome.includes("Add a folder") &&
     !elementFor("transcript").outline().includes("Add a folder") &&
     elementFor("transcript").querySelectorAll(".recent-thread").length > 0 &&
-    /Failed to load threads/.test(status()),
+    /Failed to load threads/.test(toastText()),
   `${blankHome} / ${elementFor("transcript").outline()} / ${status()}`,
 );
 threadsError = null;
@@ -1697,7 +1712,7 @@ const refusedHandoff = app.handoffSession();
 await nextTick();
 elementFor("confirm-ok").click();
 await refusedHandoff;
-check("kept the chat in place when handoff was refused", app.state.session === handoffId && app.state.worktree === worktrees[0].path && /uncommitted changes/.test(status()));
+check("kept the chat in place when handoff was refused", app.state.session === handoffId && app.state.worktree === worktrees[0].path && /uncommitted changes/.test(toastText()));
 handoffError = null;
 
 // Making one from the reader's own name starts a thread in it.
@@ -1733,7 +1748,7 @@ calls.length = 0;
 await app.createWorktree();
 check(
   "reported a worktree it could not make without moving the thread",
-  /Could not create the worktree: .*not in a git repository/.test(status()) &&
+  /Could not create the worktree: .*not in a git repository/.test(toastText()) &&
     app.state.worktree === "/home/dev/Oxide/worktrees/9c1f/cache-the-tokens",
   `${status()} / ${app.state.worktree}`,
 );
@@ -3175,7 +3190,7 @@ check(
     rowFor("filesystem").children[0].children[2].className === "icon mcp-toggle",
   after,
 );
-check("reported the toggle", status() === "Ready", status());
+check("reported the toggle outside the composer", toastText() === "filesystem disabled", toastText());
 
 // A failing core call is shown, not swallowed into an empty dialog.
 mcpsError = "connection refused";
@@ -4591,8 +4606,14 @@ await reviewTick();
 check("opened all chat sources without replacing the project panel", !elementFor("sources-modal").hidden && !elementFor("details-panel").hidden);
 document.fire("keydown", { key: "Escape" });
 check("dismissed chat sources before the dock behind it", elementFor("sources-modal").hidden && !elementFor("details-panel").hidden);
-elementFor("details-resizer").fire("keydown", { key: "ArrowLeft", preventDefault() {}, stopPropagation() {} });
-check("resized the dock from its keyboard separator", elementFor("details-panel").style.flexBasis === "320px");
+check("kept the project panel at a fixed width without a resize handle", !shell.includes('id="details-resizer"') && !source.includes("function initDockResize"));
+const previousQuerySelector = document.querySelector;
+document.querySelector = (selector) => selector === ".sidebar" ? { getBoundingClientRect: () => ({ width: 620 }) } : previousQuerySelector(selector);
+app.paintDockToggles();
+check("hid the project summary when the sidebar took the reading room", elementFor("details-panel").hidden);
+document.querySelector = previousQuerySelector;
+app.paintDockToggles();
+check("restored the project summary when the sidebar narrowed", !elementFor("details-panel").hidden);
 await app.openRepositoryChanges();
 await reviewTick();
 check(
@@ -6088,11 +6109,11 @@ const heldThreads = threads;
 threadsError = "permission denied";
 await app.loadSessions();
 check(
-  "wore the error state for a status that reports a failure",
-  el("status").dataset.level === "error" &&
-    el("send").dataset.level === "error" &&
-    el("status-text").hidden === false &&
-    el("status-text").textContent === "Failed to load threads: Error: permission denied",
+  "reported a listing failure without changing the send status",
+  el("status").dataset.level === "info" &&
+    el("send").dataset.level === "info" &&
+    toastText() === "Failed to load threads: Error: permission denied" &&
+    status() === "Queued as the next turn.",
   `${el("status").dataset.level} / ${el("status-text").textContent}`,
 );
 threadsError = null;
@@ -6448,7 +6469,7 @@ await nextTick();
 check(
   "refused to archive the thread the turn is running in from another thread",
   !calls.some(([name]) => name === "delete_session") &&
-    /stop it before archiving/.test(status()) &&
+    /stop it before archiving/.test(toastText()) &&
     app.state.session === readThread.id &&
     elementFor("confirm-modal").hidden === true,
   `${JSON.stringify(calls.map(([name]) => name))} / ${status()} / ${elementFor("confirm-modal").hidden}`,
@@ -6551,7 +6572,7 @@ check(
     elementFor("run-banner").hidden === true,
   `${JSON.stringify(calls.map(([name]) => name))} / ${app.state.parked} / ${elementFor("run-banner").hidden}`,
 );
-check("explained permanent CLI deletion after archiving", /oxide sessions delete/.test(status()));
+check("offered concise archive feedback", toastText() === "Chat archived");
 app.state.parked = null;
 app.state.changes = [];
 threads = existing;
@@ -6970,7 +6991,7 @@ calls.length = 0;
 await app.removeProject(removeTarget);
 check(
   "refused to remove the folder of a running turn",
-  calls.length === 0 && /stop it before removing/.test(elementFor("status-text").textContent),
+  calls.length === 0 && /stop it before removing/.test(toastText()),
   elementFor("status-text").textContent,
 );
 app.state.busy = false;
@@ -7156,6 +7177,36 @@ check(
     elementFor("projects-tree").querySelectorAll(".recent-session-item").length === 0,
   JSON.stringify(calls),
 );
+
+check(
+  "reported archiving outside the composer with an undo action",
+  toastText() === "Chat archived" && !status().includes("Thread archived"),
+);
+const archiveToast = elementFor("toast-list").children.at(-1);
+await archiveToast.children[1].onclick();
+check(
+  "undo restored the archived thread and its pin without changing the open chat",
+  calls.some(([name, args]) => name === "unarchive_session" && args.id === "pin-me" && args.pinned) &&
+    app.state.sessions.some((session) => session.id === "pin-me" && session.pinned) &&
+    !elementFor("toast-list").children.includes(archiveToast),
+);
+app.setStatus("Working…");
+const dismissToast = app.showToast("Project trusted");
+check("app feedback preserved the running turn's status", status() === "Working…" && toastText() === "Project trusted");
+dismissToast();
+const projectBeforeTrust = app.state.project;
+app.state.project = removeTarget.path;
+await app.answerTrust(true);
+check("confirmed trust in a toast and on the shield", toastText() === "Project trusted" && el("trust").classList.contains("active") && el("trust-modal").hidden);
+await app.answerTrust(false);
+check("kept a trust refusal outside the composer", toastText() === "Project resources left untrusted" && !el("trust").classList.contains("active") && status() === "Working…");
+app.state.project = projectBeforeTrust;
+const toastCount = elementFor("toast-list").children.length;
+app.showToast("Could not archive thread", "error");
+const errorToast = elementFor("toast-list").children.at(-1);
+check("announced app errors accessibly", errorToast.children[0].getAttribute("role") === "alert");
+errorToast.children.at(-1).click();
+check("dismissed the app notification", elementFor("toast-list").children.length === toastCount);
 
 // ---------- check for updates ----------
 
@@ -7761,9 +7812,9 @@ installError = "the download did not verify against the release's checksum";
 releaseHeldInstalls();
 await behind;
 check(
-  "reported an install that failed behind a closed dialog as a line",
+  "reported an install that failed behind a closed dialog as a toast",
   elementFor("update-modal").hidden === true &&
-    /Could not install the update: .*the download did not verify/.test(status()),
+    /Could not install the update: .*the download did not verify/.test(toastText()),
   `${elementFor("update-modal").hidden} / ${status()}`,
 );
 installError = null;
@@ -7883,8 +7934,8 @@ launchHeard = { event: "update-failed", payload: { message: "the download did no
 elementFor("status-text").textContent = "";
 await app.catchUpOnLaunchUpdate();
 check(
-  "reported an install that failed as a line, not a dialog",
-  elementFor("update-modal").hidden === true && /did not verify/.test(status()),
+  "reported an install that failed as a toast",
+  elementFor("update-modal").hidden === true && /did not verify/.test(toastText()),
   `${elementFor("update-modal").hidden} / ${status()}`,
 );
 launchHeard = null;
@@ -8034,7 +8085,7 @@ el("login-model").value = "claude-sonnet-4-5";
 const connecting = app.saveConnect();
 check(
   "said what the dialog was waiting on while the provider's catalog is read",
-  status() === "Connecting Anthropic…",
+  toastText() === "Connecting Anthropic…",
   status(),
 );
 await connecting;
@@ -8047,7 +8098,7 @@ check(
     loginCall[1].model === "claude-sonnet-4-5" &&
     elementFor("connect-modal").hidden === true &&
     el("login-key").value === "" &&
-    status() === "Connected Anthropic",
+    toastText() === "Connected Anthropic",
   `${JSON.stringify(loginCall)} / ${status()}`,
 );
 // A window with no folder open has no window to read the chip's own line off,
@@ -8072,7 +8123,7 @@ searchProviders("nothing here");
 await app.saveConnect();
 check(
   "refused to connect anything with no provider selected",
-  calls.length === 0 && status() === "Choose a provider first.",
+  calls.length === 0 && toastText() === "Choose a provider first.",
   `${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
 );
 searchProviders("");
@@ -8356,8 +8407,8 @@ await nextTick();
 check(
   "put the order back when the write failed, and said so",
   JSON.stringify(listedIds()) === JSON.stringify(before) &&
-    String(elementFor("status-text").textContent).includes("Could not reorder projects") &&
-    elementFor("status").dataset.level === "error",
+    toastText().includes("Could not reorder projects") &&
+    elementFor("toast-list").children.at(-1).dataset.level === "error",
   `${listedIds().join(" | ")} / ${elementFor("status-text").textContent}`,
 );
 first.fire("dragend", over(35));
@@ -8389,9 +8440,17 @@ check("reset effort after switching to a model without reasoning",
   `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning").hidden}`);
 projectInfo = { ...projectInfo, model: "deepseek-reasoner", supportsReasoning: true, reasoningLevels: ["low", "high", "max"] };
 await app.loadInfo();
-check("refreshed the next model's effort choices without restoring the old effort",
-  app.state.reasoning === "auto" && !elementFor("reasoning").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",
+check("read the shared effort when the model changed elsewhere",
+  app.state.reasoning === "high" && !elementFor("reasoning").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",
   `${app.state.reasoning} / ${app.state.reasoningLevels.join(" ")}`);
+
+calls.length = 0;
+app.setReasoning("max");
+await nextTick();
+check("saved reasoning through the shared configuration command", projectCalls("set_reasoning").at(-1)?.[1].reasoning === "max");
+projectInfo = { ...projectInfo, reasoning: "high" };
+await app.loadInfo();
+check("reloaded the saved effort instead of a window-local choice", app.state.reasoning === "high");
 
 console.log("composer dropdowns");
 modelCatalog = { providers: [{ provider: "openai", active: true, current: projectInfo.model, models: [projectInfo.model, "gpt-5"] }] };
@@ -8424,7 +8483,7 @@ await app.openReasoning();
 check("announced the reasoning dropdown as expanded", elementFor("reasoning").getAttribute("aria-expanded") === "true");
 elementFor("reasoning-modal").fire("keydown", { key: "Tab", stopPropagation() {} });
 check("dismissed reasoning on Tab without cycling the level",
-  elementFor("reasoning-modal").hidden && app.state.reasoning === "auto" &&
+  elementFor("reasoning-modal").hidden && app.state.reasoning === "high" &&
     elementFor("reasoning").getAttribute("aria-expanded") === "false");
 await app.openReasoning();
 document.fire("click", { target: elementFor("prompt") });
@@ -8479,6 +8538,97 @@ check("Up preserved an existing draft", markdownComposer.value === "my draft");
 markdownComposer.value = "";
 markdownComposer.fire("keydown", { key: "ArrowUp", altKey: true, preventDefault() {} });
 check("modified Up did not recall a prompt", markdownComposer.value === "");
+
+console.log("chat tabs and message navigation");
+app.state.busy = false;
+app.state.runSession = null;
+app.state.sendView = null;
+app.state.parked = null;
+app.state.project = "/preview-test";
+app.state.session = "tab-one";
+const firstTab = app.activeChatTab().id;
+const firstMessage = app.bubble("user", "Explain the architecture");
+const reply = app.bubble("assistant", "The project has a shared core.");
+const secondMessage = app.bubble("user", "Show the next step");
+firstMessage.scrollIntoView = (options) => { firstMessage.jumped = options; };
+secondMessage.scrollIntoView = (options) => { secondMessage.jumped = options; };
+elementFor("transcript").replaceChildren(firstMessage, reply, secondMessage);
+elementFor("transcript").scrollTop = 120;
+elementFor("prompt").value = "unfinished draft";
+app.state.attachments = [{ name: "note.txt", dataUrl: "data:text/plain;base64,eA==" }];
+await app.newChatTab();
+check("opened a fresh tab without the previous draft", app.chatTabs.length === 2 && elementFor("prompt").value === "" && app.state.attachments.length === 0 && app.state.session === null);
+const secondTab = app.activeChatTab().id;
+elementFor("prompt").value = "another draft";
+await app.activateChatTab(firstTab);
+check("restored the first tab's draft, attachments and reading position", elementFor("prompt").value === "unfinished draft" && app.state.attachments[0]?.name === "note.txt" && elementFor("transcript").children[0] === firstMessage && elementFor("transcript").scrollTop === 120);
+app.renderMessageNavigator();
+check("listed one jump marker per user message", elementFor("message-nav").children.length === 2 && !elementFor("message-nav").hidden);
+elementFor("message-nav").children[0].onmouseenter();
+check("previewed the target message without navigating", !elementFor("message-preview").hidden && elementFor("message-preview").children[0].textContent === "Explain the architecture" && !firstMessage.jumped);
+elementFor("message-nav").children[1].click();
+check("jumped to the selected message", secondMessage.jumped?.block === "start" && elementFor("message-preview").hidden);
+await app.closeChatTab(secondTab);
+check("closing another tab kept the active chat", app.chatTabs.length === 1 && app.activeChatTab().id === firstTab && elementFor("prompt").value === "unfinished draft");
+
+app.state.session = null;
+app.state.busy = true;
+app.state.runSession = null;
+app.state.runProject = app.state.project;
+app.state.sendView = { session: null, project: app.state.project, tabId: firstTab };
+app.state.parked = null;
+elementFor("transcript").replaceChildren(app.bubble("user", "A response starting in this tab"));
+await app.newChatTab();
+const awayTab = app.activeChatTab().id;
+await app.newChatTab();
+await app.activateChatTab(awayTab);
+check("kept a pending new chat out of another blank tab", app.state.parked?.pending && !elementFor("transcript").outline().includes("A response starting in this tab"));
+await emit("agent-start", { sessionId: "tab-live", title: "Running in the first tab" });
+check("kept a starting response in its original tab", app.state.session === null && app.state.parked?.session === "tab-live" && app.chatTabs.find((tab) => tab.id === firstTab)?.session === "tab-live");
+app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Reply while this tab is away" } });
+await app.activateChatTab(firstTab);
+check("restored the response streamed into an inactive tab", app.state.session === "tab-live" && elementFor("transcript").outline().includes("Reply while this tab is away"));
+await app.closeChatTab(firstTab);
+check("closing a running chat tab preserved its response", app.activeChatTab().id === awayTab && app.state.runSession === "tab-live" && app.state.parked?.session === "tab-live");
+app.setIdle();
+
+const readGate = {};
+sessionReadGate = readGate;
+const loadingTab = app.activeChatTab().id;
+const lateRead = app.openSession({ id: "late-read", cwd: app.state.project, name: "A slow chat" });
+await nextTick();
+await app.newChatTab();
+const newView = app.bubble("user", "Keep this new tab intact");
+elementFor("transcript").replaceChildren(newView);
+readGate.release();
+await lateRead;
+check("discarded a session read that arrived after switching tabs", app.state.session === null && elementFor("transcript").children[0] === newView);
+await app.activateChatTab(loadingTab);
+check("reloaded the interrupted chat when its tab reopened", app.state.session === "late-read" && projectCalls("session_messages").filter(([, args]) => args.id === "late-read").length === 2);
+
+console.log("jump to latest");
+const jumpTranscript = elementFor("transcript");
+jumpTranscript.scrollHeight = 1000;
+jumpTranscript.clientHeight = 400;
+jumpTranscript.scrollTop = 600;
+jumpTranscript.fire("scroll", {});
+check("hid the down arrow at the latest message", elementFor("jump-latest").hidden && jumpTranscript.followLatest);
+jumpTranscript.scrollTop = 100;
+jumpTranscript.fire("scroll", {});
+check("showed the down arrow while reading earlier messages", !elementFor("jump-latest").hidden && jumpTranscript.followLatest === false);
+app.state.currentAssistant = null;
+app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "More output while reading earlier messages" } });
+check("kept streamed output from moving the reader", jumpTranscript.scrollTop === 100 && !elementFor("jump-latest").hidden);
+elementFor("jump-latest").click();
+check("jumped to the bottom and resumed following output", jumpTranscript.scrollTop === 1000 && jumpTranscript.followLatest && elementFor("jump-latest").hidden);
+jumpTranscript.scrollHeight = 1100;
+app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "The next update" } });
+check("followed the response again after jumping", jumpTranscript.scrollTop === 1100);
+jumpTranscript.scrollHeight = 300;
+jumpTranscript.clientHeight = 400;
+jumpTranscript.scrollTop = 0;
+jumpTranscript.fire("scroll", {});
+check("kept the button hidden for a short chat", elementFor("jump-latest").hidden);
 
 console.log("the bridge");
 check(

@@ -260,9 +260,8 @@ const state = {
   heldThread: null,
   agent: "",
   reasoning: "auto",
-  // Whether the reader chose a level in this window, rather than the one the
-  // project's config loaded. Only an explicit pick overrides the level a
-  // resumed session recorded; otherwise the core restores the session's own.
+  // Whether a picker choice supplies an explicit level while the shared
+  // configuration is being saved.
   reasoningPicked: false,
   // The levels the active model advertised, when its listing carried them. The
   // picker shows these instead of the full set, so it never offers a level the
@@ -370,6 +369,65 @@ function setStatus(text, level = "info") {
   state.statusText = text;
   state.statusLevel = level;
   paintStatus();
+}
+
+function showToast(text, level = "info", action = null) {
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.dataset.level = level;
+  const message = document.createElement("span");
+  message.className = "toast-message";
+  message.setAttribute("role", level === "error" ? "alert" : "status");
+  message.textContent = text;
+  toast.appendChild(message);
+  let timer;
+  let pending = false;
+  let hovered = false;
+  let focused = false;
+  const dismiss = () => { clearTimeout(timer); toast.remove(); };
+  const pause = () => clearTimeout(timer);
+  const resume = () => {
+    pause();
+    if (pending || hovered || focused) return;
+    timer = setTimeout(dismiss, action || level === "error" ? 10000 : 6000);
+  };
+  if (action) {
+    const button = document.createElement("button");
+    button.className = "toast-action";
+    button.textContent = action.label;
+    button.onclick = async () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      pending = true;
+      pause();
+      try {
+        await action.run();
+        dismiss();
+      } catch (error) {
+        button.disabled = false;
+        pending = false;
+        showToast(`Could not undo: ${error}`, "error");
+      }
+    };
+    toast.appendChild(button);
+  }
+  const close = document.createElement("button");
+  close.className = "icon-button toast-close";
+  close.innerHTML = ICONS.close;
+  close.title = "Dismiss notification";
+  close.setAttribute("aria-label", close.title);
+  close.onclick = dismiss;
+  toast.appendChild(close);
+  toast.addEventListener("mouseenter", () => { hovered = true; pause(); });
+  toast.addEventListener("mouseleave", () => { hovered = false; resume(); });
+  toast.addEventListener("focusin", () => { focused = true; pause(); });
+  toast.addEventListener("focusout", (event) => {
+    focused = toast.contains(event.relatedTarget);
+    resume();
+  });
+  el("toast-list").appendChild(toast);
+  resume();
+  return dismiss;
 }
 
 /// The action carries the status; a separate line is only needed for a notice.
@@ -537,8 +595,276 @@ function usagePercent(totals) {
   return (totals.prompt / state.contextWindow) * 100;
 }
 
+let nextTabId = 1;
+const chatTabs = [{ id: nextTabId++, title: "New chat", snapshot: null }];
+let activeTabId = chatTabs[0].id;
+let switchingTab = false;
+const activeChatTab = () => chatTabs.find((tab) => tab.id === activeTabId);
+const tabChangeBlocked = () => switchingTab || state.handingOff ||
+  ["approval", "question", "trust-modal", "confirm-modal", "rename-modal"].some((id) => !el(id).hidden);
+
+function captureChatTab() {
+  const tab = activeChatTab();
+  if (!tab) return;
+  tab.title = el("thread-title").textContent || "New chat";
+  tab.session = state.session;
+  tab.snapshot = {
+    project: state.project, projectName: state.projectName, session: state.session, trust: state.trust,
+    worktree: state.worktree, worktrees: state.worktrees, agent: state.agent,
+    changes: state.changes, repositoryChanges: state.repositoryChanges,
+    usage: state.usage, contextWindow: state.contextWindow,
+    draft: el("prompt").value, attachments: [...state.attachments],
+    nodes: [...el("transcript").children], scrollTop: el("transcript").scrollTop,
+    followLatest: el("transcript").followLatest !== false,
+  };
+}
+
+function paintChatTabs() {
+  const list = el("chat-tabs");
+  if (!list) return;
+  list.replaceChildren();
+  list.hidden = chatTabs.length < 2;
+  for (const tab of chatTabs) {
+    const row = document.createElement("div");
+    row.className = `chat-tab${tab.id === activeTabId ? " active" : ""}`;
+    const select = document.createElement("button");
+    select.className = "chat-tab-select";
+    select.id = `chat-tab-${tab.id}`;
+    select.setAttribute("role", "tab");
+    select.setAttribute("aria-selected", String(tab.id === activeTabId));
+    select.setAttribute("aria-controls", "transcript");
+    select.tabIndex = tab.id === activeTabId ? 0 : -1;
+    select.textContent = tab.title;
+    select.title = tab.title;
+    select.onclick = () => activateChatTab(tab.id);
+    select.onkeydown = (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const index = chatTabs.indexOf(tab);
+      const target = event.key === "Home" ? chatTabs[0] : event.key === "End" ? chatTabs.at(-1)
+        : chatTabs[(index + (event.key === "ArrowRight" ? 1 : -1) + chatTabs.length) % chatTabs.length];
+      activateChatTab(target.id).then(() => el(`chat-tab-${target.id}`)?.focus());
+    };
+    const close = document.createElement("button");
+    close.className = "chat-tab-close";
+    close.innerHTML = ICONS.close;
+    close.title = `Close ${tab.title}`;
+    close.setAttribute("aria-label", close.title);
+    close.onclick = () => closeChatTab(tab.id);
+    row.append(select, close);
+    list.appendChild(row);
+  }
+  el("transcript").setAttribute("aria-labelledby", `chat-tab-${activeTabId}`);
+}
+
+async function activateChatTab(id) {
+  if (id === activeTabId || tabChangeBlocked()) return;
+  const tab = chatTabs.find((entry) => entry.id === id);
+  if (!tab) return;
+  switchingTab = true;
+  try {
+    captureChatTab();
+    closeAt();
+    closeSidebarCards();
+    closeQueueMenu();
+    parkRun();
+    clearPaintIdle();
+    activeTabId = id;
+    const saved = tab.snapshot;
+    if (saved) {
+      for (const key of ["project", "projectName", "session", "trust", "worktree", "worktrees", "agent", "changes", "repositoryChanges", "contextWindow"]) state[key] = saved[key];
+      el("transcript").replaceChildren(...saved.nodes);
+      const ownsParked = tab.session != null
+        ? state.parked?.session === tab.session
+        : state.parked?.pending && state.sendView?.tabId === tab.id;
+      if (!ownsParked || !restoreParked(tab.session)) setUsage(saved.usage || {});
+      el("transcript").scrollTop = saved.scrollTop || 0;
+      el("transcript").followLatest = saved.followLatest;
+      el("prompt").value = saved.draft;
+      state.attachments = [...saved.attachments];
+    } else {
+      state.session = null;
+      state.worktree = null;
+      resetTranscript();
+      el("prompt").value = "";
+      state.attachments = [];
+    }
+    closeOverlays();
+    closeReview();
+    setThreadTitle(tab.title === "New chat" ? "" : tab.title);
+    renderAttachments();
+    updateChips();
+    el("agents").title = `Agents: ${state.agent || "Default"}`;
+    paintQueue();
+    updateRunBanner();
+    updateSendState();
+    renderProjectsTree();
+    renderMessageNavigator();
+    loadGit();
+    await loadInfo();
+    loadWorktrees();
+    if (tab.pendingSession) await openSession(tab.pendingSession);
+    el("prompt").focus();
+  } finally {
+    switchingTab = false;
+    paintChatTabs();
+  }
+}
+
+async function newChatTab() {
+  if (tabChangeBlocked()) return;
+  const tab = { id: nextTabId++, title: "New chat", snapshot: null };
+  chatTabs.push(tab);
+  await activateChatTab(tab.id);
+  return tab.id;
+}
+
+async function closeChatTab(id) {
+  if (tabChangeBlocked()) return;
+  const index = chatTabs.findIndex((tab) => tab.id === id);
+  if (index < 0) return;
+  if (chatTabs.length === 1) {
+    await newChatTab();
+  } else if (activeTabId === id) {
+    await activateChatTab(chatTabs[index - 1]?.id ?? chatTabs[index + 1].id);
+  }
+  chatTabs.splice(chatTabs.findIndex((tab) => tab.id === id), 1);
+  paintChatTabs();
+}
+
+function initChatTabs() {
+  paintChatTabs();
+  el("new-tab").onclick = newChatTab;
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || state.handingOff) return;
+    const key = event.key.toLowerCase();
+    if ((event.metaKey || event.ctrlKey) && key === "t" && !event.shiftKey && !event.altKey) {
+      event.preventDefault(); newChatTab();
+    } else if ((event.metaKey || event.ctrlKey) && key === "w" && !event.shiftKey && !event.altKey) {
+      event.preventDefault(); closeChatTab(activeTabId);
+    } else if (event.ctrlKey && key === "tab") {
+      event.preventDefault();
+      const index = chatTabs.findIndex((tab) => tab.id === activeTabId);
+      activateChatTab(chatTabs[(index + (event.shiftKey ? -1 : 1) + chatTabs.length) % chatTabs.length].id);
+    }
+  });
+}
+
+function messageSummary(node) {
+  return (node?.dataset?.prompt || node?.querySelector?.(".body")?.textContent || node?.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+function renderMessageNavigator() {
+  const nav = el("message-nav");
+  if (!nav) return;
+  const prompts = [...el("transcript").querySelectorAll(".msg.user")];
+  nav.replaceChildren();
+  el("message-preview").hidden = true;
+  paintJumpLatest();
+  nav.hidden = prompts.length < 2;
+  prompts.forEach((message, index) => {
+    const mark = document.createElement("button");
+    mark.className = "message-marker";
+    const summary = messageSummary(message) || "Attachment";
+    mark.setAttribute("aria-label", `Jump to message ${index + 1}: ${summary.slice(0, 100)}`);
+    mark.title = summary;
+    const show = () => {
+      const preview = el("message-preview");
+      preview.replaceChildren();
+      const title = document.createElement("strong");
+      title.textContent = summary;
+      const excerpt = document.createElement("p");
+      const siblings = [...el("transcript").children];
+      const start = siblings.indexOf(message);
+      const end = index + 1 < prompts.length ? siblings.indexOf(prompts[index + 1]) : siblings.length;
+      excerpt.textContent = siblings.slice(start + 1, end).filter((node) => node.classList.contains("assistant")).map(messageSummary).join(" ").slice(0, 360);
+      preview.append(title, excerpt);
+      preview.hidden = false;
+      const pane = (document.querySelector(".conversation-pane") || el("transcript")).getBoundingClientRect();
+      preview.style.top = `${Math.max(8, Math.min(mark.getBoundingClientRect().top - pane.top - 20, pane.height - preview.getBoundingClientRect().height - 8))}px`;
+    };
+    const hide = () => { el("message-preview").hidden = true; };
+    mark.onmouseenter = show;
+    mark.onmouseleave = hide;
+    mark.onfocus = show;
+    mark.onblur = hide;
+    mark.onclick = () => {
+      hide();
+      el("transcript").followLatest = false;
+      message.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+      message.classList.remove("jump-target");
+      message.classList.add("jump-target");
+      setTimeout(() => message.classList.remove("jump-target"), 1200);
+      for (const button of nav.children) button.classList.toggle("active", button === mark);
+    };
+    nav.appendChild(mark);
+  });
+  paintMessagePosition();
+}
+
+function paintMessagePosition() {
+  const messages = [...el("transcript").querySelectorAll(".msg.user")];
+  const top = el("transcript").getBoundingClientRect().top + 80;
+  let active = 0;
+  messages.forEach((message, index) => { if (message.getBoundingClientRect().top <= top) active = index; });
+  [...el("message-nav").children].forEach((button, index) => {
+    button.classList.toggle("active", index === active);
+    if (index === active) button.setAttribute("aria-current", "true");
+    else button.removeAttribute("aria-current");
+  });
+}
+
+function paintJumpLatest(updateFollow = false) {
+  const transcript = el("transcript");
+  const button = el("jump-latest");
+  const away = transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop > 80;
+  if (updateFollow) transcript.followLatest = !away;
+  button.hidden = !away;
+  if (away) {
+    const pane = (document.querySelector(".conversation-pane") || transcript).getBoundingClientRect();
+    button.style.top = `${Math.max(8, transcript.getBoundingClientRect().bottom - pane.top - 48)}px`;
+  }
+}
+
+function initJumpLatest() {
+  const transcript = el("transcript");
+  transcript.addEventListener("scroll", () => paintJumpLatest(true));
+  el("jump-latest").onclick = () => scrollDown(transcript, true);
+  transcript.addEventListener("load", () => scrollDown(transcript), true);
+  if (typeof MutationObserver !== "undefined") {
+    let queued = false;
+    new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; scrollDown(transcript); });
+    }).observe(transcript, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["class", "hidden"] });
+  }
+  window.addEventListener("resize", () => paintJumpLatest());
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => {
+      if (transcript.followLatest !== false) scrollDown(transcript);
+      else paintJumpLatest();
+    }).observe(transcript);
+  }
+}
+
+function initMessageNavigator() {
+  el("transcript").addEventListener("scroll", paintMessagePosition);
+  if (typeof MutationObserver !== "undefined") {
+    let queued = false;
+    new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; renderMessageNavigator(); });
+    }).observe(el("transcript"), { childList: true });
+  }
+}
+
 function setThreadTitle(text) {
   el("thread-title").textContent = text || "";
+  const tab = activeChatTab();
+  if (tab) { tab.title = text || "New chat"; tab.session = state.session; }
+  paintChatTabs();
 }
 
 /// The label a thread is known by, held once: the sidebar row, the header and
@@ -1086,7 +1412,7 @@ async function loadProjects() {
     // is closed and opened again.
     if (!el("projects-modal").hidden) renderProjects();
   } catch (error) {
-    setStatus(`Failed to load projects: ${error}`, "error");
+    showToast(`Failed to load projects: ${error}`, "error");
   }
 }
 
@@ -1226,7 +1552,7 @@ async function loadInfo() {
     const changedModel = state.reasoningIdentity && identity !== state.reasoningIdentity;
     state.reasoningIdentity = identity;
     state.supportsReasoning = info.supportsReasoning;
-    state.reasoning = changedModel || info.supportsReasoning === false ? "auto" : info.reasoning;
+    state.reasoning = info.supportsReasoning === false ? "auto" : info.reasoning;
     state.reasoningPicked = Boolean(changedModel) || info.supportsReasoning === false;
     state.reasoningLevels = info.supportsReasoning === false
       ? ["auto"]
@@ -1354,9 +1680,9 @@ async function answerTrust(trusted) {
     state.trust = info.trust || null;
     renderProjectMeta(info);
     updateTrustButton();
-    setStatus(trusted ? IDLE_STATUS : "Project resources left untrusted");
+    showToast(trusted ? "Project trusted" : "Project resources left untrusted");
   } catch (error) {
-    setStatus(`Trust update failed: ${error}`, "error");
+    showToast(`Trust update failed: ${error}`, "error");
   }
 }
 
@@ -1700,7 +2026,7 @@ function selectWorktree(path) {
   }
   paintWorktreeChip();
   loadGit();
-  setStatus(
+  showToast(
     entry
       ? `Threads run in the worktree ${entry.name} on ${entry.branch}.`
       : "Threads run in this project's own folder.",
@@ -1737,9 +2063,9 @@ async function createWorktree() {
     await loadWorktrees();
     if (!state.worktrees.some((item) => item.path === entry.path)) state.worktrees.push(entry);
     selectWorktree(entry.path);
-    setStatus(`Created the worktree ${entry.name} at ${entry.branch}.`);
+    showToast(`Created the worktree ${entry.name} at ${entry.branch}.`);
   } catch (error) {
-    setStatus(`Could not create the worktree: ${error}`, "error");
+    showToast(`Could not create the worktree: ${error}`, "error");
   } finally {
     button.disabled = false;
   }
@@ -1763,9 +2089,9 @@ async function removeWorktree(entry) {
       loadGit();
     }
     await loadWorktrees();
-    setStatus(`Removed ${entry.name}. Its branch ${removed.branch} is still in the repository.`);
+    showToast(`Removed ${entry.name}. Its branch ${removed.branch} is still in the repository.`);
   } catch (error) {
-    setStatus(`Could not remove the worktree: ${error}`, "error");
+    showToast(`Could not remove the worktree: ${error}`, "error");
   }
 }
 
@@ -1782,9 +2108,9 @@ async function createWorktreeBranch() {
     await loadWorktrees();
     await loadGit();
     await refreshProjectDetails();
-    setStatus(`Created branch ${branch}.`);
+    showToast(`Created branch ${branch}.`);
   } catch (error) {
-    setStatus(`Could not create branch: ${error}`, "error");
+    showToast(`Could not create branch: ${error}`, "error");
   }
 }
 
@@ -1798,7 +2124,7 @@ async function handoffSession() {
   if (!confirmed || state.session !== id || project !== state.project || busyRefusal("handing off this chat")) return;
   state.handingOff = true;
   el("worktree-handoff").disabled = true;
-  setStatus("Moving chat and changes…");
+  const dismissHandoff = showToast("Moving chat and changes…");
   try {
     const result = await invoke("handoff_session", { project, source, id, toWorktree });
     if (state.session !== id || project !== state.project) return;
@@ -1810,10 +2136,11 @@ async function handoffSession() {
     await openSession({ ...session, cwd: result.cwd });
     state.applyingHandoff = false;
     closeWorktrees();
-    setStatus(`Chat moved to ${toWorktree ? "Worktree" : "Local"}.`);
+    showToast(`Chat moved to ${toWorktree ? "Worktree" : "Local"}.`);
   } catch (error) {
-    setStatus(`Could not hand off chat: ${error}`, "error");
+    showToast(`Could not hand off chat: ${error}`, "error");
   } finally {
+    dismissHandoff();
     state.handingOff = false;
     state.applyingHandoff = false;
     el("worktree-handoff").disabled = false;
@@ -1836,7 +2163,7 @@ async function loadSessions() {
     repaintWelcome();
     return "";
   } catch (error) {
-    setStatus(`Failed to load threads: ${error}`, "error");
+    showToast(`Failed to load threads: ${error}`, "error");
     state.sessionsError = String(error);
     // The home state is painted before either listing answers, so a store that
     // cannot be read still lets the folders that did arrive repaint it: the
@@ -1862,12 +2189,18 @@ function repaintWelcome() {
 /// this happens — the transcript is the reader's, so the run's own output is not
 /// painted into it (see `viewingRun`) — and a card a turn left for this thread
 /// while the reader was elsewhere is painted with it.
+let sessionRead = 0;
 async function openSession(session) {
   if (state.handingOff && !state.applyingHandoff) return;
+  const read = ++sessionRead;
+  const ownerTab = activeChatTab();
+  if (ownerTab) ownerTab.pendingSession = session;
+  const tabId = activeTabId;
   // Leaving the thread a turn is running in parks its transcript with the run:
   // what it has painted stays, and its next step goes on painting into it.
   parkRun();
   state.session = session.id;
+  setThreadTitle(sessionLabel(session));
   // The thread runs where its own header says it does: a thread in a worktree
   // is read back from, and continued in, that checkout rather than in the
   // folder the reader has open.
@@ -1878,6 +2211,7 @@ async function openSession(session) {
   // the store has not been told about yet — so it is handed back rather than
   // read again from a listing that is a step behind.
   if (restoreParked(session.id)) {
+    if (ownerTab) delete ownerTab.pendingSession;
     closeReview();
     setThreadTitle(sessionLabel(session));
     updateRunBanner();
@@ -1892,12 +2226,16 @@ async function openSession(session) {
   state.repositoryChanges = null;
   closeReview();
   updateRunBanner();
+  el("transcript").replaceChildren();
+  renderMessageNavigator();
   try {
     const data = await invoke("session_messages", { project: session.cwd, id: session.id });
+    if (tabId !== activeTabId || read !== sessionRead || state.session !== session.id) return;
+    if (ownerTab) delete ownerTab.pendingSession;
     const transcript = el("transcript");
     transcript.innerHTML = "";
     renderStoredTranscript(transcript, data.messages);
-    scrollDown();
+    scrollDown(el("transcript"), true);
     setThreadTitle(sessionLabel(session));
     paintThreadWorktree();
     loadGit();
@@ -1918,7 +2256,7 @@ async function openSession(session) {
       });
     }
   } catch (error) {
-    setStatus(`Failed to open thread: ${error}`, "error");
+    showToast(`Failed to open thread: ${error}`, "error");
   }
   loadSessions();
 }
@@ -1931,6 +2269,8 @@ function resetTranscript() {
   closeReview();
   if (!el("details-panel").hidden) refreshProjectDetails();
   el("transcript").innerHTML = "";
+  el("transcript").followLatest = true;
+  paintJumpLatest();
   el("usage").textContent = "";
   state.usage = null;
   // The totals a thread carried leave with it, so the line and the ring go back
@@ -2045,8 +2385,10 @@ function speakerLabel(kind) {
 /// Scrolls a transcript to its newest line. The one on screen unless a caller
 /// names another: the run's own output goes to its own thread, which is parked
 /// — detached, and so with nothing to scroll — while the reader is elsewhere.
-function scrollDown(node = el("transcript")) {
-  node.scrollTop = node.scrollHeight;
+function scrollDown(node = el("transcript"), force = false) {
+  if (force) node.followLatest = true;
+  if (node.followLatest !== false) node.scrollTop = node.scrollHeight;
+  if (node === el("transcript")) paintJumpLatest();
 }
 
 /// Drops the pointers into the transcript that was being painted: the reply in
@@ -2464,7 +2806,7 @@ function viewingRun() {
   // the reader can open another thread, and a message typed there would be steered
   // into a run whose reply belongs to a conversation that is not on screen.
   if (state.sendView != null) {
-    return state.sendView.session === state.session && state.sendView.project === state.project;
+    return (!state.sendView.tabId || state.sendView.tabId === activeTabId) && state.sendView.session === state.session && state.sendView.project === state.project;
   }
   return true;
 }
@@ -2542,6 +2884,7 @@ function parkRun() {
   if (state.parked?.session === session && (!starting || state.parked.pending)) return;
   const node = document.createElement("div");
   node.className = "conversation";
+  node.followLatest = el("transcript").followLatest;
   if (state.session === session) node.append(...el("transcript").children);
   state.parked = {
     session,
@@ -2574,7 +2917,7 @@ function restoreParked(session) {
   state.changes = parked.changes;
   const transcript = el("transcript");
   transcript.replaceChildren(...parked.node.children);
-  transcript.scrollTop = transcript.scrollHeight;
+  scrollDown(transcript, true);
   setUsage(parked.usage || {});
   return true;
 }
@@ -2970,7 +3313,7 @@ async function send(opposite = false) {
     el("transcript").appendChild(
       bubble("user", prompt, attachments),
     );
-    scrollDown();
+    scrollDown(el("transcript"), true);
     const accepted = await invoke("steer_run", {
       runId: state.runId,
       message: prompt,
@@ -3012,7 +3355,8 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
   if (!project) return;
   const session = target ? target.session : state.session;
   const here = project === runFolder() && session === state.session;
-  state.sendView = { session, project };
+  const tabId = here ? activeTabId : chatTabs.find((tab) => tab.session === session)?.id;
+  state.sendView = { session, project, tabId };
   // The run's own thread and folder, held apart from the ones on screen: the
   // reader may open another thread while it works, and the run keeps writing into
   // this thread of this folder.
@@ -3024,13 +3368,14 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
       el("prompt").value = "";
       clearAttachments();
       el("transcript").appendChild(bubble("user", prompt, attachments));
-      scrollDown();
+      scrollDown(el("transcript"), true);
     }
   }
   resetTurn();
   setBusy();
   setStatus("Working…");
   try {
+    await reasoningSave;
     state.runId = await invoke("send_prompt", {
       project,
       prompt,
@@ -3095,7 +3440,7 @@ async function queueAction(action, index, direction = 0) {
     if (!accepted) return;
     state.pendingSends.splice(index, 1);
     el("transcript").appendChild(bubble("user", pending.prompt, pending.attachments));
-    scrollDown();
+    scrollDown(el("transcript"), true);
     setStatus("Steering the active response…");
   }
   paintQueue();
@@ -3671,14 +4016,14 @@ async function undoChanges(card) {
       after: card.after,
     });
   } catch (error) {
-    setStatus(`Could not undo: ${error}`, "error");
+    showToast(`Could not undo: ${error}`, "error");
     return;
   }
   card.undone = true;
   card.note.textContent = "Undone";
   card.note.hidden = false;
   card.undo.hidden = true;
-  setStatus("Put the turn's files back");
+  showToast("Put the turn's files back");
 }
 
 // ---------- review ----------
@@ -3902,7 +4247,7 @@ function paintDockToggles() {
   // page has no chat, even when another conversation is running.
   const panel = el("details-panel");
   const wasHidden = panel.hidden;
-  panel.hidden = !state.detailsOpen || !hasChat() || !el("review-modal").hidden;
+  panel.hidden = !state.detailsOpen || !hasChat() || !el("review-modal").hidden || !dockHasRoom();
   el("details-toggle").hidden = !hasChat();
   el("changes-toggle").hidden = !hasChat();
   paintLiveChanges();
@@ -4138,6 +4483,8 @@ function handleEvent(event) {
       const title = String(event.title || "").trim();
       if (!title) break;
       state.runTitle = title;
+      for (const tab of chatTabs) if (tab.session === state.runSession) tab.title = title;
+      paintChatTabs();
       if (state.heldThread?.id === state.runSession) state.heldThread.title = title;
       if (state.parked?.session === state.runSession) state.parked.title = title;
       refreshThreadTitle();
@@ -4639,13 +4986,13 @@ function renderLoginFields() {
 async function saveConnect() {
   const provider = state.providers.find((one) => one.name === state.providerName);
   if (!provider) {
-    setStatus("Choose a provider first.");
+    showToast("Choose a provider first.");
     return;
   }
   // A login reads the provider's own catalog before it answers, so the model the
   // chip names is one that account really serves — which is a round trip, and
   // this dialog waits on it.
-  setStatus(`Connecting ${provider.label}…`);
+  const dismissConnecting = showToast(`Connecting ${provider.label}…`);
   try {
     const outcome = await invoke("login", {
       provider: provider.name,
@@ -4661,9 +5008,11 @@ async function saveConnect() {
       labelControl("model", `model: ${outcome.model}`, "Switch model");
       el("model-value").textContent = outcome.model;
     }
-    setStatus(`Connected ${provider.label}`);
+    showToast(`Connected ${provider.label}`);
   } catch (error) {
-    setStatus(`Login failed: ${error}`, "error");
+    showToast(`Login failed: ${error}`, "error");
+  } finally {
+    dismissConnecting();
   }
 }
 
@@ -4715,6 +5064,7 @@ function renderModels() {
       row.setAttribute("aria-pressed", String(Boolean(current)));
       row.textContent = model;
       row.onclick = async () => {
+        await reasoningSave;
         await invoke("set_model", { provider: provider.provider, model });
         closeModels();
         await loadInfo();
@@ -4878,7 +5228,7 @@ async function openThemes() {
     renderThemes(entries, themes.current);
   } catch (error) {
     box.innerHTML = "";
-    setStatus(`Themes failed: ${error}`, "error");
+    showToast(`Themes failed: ${error}`, "error");
   }
 }
 
@@ -4933,7 +5283,7 @@ async function selectTheme(name, row) {
       if (check) setCheck(check, isActive);
     }
   } catch (error) {
-    setStatus(`Theme failed: ${error}`, "error");
+    showToast(`Theme failed: ${error}`, "error");
   }
 }
 
@@ -5370,7 +5720,7 @@ function cancelUpdate() {
   el("update-modal").hidden = true;
   if (!token) return;
   invoke("cancel_update", { token }).catch((error) =>
-    setStatus(`Could not stop the update: ${error}`, "error"),
+    showToast(`Could not stop the update: ${error}`, "error"),
   );
 }
 
@@ -5381,7 +5731,7 @@ function cancelUpdate() {
 /// watching reports itself.
 function reportUpdateFailure(text) {
   if (el("update-modal").hidden) {
-    setStatus(`Could not install the update: ${text}`, "error");
+    showToast(`Could not install the update: ${text}`, "error");
     return;
   }
   paintUpdateFailure("Could not install the update", text);
@@ -5550,7 +5900,7 @@ function openInstallUpdate(payload) {
 /// the way starting a new thread is.
 function restartApp() {
   if (busyRefusal("restarting Oxide")) return;
-  invoke("restart_app").catch((error) => setStatus(`Could not restart Oxide: ${error}`, "error"));
+  invoke("restart_app").catch((error) => showToast(`Could not restart Oxide: ${error}`, "error"));
 }
 
 /// Opens the release the dialog is showing in the platform browser, the way a
@@ -5558,7 +5908,7 @@ function restartApp() {
 function openReleaseNotes() {
   if (!updateCheck || !updateCheck.releaseUrl) return;
   invoke("open_url", { url: updateCheck.releaseUrl }).catch((error) =>
-    setStatus(`Could not open link: ${error}`, "error"),
+    showToast(`Could not open link: ${error}`, "error"),
   );
 }
 
@@ -5643,19 +5993,22 @@ async function toggleMcp(server, button) {
     return;
   }
   button.disabled = true;
-  setStatus(`${server.enabled ? "Turning off" : "Turning on"} ${server.name}…`);
+  const enabled = !server.enabled;
+  const dismissProgress = showToast(`${enabled ? "Turning on" : "Turning off"} ${server.name}…`);
   try {
     state.mcps = await invoke("set_mcp_server", {
       project: state.project || "",
       name: server.name,
-      enabled: !server.enabled,
+      enabled,
     });
     state.mcpError = "";
     renderMcps();
-    setStatus("Ready");
+    showToast(`${server.name} ${enabled ? "enabled" : "disabled"}`);
   } catch (error) {
     button.disabled = false;
-    setStatus(`Could not change ${server.name}: ${error}`, "error");
+    showToast(`Could not change ${server.name}: ${error}`, "error");
+  } finally {
+    dismissProgress();
   }
 }
 
@@ -5806,7 +6159,7 @@ async function runSlashCommand(text) {
       return true;
     case "trust":
       if (state.trust) showTrust(state.trust);
-      else setStatus("Nothing to decide — this project needs no trust decision.");
+      else showToast("Nothing to decide — this project needs no trust decision.");
       return true;
     case "connect":
       await openConnect();
@@ -5854,7 +6207,7 @@ async function runSlashCommand(text) {
       if (!ok) return true;
       await invoke("logout", { provider: target.name });
       await loadInfo();
-      setStatus(`Signed out of ${target.label}`);
+      showToast(`Signed out of ${target.label}`);
       return true;
     }
     case "session":
@@ -6225,15 +6578,18 @@ function toggleHelp() {
   el("help-modal").hidden = !hidden;
 }
 
-/// The level a turn is given, whether it was picked from the dialog or walked to
-/// with the keyboard. `--reasoning` is sent per turn rather than stored, so this
-/// only has to agree with the chip — and a level set from anywhere but the
-/// picker's own row leaves the listing, whose mark would be out of date.
+/// Keep picks and keyboard cycling in the shared configuration.
+let reasoningSave = Promise.resolve();
+
 function setReasoning(level) {
   const levels = state.reasoningLevels || REASONING;
   if (!levels.includes(level)) return;
   state.reasoning = level;
   state.reasoningPicked = true;
+  reasoningSave = reasoningSave.then(() => invoke("set_reasoning", { reasoning: level })).catch(async (error) => {
+    if (state.reasoning === level) await loadInfo();
+    showToast(`Could not save reasoning: ${error}`, "error");
+  });
   updateChips();
   // A level set while the picker is up — `Ctrl+R`, or a row — moves the mark, so
   // the dialog never shows the level it has just left. The list is rebuilt to do
@@ -6286,7 +6642,16 @@ async function initEvents() {
     // reader who opened another conversation — or another folder, which has none
     // of its own — since is reading that one.
     const sent = state.sendView;
-    if (sent == null || (state.session === sent.session && state.project === sent.project)) {
+    if (sent?.tabId) {
+      const tab = chatTabs.find((entry) => entry.id === sent.tabId);
+      if (tab) {
+        tab.session = payload.sessionId || null;
+        tab.title = payload.title || tab.title;
+        if (tab.snapshot) tab.snapshot.session = tab.session;
+      }
+      paintChatTabs();
+    }
+    if (sent == null || ((!sent.tabId || sent.tabId === activeTabId) && state.session === sent.session && state.project === sent.project)) {
       state.session = payload.sessionId || null;
     }
     state.sendView = null;
@@ -6313,6 +6678,7 @@ async function initEvents() {
   // The macOS menu item has no page of its own to paint into, so it asks the
   // window for the dialog the sidebar's own button opens.
   await listen("check-updates", () => openUpdate());
+  await listen("chat-tab", (event) => event.payload?.action === "close" ? closeChatTab(activeTabId) : newChatTab());
   // The install this process is running reports itself here, whether it is the
   // launch's own or one the window asked for, and the dialog is its surface: the
   // release that is out, the download as it happens, and the restart that runs
@@ -6519,6 +6885,7 @@ function initSidebarResize() {
     handle.setAttribute("aria-valuenow", String(next));
     handle.setAttribute("aria-valuemax", String(maxWidth()));
     if (persist) localStorage.setItem(STORAGE_KEY, String(next));
+    paintDockToggles();
   };
 
   const saved = Number(localStorage.getItem(STORAGE_KEY) || 0);
@@ -6560,6 +6927,7 @@ function initSidebarResize() {
     localStorage.removeItem(STORAGE_KEY);
     sidebar.style.width = "";
     const current = sidebar.getBoundingClientRect().width;
+    paintDockToggles();
     handle.setAttribute("aria-valuenow", String(Math.round(current)));
     handle.setAttribute("aria-valuemax", String(maxWidth()));
   });
@@ -6569,54 +6937,9 @@ function initSidebarResize() {
   });
 }
 
-function initDockResize() {
-  for (const [panelId, handleId] of [["review-modal", "changes-resizer"], ["details-panel", "details-resizer"]]) {
-    const panel = el(panelId);
-    const handle = el(handleId);
-    const key = `oxide.${panelId}.width`;
-    const apply = (width, save = false) => {
-      const max = Math.max(260, window.innerWidth - (document.querySelector(".sidebar")?.getBoundingClientRect().width || 220) - 320);
-      const value = Math.round(Math.max(260, Math.min(max, width)));
-      panel.style.flexBasis = `${value}px`;
-      handle.setAttribute("aria-valuenow", String(value));
-      handle.setAttribute("aria-valuemax", String(max));
-      if (save) localStorage.setItem(key, String(value));
-    };
-    const saved = Number(localStorage.getItem(key));
-    if (saved > 0) apply(saved);
-    handle.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-      handle.setPointerCapture(event.pointerId);
-      const width = panel.getBoundingClientRect().width;
-      const start = event.clientX;
-      document.body.classList.add("resizing");
-      const move = (event) => apply(width + start - event.clientX);
-      const end = (event) => {
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", end);
-        handle.removeEventListener("pointercancel", end);
-        handle.releasePointerCapture?.(event.pointerId);
-        document.body.classList.remove("resizing");
-        apply(panel.getBoundingClientRect().width, true);
-      };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", end);
-      handle.addEventListener("pointercancel", end);
-    });
-    handle.addEventListener("keydown", (event) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      event.preventDefault();
-      event.stopPropagation();
-      apply(panel.getBoundingClientRect().width + (event.key === "ArrowLeft" ? 20 : -20), true);
-    });
-    handle.addEventListener("dblclick", () => {
-      panel.style.flexBasis = "";
-      localStorage.removeItem(key);
-    });
-    window.addEventListener("resize", () => {
-      if (!panel.hidden && panel.style.flexBasis) apply(panel.getBoundingClientRect().width);
-    });
-  }
+function dockHasRoom() {
+  const sidebar = document.querySelector(".sidebar")?.getBoundingClientRect().width || 268;
+  return window.innerWidth - sidebar - 7 >= 1100;
 }
 
 /// How long a scrollbar stays drawn after the last scroll of its box, in
@@ -6752,7 +7075,9 @@ function finishEditorControlPress(event) {
 function init() {
   installMarkdownInput(el("prompt"), (text) => renderMarkdown(text, true));
   initSidebarResize();
-  initDockResize();
+  initChatTabs();
+  initMessageNavigator();
+  initJumpLatest();
   initOverlayScrollbars();
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
@@ -6995,6 +7320,7 @@ function init() {
   // this window that they changed.
   window.addEventListener("focus", () => {
     loadGit();
+    if (!state.busy) reasoningSave.then(() => loadInfo());
   });
   window.addEventListener("blur", () => {
     editorControlPress = null;
@@ -7009,7 +7335,7 @@ function init() {
     if (!link) return;
     event.preventDefault();
     invoke("open_url", { url: link.getAttribute("href") }).catch((error) =>
-      setStatus(`Could not open link: ${error}`, "error"),
+      showToast(`Could not open link: ${error}`, "error"),
     );
   });
 
@@ -7153,7 +7479,9 @@ function init() {
   });
 
   document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
     if (event.key === "Escape") {
+      el("message-preview").hidden = true;
       const modalOpen = OVERLAYS.some((id) => !el(id).hidden);
       closeSidebarCards();
       closeImage();
@@ -7314,7 +7642,7 @@ async function dropProject(fromId, toId, after) {
     });
   } catch (error) {
     state.projects = before;
-    setStatus(`Could not reorder projects: ${error}`, "error");
+    showToast(`Could not reorder projects: ${error}`, "error");
   }
   renderProjectsTree();
 }
@@ -7436,7 +7764,7 @@ function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
       closeSidebarCards();
       renderProjectsTree();
     } catch (error) {
-      setStatus(`Could not ${project.pinned ? "unpin" : "pin"} project: ${error}`, "error");
+      showToast(`Could not ${project.pinned ? "unpin" : "pin"} project: ${error}`, "error");
     }
   };
   if (edit) edit.onclick = () => openEditProject(project);
@@ -7533,27 +7861,38 @@ async function pinSession(session) {
     renderProjectsTree();
     repaintWelcome();
   } catch (error) {
-    setStatus(`Could not ${session.pinned ? "unpin" : "pin"} thread: ${error}`, "error");
+    showToast(`Could not ${session.pinned ? "unpin" : "pin"} thread: ${error}`, "error");
   }
 }
 
 async function archiveSession(session) {
   if (!session || session.unstored) return;
   if (state.busy && (state.session === session.id || state.runSession === session.id)) {
-    setStatus("A turn is running; stop it before archiving this thread.");
+    showToast("A turn is running; stop it before archiving this thread.");
     return;
   }
   try {
     state.sessions = await invoke("archive_session", { id: session.id });
+    for (let index = chatTabs.length - 1; index >= 0; index--) {
+      if (chatTabs[index].id !== activeTabId && chatTabs[index].session === session.id) chatTabs.splice(index, 1);
+    }
+    paintChatTabs();
     if (state.parked?.session === session.id) state.parked = null;
     if (state.session === session.id) resetTranscript();
     updateRunBanner();
     closeSidebarCards();
     renderProjectsTree();
     repaintWelcome();
-    setStatus(`Thread archived. To permanently delete its log, run oxide sessions delete ${session.id} from its project folder. To restore it, run oxide sessions unarchive ${session.id}.`);
+    showToast("Chat archived", "info", {
+      label: "Undo",
+      run: async () => {
+        state.sessions = await invoke("unarchive_session", { id: session.id, pinned: Boolean(session.pinned) });
+        renderProjectsTree();
+        repaintWelcome();
+      },
+    });
   } catch (error) {
-    setStatus(`Could not archive thread: ${error}`, "error");
+    showToast(`Could not archive thread: ${error}`, "error");
   }
 }
 
@@ -7806,8 +8145,12 @@ async function renderProjectsTree() {
         sessionItem.appendChild(archiveBtn);
       }
 
-      sessionItem.onclick = () => {
-        selectSessionFromTree(session);
+      sessionItem.onclick = (event) => {
+        if (event?.metaKey || event?.ctrlKey) openSessionTab(session);
+        else selectSessionFromTree(session);
+      };
+      sessionItem.onauxclick = (event) => {
+        if (event.button === 1) { event.preventDefault(); openSessionTab(session); }
       };
       sessionItem.addEventListener("mouseenter", () => showThreadDetails(session, sessionItem));
       sessionItem.addEventListener("mouseleave", closeSidebarCards);
@@ -7888,8 +8231,17 @@ async function renderProjectsTree() {
   container.appendChild(recentSection);
 }
 
+async function openSessionTab(session) {
+  const existing = chatTabs.find((tab) => tab.session === session.id);
+  if (existing) return activateChatTab(existing.id);
+  if (!await newChatTab()) return;
+  return selectSessionFromTree(session);
+}
+
 async function selectSessionFromTree(session) {
   if (!session) return;
+  const existing = chatTabs.find((tab) => tab.session === session.id && tab.id !== activeTabId);
+  if (existing) return activateChatTab(existing.id);
 
   const project = sessionProject(session);
   const projectSessions = listedSessions().filter((candidate) => sessionProject(candidate) === project);
@@ -7948,7 +8300,7 @@ function selectedProjectStillListed() {
 
 async function removeProject(project) {
   if (state.busy && (state.runProject || state.project) === project.path) {
-    setStatus("A turn is running; stop it before removing this project.");
+    showToast("A turn is running; stop it before removing this project.");
     return;
   }
 
@@ -7967,6 +8319,6 @@ async function removeProject(project) {
     await loadSessions();
     renderProjectsTree();
   } catch (error) {
-    setStatus(`Could not remove project: ${error}`, "error");
+    showToast(`Could not remove project: ${error}`, "error");
   }
 }

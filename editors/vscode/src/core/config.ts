@@ -2,9 +2,8 @@
 //
 // The CLI, the desktop app and this extension all read the same
 // `<platform config dir>/Oxide` (see `oxide_core::config::config_dir`), which
-// is what lets a provider connected in the terminal show up here. Nothing is
-// written to it from the extension: `oxide.model` and friends are VS Code
-// settings, and `--model` is simply passed to the CLI.
+// is what lets a provider connected in the terminal show up here. Shared
+// model and reasoning choices are saved through `oxide select`.
 
 import { parseObject } from "./json";
 
@@ -37,6 +36,7 @@ export function configDir(input: ConfigEnv): string {
 }
 
 export interface ConfigSummary {
+  reasoning: string;
   provider: string;
   model: string;
   /// The models remembered per provider (`provider_models`), used as the
@@ -61,6 +61,7 @@ export function parseConfigSummary(raw: string | null): ConfigSummary | null {
     }
   }
   return {
+    reasoning: typeof record.reasoning === "string" ? record.reasoning : "auto",
     provider: typeof record.provider === "string" ? record.provider : "",
     model: typeof record.model === "string" ? record.model : "",
     models,

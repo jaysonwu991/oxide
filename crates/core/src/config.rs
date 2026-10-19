@@ -2455,6 +2455,10 @@ impl Config {
         Self::set_active_field_at(path, "default_model", model)
     }
 
+    pub fn set_reasoning_at(path: &Path, reasoning: Reasoning) -> Result<()> {
+        Self::set_active_field_at(path, "reasoning", reasoning.label())
+    }
+
     /// Persists the selected theme name in `config.json`, so the CLI and the
     /// desktop both start with it (the CLI reads the same `theme` key).
     pub fn set_theme_at(path: &Path, name: &str) -> Result<()> {
@@ -4415,6 +4419,28 @@ mod tests {
         assert_eq!(value["model"], "deepseek-reasoner");
         assert_eq!(value["provider"], "deepseek");
         assert_eq!(value["mode"], "plan");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reasoning_selection_survives_reload_and_preserves_model() {
+        let dir = temp_dir("shared-reasoning");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"provider":"deepseek","model":"deepseek-reasoner","auto_approve":false}"#,
+        )
+        .unwrap();
+        Config::set_reasoning_at(&path, Reasoning::High).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["reasoning"], "high");
+        assert_eq!(value["model"], "deepseek-reasoner");
+        assert_eq!(value["auto_approve"], false);
+        Config::set_active_model_at(&path, "deepseek-chat").unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["reasoning"], "auto");
         std::fs::remove_dir_all(&dir).ok();
     }
 

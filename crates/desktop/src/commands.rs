@@ -8,7 +8,7 @@ use oxide_core::agent::{AgentEvent, Cancel, Steering};
 use oxide_core::auth::{self, AuthStore};
 use oxide_core::catalog;
 use oxide_core::cli::{event_json, session_header};
-use oxide_core::config::Config;
+use oxide_core::config::{Config, Reasoning};
 use oxide_core::diff::{Diff, LineKind};
 use oxide_core::llm::LlmClient;
 use oxide_core::llm::Message;
@@ -563,6 +563,17 @@ pub async fn archive_session(id: String, state: &DesktopState) -> CmdResult<Vec<
     manager.session_views(sessions).map_err(err)
 }
 
+pub async fn unarchive_session(
+    id: String,
+    pinned: bool,
+    state: &DesktopState,
+) -> CmdResult<Vec<SessionView>> {
+    let mut manager = state.manager.lock().await;
+    manager.unarchive_session(&id, pinned).map_err(err)?;
+    let sessions = manager.all_sessions().map_err(err)?;
+    manager.session_views(sessions).map_err(err)
+}
+
 /// The stored transcript for one session.
 pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
     let cwd = PathBuf::from(project);
@@ -1063,6 +1074,12 @@ pub async fn set_model(provider: String, model: String) -> CmdResult<()> {
     Ok(())
 }
 
+pub async fn set_reasoning(reasoning: String) -> CmdResult<()> {
+    let level = Reasoning::parse(&reasoning)
+        .ok_or_else(|| format!("unknown reasoning level `{reasoning}`"))?;
+    Config::set_reasoning_at(&Config::config_path(), level).map_err(err)
+}
+
 // ---------- themes ----------
 
 /// Theme names available for a project, plus the selected one from `config.json`.
@@ -1402,6 +1419,9 @@ pub async fn dispatch(
             set_session_pinned(arg(&args, "id")?, arg(&args, "pinned")?, &state).await,
         ),
         "archive_session" => command_value(archive_session(arg(&args, "id")?, &state).await),
+        "unarchive_session" => {
+            command_value(unarchive_session(arg(&args, "id")?, arg(&args, "pinned")?, &state).await)
+        }
         "project_info" => command_value(project_info(arg(&args, "project")?, &state).await),
         "git_info" => command_value(git_info(arg(&args, "project")?)),
         "worktrees" => command_value(worktrees(arg(&args, "project")?)),
@@ -1535,6 +1555,7 @@ pub async fn dispatch(
         "list_approvals" => command_value(list_approvals(arg(&args, "project")?, &state).await),
         "clear_approvals" => command_value(clear_approvals(arg(&args, "project")?, &state).await),
         "list_models" => command_value(list_models(arg(&args, "project")?, &state).await),
+        "set_reasoning" => command_value(set_reasoning(arg(&args, "reasoning")?).await),
         "set_model" => {
             command_value(set_model(arg(&args, "provider")?, arg(&args, "model")?).await)
         }

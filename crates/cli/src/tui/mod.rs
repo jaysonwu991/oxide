@@ -283,6 +283,7 @@ async fn event_loop(
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
     let mut progress_tick = tokio::time::interval(std::time::Duration::from_millis(120));
     let mut branch_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut shared_selection = saved_selection(&Config::config_path());
     let mut usage_tick = tokio::time::interval(std::time::Duration::from_secs(60));
     let mut usage_inflight = false;
 
@@ -436,6 +437,18 @@ async fn event_loop(
             }
             _ = branch_tick.tick(), if !app.busy => {
                 app.refresh_git_branch();
+                let latest = saved_selection(&Config::config_path());
+                if latest.is_some() && latest != shared_selection {
+                    if let Ok(saved) = Config::load(&cwd, None, None, None, None) {
+                        config.apply_provider(&saved.provider, &saved.api_key);
+                        config.apply_login_options(&saved.model, &saved.base_url, &saved.portkey_config);
+                        config.reasoning = saved.reasoning;
+                        config.reasoning_supported = saved.reasoning_supported;
+                        config.context_window = saved.context_window;
+                        apply_model_state(&mut app, &config);
+                        shared_selection = latest;
+                    }
+                }
             }
             _ = usage_tick.tick(), if app.usage.is_some() && !usage_inflight => {
                 usage_inflight = spawn_usage_refresh(&config, &app.usage_settings, &usage_tx);
@@ -532,11 +545,16 @@ fn names_command(raw: &str, command: &str) -> bool {
     }
 }
 
-/// Cycles the thinking level and records it on the session. Shared by the
-/// `Shift+Tab` (Pi's binding) and `Ctrl+R` (the pre-desktop binding) shortcuts.
-/// Re-reads the active model's advertised reasoning levels from the model
-/// cache, so the levels the background listing warmed are in effect for the
-/// next turn and the next cycle rather than only for a fresh process.
+fn saved_selection(path: &Path) -> Option<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    value.as_object()?;
+    Some(serde_json::json!({
+        "provider": value.get("provider"),
+        "model": value.get("model"),
+        "reasoning": value.get("reasoning"),
+    }))
+}
+
 fn refresh_reasoning(config: &mut Config) {
     config.reasoning_supported = crate::llm::cached_model_reasoning(config, &config.model);
 }
@@ -545,7 +563,14 @@ fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<Sess
     refresh_reasoning(config);
     // The model's own advertised levels when the listing carried them, else
     // the built-in set, so the cycle never offers a level the model rejects.
-    config.reasoning = config.reasoning.next_in(&config.reasoning_levels());
+    let level = config.reasoning.next_in(&config.reasoning_levels());
+    if let Err(error) = Config::set_reasoning_at(&Config::config_path(), level) {
+        app.items.push(ChatItem::Error(format!(
+            "Could not save reasoning: {error:#}"
+        )));
+        return;
+    }
+    config.reasoning = level;
     app.reasoning = config.reasoning;
     if let Some(log) = session.as_ref() {
         let _ = log.append_thinking_level(config.reasoning.label());
@@ -1440,6 +1465,13 @@ fn handle_key(
                         ));
                     }
                     Some(level) => {
+                        if let Err(error) = Config::set_reasoning_at(&Config::config_path(), level)
+                        {
+                            app.items.push(ChatItem::Error(format!(
+                                "Could not save reasoning: {error:#}"
+                            )));
+                            return;
+                        }
                         config.reasoning = level;
                         if let Some(log) = session.as_ref() {
                             let _ = log.append_thinking_level(level.label());
@@ -4209,19 +4241,10 @@ fn handle_marketplaces_key(key: KeyEvent, app: &mut App, marketplaces_tx: &Marke
 
 fn switch_session(
     app: &mut App,
-    config: &mut Config,
+    _config: &mut Config,
     session: &mut Option<SessionLog>,
     log: SessionLog,
 ) {
-    // A resumed thread restores the thinking level it was last left at, so the
-    // footer and the next turn agree with what the thread recorded.
-    if let Some(parsed) = log
-        .thinking_level()
-        .and_then(|level| Reasoning::parse(&level))
-    {
-        config.reasoning = parsed;
-        app.reasoning = parsed;
-    }
     match log.messages() {
         Ok(messages) => {
             let id = log.id().to_string();
