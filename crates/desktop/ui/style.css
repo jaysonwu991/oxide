@@ -934,7 +934,9 @@ body.running .composer { border-radius: 16px; }
   padding: 4px 2px 8px;
   color: var(--text);
   font: inherit;
-  min-height: calc(1lh + 12px);
+  /* Two lines before anything is typed: the box reads as a place to write a
+     message rather than as a one-line field, and it grows from there. */
+  min-height: calc(2lh + 12px);
   max-height: 220px;
 }
 .attachments {
@@ -1490,6 +1492,41 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   color: var(--accent);
 }
 .theme-empty { color: var(--faint); font-size: 12.5px; padding: 6px 2px; }
+
+/* The language picker's rows: the same surface as a theme's, without the swatch
+   strip a theme needs — a language has nothing to show but its own name. */
+.language-option {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 36px 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.language-option:hover { background: var(--panel-2); border-color: var(--dim); }
+.language-option.active { background: var(--panel-2); border-color: var(--accent); }
+.language-option-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.language-option.active .language-option-name { color: var(--accent); }
+.language-option-tag { margin-left: auto; color: var(--dim); font-size: 12px; }
+.language-option-check {
+  position: absolute;
+  right: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--accent);
+}
 
 .shortcuts { width: 100%; border-collapse: collapse; }
 .shortcuts td { padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 12.5px; }

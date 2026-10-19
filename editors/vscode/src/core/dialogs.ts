@@ -13,6 +13,12 @@
 // the listing is about, and cannot be answered while a turn streams.
 
 import { mcpStateLabel, type McpServerView } from "./mcps";
+import {
+  DEFAULT_LANGUAGE,
+  FALLBACK_LANGUAGES,
+  translate,
+  type LanguageInfo,
+} from "./i18n";
 import { filterProviders, providerState, type ProviderView } from "./providers";
 import { modelChoiceId } from "./models";
 import { filterSessions, type SessionEntry } from "./sessions";
@@ -84,7 +90,8 @@ export type DialogKind =
   | "mcp"
   | "sessions"
   | "worktrees"
-  | "undo";
+  | "undo"
+  | "language";
 
 export interface DialogState {
   kind: DialogKind;
@@ -136,6 +143,8 @@ export const SESSION_ARCHIVE = "sessionArchive";
 /// restore. The Undo under the card itself posts its own view message, since it
 /// is a transcript control rather than a row of a dialog.
 export const CHANGES_UNDO_CONFIRM = "changesUndoConfirm";
+/// The language listing's own control: a row switches to the language it names.
+export const LANGUAGE_SELECT = "languageSelect";
 /// Close or Escape: the view dismisses it and tells the controller, so the next
 /// pane to attach does not paint it again.
 export const CLOSE_DIALOG = "dialogClose";
@@ -400,6 +409,41 @@ export function agentDialog(
     search: true,
     query,
     searchPlaceholder: "Filter or enter an agent name…",
+    refreshLabel: "",
+    refreshAction: "",
+  };
+}
+
+/// The language listing: the languages the CLI offers, each named in itself
+/// with the one in use marked. A row switches the language every front-end
+/// draws — the same `settings.json` key the terminal and the desktop app read —
+/// because the choice is written by the CLI rather than kept in a VS Code
+/// setting this panel alone would follow.
+export function languageDialog(info: LanguageInfo | null): DialogState {
+  const current = info?.language ?? DEFAULT_LANGUAGE;
+  const languages = info?.languages?.length ? info.languages : FALLBACK_LANGUAGES;
+  return {
+    kind: "language",
+    pin: "footer",
+    title: translate(info, "language.name", "Language"),
+    subtitle: translate(
+      info,
+      "dialog.language.subtitle",
+      "The language this window, the terminal and the editor panel share. Switching it rewrites the same settings.json key every front-end reads.",
+    ),
+    note: "",
+    rows: languages.map((language) =>
+      row(language.tag, language.nativeLabel || language.label, {
+        detail: language.tag,
+        action: LANGUAGE_SELECT,
+        status: language.tag === current ? translate(info, "panel.current", "Current") : "",
+        tone: language.tag === current ? "ok" : "",
+        current: language.tag === current,
+      }),
+    ),
+    count: 0,
+    search: false,
+    query: "",
     refreshLabel: "",
     refreshAction: "",
   };

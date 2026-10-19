@@ -163,6 +163,7 @@ async fn event_loop(
     app.show_thinking = config.supports_reasoning();
     app.show_thinking_blocks = !crate::config::load_hide_thinking_block();
     app.theme = crate::theme::load(&cwd, &theme_name);
+    app.lang = crate::i18n::resolve(&cwd);
     app.usage_settings = crate::portkey_usage::UsageSettings::load().unwrap_or_default();
     if app.usage_settings.enabled && app.usage_settings.available(&config) {
         app.usage = Some(crate::portkey_usage::UsageBar::new(&app.usage_settings));
@@ -1518,6 +1519,52 @@ fn handle_key(
                     .push(ChatItem::Info(format!("theme set to {requested}")));
                 return;
             }
+            if raw == "/language" || raw.starts_with("/language ") {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                let requested = raw.strip_prefix("/language").unwrap_or_default().trim();
+                if requested.is_empty() {
+                    let names: Vec<&str> = crate::i18n::Language::ALL
+                        .iter()
+                        .map(|language| language.tag())
+                        .collect();
+                    app.items.push(ChatItem::Info(format!(
+                        "{}; available: {}",
+                        app.tf("language.current", &[("language", app.lang.tag())]),
+                        names.join(", ")
+                    )));
+                    return;
+                }
+                match crate::i18n::Language::parse(requested) {
+                    Some(language) => {
+                        match crate::i18n::save(language) {
+                            Ok(()) => {
+                                app.lang = language;
+                                app.invalidate_render_cache();
+                                app.items.push(ChatItem::Info(app.tf(
+                                    "language.changed",
+                                    &[("language", language.native_label())],
+                                )));
+                            }
+                            Err(error) => app.items.push(ChatItem::Error(format!(
+                                "Could not save language: {error:#}"
+                            ))),
+                        }
+                    }
+                    None => {
+                        let names: Vec<&str> = crate::i18n::Language::ALL
+                            .iter()
+                            .map(|language| language.tag())
+                            .collect();
+                        let names = names.join(", ");
+                        app.items.push(ChatItem::Error(app.tf(
+                            "language.unknown",
+                            &[("tag", requested), ("options", &names)],
+                        )));
+                    }
+                }
+                return;
+            }
             if raw == "/trust" || raw.starts_with("/trust ") {
                 app.clear_input();
                 refresh_suggestions(app, config);
@@ -1802,8 +1849,11 @@ fn escape_action(app: &mut App) {
     app.clear_input();
 }
 
-/// What the typed answer to a tool approval accepts.
-pub(crate) const APPROVAL_HINT: &str = "y = once · a = always (this project) · n [reason] = deny";
+/// What the typed answer to a tool approval accepts, in the language the run
+/// draws.
+fn approval_hint(app: &App) -> &'static str {
+    app.t("tui.approvalHint")
+}
 
 /// Maps what the user typed into the answer field to a decision: `y`/`a`/`n`
 /// (or the words) answer it, and any other text refuses the tool with that text
@@ -1833,7 +1883,10 @@ fn parse_approval_answer(input: &str) -> Option<Decision> {
 fn answer_approval_input(app: &mut App, approvals: &ApprovalBroker, typed: &str) {
     match parse_approval_answer(typed) {
         Some(decision) => answer_approval(app, approvals, decision),
-        None => app.show_status(format!("approve: {APPROVAL_HINT}")),
+        None => {
+            let hint = format!("approve: {}", approval_hint(app));
+            app.show_status(hint)
+        }
     }
 }
 
@@ -3523,6 +3576,26 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
             ArgSpec {
                 value: "off",
                 description: "decline this project",
+                children: &[],
+            },
+        ],
+    ),
+    (
+        "language",
+        &[
+            ArgSpec {
+                value: "show",
+                description: "report the language in use",
+                children: &[],
+            },
+            ArgSpec {
+                value: "en-GB",
+                description: "English (United Kingdom)",
+                children: &[],
+            },
+            ArgSpec {
+                value: "zh-CN",
+                description: "简体中文",
                 children: &[],
             },
         ],
@@ -5364,10 +5437,13 @@ fn ensure_session<'a>(session: &'a mut Option<SessionLog>, cwd: &Path) -> Result
 fn handle_agent_event(event: AgentEvent, app: &mut App) {
     match event {
         AgentEvent::ApprovalRequest { id, tool, detail } => {
-            app.status = "waiting for approval".to_string();
-            app.items.push(ChatItem::Info(format!(
-                "approve `{tool}`? {APPROVAL_HINT}\n  {detail}"
-            )));
+            app.status = app.t("tui.waitingApproval").to_string();
+            let line = app.tf(
+                "tui.approve",
+                &[("tool", &tool), ("hint", approval_hint(app))],
+            );
+            app.items
+                .push(ChatItem::Info(format!("{line}\n  {detail}")));
             app.auto_scroll = true;
             app.pending_approval = Some(PendingApproval { id, tool });
         }

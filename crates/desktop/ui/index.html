@@ -26,17 +26,21 @@
           class="new-chat"
           title="New Chat&#10;Starts a thread in the current project"
           aria-label="New Chat"
-        ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span>New Chat</span></button>
+          data-i18n-title="sidebar.newChat"
+          data-i18n-aria="sidebar.newChat"
+        ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span data-i18n="sidebar.newChat">New Chat</span></button>
       </div>
 
       <div class="projects-section">
         <div class="projects-header">
-          <span>Projects</span>
+          <span data-i18n="sidebar.projects">Projects</span>
           <button
             id="create-project-btn-tree"
             class="icon"
             title="New project&#10;Pick the folders to include"
             aria-label="New project"
+            data-i18n-title="sidebar.newProject"
+            data-i18n-aria="sidebar.newProject"
           ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         </div>
         <div id="projects-tree" class="projects-tree"></div>
@@ -48,12 +52,30 @@
           class="icon"
           title="Theme"
           aria-label="Theme"
+          data-i18n-title="sidebar.theme"
+          data-i18n-aria="sidebar.theme"
         ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="currentColor"/></svg></button>
+        <!-- The language the whole app is drawn in. It is the window's own
+             setting rather than a thread's, so it stands beside the theme and
+             the release check. -->
+        <button
+          id="language"
+          class="icon"
+          title="Language"
+          aria-label="Language"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          aria-controls="language-modal"
+          data-i18n-title="sidebar.language"
+          data-i18n-aria="sidebar.language"
+        ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 12h17M12 3.5c2.2 2.4 3.3 5.3 3.3 8.5S14.2 18.1 12 20.5c-2.2-2.4-3.3-5.3-3.3-8.5S9.8 5.9 12 3.5Z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
         <button
           id="update"
           class="icon"
           title="Check for updates"
           aria-label="Check for updates"
+          data-i18n-title="sidebar.checkUpdates"
+          data-i18n-aria="sidebar.checkUpdates"
         ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
     </aside>
@@ -87,9 +109,9 @@
           <span class="run-banner-open" aria-hidden="true">Open</span>
         </button>
         <div class="topbar-actions">
-          <button id="changes-toggle" class="icon" title="View changes" aria-label="View changes" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 9h8M12 5v8M8 17h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
-          <button id="details-toggle" class="icon" title="Project details" aria-label="Project details" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="5" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="5" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 6h9M11 12h9M11 18h9M3 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-          <button id="new-tab" class="icon" title="New tab (⌘T / Ctrl+T)" aria-label="New tab"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v10M7 12h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          <button id="changes-toggle" class="icon" title="View changes" aria-label="View changes" aria-expanded="false" data-i18n-title="topbar.viewChanges" data-i18n-aria="topbar.viewChanges"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 9h8M12 5v8M8 17h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
+          <button id="details-toggle" class="icon" title="Project details" aria-label="Project details" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="5" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="5" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 6h9M11 12h9M11 18h9M3 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          <button id="new-tab" class="icon" title="New tab (⌘T / Ctrl+T)" aria-label="New tab" data-i18n-title="topbar.newTab" data-i18n-aria="topbar.newTab"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v10M7 12h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         </div>
       </header>
 
@@ -103,7 +125,7 @@
       <nav id="message-nav" class="message-nav" aria-label="Jump to a message" hidden></nav>
       <div id="message-preview" class="message-preview" hidden></div>
       <div id="transcript" class="conversation" role="tabpanel"></div>
-      <button id="jump-latest" class="jump-latest" title="Jump to latest message" aria-label="Jump to latest message" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button id="jump-latest" class="jump-latest" title="Jump to latest message" aria-label="Jump to latest message" data-i18n-title="topbar.jumpLatest" data-i18n-aria="topbar.jumpLatest" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
 
       <div class="composer-wrap">
         <!-- The folders this window can run in, opened from the composer's own
@@ -111,53 +133,61 @@
              so the chip is where one is picked. -->
         <section id="projects-modal" class="popover" hidden aria-labelledby="projects-title">
           <div class="popover-head">
-            <h2 id="projects-title">Projects</h2>
+            <h2 id="projects-title" data-i18n="sidebar.projects">Projects</h2>
             <div class="popover-actions">
               <button
                 id="projects-add"
                 class="icon"
                 title="New project&#10;Pick the folders to include"
                 aria-label="New project"
+                data-i18n-title="sidebar.newProject"
+                data-i18n-aria="sidebar.newProject"
               ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
               <button
                 id="projects-close"
                 class="icon"
                 title="Close"
                 aria-label="Close"
+                data-i18n-title="common.close"
+                data-i18n-aria="common.close"
               ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
             </div>
           </div>
-          <p class="dialog-sub">The folders this window can run in, the same list the sidebar draws. Picking one opens it here.</p>
+          <p class="dialog-sub" data-i18n="dialog.projects.subtitle">The folders this window can run in, the same list the sidebar draws. Picking one opens it here.</p>
           <div id="project-list" class="project-list"></div>
         </section>
 
         <section id="worktrees-modal" class="popover" hidden aria-labelledby="worktrees-title">
           <div class="popover-head">
-            <h2 id="worktrees-title">Worktrees</h2>
+            <h2 id="worktrees-title" data-i18n="dialog.worktrees.title">Worktrees</h2>
             <div class="popover-actions">
               <button
                 id="worktrees-refresh"
                 class="icon"
                 title="Recheck the worktrees"
                 aria-label="Recheck the worktrees"
+                data-i18n-title="dialog.worktrees.recheck"
+                data-i18n-aria="dialog.worktrees.recheck"
               ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
               <button
                 id="worktrees-close"
                 class="icon"
                 title="Close"
                 aria-label="Close"
+                data-i18n-title="common.close"
+                data-i18n-aria="common.close"
               ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
             </div>
           </div>
-          <p class="dialog-sub">Run a chat in an isolated checkout. Choose a starting branch or commit; your local checkout stays in place.</p>
+          <p class="dialog-sub" data-i18n="dialog.worktrees.subtitle">Run a chat in an isolated checkout. Choose a starting branch or commit; your local checkout stays in place.</p>
           <div id="worktree-list" class="worktree-list"></div>
-          <button id="worktree-handoff" class="details-row" hidden>Hand off chat to Worktree</button>
-          <button id="worktree-branch" class="details-row" hidden>Create branch here</button>
+          <button id="worktree-handoff" class="details-row" data-i18n="dialog.worktrees.handoff" hidden>Hand off chat to Worktree</button>
+          <button id="worktree-branch" class="details-row" data-i18n="dialog.worktrees.createBranch" hidden>Create branch here</button>
           <div class="worktree-options">
-            <label for="worktree-base">Start from</label>
-            <input id="worktree-base" type="text" placeholder="HEAD (current checkout)" aria-label="Starting branch or commit" autocomplete="off" spellcheck="false" />
-            <label><input id="worktree-copy" type="checkbox" /> Include uncommitted changes from the current checkout</label>
-            <label><input id="worktree-detached" type="checkbox" checked /> Detached HEAD (create a branch later)</label>
+            <label for="worktree-base" data-i18n="dialog.worktrees.startFrom">Start from</label>
+            <input id="worktree-base" type="text" placeholder="HEAD (current checkout)" aria-label="Starting branch or commit" autocomplete="off" spellcheck="false" data-i18n-placeholder="dialog.worktrees.basePlaceholder" />
+            <label><input id="worktree-copy" type="checkbox" /> <span data-i18n="dialog.worktrees.includeChanges">Include uncommitted changes from the current checkout</span></label>
+            <label><input id="worktree-detached" type="checkbox" checked /> <span data-i18n="dialog.worktrees.detached">Detached HEAD (create a branch later)</span></label>
           </div>
           <div class="worktree-new">
             <input
@@ -168,57 +198,66 @@
               spellcheck="false"
               placeholder="fix-login-bug"
               aria-label="New worktree name"
+              data-i18n-aria="dialog.worktrees.name"
             />
-            <button id="worktree-create" class="chip worktree-create">Create worktree</button>
+            <button id="worktree-create" class="chip worktree-create" data-i18n="dialog.worktrees.create">Create worktree</button>
           </div>
         </section>
 
         <section id="mcps-modal" class="popover" hidden aria-labelledby="mcps-title">
           <div class="popover-head">
-            <h2 id="mcps-title">MCP servers</h2>
+            <h2 id="mcps-title" data-i18n="dialog.mcps.title">MCP servers</h2>
             <div class="popover-actions">
               <button
                 id="mcps-refresh"
                 class="icon"
                 title="Recheck the servers"
                 aria-label="Recheck the servers"
+                data-i18n-title="dialog.mcps.recheck"
+                data-i18n-aria="dialog.mcps.recheck"
               ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
               <button
                 id="mcps-close"
                 class="icon"
                 title="Close"
                 aria-label="Close"
+                data-i18n-title="common.close"
+                data-i18n-aria="common.close"
               ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
             </div>
           </div>
-          <p class="dialog-sub">The servers this project loads, and whether Oxide can reach them. They come from the same <code>mcp.json</code> files the CLI reads, and turning one off writes to the file that defines it.</p>
+          <p class="dialog-sub" data-i18n="dialog.mcps.subtitle">The servers this project loads, and whether Oxide can reach them. They come from the same <code>mcp.json</code> files the CLI reads, and turning one off writes to the file that defines it.</p>
           <div id="mcp-list" class="mcp-list"></div>
         </section>
 
         <section id="sessions-modal" class="popover" hidden aria-labelledby="sessions-title">
           <div class="popover-head">
-            <h2 id="sessions-title">Sessions</h2>
+            <h2 id="sessions-title" data-i18n="dialog.sessions.title">Sessions</h2>
             <div class="popover-actions">
               <button
                 id="sessions-new"
                 class="icon"
                 title="New thread"
                 aria-label="New thread"
+                data-i18n-title="dialog.sessions.new"
+                data-i18n-aria="dialog.sessions.new"
               ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
               <button
                 id="sessions-close"
                 class="icon"
                 title="Close"
                 aria-label="Close"
+                data-i18n-title="common.close"
+                data-i18n-aria="common.close"
               ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
             </div>
           </div>
-          <p class="dialog-sub">Threads stored for this project, most recent first. Picking one opens it here; the sidebar shows the same list beside every project.</p>
+          <p class="dialog-sub" data-i18n="dialog.sessions.subtitle">Threads stored for this project, most recent first. Picking one opens it here; the sidebar shows the same list beside every project.</p>
           <div id="sessions-list" class="session-list"></div>
         </section>
 
         <button id="live-changes" class="live-changes" type="button" hidden
-          title="View changes" aria-label="View changes"></button>
+          title="View changes" aria-label="View changes" data-i18n-title="topbar.viewChanges" data-i18n-aria="topbar.viewChanges"></button>
 
         <!-- Project facts stay above the input. Usage and context stay beside
              the action that sends or stops a turn. -->
@@ -230,6 +269,8 @@
               class="chip project-chip"
               title="Choose a project&#10;Pick the folder this window runs in"
               aria-label="Choose a project"
+              data-i18n-title="composer.chooseProject"
+              data-i18n-aria="composer.chooseProject"
             ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.9 12.5V4c0-.6.5-1.1 1.1-1.1h2.4c.3 0 .6.1.8.4l1.2 1.5h5.6c.6 0 1.1.5 1.1 1.1v6.6c0 .6-.5 1.1-1.1 1.1H3c-.6 0-1.1-.5-1.1-1.1Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="project-name" class="chip-name">Choose a project</span></button>
             <!-- The branch is read out of the repository's own HEAD, so it
                  names a worktree's branch or the commit a detached HEAD is on;
@@ -253,18 +294,20 @@
               aria-expanded="false"
               aria-controls="worktrees-modal"
               hidden
+              data-i18n-title="composer.worktree"
+              data-i18n-aria="composer.worktree"
             ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="1.9" y="3.1" width="7.2" height="8.4" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M11.2 4.9h1.1a1.5 1.5 0 0 1 1.5 1.5v4.2a1.5 1.5 0 0 1-1.5 1.5h-1.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3.8 6.2h3.4M3.8 8.5h2.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span id="worktree-label" hidden></span></button>
           </div>
         </div>
 
         <div id="composer" class="composer">
-          <div id="queue-list" class="queued-messages" aria-label="Queued messages" hidden></div>
+          <div id="queue-list" class="queued-messages" aria-label="Queued messages" data-i18n-aria="composer.queued" hidden></div>
           <div id="queue-menu" class="queued-message-menu" role="menu"
-            aria-label="Queued message actions" hidden></div>
+            aria-label="Queued message actions" data-i18n-aria="composer.queuedActions" hidden></div>
           <div id="attachments" class="attachments" hidden></div>
           <div id="prompt" class="markdown-input body" contenteditable="true"
             role="textbox" aria-multiline="true" aria-label="Message"
-            data-placeholder="Ask Oxide…"></div>
+            data-placeholder="Ask Oxide…" data-i18n-aria="composer.message" data-i18n-placeholder="composer.placeholder"></div>
           <div class="composer-bar">
             <div class="composer-left">
               <button
@@ -272,6 +315,8 @@
                 class="chip chip-icon"
                 title="Attach images or PDFs (paste with the platform paste shortcut)"
                 aria-label="Attach images or PDFs"
+                data-i18n-title="composer.attachHint"
+                data-i18n-aria="composer.attach"
               ><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
               <span class="composer-sep" aria-hidden="true"></span>
               <button
@@ -279,26 +324,34 @@
                 class="chip chip-icon"
                 title="Connect a provider"
                 aria-label="Connect a provider"
+                data-i18n-title="composer.connect"
+                data-i18n-aria="composer.connect"
               ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 2.2v2.6M10 2.2v2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11.8 4.8v2a3.8 3.8 0 0 1-7.6 0v-2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 10.6v3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
               <button
                 id="trust"
                 class="chip chip-icon"
                 title="Project access"
                 aria-label="Project access"
+                data-i18n-title="composer.trust"
+                data-i18n-aria="composer.trust"
                 hidden
               ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.7c1.7 1.2 3.3 1.7 5 1.8v3.8c0 3.2-1.7 5.5-5 7-3.3-1.5-5-3.8-5-7V3.5c1.7-.1 3.3-.6 5-1.8Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="m5.6 8 1.5 1.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-              <button id="agents" class="chip chip-icon" title="Agents" aria-label="Agents" aria-haspopup="dialog" aria-controls="agents-modal"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="5.2" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.2 13.8c.4-3 2-4.4 4.8-4.4s4.4 1.4 4.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+              <button id="agents" class="chip chip-icon" title="Agents" aria-label="Agents" aria-haspopup="dialog" aria-controls="agents-modal" data-i18n-title="composer.agents" data-i18n-aria="composer.agents"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="5.2" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.2 13.8c.4-3 2-4.4 4.8-4.4s4.4 1.4 4.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
               <button
                 id="permissions"
                 class="chip chip-icon"
                 title="Tool approvals"
                 aria-label="Tool approvals"
+                data-i18n-title="composer.permissions"
+                data-i18n-aria="composer.permissions"
               ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5.6 7.4V5.6a2.4 2.4 0 0 1 4.8 0v1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.4 7.4h7.2a1.2 1.2 0 0 1 1.2 1.2v4.2a1.2 1.2 0 0 1-1.2 1.2H4.4a1.2 1.2 0 0 1-1.2-1.2V8.6a1.2 1.2 0 0 1 1.2-1.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></button>
               <button
                 id="help"
                 class="chip chip-icon"
                 title="Keyboard shortcuts"
                 aria-label="Keyboard shortcuts"
+                data-i18n-title="composer.help"
+                data-i18n-aria="composer.help"
               ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.4 6.2a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.7.5-.7 1.1v.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11v.01" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             </div>
             <div class="composer-right">
@@ -314,6 +367,8 @@
                   aria-haspopup="dialog"
                   aria-expanded="false"
                   aria-controls="models-modal"
+                  data-i18n-title="composer.model"
+                  data-i18n-aria="composer.model"
                 ><span id="model-value">Model</span><svg class="selector-caret" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
                 <button
                   id="reasoning"
@@ -323,6 +378,8 @@
                   aria-haspopup="dialog"
                   aria-expanded="false"
                   aria-controls="reasoning-modal"
+                  data-i18n-title="composer.thinking"
+                  data-i18n-aria="composer.thinking"
                 ><span id="reasoning-value">Auto</span><svg class="selector-caret" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
               </div>
               <span id="usage" class="spend"></span>
@@ -334,8 +391,10 @@
                 hidden
                 title="Stop the running turn"
                 aria-label="Stop the running turn"
+                data-i18n-title="composer.stopHint"
+                data-i18n-aria="composer.stopHint"
               ><span class="stop-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg></span></button>
-              <button id="send" class="send composer-action" disabled title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 13.4V3.4M4 7.4 8 3.4l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button id="send" class="send composer-action" disabled title="Send (Enter)" aria-label="Send" data-i18n-title="composer.sendHint" data-i18n-aria="composer.send"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 13.4V3.4M4 7.4 8 3.4l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             </div>
           </div>
         </div>
@@ -344,18 +403,20 @@
 
     <aside id="review-modal" class="changes-pane" aria-label="Changes" hidden>
       <div class="review-dialog">
-        <div class="dock-title"><h2 id="review-title">Changes</h2>
+        <div class="dock-title"><h2 id="review-title" data-i18n="topbar.viewChanges">Changes</h2>
           <button
             id="review-close"
             class="icon"
             title="Close (Esc)"
             aria-label="Close"
+            data-i18n-title="common.close"
+            data-i18n-aria="common.close"
           ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         </div>
         <div class="review-head">
           <select id="review-scope" aria-label="Change scope"><option value="turn">Last turn</option><option value="repository">Uncommitted</option></select>
           <span id="review-total" class="review-total"></span>
-          <button id="review-refresh" class="icon" title="Refresh changes" aria-label="Refresh changes"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 4v6h-6M20 10a8 8 0 1 0 0 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button id="review-refresh" class="icon" title="Refresh changes" aria-label="Refresh changes" data-i18n-title="common.refresh" data-i18n-aria="common.refresh"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 4v6h-6M20 10a8 8 0 1 0 0 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
 
         </div>
         <div class="review-body">
@@ -366,13 +427,13 @@
 
     <aside id="details-panel" class="details-pane" aria-label="Project details" hidden>
       <div class="details-card">
-        <div class="details-head"><span id="details-project"></span><button id="details-more" class="icon" title="Project options" aria-label="Project options" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
-        <button id="details-changes" class="details-row"><span id="details-changes-icon" aria-hidden="true"></span><span>Changes</span><span id="details-stats" class="change-stats"></span></button>
+        <div class="details-head"><span id="details-project"></span><button id="details-more" class="icon" title="Project options" aria-label="Project options" aria-haspopup="menu" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
+        <button id="details-changes" class="details-row"><span id="details-changes-icon" aria-hidden="true"></span><span data-i18n="topbar.viewChanges">Changes</span><span id="details-stats" class="change-stats"></span></button>
         <div id="details-checkout" class="details-row"></div>
         <div id="details-branch" class="details-row" hidden></div>
-        <div class="details-sources-head"><span>Sources</span><button id="details-add-source" class="icon" title="Add sources" aria-label="Add sources"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
+        <div class="details-sources-head"><span data-i18n="dialog.sources.title">Sources</span><button id="details-add-source" class="icon" title="Add sources" aria-label="Add sources" data-i18n-title="dialog.sources.add" data-i18n-aria="dialog.sources.add"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
         <div id="details-sources"></div>
-        <button id="details-view-sources" class="details-row">View all</button>
+        <button id="details-view-sources" class="details-row" data-i18n="dialog.sources.viewAll">View all</button>
       </div>
     </aside>
 
@@ -380,14 +441,14 @@
     </main>
     <div id="approval" class="overlay" hidden>
       <div class="dialog">
-        <h2>Permission required</h2>
-        <p class="dialog-sub">Oxide wants to run a tool that needs your approval.</p>
+        <h2 data-i18n="dialog.approval.title">Permission required</h2>
+        <p class="dialog-sub" data-i18n="dialog.approval.subtitle">Oxide wants to run a tool that needs your approval.</p>
         <div class="approval-tool"><span id="approval-tool">tool</span></div>
         <pre id="approval-detail" class="approval-detail"></pre>
         <div class="dialog-actions">
-          <button id="approval-deny" class="ghost">Deny</button>
-          <button id="approval-once" class="primary">Allow once</button>
-          <button id="approval-always" class="primary">Always allow</button>
+          <button id="approval-deny" class="ghost" data-i18n="dialog.approval.deny">Deny</button>
+          <button id="approval-once" class="primary" data-i18n="dialog.approval.once">Allow once</button>
+          <button id="approval-always" class="primary" data-i18n="dialog.approval.always">Always allow</button>
         </div>
       </div>
     </div>
@@ -403,113 +464,127 @@
         <p id="question-hint" class="dialog-sub" hidden></p>
         <div id="question-body" class="question-body"></div>
         <div class="dialog-actions question-actions">
-          <button id="question-dismiss" class="ghost">Dismiss</button>
+          <button id="question-dismiss" class="ghost" data-i18n="common.dismiss">Dismiss</button>
           <span class="spacer"></span>
-          <button id="question-back" class="ghost" hidden>Back</button>
-          <button id="question-submit" class="primary">Next</button>
+          <button id="question-back" class="ghost" data-i18n="common.back" hidden>Back</button>
+          <button id="question-submit" class="primary" data-i18n="common.next">Next</button>
         </div>
       </div>
     </div>
 
     <div id="connect-modal" class="overlay" hidden>
       <div class="dialog">
-        <h2>Connect a provider</h2>
-        <p class="dialog-sub">Credentials are stored in the same <code>auth.json</code> the CLI uses.</p>
-        <input id="provider-filter" class="search" placeholder="Search providers…" spellcheck="false" />
+        <h2 data-i18n="dialog.connect.title">Connect a provider</h2>
+        <p class="dialog-sub" data-i18n="dialog.connect.subtitle">Credentials are stored in the same <code>auth.json</code> the CLI uses.</p>
+        <input id="provider-filter" class="search" placeholder="Search providers…" spellcheck="false" data-i18n-placeholder="dialog.connect.search" />
         <div id="provider-list" class="provider-list"></div>
         <div id="login-key-field" class="field">
-          <label for="login-key">API key</label>
-          <input id="login-key" type="password" placeholder="Paste your API key" spellcheck="false" autocomplete="off" />
+          <label for="login-key" data-i18n="dialog.connect.key">API key</label>
+          <input id="login-key" type="password" placeholder="Paste your API key" spellcheck="false" autocomplete="off" data-i18n-placeholder="dialog.connect.keyPlaceholder" />
         </div>
         <p id="login-key-note" class="provider-note" hidden></p>
         <div class="field-row">
           <div class="field">
-            <label for="login-model">Model (optional)</label>
-            <input id="login-model" placeholder="default" spellcheck="false" />
+            <label for="login-model" data-i18n="dialog.connect.model">Model (optional)</label>
+            <input id="login-model" placeholder="default" spellcheck="false" data-i18n-placeholder="dialog.connect.default" />
           </div>
           <div class="field">
-            <label for="login-url">Base URL (optional)</label>
-            <input id="login-url" placeholder="default" spellcheck="false" />
+            <label for="login-url" data-i18n="dialog.connect.url">Base URL (optional)</label>
+            <input id="login-url" placeholder="default" spellcheck="false" data-i18n-placeholder="dialog.connect.default" />
           </div>
         </div>
         <div class="dialog-actions">
-          <button id="login-cancel" class="ghost">Cancel</button>
-          <button id="login-save" class="primary">Save</button>
+          <button id="login-cancel" class="ghost" data-i18n="common.cancel">Cancel</button>
+          <button id="login-save" class="primary" data-i18n="common.save">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- The language the whole app is drawn in. One row per language, named in
+         the language itself, so a reader looking for their own finds it whether
+         or not they read the one the window is currently in. -->
+    <div id="language-modal" class="overlay" hidden>
+      <div class="dialog">
+        <h2 data-i18n="language.name">Language</h2>
+        <p class="dialog-sub" data-i18n="dialog.language.subtitle">The language this window, the terminal and the editor panel share. Switching it rewrites the same <code>settings.json</code> key every front-end reads.</p>
+        <div id="language-list" class="theme-list"></div>
+        <div class="dialog-actions">
+          <button id="language-close" class="ghost" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>
 
     <div id="sources-modal" class="overlay" hidden>
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="sources-title">
-        <div class="dialog-head"><h2 id="sources-title">Sources</h2><button id="sources-close" class="icon" title="Close" aria-label="Close"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
+        <div class="dialog-head"><h2 id="sources-title" data-i18n="dialog.sources.title">Sources</h2><button id="sources-close" class="icon" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
         <div id="sources-list" class="sources-list"></div>
-        <button id="sources-manage" class="details-row">Manage MCP servers</button>
+        <button id="sources-manage" class="details-row" data-i18n="dialog.mcps.manage">Manage MCP servers</button>
       </div>
     </div>
 
     <div id="agents-modal" class="overlay" hidden>
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="agents-title">
-        <h2 id="agents-title">Agents</h2>
-        <p class="dialog-sub">Choose the agent this chat runs as.</p>
+        <h2 id="agents-title" data-i18n="dialog.agents.title">Agents</h2>
+        <p class="dialog-sub" data-i18n="dialog.agents.subtitle">Choose the agent this chat runs as.</p>
         <div id="agents-list" class="session-list"></div>
-        <div class="dialog-actions"><button id="agents-close" class="ghost">Close</button></div>
+        <div class="dialog-actions"><button id="agents-close" class="ghost" data-i18n="common.close">Close</button></div>
       </div>
     </div>
     <div id="trust-modal" class="overlay" hidden>
       <div class="dialog">
-        <h2>Trust this project?</h2>
-        <p class="dialog-sub">
+        <h2 data-i18n="dialog.trust.title">Trust this project?</h2>
+        <p class="dialog-sub" data-i18n="dialog.trust.body">
           Trusting this project loads its local resources, which can run commands or
           change how the agent behaves. This decision is shared with the CLI and extension.
         </p>
         <div id="trust-resources" class="trust-resources"></div>
         <div class="dialog-actions">
-          <button id="trust-deny" class="ghost">Don't trust</button>
-          <button id="trust-allow" class="primary">Trust project</button>
+          <button id="trust-deny" class="ghost" data-i18n="dialog.trust.deny">Don't trust</button>
+          <button id="trust-allow" class="primary" data-i18n="dialog.trust.allow">Trust project</button>
         </div>
       </div>
     </div>
 
     <div id="models-modal" class="settings-dropdown" role="dialog" aria-labelledby="models-title" hidden>
       <div class="dropdown-content">
-        <h2 id="models-title">Model</h2>
-        <input id="model-filter" class="search" placeholder="Filter models…" spellcheck="false" />
+        <h2 id="models-title" data-i18n="dialog.models.title">Model</h2>
+        <input id="model-filter" class="search" placeholder="Filter models…" spellcheck="false" data-i18n-placeholder="dialog.models.filter" />
         <div id="model-list" class="model-list"></div>
         <div class="dialog-actions">
-          <button id="models-close" class="ghost">Close</button>
+          <button id="models-close" class="ghost" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>
 
     <div id="reasoning-modal" class="settings-dropdown" role="dialog" aria-labelledby="reasoning-title" hidden>
       <div class="dropdown-content">
-        <h2 id="reasoning-title">Reasoning effort</h2>
+        <h2 id="reasoning-title" data-i18n="dialog.reasoning.title">Reasoning effort</h2>
         <div id="reasoning-list" class="reasoning-list"></div>
         <div class="dialog-actions">
-          <button id="reasoning-close" class="ghost">Close</button>
+          <button id="reasoning-close" class="ghost" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>
 
     <div id="themes-modal" class="overlay" hidden>
       <div class="dialog">
-        <h2>Theme</h2>
-        <p class="dialog-sub">Built-in and <code>.oxide/themes</code> files, shared with the CLI.</p>
+        <h2 data-i18n="dialog.themes.title">Theme</h2>
+        <p class="dialog-sub" data-i18n="dialog.themes.subtitle">Built-in and <code>.oxide/themes</code> files, shared with the CLI.</p>
         <div id="theme-list" class="theme-list"></div>
         <div class="dialog-actions">
-          <button id="themes-close" class="ghost">Close</button>
+          <button id="themes-close" class="ghost" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>
 
     <div id="permissions-modal" class="overlay" hidden>
       <div class="dialog">
-        <h2>Tool approvals</h2>
-        <p class="dialog-sub">Tools allowed without prompting in this project.</p>
+        <h2 data-i18n="dialog.permissions.title">Tool approvals</h2>
+        <p class="dialog-sub" data-i18n="dialog.permissions.subtitle">Tools allowed without prompting in this project.</p>
         <div id="approval-list" class="theme-list"></div>
         <div class="dialog-actions">
-          <button id="permissions-clear" class="ghost danger">Clear all</button>
-          <button id="permissions-close" class="ghost">Close</button>
+          <button id="permissions-clear" class="ghost danger" data-i18n="dialog.permissions.clear">Clear all</button>
+          <button id="permissions-close" class="ghost" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>
@@ -519,9 +594,9 @@
         <h2 id="confirm-title">Confirm</h2>
         <p class="dialog-sub" id="confirm-message"></p>
         <div class="dialog-actions">
-          <button id="confirm-cancel" class="ghost">Cancel</button>
+          <button id="confirm-cancel" class="ghost" data-i18n="common.cancel">Cancel</button>
           <button id="confirm-alt" class="ghost danger" hidden></button>
-          <button id="confirm-ok" class="primary">Confirm</button>
+          <button id="confirm-ok" class="primary" data-i18n="dialog.confirm.ok">Confirm</button>
         </div>
       </div>
     </div>
@@ -530,12 +605,12 @@
       <div class="dialog">
         <h2 id="rename-title">Rename thread</h2>
         <div class="field">
-          <label for="rename-input">Name</label>
+          <label for="rename-input" data-i18n="dialog.rename.name">Name</label>
           <input id="rename-input" spellcheck="false" autocomplete="off" />
         </div>
         <div class="dialog-actions">
-          <button id="rename-cancel" class="ghost">Cancel</button>
-          <button id="rename-save" class="primary">Save</button>
+          <button id="rename-cancel" class="ghost" data-i18n="common.cancel">Cancel</button>
+          <button id="rename-save" class="primary" data-i18n="common.save">Save</button>
         </div>
       </div>
     </div>
@@ -543,29 +618,29 @@
 
     <div id="help-modal" class="overlay" hidden>
       <div class="dialog">
-        <h2>Keyboard shortcuts</h2>
+        <h2 data-i18n="dialog.help.title">Keyboard shortcuts</h2>
         <table class="shortcuts">
-          <tr><td>Enter</td><td>Send with the default follow-up behavior</td></tr>
-          <tr><td>Shift+Enter</td><td>Newline</td></tr>
-          <tr><td>⌘⇧Enter / Ctrl+Shift+Enter</td><td>Use the opposite follow-up behavior once</td></tr>
-          <tr><td>⌘V / Ctrl+V</td><td>Attach a clipboard image</td></tr>
-          <tr><td>⌘T / Ctrl+T</td><td>New chat tab</td></tr>
-          <tr><td>⌘W / Ctrl+W</td><td>Close chat tab</td></tr>
-          <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td>Next / previous chat tab</td></tr>
-          <tr><td>⌘1…⌘9 / Ctrl+1…9</td><td>Open the thread at that place in the sidebar</td></tr>
-          <tr><td>Shift+Tab / Ctrl+R</td><td>Cycle reasoning</td></tr>
-          <tr><td>Ctrl+K</td><td>Open the model picker</td></tr>
-          <tr><td>Ctrl+/</td><td>Toggle this help</td></tr>
-          <tr><td>↑ / ↓</td><td>Walk a change review's files</td></tr>
-          <tr><td>Escape</td><td>Close any dialog</td></tr>
+          <tr><td>Enter</td><td data-i18n="help.enter">Send with the default follow-up behavior</td></tr>
+          <tr><td>Shift+Enter</td><td data-i18n="help.newline">Newline</td></tr>
+          <tr><td>⌘⇧Enter / Ctrl+Shift+Enter</td><td data-i18n="help.opposite">Use the opposite follow-up behavior once</td></tr>
+          <tr><td>⌘V / Ctrl+V</td><td data-i18n="help.paste">Attach a clipboard image</td></tr>
+          <tr><td>⌘T / Ctrl+T</td><td data-i18n="help.newTab">New chat tab</td></tr>
+          <tr><td>⌘W / Ctrl+W</td><td data-i18n="help.closeTab">Close chat tab</td></tr>
+          <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td data-i18n="help.cycleTab">Next / previous chat tab</td></tr>
+          <tr><td>⌘1…⌘9 / Ctrl+1…9</td><td data-i18n="help.sessionKey">Open the thread at that place in the sidebar</td></tr>
+          <tr><td>Shift+Tab / Ctrl+R</td><td data-i18n="help.reasoning">Cycle reasoning</td></tr>
+          <tr><td>Ctrl+K</td><td data-i18n="help.model">Open the model picker</td></tr>
+          <tr><td>Ctrl+/</td><td data-i18n="help.help">Toggle this help</td></tr>
+          <tr><td>↑ / ↓</td><td data-i18n="help.reviewFiles">Walk a change review's files</td></tr>
+          <tr><td>Escape</td><td data-i18n="help.escape">Close any dialog</td></tr>
         </table>
         <div class="dialog-actions">
-          <button id="help-close" class="ghost">Close</button>
+          <button id="help-close" class="ghost" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>
 
-    <div id="image-modal" class="overlay" role="dialog" aria-modal="true" aria-label="Image preview" hidden>
+    <div id="image-modal" class="overlay" role="dialog" aria-modal="true" aria-label="Image preview" data-i18n-aria="dialog.image.preview" hidden>
       <div class="image-view">
         <div class="image-head">
           <span id="image-view-name" class="image-name"></span>
@@ -574,6 +649,8 @@
             class="icon"
             title="Close (Esc)"
             aria-label="Close"
+            data-i18n-title="common.close"
+            data-i18n-aria="common.close"
           >✕</button>
         </div>
         <img id="image-view-img" alt="attachment preview" />
@@ -595,38 +672,38 @@
           <div id="update-progress-fill" class="update-progress-fill"></div>
         </div>
         <div class="dialog-actions">
-          <button id="update-page" class="ghost" hidden>Release notes</button>
-          <button id="update-close" class="ghost">Dismiss</button>
-          <button id="update-later" class="ghost" hidden>Later</button>
-          <button id="update-cancel" class="ghost" hidden>Cancel</button>
-          <button id="update-background" class="ghost" hidden>Download in background</button>
-          <button id="update-install" class="primary" hidden>Update</button>
-          <button id="update-restart" class="primary" hidden>Restart and install update</button>
+          <button id="update-page" class="ghost" hidden data-i18n="dialog.update.notes">Release notes</button>
+          <button id="update-close" class="ghost" data-i18n="common.dismiss">Dismiss</button>
+          <button id="update-later" class="ghost" hidden data-i18n="common.later">Later</button>
+          <button id="update-cancel" class="ghost" hidden data-i18n="common.cancel">Cancel</button>
+          <button id="update-background" class="ghost" hidden data-i18n="dialog.update.background">Download in background</button>
+          <button id="update-install" class="primary" hidden data-i18n="dialog.update.install">Update</button>
+          <button id="update-restart" class="primary" hidden data-i18n="dialog.update.restart">Restart and install update</button>
         </div>
       </div>
     </div>
 
     <div id="command-palette" class="palette" hidden>
       <div id="palette-list" class="palette-list" role="listbox" aria-label="Slash commands"></div>
-      <div class="palette-hint">↑↓ choose · Enter run · Esc close</div>
+      <div class="palette-hint" data-i18n="palette.commandsHint">↑↓ choose · Enter run · Esc close</div>
     </div>
 
     <div id="at-list" class="palette" hidden>
       <div id="at-rows" class="palette-list" role="listbox" aria-label="Files and folders"></div>
-      <div class="palette-hint">↑↓ choose · Enter insert · Esc close</div>
+      <div class="palette-hint" data-i18n="palette.pathsHint">↑↓ choose · Enter insert · Esc close</div>
     </div>
 
     <div id="create-project-modal" class="overlay" hidden>
       <div class="dialog">
-        <h2 id="create-project-title">Create project</h2>
+        <h2 id="create-project-title" data-i18n="dialog.createProject.title">Create project</h2>
         <div class="field">
-          <label for="create-project-name">Project name</label>
-          <input id="create-project-name" placeholder="Project name" spellcheck="false" autocomplete="off" />
+          <label for="create-project-name" data-i18n="dialog.createProject.name">Project name</label>
+          <input id="create-project-name" placeholder="Project name" spellcheck="false" autocomplete="off" data-i18n-placeholder="dialog.createProject.name" />
         </div>
         <div id="create-project-sources" class="field">
-          <label>Source folders</label>
+          <label data-i18n="dialog.createProject.sources">Source folders</label>
           <div id="create-project-folders" class="folder-list"></div>
-          <button id="create-project-add-folder" class="ghost small">+ Add a folder</button>
+          <button id="create-project-add-folder" class="ghost small" data-i18n="dialog.createProject.addFolder">+ Add a folder</button>
           <div class="field-row path-row">
             <input
               id="create-project-path"
@@ -634,20 +711,21 @@
               placeholder="Or type a path, e.g. ~/Projects/app"
               spellcheck="false"
               autocomplete="off"
+              data-i18n-placeholder="dialog.createProject.pathPlaceholder"
             />
-            <button id="create-project-add-path" class="ghost small">Add path</button>
+            <button id="create-project-add-path" class="ghost small" data-i18n="dialog.createProject.addPath">Add path</button>
           </div>
         </div>
         <div id="create-project-error" class="add-error" hidden></div>
         <div class="dialog-actions">
-          <button id="create-project-remove" class="danger dialog-remove" hidden>Remove project</button>
-          <button id="create-project-cancel" class="ghost">Cancel</button>
-          <button id="create-project-save" class="primary">Create project</button>
+          <button id="create-project-remove" class="danger dialog-remove" data-i18n="dialog.createProject.remove" hidden>Remove project</button>
+          <button id="create-project-cancel" class="ghost" data-i18n="common.cancel">Cancel</button>
+          <button id="create-project-save" class="primary" data-i18n="dialog.createProject.title">Create project</button>
         </div>
       </div>
     </div>
 
-    <div id="toast-list" class="toast-list" aria-label="Notifications"></div>
+    <div id="toast-list" class="toast-list" aria-label="Notifications" data-i18n-aria="toast.notifications"></div>
 
     <input id="attach-input" type="file" accept="image/*,application/pdf" multiple hidden />
     <input id="folder-picker-input" type="file" webkitdirectory directory multiple hidden />

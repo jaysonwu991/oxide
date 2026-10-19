@@ -2524,7 +2524,9 @@ footer {
 }
 
 #input {
-  min-height: calc(1lh + 11px);
+  /* Two lines before anything is typed: the box reads as a place to write a
+     message rather than as a one-line field, and it grows from there. */
+  min-height: calc(2lh + 11px);
   padding: 4px 2px 7px;
 }
 

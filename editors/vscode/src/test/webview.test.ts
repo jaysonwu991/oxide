@@ -789,6 +789,12 @@ describe("webview footer", () => {
     // after it and the branch takes whatever room is left.
     assert.match(style, /\.composer-strip \.usage \{ margin-left: auto; \}/);
     assert.doesNotMatch(style, /#footline/);
+    // The box opens on two lines: an empty composer reads as somewhere to write
+    // a message rather than as a one-line field, and it grows from there. The
+    // later rule is the one in force — it narrows the padding the base rule
+    // gives — so the check reads the last of them.
+    const input = [...style.matchAll(/#input \{[^}]*\}/gs)].at(-1)?.[0] ?? "";
+    assert.match(input, /min-height: calc\(2lh \+ 11px\);/);
   });
 
   it("paints the branch, the usage line and the gauge the host hands it", () => {

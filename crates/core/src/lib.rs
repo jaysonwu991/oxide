@@ -22,6 +22,7 @@ pub mod config;
 pub mod diff;
 pub mod ecosystem;
 pub mod html;
+pub mod i18n;
 pub mod llm;
 pub mod lsp;
 pub mod mcp;

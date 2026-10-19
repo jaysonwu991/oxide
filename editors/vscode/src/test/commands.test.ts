@@ -1113,7 +1113,7 @@ describe("command contributions", () => {
     const status = chat.slice(chat.indexOf("private broadcastStatus()"), chat.indexOf("get running"));
     assert.ok(status.includes("title: this.threadTitle()"), "the status carries the title");
     assert.ok(
-      renderer.includes('titleLabel.textContent = message.title || "New chat"'),
+      renderer.includes('titleLabel.textContent = message.title || t("panel.newChat", "New chat")'),
       "and the webview paints it over the placeholder",
     );
     const events = chat.slice(chat.indexOf("private handleEvent("), chat.indexOf("private handleExit("));

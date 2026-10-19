@@ -1291,6 +1291,15 @@ keyboard shortcuts — after a rule of their own: the composer's bottom row is o
 line at every width, and four glyphs beside a model name left the name cut to
 `deepse…` in a narrow side bar.
 
+**Oxide: Change Language...** (and `/language` in the composer) draws the panel
+in British English or Simplified Chinese. The catalog is the core's: the panel
+runs `oxide language --json` and paints what it answers, so the words are the
+same ones the terminal and the desktop app use. A switch runs `oxide language set
+<tag> --json`, which writes the shared `settings.json` key every front-end
+reads — the terminal's next launch and the desktop app's next paint follow it —
+and the panel repaints from the answer. Only the interface is translated; what
+the model writes and what a tool prints stays as authored.
+
 ## Development and testing
 
 ```sh

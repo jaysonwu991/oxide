@@ -24,6 +24,7 @@ import { changesTitle, changesTotals, changeRows, changesMore, turnChanges, type
 import { argumentDiff } from "./preview";
 import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
+import type { LanguageInfo } from "./i18n";
 import type { CommandRow } from "./palette";
 
 /// One JSONL line from the agent's stdout. Only `type` is guaranteed.
@@ -295,6 +296,11 @@ export interface TranscriptState {
   /// to it. `null` when the panel's own thread is the run's — or when nothing
   /// is running and nothing is parked.
   run: RunThread | null;
+  /// The language the panel draws and the strings to draw it with, read from
+  /// the CLI (`oxide language --json`) — the same catalog the terminal and the
+  /// desktop app use. `null` until the answer lands, when the view falls back
+  /// to the English it was authored in.
+  language: LanguageInfo | null;
 }
 
 /// A turn's own thread, named for a pane that is showing another one. The
@@ -621,6 +627,7 @@ export class Transcript {
     showThinking: boolean;
     footer: FooterState;
     run: RunThread | null;
+    language?: LanguageInfo | null;
   }): TranscriptState {
     return {
       items: this.items,
@@ -629,6 +636,7 @@ export class Transcript {
       usage: this.usage,
       sessionId: this.sessionId,
       ...extra,
+      language: extra.language ?? null,
       queue: extra.queue ?? [],
       followUpBehavior: extra.followUpBehavior ?? "queue",
     };

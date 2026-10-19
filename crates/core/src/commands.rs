@@ -180,6 +180,14 @@ pub const BUILTINS: &[Builtin] = &[
         front_ends: &[FrontEnd::Terminal, FrontEnd::Desktop],
     },
     Builtin {
+        name: "language",
+        description: "Switch the interface language",
+        arguments: Some("en-GB|zh-CN"),
+        // All three draw their own picker over the one setting every front-end
+        // reads, so the terminal, the app and the panel switch the same key.
+        front_ends: FrontEnd::ALL,
+    },
+    Builtin {
         name: "connect",
         description: "Sign in to a provider",
         arguments: Some("provider"),
