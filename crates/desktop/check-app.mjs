@@ -1901,13 +1901,15 @@ check(
 // is a constant rather than a fact.
 const strip = shell.slice(
   shell.indexOf('<div class="composer-strip">'),
-  shell.indexOf('<button id="live-changes"'),
+  shell.indexOf('<div id="composer"'),
 );
 check(
   "put the folder and the branch on the composer's own top row",
   !shell.includes('class="composer-head"') &&
     !shell.includes('id="machine"') &&
     !shell.includes("This computer") &&
+    shell.indexOf('<button id="live-changes"') < shell.indexOf('<div class="composer-strip">') &&
+    /<\/div>\s*<\/div>\s*$/.test(strip) &&
     strip.includes('id="project"') &&
     /<span id="project-name"[^>]*>[^<]+<\/span>/.test(strip) &&
     strip.includes('id="git-branch"') &&
@@ -2045,7 +2047,7 @@ check(
 // box's own top edge, narrower than the box and centered on it, so its edges stand
 // where the box's own text column does and the box reads as the wider of the two
 // at any window width — rounded at the top and open at the bottom, with the box
-// rounded at the bottom and open at the top, so the two read as one shape with the
+// rounded at every corner, so the two read as one shape with the
 // box's own top border as the line between them. The bar's surface is a step off
 // the box's, which is what makes it read as a bar.
 check(
@@ -2053,7 +2055,7 @@ check(
   /\.composer-strip \{[^}]*width: calc\(100% - 24px\);[^}]*max-width: 756px;[^}]*margin: 0 auto;[^}]*background: var\(--panel-2\);[^}]*border: 1px solid var\(--border\);[^}]*border-bottom: none;[^}]*border-radius: 16px 16px 0 0;/.test(
     sheet,
   ) &&
-    /\.composer \{[^}]*max-width: 780px;[^}]*margin: 0 auto;[^}]*border-radius: 0 0 16px 16px;/.test(sheet),
+    /\.composer \{[^}]*max-width: 780px;[^}]*margin: 0 auto;[^}]*border-radius: 16px;/.test(sheet),
   sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 260),
 );
 // The bar carries no control of its own: the window's settings live where they
@@ -5428,6 +5430,26 @@ check(
 // ---------- markdown ----------
 
 console.log("markdown");
+
+for (const [source, expected] of [
+  ["[outer [inner [key]] title](https://example.com)", '<a href="https://example.com" target="_blank" rel="noreferrer">outer [inner [key]] title</a>'],
+  ["[<img src=x> [key]](https://example.com)", '<a href="https://example.com" target="_blank" rel="noreferrer">&lt;img src=x&gt; [key]</a>'],
+  ["`[title [key]](https://example.com)`", '<code>[title [key]](https://example.com)</code>'],
+  ["[unfinished [key] title", '[unfinished [key] title'],
+]) {
+  const html = app.renderMarkdown(source);
+  check("kept nested link labels safe and incomplete links readable: " + source,
+    html === `<p>${expected}</p>`, html);
+}
+const bracketLink = app.renderMarkdown(
+  "PR [#11519 [CYB-5757] feat: allow indexing](https://github.com/Skyscanner/falcon/pull/11519) is open.",
+);
+check(
+  "rendered a PR link whose title contains an issue key in brackets",
+  bracketLink === '<p>PR <a href="https://github.com/Skyscanner/falcon/pull/11519" target="_blank" rel="noreferrer">#11519 [CYB-5757] feat: allow indexing</a> is open.</p>',
+  bracketLink,
+);
+
 // A Markdown table is rendered from `splitRow`, a string splitter. The review's
 // diff row builder once shared the name and shadowed it through hoisting, so a
 // transcript holding a table threw `header.map is not a function` — the table's

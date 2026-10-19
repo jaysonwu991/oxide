@@ -710,7 +710,7 @@ button.details-row:hover { color: var(--accent); }
   margin: 0 auto;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 0 0 16px 16px;
+  border-radius: 16px;
   padding: 10px 12px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
