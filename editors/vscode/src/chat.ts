@@ -425,6 +425,7 @@ export class ChatController {
   /// the panel in a language the reader has already left.
   private languageInfo: LanguageInfo | null = null;
   private languageProbe = 0;
+  private languageDirectory: string | null = null;
   /// Whether the credential this folder runs with is a plan rather than a
   /// metered key, which is what the usage line marks ` (sub)`. Read with the
   /// window, since the CLI resolves both from the same config.
@@ -640,7 +641,7 @@ export class ChatController {
     // listen is what asks for it, and the answer repaints every pane. A pane
     // opened later reads what that answer left, and the picker re-reads it when
     // it is opened, since a switch may have been made elsewhere.
-    if (!this.languageInfo) void this.refreshLanguage(true);
+    if (this.languageDirectory === null) void this.refreshLanguage(true);
     const pending = this.pendingComposer;
     this.pendingComposer = [];
     for (const message of pending) void this.push(view, message);
@@ -697,6 +698,11 @@ export class ChatController {
   /// on that path: with `--refresh` they cost a provider request, and only the
   /// model's own identity decides them.
   private refreshProject(recheckWindow = false): void {
+    const languageDirectory = this.languageCwd();
+    if (languageDirectory !== this.languageDirectory || recheckWindow) {
+      this.languageInfo = null;
+      void this.refreshLanguage(true);
+    }
     const folder = this.folder();
     if (!folder) {
       // Nothing is open, so nothing of the folder just closed belongs on the
@@ -3325,7 +3331,10 @@ export class ChatController {
   /// then paints — the panel keeps no table of its own.
   private async selectLanguage(tag: string): Promise<void> {
     const cwd = this.languageCwd();
+    this.languageDirectory = cwd;
+    const probe = ++this.languageProbe;
     const result = await runCapture(this.binary(), languageSetArgs(tag), cwd, 20_000);
+    if (probe !== this.languageProbe || cwd !== this.languageCwd()) return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       this.showNotice(`Could not switch language: ${detail}`, "error");
@@ -3350,11 +3359,13 @@ export class ChatController {
   /// in, which is what `null` paints.
   private async refreshLanguage(report: boolean): Promise<void> {
     const probe = ++this.languageProbe;
+    const cwd = this.languageCwd();
+    this.languageDirectory = cwd;
     try {
-      const result = await runCapture(this.binary(), languageArgs(), this.languageCwd(), 10_000);
+      const result = await runCapture(this.binary(), languageArgs(), cwd, 10_000);
       if (result.error || result.code !== 0) return;
       const info = parseLanguageInfo(result.stdout);
-      if (!info || probe !== this.languageProbe) return;
+      if (!info || probe !== this.languageProbe || cwd !== this.languageCwd()) return;
       this.languageInfo = info;
       if (report) this.broadcast(this.stateMessage());
     } catch {

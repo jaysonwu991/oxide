@@ -2118,7 +2118,7 @@ pub(crate) fn jump_to_end_rect(app: &App, area: Rect) -> Option<Rect> {
     if app.scroll as usize + view >= app.lines.len() {
         return None;
     }
-    let width = jump_to_end_label(app).chars().count() as u16;
+    let width = text_width(&jump_to_end_label(app)) as u16;
     if width > area.width {
         return None;
     }
@@ -4493,6 +4493,13 @@ mod tests {
         assert_eq!(rect.y, area.bottom() - 1);
         assert_eq!(rect.height, 1);
         assert!(rect.x > area.x);
+
+        app.lang = crate::i18n::Language::ZhCn;
+        let label = jump_to_end_label(&app);
+        let rect = jump_to_end_rect(&app, area).expect("Chinese indicator");
+        assert_eq!(usize::from(rect.width), text_width(&label));
+        assert!(usize::from(rect.width) > label.chars().count());
+        assert!(jump_to_end_rect(&app, Rect::new(0, 0, rect.width - 1, 10)).is_none());
 
         // Back at the bottom: it goes away.
         app.scroll = 15;

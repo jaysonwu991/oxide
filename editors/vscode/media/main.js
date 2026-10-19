@@ -1764,7 +1764,8 @@ function installMarkdownInput(editor, render) {
           "home.openFolder",
           "Open a folder to run Oxide: sessions and context are per project.",
         );
-    if (open && !suggestions.children.length) {
+    if (open) {
+      suggestions.innerHTML = "";
       for (const [index, text] of SUGGESTIONS.entries()) {
         const label = t(SUGGESTION_KEYS[index], text);
         const button = document.createElement("button");
@@ -1974,7 +1975,7 @@ function installMarkdownInput(editor, render) {
     statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
     if (busy) {
       statusLabel.hidden = true;
-      stopButton.title = `Stop the running turn (Esc)${label ? ` · ${label}` : ""}`;
+      stopButton.title = `${t("composer.stopHint", "Stop the running turn")} (Esc)${label ? ` · ${label}` : ""}`;
       stopButton.setAttribute("aria-label", stopButton.title);
     }
     updateElapsed(wasBusy && !busy);
@@ -2278,9 +2279,14 @@ function installMarkdownInput(editor, render) {
     sendButton.disabled = !hasText;
     sendButton.hidden = busy && (!hasText || !here);
     stopButton.hidden = !busy || (hasText && here);
-    const action = followUpBehavior === "steer" ? "Steer the active response" : "Queue as the next turn";
-    sendButton.title = busy ? `${action} (Enter)` : "Send (Enter)";
-    sendButton.setAttribute("aria-label", busy ? followUpBehavior === "steer" ? "Steer" : "Queue" : "Send");
+    sendButton.title = busy
+      ? followUpBehavior === "steer"
+        ? t("composer.steerHint", "Steer the active response (Enter)")
+        : t("composer.queueHint", "Queue as the next turn (Enter)")
+      : t("composer.sendHint", "Send (Enter)");
+    sendButton.setAttribute("aria-label", busy
+      ? followUpBehavior === "steer" ? t("composer.steer", "Steer") : t("composer.queue", "Queue")
+      : t("composer.send", "Send"));
     for (const button of [sendButton, stopButton]) {
       button.dataset.level = busy ? "busy" : "info";
       button.setAttribute("aria-description", statusLabel.textContent || "Ready");

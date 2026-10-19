@@ -478,8 +478,8 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Looks one key up. A key the catalog does not hold reads as the key itself,
-/// so a missing entry is visible where it is drawn rather than blank.
+/// Looks one key up. A missing key returns an empty string so front-ends can
+/// keep their authored fallback.
 pub fn t(language: Language, key: &str) -> &'static str {
     let Some((_, en, zh)) = CATALOG.iter().find(|(name, _, _)| *name == key) else {
         return "";
@@ -506,11 +506,12 @@ pub fn tf(language: Language, key: &str, vars: &[(&str, &str)]) -> String {
 pub fn catalog(language: Language) -> serde_json::Map<String, serde_json::Value> {
     CATALOG
         .iter()
-        .map(|(key, _, _)| {
-            (
-                key.to_string(),
-                serde_json::Value::String(t(language, key).to_string()),
-            )
+        .map(|(key, en, zh)| {
+            let text = match language {
+                Language::ZhCn if !zh.is_empty() => zh,
+                _ => en,
+            };
+            (key.to_string(), serde_json::Value::String(text.to_string()))
         })
         .collect()
 }

@@ -375,6 +375,8 @@ function authored(node, kind, value) {
 /// Paints the language the core resolved into every node that names a key, and
 /// remembers the value for the dynamic strings (`t`) the page writes later.
 function applyLanguage(info) {
+  const statusKey = state.statusText === idleStatus() ? "composer.ready"
+    : state.statusText === t("composer.working", "Working…") ? "composer.working" : null;
   if (info?.language) state.language = info.language;
   if (Array.isArray(info?.languages)) state.languages = info.languages;
   state.strings = info?.strings || {};
@@ -396,10 +398,10 @@ function applyLanguage(info) {
   }
   for (const node of document.querySelectorAll("[data-i18n-placeholder]")) {
     const key = node.dataset.i18nPlaceholder;
-    node.dataset.placeholder = t(
-      key,
-      authored(node, "placeholder", node.dataset.placeholder || ""),
-    );
+    const native = node.tagName === "INPUT" || node.tagName === "TEXTAREA";
+    const text = t(key, authored(node, "placeholder", native ? node.placeholder : node.dataset.placeholder || ""));
+    if (native) node.placeholder = text;
+    else node.dataset.placeholder = text;
   }
   // The chips and the prompt are painted after this runs; the placeholder the
   // empty composer shows is read out of the dataset here.
@@ -411,15 +413,23 @@ function applyLanguage(info) {
   // is named by its folder, and only the empty chip is a label to translate.
   updateProjectChip();
   renderLanguageRows(info);
+  if (statusKey) state.statusText = t(statusKey, statusKey === "composer.ready" ? "Ready" : "Working…");
+  repaintLanguage();
 }
 
 /// Reads the language the core resolved and paints it. The window starts in
 /// English, so a core that cannot answer leaves the page exactly as authored.
+let languageProbe = 0;
+
 async function loadLanguage() {
+  const project = state.project;
+  const probe = ++languageProbe;
   try {
-    applyLanguage(await invoke("language"));
+    const info = await invoke("language", { project });
+    if (probe !== languageProbe || project !== state.project) return;
+    applyLanguage(info);
   } catch {
-    applyLanguage(null);
+    // Keep the catalog already on screen when a background read fails.
   }
 }
 
@@ -469,13 +479,12 @@ async function switchLanguage(tag) {
     return;
   }
   try {
-    const info = await invoke("set_language", { tag });
+    const project = state.project;
+    const probe = ++languageProbe;
+    const info = await invoke("set_language", { tag, project });
+    if (probe !== languageProbe || project !== state.project) return;
     applyLanguage(info);
     el("language-modal").hidden = true;
-    // What the window painted before the switch is English written into nodes
-    // the page owns rather than the markup: the home state, the status line
-    // and the sidebar's own labels are painted again in the new language.
-    repaintLanguage();
   } catch (error) {
     setStatus(String(error), "error");
   }
@@ -486,10 +495,12 @@ async function switchLanguage(tag) {
 /// by `applyLanguage`.
 function repaintLanguage() {
   updateProjectChip();
-  if (el("send")) el("send").title = t("composer.sendHint", "Send (Enter)");
+  updateSendState();
+  updateTrustButton();
+  paintStatus();
+  paintQueue();
   repaintWelcome();
   void renderProjectsTree();
-  setStatus(state.busy ? t("composer.working", "Working…") : t("composer.ready", "Ready"));
 }
 
 

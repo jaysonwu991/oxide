@@ -656,6 +656,7 @@ let steerAccepted = true;
 // picker offers and the strings the window paints. Only the keys a check reads
 // are carried — the real catalog is the core's, and a page with no entry falls
 // back to the English it was authored in.
+let languageRead = null;
 const languageAnswer = {
   language: "en-GB",
   languages: [
@@ -876,6 +877,7 @@ const invoke = async (command, args = {}) => {
     case "list_approvals":
       return [];
     case "language":
+      if (languageRead) return languageRead;
       // The language the core resolves, with the shared catalog's strings. The
       // fixture answers in English so every other check reads the words the page
       // was authored in; a switch below answers in the other language.
@@ -8724,10 +8726,50 @@ console.log("the language");
 // core's to make: a row writes the shared `settings.json` key through
 // `set_language`, and the page repaints itself in the answer — no table of its
 // own, so the terminal and the panel cannot drift from this window.
+const nativeHint = document.createElement("input");
+nativeHint.dataset.i18nPlaceholder = "composer.placeholder";
+nativeHint.placeholder = "Ask Oxide…";
+const composerHint = document.createElement("div");
+composerHint.dataset.i18nPlaceholder = "composer.placeholder";
+composerHint.dataset.placeholder = "Ask Oxide…";
+const originalQueries = document.querySelectorAll;
+document.querySelectorAll = (selector) => selector === "[data-i18n-placeholder]"
+  ? [nativeHint, composerHint] : originalQueries(selector);
+languageAnswer.strings["zh-CN"]["composer.placeholder"] = "询问 Oxide…";
+app.state.statusText = "Ready";
+const previousProject = app.state.project;
+let finishLanguageRead;
+languageRead = new Promise((resolve) => { finishLanguageRead = resolve; });
+const delayedLanguage = app.loadLanguage();
+languageRead = null;
+finishLanguageRead({ language: "zh-CN", strings: languageAnswer.strings["zh-CN"] });
+await delayedLanguage;
+check("repainted a saved language after the asynchronous startup read",
+  elementFor("status-text").textContent === "就绪" && elementFor("status-text").hidden);
+check("translated native and contenteditable placeholders through their own properties",
+  nativeHint.placeholder === "询问 Oxide…" && composerHint.dataset.placeholder === "询问 Oxide…");
+app.state.statusText = "Connection failed";
+app.state.statusLevel = "error";
+await app.loadLanguage();
+check("kept an existing failure while repainting the language",
+  elementFor("status-text").textContent === "Connection failed" && app.state.statusLevel === "error");
+languageRead = new Promise((resolve) => { finishLanguageRead = resolve; });
+const staleLanguage = app.loadLanguage();
+app.state.project = "/different-project";
+languageRead = null;
+await app.loadLanguage();
+finishLanguageRead({ language: "zh-CN", strings: languageAnswer.strings["zh-CN"] });
+await staleLanguage;
+check("discarded a language response for the project already left",
+  document.documentElement.lang === "en-GB");
+app.state.project = previousProject;
+app.state.statusText = "Ready";
+app.state.statusLevel = "info";
+document.querySelectorAll = originalQueries;
 await app.loadLanguage();
 check(
   "read the language before it painted its own words",
-  calls.some(([name]) => name === "language") && document.documentElement.lang === "en-GB",
+  calls.some(([name, args]) => name === "language" && args.project === previousProject) && document.documentElement.lang === "en-GB",
   document.documentElement.lang,
 );
 elementFor("language").onclick(press());
@@ -8751,7 +8793,7 @@ languageRows[1].onclick(press());
 await nextTick();
 check(
   "switched through the core rather than a setting of this window's own",
-  calls.some(([name, args]) => name === "set_language" && args.tag === "zh-CN") &&
+  calls.some(([name, args]) => name === "set_language" && args.tag === "zh-CN" && args.project === previousProject) &&
     document.documentElement.lang === "zh-CN" &&
     elementFor("language-modal").hidden === true,
   JSON.stringify(calls.filter(([name]) => name === "set_language")),

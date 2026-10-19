@@ -1523,7 +1523,7 @@ fn handle_key(
                 app.clear_input();
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/language").unwrap_or_default().trim();
-                if requested.is_empty() {
+                if requested.is_empty() || requested == "show" {
                     let names: Vec<&str> = crate::i18n::Language::ALL
                         .iter()
                         .map(|language| language.tag())

@@ -4181,6 +4181,43 @@ describe("webview welcome page", () => {
 
   /// With no folder there is nowhere to run, so the page says what to do rather
   /// than inviting a message the send would refuse.
+  it("repaints suggestions and send actions after a delayed language load", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ folder: "/work/oxide" }));
+    const language = { language: "zh-CN", strings: {
+      "home.suggestion1": "解释此代码库及其架构。",
+      "composer.send": "发送",
+      "composer.sendHint": "发送 (Enter)",
+      "composer.queue": "排队",
+      "composer.queueHint": "排队等待下一回合 (Enter)",
+      "composer.steer": "引导",
+      "composer.steerHint": "引导当前回复 (Enter)",
+      "composer.stopHint": "停止当前回合",
+    } };
+    send(stateMessage({ folder: "/work/oxide", language }));
+    const row = byId.get("empty-suggestions")!;
+    assert.equal(row.children.length, 4);
+    assert.equal(row.children[0].textContent, language.strings["home.suggestion1"]);
+    row.fire("click", { target: row.children[0] });
+    assert.equal(byId.get("input")!.value, language.strings["home.suggestion1"]);
+    const button = byId.get("send")!;
+    assert.equal(button.title, "发送 (Enter)");
+    assert.equal(button.getAttribute("aria-label"), "发送");
+    for (const [behavior, label, hint] of [
+      ["queue", "排队", "排队等待下一回合 (Enter)"],
+      ["steer", "引导", "引导当前回复 (Enter)"],
+    ]) {
+      send(stateMessage({ folder: "/work/oxide", language, busy: true, followUpBehavior: behavior }));
+      assert.equal(button.title, hint);
+      assert.equal(button.getAttribute("aria-label"), label);
+      assert.match(byId.get("stop")!.title, /^停止当前回合 \(Esc\)/);
+      byId.get("input")!.fire("input");
+      assert.equal(button.getAttribute("aria-label"), label);
+    }
+    send(stateMessage({ folder: "/work/oxide" }));
+    assert.equal(row.children[0].textContent, "Explain this codebase and its architecture.");
+  });
+
   it("says a folder has to be open before anything can run", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ folder: null }));
