@@ -2095,13 +2095,46 @@ fn looks_like_verification_command(command: &str) -> bool {
         "Verify",
         "Typecheck",
     ];
-    command
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .any(|token| {
-            !token.is_empty()
-                && (EXACT.iter().any(|word| token.eq_ignore_ascii_case(word))
-                    || SUFFIXES.iter().any(|suffix| token.ends_with(suffix)))
-        })
+    let has_check_name = |value: &str| {
+        value
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .any(|token| {
+                !token.is_empty()
+                    && (EXACT.iter().any(|word| token.eq_ignore_ascii_case(word))
+                        || SUFFIXES.iter().any(|suffix| token.ends_with(suffix)))
+            })
+    };
+    tools::shell_segments(command).into_iter().any(|segment| {
+        let words: Vec<_> = segment.split_whitespace().collect();
+        let Some(index) = tools::shell_command_index(&words) else {
+            return false;
+        };
+        let executable = words[index].trim_matches(['\'', '"']);
+        let name = executable.rsplit(['/', '\\']).next().unwrap_or(executable);
+        let name = name
+            .strip_suffix(".exe")
+            .or_else(|| name.strip_suffix(".cmd"))
+            .or_else(|| name.strip_suffix(".bat"))
+            .unwrap_or(name);
+        let args = &words[index + 1..];
+        match name {
+            "cargo" | "npm" | "pnpm" | "yarn" | "bun" | "deno" | "go" | "dotnet" | "gradle"
+            | "gradlew" | "mvn" | "mvnw" | "make" | "gmake" | "bazel" | "buck" | "sbt"
+            | "swift" | "xcodebuild" | "meson" | "ninja" | "rake" | "bundle" | "tox" | "uv" => {
+                args.iter().any(|arg| has_check_name(arg))
+            }
+            "pytest" | "ctest" | "tsc" | "eslint" | "ruff" => true,
+            // Script paths are tasks; strings passed with -e/-c are data, not
+            // proof that the interpreter ran a verifier.
+            "node" | "nodejs" | "python" | "python3" | "bash" | "sh" => args
+                .first()
+                .filter(|arg| !arg.starts_with('-'))
+                .is_some_and(|script| {
+                    has_check_name(script.rsplit(['/', '\\']).next().unwrap_or(script))
+                }),
+            _ => executable.contains(['/', '\\']) && has_check_name(name),
+        }
+    })
 }
 
 /// Whether a shell command inspected the edited file itself — a `git diff`,
@@ -2389,15 +2422,12 @@ async fn ls_remote(cwd: &Path, remote: &str, branch: &str) -> Option<String> {
 /// `./gradlew test | wc -l` count as the same run. Returns `None` for a command
 /// that is not a verifier at all.
 fn verification_key(command: &str) -> Option<String> {
-    if !looks_like_verification_command(command) {
-        return None;
-    }
     let base = match first_unquoted(command, '|') {
         Some(index) => &command[..index],
         None => command,
     };
     let base = base.trim().trim_end_matches("2>&1").trim();
-    (!base.is_empty()).then(|| base.to_string())
+    looks_like_verification_command(base).then(|| base.to_string())
 }
 
 /// The byte index of the first `needle` outside single or double quotes.
@@ -5569,6 +5599,46 @@ for line in sys.stdin:
         ));
         assert!(!looks_like_verification_command("git status"));
         assert!(!looks_like_verification_command("git log --grep latest"));
+    }
+
+    #[test]
+    fn inspecting_test_code_does_not_count_as_running_a_verifier() {
+        for command in [
+            "grep -n test src/main.rs",
+            "rg 'build|test' crates/core",
+            "sed -n 1,40p src/test/dialogs.test.ts",
+            "cat test/results.txt",
+            "echo cargo test",
+            "printf '%s' 'npm run lint'",
+            "git diff -- src/test.rs",
+            "gh pr view 224 --json statusCheckRollup",
+            "node -e 'console.log(\"test\")'",
+            "printf ok | grep test",
+        ] {
+            assert!(!looks_like_verification_command(command), "{command}");
+            assert!(verification_key(command).is_none(), "{command}");
+        }
+        for command in [
+            "node crates/desktop/check-app.mjs",
+            "cd editors/vscode && pnpm test",
+            "env CI=1 cargo test",
+            "python3 tests/check_contract.py",
+            "./scripts/check.sh",
+        ] {
+            assert!(looks_like_verification_command(command), "{command}");
+        }
+        let mut state = VerificationState::new(Path::new("/repo"));
+        state.record(
+            "edit",
+            &json!({"path": "a.rs"}),
+            "Successfully replaced 1 block(s).",
+        );
+        state.record(
+            "bash",
+            &json!({"command": "grep test b.rs"}),
+            "test\n[exit: 0]",
+        );
+        assert!(state.edited.contains("a.rs"));
     }
 
     #[test]
