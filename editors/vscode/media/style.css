@@ -110,6 +110,7 @@ button.icon.danger:hover:not(:disabled) {
    rows and Undo are hidden the same way, from the same kind of `display`. */
 .queued-messages[hidden],
 .live-changes[hidden],
+.jump-latest[hidden],
 button.icon[hidden],
 .change-row[hidden],
 .changes-more[hidden],
@@ -2665,3 +2666,23 @@ button.icon {
 .markdown-input:empty::before { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; content: attr(data-placeholder); color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground)); }
 .markdown-input > :first-child { margin-top: 0; }
 .markdown-input > :last-child { margin-bottom: 0; }
+
+.jump-latest {
+  position: fixed;
+  z-index: 12;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--vscode-panel-border, transparent);
+  border-radius: 50%;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  box-shadow: 0 3px 12px #0003;
+}
+.jump-latest svg { display: block; flex: none; }
+.jump-latest:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }

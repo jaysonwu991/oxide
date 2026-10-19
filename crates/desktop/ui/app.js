@@ -680,6 +680,7 @@ async function activateChatTab(id) {
       if (!ownsParked || !restoreParked(tab.session)) setUsage(saved.usage || {});
       el("transcript").scrollTop = saved.scrollTop || 0;
       el("transcript").followLatest = saved.followLatest;
+      el("transcript").followScrollTop = el("transcript").scrollTop;
       el("prompt").value = saved.draft;
       state.attachments = [...saved.attachments];
     } else {
@@ -817,8 +818,8 @@ function paintMessagePosition() {
 function paintJumpLatest(updateFollow = false) {
   const transcript = el("transcript");
   const button = el("jump-latest");
-  const away = transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop > 80;
-  if (updateFollow) transcript.followLatest = !away;
+  if (updateFollow) updateTranscriptFollow(transcript);
+  const away = transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop > 2;
   button.hidden = !away;
   if (away) {
     const pane = (document.querySelector(".conversation-pane") || transcript).getBoundingClientRect();
@@ -828,6 +829,11 @@ function paintJumpLatest(updateFollow = false) {
 
 function initJumpLatest() {
   const transcript = el("transcript");
+  transcript.followScrollTop = transcript.scrollTop;
+  transcript.addEventListener("wheel", (event) => {
+    updateTranscriptFollow(transcript);
+    if (event.deltaY < 0 && transcript.scrollTop > 0) transcript.followLatest = false;
+  }, { passive: true });
   transcript.addEventListener("scroll", () => paintJumpLatest(true));
   el("jump-latest").onclick = () => scrollDown(transcript, true);
   transcript.addEventListener("load", () => scrollDown(transcript), true);
@@ -2270,6 +2276,7 @@ function resetTranscript() {
   if (!el("details-panel").hidden) refreshProjectDetails();
   el("transcript").innerHTML = "";
   el("transcript").followLatest = true;
+  el("transcript").followScrollTop = el("transcript").scrollTop;
   paintJumpLatest();
   el("usage").textContent = "";
   state.usage = null;
@@ -2386,8 +2393,12 @@ function speakerLabel(kind) {
 /// names another: the run's own output goes to its own thread, which is parked
 /// — detached, and so with nothing to scroll — while the reader is elsewhere.
 function scrollDown(node = el("transcript"), force = false) {
+  updateTranscriptFollow(node);
   if (force) node.followLatest = true;
-  if (node.followLatest !== false) node.scrollTop = node.scrollHeight;
+  if (node.followLatest !== false) {
+    node.scrollTop = node.scrollHeight;
+    node.followScrollTop = node.scrollTop;
+  }
   if (node === el("transcript")) paintJumpLatest();
 }
 
@@ -2425,6 +2436,16 @@ function resetTurn() {
 /// Queue/Steer preference; Cmd/Ctrl+Shift+Enter inverts it once.
 const lastInputs = new Map();
 const inputHistoryKey = () => JSON.stringify([state.project, state.session]);
+
+// A scroll event can arrive after the next streamed update. Compare positions
+// before painting too, and never treat content growth as a reader scrolling up.
+function updateTranscriptFollow(transcript) {
+  const top = transcript.scrollTop;
+  const previous = transcript.followScrollTop ?? top;
+  if (top < previous) transcript.followLatest = false;
+  else if (top > previous && transcript.scrollHeight - transcript.clientHeight - top <= 2) transcript.followLatest = true;
+  transcript.followScrollTop = top;
+}
 
 // One rendered, editable surface. The value/selection facade keeps completion,
 // recall and sending on Markdown while the browser edits the rendered nodes.
@@ -4485,6 +4506,7 @@ function activeTool(name) {
 }
 
 function handleEvent(event) {
+  updateTranscriptFollow(runTranscript(state.runSession));
   if (event.runId != null) state.runId = event.runId;
   // A delta, a tool card, a retry that drops the attempt it replaced: each writes
   // into the thread the run is in, which is the one on screen or the one parked
