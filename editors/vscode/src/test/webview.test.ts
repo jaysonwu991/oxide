@@ -3121,6 +3121,16 @@ describe("webview questions", () => {
 });
 
 describe("webview links", () => {
+
+  it("renders balanced brackets in link labels without leaking Markdown", () => {
+    const { byId, send } = loadRenderer();
+    const text = "PR [#11519 [CYB-5757] feat: allow indexing](https://github.com/Skyscanner/falcon/pull/11519) is open.";
+    send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
+    const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+    assert.equal(html, '<p>PR <a href="https://github.com/Skyscanner/falcon/pull/11519" target="_blank" rel="noreferrer">#11519 [CYB-5757] feat: allow indexing</a> is open.</p>');
+  });
+
+
   /// A reply's link is an anchor, and VS Code's own webview host opens every
   /// http(s) anchor it sees clicked: its `handleInnerClick` posts
   /// `did-click-link` to the workbench, which hands the URL to the opener

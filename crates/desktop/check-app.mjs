@@ -5430,6 +5430,26 @@ check(
 // ---------- markdown ----------
 
 console.log("markdown");
+
+for (const [source, expected] of [
+  ["[outer [inner [key]] title](https://example.com)", '<a href="https://example.com" target="_blank" rel="noreferrer">outer [inner [key]] title</a>'],
+  ["[<img src=x> [key]](https://example.com)", '<a href="https://example.com" target="_blank" rel="noreferrer">&lt;img src=x&gt; [key]</a>'],
+  ["`[title [key]](https://example.com)`", '<code>[title [key]](https://example.com)</code>'],
+  ["[unfinished [key] title", '[unfinished [key] title'],
+]) {
+  const html = app.renderMarkdown(source);
+  check("kept nested link labels safe and incomplete links readable: " + source,
+    html === `<p>${expected}</p>`, html);
+}
+const bracketLink = app.renderMarkdown(
+  "PR [#11519 [CYB-5757] feat: allow indexing](https://github.com/Skyscanner/falcon/pull/11519) is open.",
+);
+check(
+  "rendered a PR link whose title contains an issue key in brackets",
+  bracketLink === '<p>PR <a href="https://github.com/Skyscanner/falcon/pull/11519" target="_blank" rel="noreferrer">#11519 [CYB-5757] feat: allow indexing</a> is open.</p>',
+  bracketLink,
+);
+
 // A Markdown table is rendered from `splitRow`, a string splitter. The review's
 // diff row builder once shared the name and shadowed it through hoisting, so a
 // transcript holding a table threw `header.map is not a function` — the table's

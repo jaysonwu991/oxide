@@ -400,6 +400,31 @@ function installMarkdownInput(editor, render) {
     return href ? stash(anchor(href)) + trail : url;
   }
 
+  // Link labels can contain balanced brackets, as issue keys in PR titles do.
+  function inlineLinks(text, stash) {
+    const starts = [];
+    let output = "";
+    let copied = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] === "\\") {
+        i += 1;
+      } else if (text[i] === "[") {
+        starts.push(i);
+      } else if (text[i] === "]" && starts.length) {
+        const start = starts.pop();
+        const destination = /^\(([^)\s]+)\)/.exec(text.slice(i + 1));
+        if (!destination) continue;
+        output += text.slice(copied, start) + stash(anchor(
+          destination[1], escapeHtml(text.slice(start + 1, i)),
+        ));
+        i += destination[0].length;
+        copied = i + 1;
+        starts.length = 0;
+      }
+    }
+    return output + text.slice(copied);
+  }
+
   function inline(text) {
     const stashed = [];
     const stash = (html) => {
@@ -411,9 +436,7 @@ function installMarkdownInput(editor, render) {
     // part of a URL.
     let s = String(text);
     s = s.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) =>
-      stash(anchor(href, escapeHtml(label))),
-    );
+    s = inlineLinks(s, stash);
     s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
     s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
     s = escapeHtml(s);
