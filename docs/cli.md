@@ -806,9 +806,10 @@ the `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in
 `config.json`. In the TUI, press Shift+Tab to cycle `auto` → the model's levels
 (the built-in set is `off` → `minimal` → `low` → `medium` → `high` → `xhigh` →
 `max`); the current level is shown in the footer (for models that support
-reasoning) and colors the composer rules. Resuming a session restores the level
-that session was last left at — a level chosen with Shift+Tab or `/reasoning`
-outlives the process — unless the run names one with `--reasoning`/`OXIDE_REASONING`.
+reasoning) and colors the composer rules. Shift+Tab and `/reasoning` save the
+choice to the shared `config.json`, so it survives restarting and is also used
+by Desktop and VS Code. Resuming a session keeps this shared choice. Explicit
+`--reasoning` and `OXIDE_REASONING` values override it for a run.
 
 ### Reasoning in the transcript
 

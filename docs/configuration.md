@@ -95,9 +95,14 @@ oxide context --json [--model <MODEL>]     # {"model":…,"window":…}
 ```
 
 The window is the model's, so `--model` answers for the model a caller would run
-with rather than the one in `config.json` — the VS Code panel passes its own
-`oxide.model` setting that way, which is what keeps its model chip and context
-gauge in step with the run.
+with rather than the one in `config.json`. The VS Code panel reads the model
+from the shared configuration and asks for that model's context window.
+
+Model and reasoning choices made in the CLI, Desktop or VS Code are saved in
+that same `config.json`. Scripts can save a choice with
+`oxide select --model <MODEL> [--provider <PROVIDER>]` or
+`oxide select --reasoning <LEVEL>`. Changing the model resets reasoning to `auto`;
+a later reasoning choice is shared by every front-end.
 
 ## CLI flags
 

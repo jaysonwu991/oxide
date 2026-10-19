@@ -158,6 +158,15 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Save the model or reasoning choice shared by every front-end
+    Select {
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, requires = "model")]
+        provider: Option<String>,
+        #[arg(long)]
+        reasoning: Option<String>,
+    },
     /// Manage MCP servers
     Mcp {
         #[command(subcommand)]
@@ -891,6 +900,44 @@ async fn run() -> Result<()> {
                     json,
                 } => set_trust(project_dir(project)?, &decision, json),
             },
+            Command::Select {
+                model,
+                provider,
+                reasoning,
+            } => {
+                let level = reasoning
+                    .as_deref()
+                    .map(|value| {
+                        Reasoning::parse(value)
+                            .with_context(|| format!("unknown reasoning level `{value}`"))
+                    })
+                    .transpose()?;
+                anyhow::ensure!(
+                    model.is_some() || level.is_some(),
+                    "choose --model or --reasoning"
+                );
+                if let Some(model) = model {
+                    anyhow::ensure!(!model.trim().is_empty(), "model must not be empty");
+                    let cwd = std::env::current_dir()?;
+                    let mut config = Config::load(&cwd, None, None, None, None)?;
+                    if let Some(provider) = provider {
+                        let name = auth::canonical_provider(&provider);
+                        if name != auth::canonical_provider(&config.provider) {
+                            let key = auth::AuthStore::load()
+                                .ok()
+                                .and_then(|store| store.key(&name).map(str::to_string))
+                                .unwrap_or_default();
+                            config.apply_provider(&name, &key);
+                        }
+                    }
+                    config.apply_login_options(&model, "", "");
+                    config.persist_selection_at(&Config::config_path())?;
+                }
+                if let Some(level) = level {
+                    Config::set_reasoning_at(&Config::config_path(), level)?;
+                }
+                Ok(())
+            }
             Command::Models { json, active } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 list_models(&current_dir, json, active).await
@@ -1087,12 +1134,6 @@ async fn run() -> Result<()> {
     // for compatibility; `-p`/`--print` also selects print mode). There is no
     // permission mode; use `--tools`/`--exclude-tools` for a read-only run.
     let mode = parse_mode(cli.mode.as_deref())?;
-    // A run that names a level explicitly keeps it; a resumed session restores
-    // the one it was last left at instead of reverting to the stored default.
-    let reasoning_explicit = cli.reasoning.is_some()
-        || std::env::var("OXIDE_REASONING")
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false);
     let config = Config::load(&cwd, cli.model, cli.provider, cli.agent, cli.reasoning)?;
     let mut config = config;
     config.ephemeral = cli.no_session;
@@ -1169,13 +1210,6 @@ async fn run() -> Result<()> {
         }
         (_, session) => session,
     };
-    if !reasoning_explicit {
-        if let Some(level) = session.as_ref().and_then(SessionLog::thinking_level) {
-            if let Some(parsed) = Reasoning::parse(&level) {
-                config.reasoning = parsed;
-            }
-        }
-    }
 
     let mode = mode.as_str();
     let positional = cli.messages;
@@ -2639,6 +2673,26 @@ mod tests {
         // The provider is required, so an empty login fails rather than
         // silently connecting whatever was last used.
         assert!(Cli::try_parse_from(["oxide", "login"]).is_err());
+    }
+
+    #[test]
+    fn parses_a_shared_model_and_reasoning_selection() {
+        let cli = Cli::try_parse_from([
+            "oxide",
+            "select",
+            "--model",
+            "gpt-5",
+            "--provider",
+            "openai",
+            "--reasoning",
+            "high",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.command, Some(Command::Select { model: Some(model), provider: Some(provider), reasoning: Some(reasoning) })
+            if model == "gpt-5" && provider == "openai" && reasoning == "high")
+        );
+        assert!(Cli::try_parse_from(["oxide", "select", "--provider", "openai"]).is_err());
     }
 
     #[test]

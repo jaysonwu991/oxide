@@ -141,9 +141,9 @@ door, if you would rather use the picker there.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `oxide.binaryPath` | `oxide` | The binary to run. A bare name is looked up on `PATH`, then in `~/.local/bin` and `~/.cargo/bin`. |
-| `oxide.model` | *(empty)* | `--model`. Empty uses the model from Oxide `config.json`; the in-panel picker loads the active provider's complete catalog through `oxide models --json --active`, falls back to remembered models if it cannot refresh, and accepts a custom ID. |
+| `oxide.model` | *(empty)* | Deprecated. Choose a model in the panel; it is saved in Oxide’s shared `config.json` for CLI, Desktop and VS Code. |
 | `oxide.agent` | *(empty)* | `--agent`, loaded from the workspace's `.oxide/agents`. |
-| `oxide.reasoning` | `auto` | `--reasoning`: `auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. The footer's thinking chip walks the levels the active model's own listing advertises (read through `oxide reasoning --json`), so a model that accepts only some of them offers only those. |
+| `oxide.reasoning` | `auto` | Deprecated. Choose a reasoning level in the panel; it is saved in the same shared `config.json`. The picker offers the active model’s advertised levels. |
 | `oxide.projectTrust` | `default` | `always` passes `--approve`, `never` passes `--no-approve`; `default` follows `trust.json`/`defaultProjectTrust`. |
 | `oxide.tools` | *(empty)* | `--tools` allowlist, e.g. `read,grep,find,ls` for a read-only run. |
 | `oxide.excludeTools` | *(empty)* | `--exclude-tools` denylist. |

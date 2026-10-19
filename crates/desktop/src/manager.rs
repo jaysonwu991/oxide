@@ -306,6 +306,16 @@ impl DesktopManager {
         )
     }
 
+    pub fn unarchive_session(&mut self, id: &str, pinned: bool) -> Result<()> {
+        oxide_core::session_state::SessionState::update_at(
+            &self.store.with_file_name("sessions.json"),
+            |state| {
+                state.set_archived(id, false);
+                state.set_pinned(id, pinned)
+            },
+        )
+    }
+
     /// Records the order the reader dragged the sidebar into: the ids exactly as
     /// the sidebar listed them, top to bottom. Ids are kept as given — a
     /// discovered folder is not in `projects` and still has a place to keep — and
@@ -823,7 +833,10 @@ mod tests {
 
         let mut reloaded = reloaded;
         reloaded.archive_session(&session.id).unwrap();
-        assert!(reloaded.session_views(vec![session]).unwrap().is_empty());
+        assert!(reloaded
+            .session_views(vec![session.clone()])
+            .unwrap()
+            .is_empty());
         let persisted = DesktopManager::load_from(store).unwrap();
         let state = oxide_core::session_state::SessionState::load_from(
             &persisted.store.with_file_name("sessions.json"),
@@ -831,6 +844,12 @@ mod tests {
         .unwrap();
         assert!(state.archived("s42"));
         assert!(!state.pinned("s42"));
+
+        reloaded.unarchive_session(&session.id, true).unwrap();
+        let restored = DesktopManager::load_from(reloaded.store.clone()).unwrap();
+        let views = restored.session_views(vec![session]).unwrap();
+        assert_eq!(views.len(), 1);
+        assert!(views[0].pinned);
 
         std::fs::remove_dir_all(&dir).ok();
         let _ = std::fs::remove_dir_all(persisted.store_path().parent().unwrap());

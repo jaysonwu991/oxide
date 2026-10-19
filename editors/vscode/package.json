@@ -300,7 +300,8 @@
         "oxide.model": {
           "type": "string",
           "default": "",
-          "description": "Model passed with --model. Leave empty to use the model from the Oxide config.json."
+          "deprecationMessage": "Choose a model in Oxide. The choice is saved in the shared config.json for CLI, Desktop and VS Code.",
+          "description": "Legacy setting. Model selection now uses the shared Oxide configuration."
         },
         "oxide.agent": {
           "type": "string",
@@ -320,7 +321,8 @@
             "max"
           ],
           "default": "auto",
-          "description": "Reasoning effort passed with --reasoning. The footer's thinking chip offers the levels the active model's own listing advertises, which may be a narrower set."
+          "deprecationMessage": "Choose a reasoning level in Oxide. The choice is shared with CLI and Desktop.",
+          "description": "Legacy setting. Reasoning now uses the shared Oxide configuration."
         },
         "oxide.projectTrust": {
           "type": "string",

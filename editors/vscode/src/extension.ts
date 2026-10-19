@@ -71,7 +71,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const file = path.join(configFile(), "config.json");
     const summary = parseConfigSummary(readTextFile(file) ?? "");
-    const model = setting<string>("model", "").trim() || summary?.model || "";
+    const model = summary?.model || "";
     const provider = summary?.provider ?? "";
     status.text = controller.running ? "$(sync~spin) Oxide" : "$(circuit-board) Oxide";
     const tooltip = new vscode.MarkdownString();
@@ -86,6 +86,23 @@ export function activate(context: vscode.ExtensionContext): void {
     status.tooltip = tooltip;
     status.show();
   };
+
+  const sharedConfig = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(configFile(), "config.json"),
+  );
+  const selectionChanged = (): void => {
+    controller.configurationChanged();
+    refreshStatus();
+  };
+  context.subscriptions.push(
+    sharedConfig,
+    sharedConfig.onDidChange(selectionChanged),
+    sharedConfig.onDidCreate(selectionChanged),
+    sharedConfig.onDidDelete(selectionChanged),
+    vscode.window.onDidChangeWindowState((state) => {
+      if (state.focused) selectionChanged();
+    }),
+  );
 
   // A command that answers rather than reports — the update check returns what
   // it read so its own caller can name it — is still fire-and-forget here.
