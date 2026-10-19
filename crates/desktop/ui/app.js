@@ -582,6 +582,7 @@ function paintUsage() {
     }
   }
   el("usage").textContent = bits.join(" ");
+  el("usage").title = bits.join(" · ");
   // The context reading is painted from these totals wherever they move, rather
   // than from a second reading of its own.
   paintComposerFacts();
@@ -614,6 +615,8 @@ function captureChatTab() {
     changes: state.changes, repositoryChanges: state.repositoryChanges,
     usage: state.usage, contextWindow: state.contextWindow,
     draft: el("prompt").value, attachments: [...state.attachments],
+    selectionStart: el("prompt").selectionStart, selectionEnd: el("prompt").selectionEnd,
+    inputScrollTop: el("prompt").scrollTop, undo: el("prompt").captureHistory?.(),
     nodes: [...el("transcript").children], scrollTop: el("transcript").scrollTop,
     followLatest: el("transcript").followLatest !== false,
   };
@@ -634,8 +637,20 @@ function paintChatTabs() {
     select.setAttribute("aria-selected", String(tab.id === activeTabId));
     select.setAttribute("aria-controls", "transcript");
     select.tabIndex = tab.id === activeTabId ? 0 : -1;
-    select.textContent = tab.title;
-    select.title = tab.title;
+    const running = state.busy && (tab.session != null
+      ? tab.session === state.runSession : state.sendView?.tabId === tab.id);
+    if (running) {
+      const indicator = document.createElement("span");
+      indicator.className = "spinner";
+      indicator.setAttribute("aria-hidden", "true");
+      select.appendChild(indicator);
+    }
+    const label = document.createElement("span");
+    label.className = "chat-tab-title";
+    label.textContent = tab.title;
+    select.appendChild(label);
+    select.title = running ? `${tab.title} · Running` : tab.title;
+    select.setAttribute("aria-label", select.title);
     select.onclick = () => activateChatTab(tab.id);
     select.onkeydown = (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -650,11 +665,22 @@ function paintChatTabs() {
     close.innerHTML = ICONS.close;
     close.title = `Close ${tab.title}`;
     close.setAttribute("aria-label", close.title);
-    close.onclick = () => closeChatTab(tab.id);
+    close.onclick = async (event) => {
+      event?.stopPropagation();
+      await closeChatTab(tab.id);
+      if (chatTabs.length > 1) el(`chat-tab-${activeTabId}`)?.focus();
+      else el("prompt").focus();
+    };
+    row.onauxclick = (event) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      closeChatTab(tab.id);
+    };
     row.append(select, close);
     list.appendChild(row);
   }
-  el("transcript").setAttribute("aria-labelledby", `chat-tab-${activeTabId}`);
+  el("transcript").setAttribute("aria-labelledby", list.hidden ? "thread-title" : `chat-tab-${activeTabId}`);
+  if (!list.hidden) el(`chat-tab-${activeTabId}`)?.parentNode?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
 }
 
 async function activateChatTab(id) {
@@ -682,12 +708,14 @@ async function activateChatTab(id) {
       el("transcript").followLatest = saved.followLatest;
       el("transcript").followScrollTop = el("transcript").scrollTop;
       el("prompt").value = saved.draft;
+      el("prompt").restoreHistory?.(saved.undo);
       state.attachments = [...saved.attachments];
     } else {
       state.session = null;
       state.worktree = null;
       resetTranscript();
       el("prompt").value = "";
+      el("prompt").restoreHistory?.();
       state.attachments = [];
     }
     closeOverlays();
@@ -706,6 +734,10 @@ async function activateChatTab(id) {
     loadWorktrees();
     if (tab.pendingSession) await openSession(tab.pendingSession);
     el("prompt").focus();
+    if (saved) {
+      el("prompt").setSelectionRange(saved.selectionStart ?? saved.draft.length, saved.selectionEnd ?? saved.draft.length);
+      el("prompt").scrollTop = saved.inputScrollTop || 0;
+    }
   } finally {
     switchingTab = false;
     paintChatTabs();
@@ -2641,6 +2673,13 @@ function installMarkdownInput(editor, render) {
     selectionEnd: { configurable: true, get: () => selectionOffset(true), set: (value) => { savedEnd = value; } },
   });
   editor.setSelectionRange = select;
+  // A tab owns its undo stack as well as its text: restoring a draft must not
+  // make Undo pull a message out of the tab the reader just left.
+  editor.captureHistory = () => ({ entries: [...history], index: historyIndex });
+  editor.restoreHistory = (saved) => {
+    history.splice(0, history.length, ...(saved?.entries || [source]));
+    historyIndex = saved?.index ?? 0;
+  };
   editor.addEventListener("beforeinput", (event) => {
     if (composing || event.isComposing || !["insertText", "insertLineBreak"].includes(event.inputType)) return;
     // Applying text to the Markdown model avoids inheriting a code/bold span
@@ -2822,6 +2861,7 @@ function paintRunningChrome() {
   document.body.classList.toggle("running", state.busy && viewingRun());
   paintLiveChanges();
   paintDockToggles();
+  paintChatTabs();
 }
 
 function setBusy() {

@@ -169,6 +169,10 @@ class StubElement {
   fire(type, event) {
     for (const handler of this.listeners[type] || []) handler(event);
   }
+  dispatchEvent(event) {
+    this.fire(event.type, event);
+    return !event.defaultPrevented;
+  }
   setPointerCapture() {}
   releasePointerCapture() {}
   setAttribute(name, value) {
@@ -2052,10 +2056,10 @@ check(
 // the box's, which is what makes it read as a bar.
 check(
   "sat the row on the box's own top edge as a bar of its own",
-  /\.composer-strip \{[^}]*width: calc\(100% - 24px\);[^}]*max-width: 756px;[^}]*margin: 0 auto;[^}]*background: var\(--panel-2\);[^}]*border: 1px solid var\(--border\);[^}]*border-bottom: none;[^}]*border-radius: 16px 16px 0 0;/.test(
+  /\.composer-strip \{[^}]*width: calc\(100% - 24px\);[^}]*max-width: 756px;[^}]*margin: 0 auto;[^}]*background: var\(--panel-2\);[^}]*border: 1px solid var\(--border\);[^}]*border-bottom: none;[^}]*border-radius: 10px 10px 0 0;/.test(
     sheet,
   ) &&
-    /\.composer \{[^}]*max-width: 780px;[^}]*margin: 0 auto;[^}]*border-radius: 16px;/.test(sheet),
+    /\.composer \{[^}]*max-width: 780px;[^}]*margin: 0 auto;[^}]*border-radius: var\(--radius\);/.test(sheet),
   sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 260),
 );
 // The bar carries no control of its own: the window's settings live where they
@@ -5567,7 +5571,7 @@ check(
     elementFor("send").hidden === true &&
     document.body.classList.contains("running") &&
     /body\.running \.composer-strip \{ display: none; \}/.test(sheet) &&
-    /body\.running \.composer \{ border-radius: 16px; \}/.test(sheet),
+    /body\.running \.composer \{ border-radius: var\(--radius\); \}/.test(sheet),
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 check(
@@ -8581,20 +8585,34 @@ secondMessage.scrollIntoView = (options) => { secondMessage.jumped = options; };
 elementFor("transcript").replaceChildren(firstMessage, reply, secondMessage);
 elementFor("transcript").scrollTop = 120;
 elementFor("prompt").value = "unfinished draft";
+elementFor("prompt").setSelectionRange(2, 7);
+elementFor("prompt").scrollTop = 18;
 app.state.attachments = [{ name: "note.txt", dataUrl: "data:text/plain;base64,eA==" }];
 await app.newChatTab();
 check("opened a fresh tab without the previous draft", app.chatTabs.length === 2 && elementFor("prompt").value === "" && app.state.attachments.length === 0 && app.state.session === null);
+elementFor("prompt").fire("keydown", { key: "z", metaKey: true, preventDefault() {} });
+check("kept Undo in a new tab from recalling another tab's draft", elementFor("prompt").value === "");
 const secondTab = app.activeChatTab().id;
 elementFor("prompt").value = "another draft";
+elementFor("prompt").value = "another draft revised";
 await app.activateChatTab(firstTab);
 check("restored the first tab's draft, attachments and reading position", elementFor("prompt").value === "unfinished draft" && app.state.attachments[0]?.name === "note.txt" && elementFor("transcript").children[0] === firstMessage && elementFor("transcript").scrollTop === 120);
+check("restored the tab's composer selection and scroll", elementFor("prompt").selectionStart === 2 && elementFor("prompt").selectionEnd === 7 && elementFor("prompt").scrollTop === 18);
+check("placed tabs in the header above the transcript", shell.indexOf('id="chat-tabs"') > shell.indexOf('<header class="topbar">') && shell.indexOf('id="chat-tabs"') < shell.indexOf('</header>'));
 app.renderMessageNavigator();
 check("listed one jump marker per user message", elementFor("message-nav").children.length === 2 && !elementFor("message-nav").hidden);
 elementFor("message-nav").children[0].onmouseenter();
 check("previewed the target message without navigating", !elementFor("message-preview").hidden && elementFor("message-preview").children[0].textContent === "Explain the architecture" && !firstMessage.jumped);
 elementFor("message-nav").children[1].click();
 check("jumped to the selected message", secondMessage.jumped?.block === "start" && elementFor("message-preview").hidden);
-await app.closeChatTab(secondTab);
+await app.activateChatTab(secondTab);
+elementFor("prompt").fire("keydown", { key: "z", metaKey: true, preventDefault() {} });
+check("restored each tab's own undo history", elementFor("prompt").value === "another draft");
+await app.activateChatTab(firstTab);
+const closeSecondTab = elementFor("chat-tabs").children.find((row) => row.children[0].id === `chat-tab-${secondTab}`).children[1];
+let tabCloseStopped = false;
+await closeSecondTab.onclick({ stopPropagation() { tabCloseStopped = true; } });
+check("returned focus to the composer when the last extra tab closed", tabCloseStopped && document.activeElement === elementFor("prompt"));
 check("closing another tab kept the active chat", app.chatTabs.length === 1 && app.activeChatTab().id === firstTab && elementFor("prompt").value === "unfinished draft");
 
 app.state.session = null;
@@ -8606,6 +8624,8 @@ app.state.parked = null;
 elementFor("transcript").replaceChildren(app.bubble("user", "A response starting in this tab"));
 await app.newChatTab();
 const awayTab = app.activeChatTab().id;
+const pendingTabButton = elementFor("chat-tabs").children.find((row) => row.children[0].id === `chat-tab-${firstTab}`).children[0];
+check("marked a running response on its own tab", pendingTabButton.querySelectorAll(".spinner").length === 1 && pendingTabButton.title.endsWith(" · Running"));
 await app.newChatTab();
 await app.activateChatTab(awayTab);
 check("kept a pending new chat out of another blank tab", app.state.parked?.pending && !elementFor("transcript").outline().includes("A response starting in this tab"));
@@ -8617,6 +8637,7 @@ check("restored the response streamed into an inactive tab", app.state.session =
 await app.closeChatTab(firstTab);
 check("closing a running chat tab preserved its response", app.activeChatTab().id === awayTab && app.state.runSession === "tab-live" && app.state.parked?.session === "tab-live");
 app.setIdle();
+check("removed running markers when the turn ended", elementFor("chat-tabs").querySelectorAll(".spinner").length === 0);
 
 const readGate = {};
 sessionReadGate = readGate;

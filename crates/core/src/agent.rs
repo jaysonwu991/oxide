@@ -2095,13 +2095,151 @@ fn looks_like_verification_command(command: &str) -> bool {
         "Verify",
         "Typecheck",
     ];
-    command
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .any(|token| {
-            !token.is_empty()
-                && (EXACT.iter().any(|word| token.eq_ignore_ascii_case(word))
-                    || SUFFIXES.iter().any(|suffix| token.ends_with(suffix)))
-        })
+    let has_check_name = |value: &str| {
+        value
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .any(|token| {
+                !token.is_empty()
+                    && (EXACT.iter().any(|word| token.eq_ignore_ascii_case(word))
+                        || SUFFIXES.iter().any(|suffix| token.ends_with(suffix)))
+            })
+    };
+    tools::shell_segments(command).into_iter().any(|segment| {
+        let words: Vec<_> = segment.split_whitespace().collect();
+        let Some(index) = tools::shell_command_index(&words) else {
+            return false;
+        };
+        let executable = words[index].trim_matches(['\'', '"']);
+        let name = executable.rsplit(['/', '\\']).next().unwrap_or(executable);
+        let name = name
+            .strip_suffix(".exe")
+            .or_else(|| name.strip_suffix(".cmd"))
+            .or_else(|| name.strip_suffix(".bat"))
+            .unwrap_or(name);
+        let args = &words[index + 1..];
+        match name {
+            "cargo" | "npm" | "pnpm" | "yarn" | "bun" | "deno" | "go" | "dotnet" | "gradle"
+            | "gradlew" | "mvn" | "mvnw" | "make" | "gmake" | "bazel" | "buck" | "sbt"
+            | "swift" | "xcodebuild" | "meson" | "ninja" | "rake" | "bundle" | "tox" | "uv" => {
+                args.iter().any(|arg| has_check_name(arg))
+            }
+            "pytest" | "ctest" | "tsc" | "eslint" => true,
+            "ruff" => ruff_verifies(args),
+            "node" | "nodejs" | "python" | "python3" | "bash" | "sh" => {
+                interpreter_verifies(name, args, &has_check_name)
+            }
+            _ => executable.contains(['/', '\\']) && has_check_name(name),
+        }
+    })
+}
+
+fn ruff_verifies(args: &[&str]) -> bool {
+    let options: Vec<_> = args
+        .iter()
+        .copied()
+        .take_while(|arg| *arg != "--")
+        .collect();
+    if options.iter().any(|arg| {
+        matches!(
+            *arg,
+            "--help" | "-h" | "--version" | "-V" | "--show-settings" | "--show-files"
+        )
+    }) {
+        return false;
+    }
+    let mut index = 0;
+    while let Some(arg) = options.get(index) {
+        match *arg {
+            "--config" => index += 2,
+            arg if arg.starts_with('-') => index += 1,
+            "check" => return true,
+            "format" => return options[index + 1..].contains(&"--check"),
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn interpreter_verifies(name: &str, args: &[&str], has_check_name: &impl Fn(&str) -> bool) -> bool {
+    let node = matches!(name, "node" | "nodejs");
+    let python = matches!(name, "python" | "python3");
+    let mut check_mode = false;
+    let mut index = 0;
+    while let Some(arg) = args.get(index).copied() {
+        if matches!(arg, "--help" | "-h" | "--version" | "-V") {
+            return false;
+        }
+        if arg == "--" {
+            return args.get(index + 1).is_some_and(|script| {
+                check_mode || has_check_name(script.rsplit(['/', '\\']).next().unwrap_or(script))
+            });
+        }
+        if !arg.starts_with('-') || arg == "-" {
+            return check_mode || has_check_name(arg.rsplit(['/', '\\']).next().unwrap_or(arg));
+        }
+        if node {
+            if matches!(arg, "--eval" | "--print")
+                || arg.starts_with("--eval=")
+                || arg.starts_with("--print=")
+                || arg.starts_with("-e")
+                || arg.starts_with("-p")
+            {
+                return false;
+            }
+            if matches!(arg, "--test" | "--check" | "-c") {
+                check_mode = true;
+            }
+            if matches!(
+                arg,
+                "-r" | "--require"
+                    | "--import"
+                    | "--loader"
+                    | "--experimental-loader"
+                    | "-C"
+                    | "--conditions"
+                    | "--input-type"
+                    | "--test-name-pattern"
+                    | "--test-skip-pattern"
+                    | "--test-reporter"
+                    | "--test-reporter-destination"
+                    | "--test-concurrency"
+            ) {
+                index += 1;
+            }
+        } else if python {
+            if arg.starts_with("-c") {
+                return false;
+            }
+            if arg == "-m" || arg.starts_with("-m") {
+                let module = if arg == "-m" {
+                    index += 1;
+                    args.get(index).copied().unwrap_or("")
+                } else {
+                    &arg[2..]
+                };
+                return match module {
+                    "ruff" => ruff_verifies(&args[index + 1..]),
+                    "unittest" | "py_compile" | "compileall" => true,
+                    _ => has_check_name(module),
+                };
+            }
+            if matches!(arg, "-W" | "-X" | "--check-hash-based-pycs") {
+                index += 1;
+            }
+        } else if !arg.starts_with("--") {
+            // Shell short options can be combined: -ec still supplies inline
+            // code, while -euo consumes the following shell-option name.
+            if arg[1..].contains('c') {
+                return false;
+            }
+            check_mode |= arg[1..].contains('n');
+            if arg.ends_with(['o', 'O']) {
+                index += 1;
+            }
+        }
+        index += 1;
+    }
+    check_mode
 }
 
 /// Whether a shell command inspected the edited file itself — a `git diff`,
@@ -2389,15 +2527,12 @@ async fn ls_remote(cwd: &Path, remote: &str, branch: &str) -> Option<String> {
 /// `./gradlew test | wc -l` count as the same run. Returns `None` for a command
 /// that is not a verifier at all.
 fn verification_key(command: &str) -> Option<String> {
-    if !looks_like_verification_command(command) {
-        return None;
-    }
     let base = match first_unquoted(command, '|') {
         Some(index) => &command[..index],
         None => command,
     };
     let base = base.trim().trim_end_matches("2>&1").trim();
-    (!base.is_empty()).then(|| base.to_string())
+    looks_like_verification_command(base).then(|| base.to_string())
 }
 
 /// The byte index of the first `needle` outside single or double quotes.
@@ -5569,6 +5704,143 @@ for line in sys.stdin:
         ));
         assert!(!looks_like_verification_command("git status"));
         assert!(!looks_like_verification_command("git log --grep latest"));
+    }
+
+    #[test]
+    fn inspecting_test_code_does_not_count_as_running_a_verifier() {
+        for command in [
+            "grep -n test src/main.rs",
+            "rg 'build|test' crates/core",
+            "sed -n 1,40p src/test/dialogs.test.ts",
+            "cat test/results.txt",
+            "echo cargo test",
+            "printf '%s' 'npm run lint'",
+            "git diff -- src/test.rs",
+            "gh pr view 224 --json statusCheckRollup",
+            "node -e 'console.log(\"test\")'",
+            "printf ok | grep test",
+        ] {
+            assert!(!looks_like_verification_command(command), "{command}");
+            assert!(verification_key(command).is_none(), "{command}");
+        }
+        for command in [
+            "node crates/desktop/check-app.mjs",
+            "cd editors/vscode && pnpm test",
+            "env CI=1 cargo test",
+            "python3 tests/check_contract.py",
+            "./scripts/check.sh",
+        ] {
+            assert!(looks_like_verification_command(command), "{command}");
+        }
+        let mut state = VerificationState::new(Path::new("/repo"));
+        state.record(
+            "edit",
+            &json!({"path": "a.rs"}),
+            "Successfully replaced 1 block(s).",
+        );
+        state.record(
+            "bash",
+            &json!({"command": "grep test b.rs"}),
+            "test\n[exit: 0]",
+        );
+        assert!(state.edited.contains("a.rs"));
+    }
+
+    #[test]
+    fn ruff_formatting_does_not_confirm_edits_or_count_as_a_verifier() {
+        for command in [
+            "ruff format src/main.py",
+            "ruff format tests/check.py",
+            "ruff --config pyproject.toml format src/main.py",
+            "ruff format -- --check",
+            "ruff --version",
+            "ruff help check",
+            "ruff check --help",
+            "ruff check --show-settings",
+            "ruff check --show-files",
+            "python3 -m ruff format src/main.py",
+        ] {
+            assert!(!looks_like_verification_command(command), "{command}");
+            assert!(verification_key(command).is_none(), "{command}");
+            let mut seen = BTreeSet::new();
+            assert!(!note_verifier(&mut seen, true, command), "{command}");
+            assert!(!note_verifier(&mut seen, true, command), "{command}");
+            let mut state = VerificationState::new(Path::new("/repo"));
+            state.record("edit", &json!({"path": "src/main.py"}), "ok");
+            state.record(
+                "bash",
+                &json!({"command": command}),
+                "1 file reformatted\n[exit: 0]",
+            );
+            assert!(state.edited.contains("src/main.py"), "{command}");
+        }
+        for command in [
+            "ruff check src/main.py",
+            "ruff format --check src/main.py",
+            "ruff --config pyproject.toml check .",
+            "python3 -m ruff check .",
+            "python3 -m ruff format --check .",
+        ] {
+            assert!(looks_like_verification_command(command), "{command}");
+            assert!(verification_key(command).is_some(), "{command}");
+        }
+    }
+
+    #[test]
+    fn interpreter_options_preserve_verification_and_repeat_tracking() {
+        for command in [
+            "node --test out/test/",
+            "node --test",
+            "node --check app.js",
+            "node -c app.js",
+            "node --no-warnings scripts/check.js",
+            "node --require setup.js scripts/check.js",
+            "node --import setup.mjs --test out/test/",
+            "python3 -m pytest",
+            "python3 -mpytest tests/",
+            "python3 -W error -X dev -m pytest tests/",
+            "python3 -m unittest discover",
+            "python3 -u scripts/check.py",
+            "bash -e scripts/check.sh",
+            "bash -euo pipefail scripts/check.sh",
+            "bash -n scripts/deploy.sh",
+            "sh -eu scripts/check.sh",
+        ] {
+            assert!(looks_like_verification_command(command), "{command}");
+            assert!(verification_key(command).is_some(), "{command}");
+            let mut seen = BTreeSet::new();
+            assert!(!note_verifier(&mut seen, true, command), "{command}");
+            assert!(note_verifier(&mut seen, true, command), "{command}");
+            let mut state = VerificationState::new(Path::new("/repo"));
+            state.record("edit", &json!({"path": "a.rs"}), "ok");
+            state.record(
+                "bash",
+                &json!({"command": command}),
+                "checks passed\n[exit: 0]",
+            );
+            assert!(state.edited.is_empty(), "{command}");
+        }
+        for command in [
+            "node -e 'test()'",
+            "node --eval='test()'",
+            "node --print 'test()'",
+            "node --test --eval 'test()'",
+            "node app.js --test",
+            "node --require scripts/check.js app.js",
+            "node --help --test",
+            "python3 -c 'test()'",
+            "python3 -u -c 'test()'",
+            "python3 -ctest",
+            "python3 -m",
+            "python3 app.py -m pytest",
+            "bash -c 'scripts/check.sh'",
+            "bash -ec 'scripts/check.sh'",
+            "bash -o pipefail -c 'cargo test'",
+            "bash deploy.sh -e scripts/check.sh",
+        ] {
+            assert!(!looks_like_verification_command(command), "{command}");
+            assert!(verification_key(command).is_none(), "{command}");
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 use ratatui::Frame;
 
@@ -50,12 +50,13 @@ fn is_file_tool(name: &str) -> bool {
     FILE_TOOLS.contains(&name)
 }
 
-/// A rounded panel with a colored border and title, shared by the input and
-/// popup surfaces. An empty title leaves the top border unbroken.
+/// A rounded panel with a colored border, title and one-cell horizontal inset,
+/// shared by popup surfaces. An empty title leaves the top border unbroken.
 fn panel(title: &str, color: Color) -> Block<'static> {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
         .border_style(Style::default().fg(color));
     if title.is_empty() {
         block
@@ -226,7 +227,7 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         ),
     };
     let title = match &state.step {
-        ConnectStep::Provider => " connect ",
+        ConnectStep::Provider => "connect",
         ConnectStep::Browser { provider }
         | ConnectStep::Key { provider }
         | ConnectStep::Options { provider } => provider.as_str(),
@@ -455,7 +456,7 @@ fn draw_usage(frame: &mut Frame, app: &App) {
     let area = centered_rect(72, 56, frame.area());
     frame.render_widget(Clear, area);
 
-    let block = panel(" portkey usage ", app.theme.accent);
+    let block = panel("portkey usage", app.theme.accent);
     let inner = block.inner(area);
     let value_width = inner.width.saturating_sub(13) as usize;
 
@@ -1367,12 +1368,7 @@ pub(crate) fn suggestion_index_at(
 ) -> Option<usize> {
     let areas = main_areas(terminal_area, app);
     let window = suggestion_window(app, areas[0])?;
-    let inner = Rect {
-        x: window.popup.x.saturating_add(1),
-        y: window.popup.y.saturating_add(1),
-        width: window.popup.width.saturating_sub(2),
-        height: window.popup.height.saturating_sub(2),
-    };
+    let inner = panel("", app.theme.border).inner(window.popup);
     if column < inner.x
         || column >= inner.x.saturating_add(inner.width)
         || row < inner.y
@@ -1391,7 +1387,10 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 
     let is_command = app.input.starts_with('/');
     // The border and the highlight symbol sit outside the item text.
-    let content_width = window.popup.width.saturating_sub(4) as usize;
+    let content_width = panel("", app.theme.border)
+        .inner(window.popup)
+        .width
+        .saturating_sub(2) as usize;
     let hints = &app.suggestions[window.offset..window.offset + window.count];
     let widest = hints
         .iter()
@@ -1445,6 +1444,7 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(
             Style::default()
                 .fg(app.theme.accent)
+                .bg(app.theme.tool_pending_bg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("› ");

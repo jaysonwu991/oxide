@@ -2918,7 +2918,10 @@ impl Config {
              in the right place; a release, deployment, migration, or published artifact is \
              queried for its status; and any task with a known verifier is run through it. Run a \
              verifier once and read its whole result — re-running the same build or test on \
-             unchanged files is slow and adds nothing. \
+             unchanged files is slow and adds nothing. For verbose verifiers, preserve the full \
+             output with `2>&1 | tee <project-log-path>` and inspect that log with `grep`/`read`; \
+             filtering through `grep` or keeping only a short `tail` can discard the failure and \
+             force an unnecessary rerun. \
              Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the \
              annotation\") from what you assume, and say plainly when you could not confirm \
              something. Do not claim a change is applied, a fix works, a PR is ready, a reply is \
