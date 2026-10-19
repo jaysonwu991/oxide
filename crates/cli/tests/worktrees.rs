@@ -93,17 +93,27 @@ fn handoff_preserves_a_chat_in_the_shared_remote_session_store() {
     git(&["config", "user.email", "oxide@example.com"]);
     git(&["config", "commit.gpgsign", "false"]);
     git(&["commit", "--allow-empty", "-qm", "first"]);
-    let remote = "https://example.com/oxide-handoff.git";
-    git(&["remote", "add", "origin", remote]);
+    let remote = format!(
+        "https://example.com/oxide-handoff-{}.git",
+        std::process::id()
+    );
+    git(&["remote", "add", "origin", &remote]);
     let hash = remote.bytes().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
     });
-    let config = if cfg!(target_os = "macos") {
-        home.join("Library/Application Support")
-    } else {
-        home.clone()
-    };
-    let sessions = config.join("Oxide/sessions").join(format!("{hash:016x}"));
+    // Windows resolves config through Known Folders rather than APPDATA.
+    // Ask the child for a managed path instead of guessing its config root.
+    let probe = oxide(
+        &home,
+        &project,
+        &["worktree", "create", "config-probe", "--detached"],
+    );
+    let config = Path::new(probe["path"].as_str().unwrap())
+        .ancestors()
+        .nth(3)
+        .unwrap();
+    let sessions = config.join("sessions").join(format!("{hash:016x}"));
+    oxide(&home, &project, &["worktree", "remove", "config-probe"]);
     std::fs::create_dir_all(&sessions).unwrap();
     let log = sessions.join("handoff-chat.jsonl");
     let header = serde_json::json!({"type":"session","version":3,"id":"handoff-chat","timestamp":"2026-10-19T00:00:00.000Z","cwd":project.canonicalize().unwrap()});
@@ -127,7 +137,8 @@ fn handoff_preserves_a_chat_in_the_shared_remote_session_store() {
     assert!(Path::new(checkout).join("new.txt").exists());
     assert!(!project.join("new.txt").exists());
     let stored = std::fs::read_to_string(&log).unwrap();
-    assert!(stored.contains(checkout));
+    let stored_header: Value = serde_json::from_str(stored.lines().next().unwrap()).unwrap();
+    assert_eq!(stored_header["cwd"], checkout);
     assert!(stored.contains("keep my history"));
     oxide(
         &home,
@@ -149,7 +160,7 @@ fn handoff_preserves_a_chat_in_the_shared_remote_session_store() {
     );
     assert_eq!(again["cwd"], moved["cwd"]);
     assert_eq!(
-        std::fs::read_dir(sessions)
+        std::fs::read_dir(&sessions)
             .unwrap()
             .filter(|entry| entry
                 .as_ref()
@@ -160,5 +171,20 @@ fn handoff_preserves_a_chat_in_the_shared_remote_session_store() {
             .count(),
         1
     );
+    oxide(
+        &home,
+        &project,
+        &["worktree", "handoff", "handoff-chat", "--source", checkout],
+    );
+    let managed = oxide(&home, &project, &["worktree", "list"]);
+    for entry in managed.as_array().unwrap() {
+        oxide(
+            &home,
+            &project,
+            &["worktree", "remove", entry["name"].as_str().unwrap()],
+        );
+    }
+    std::fs::remove_file(log).unwrap();
+    std::fs::remove_dir(sessions).unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
