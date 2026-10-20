@@ -2869,8 +2869,30 @@ function installMarkdownInput(editor, render) {
     history.splice(0, history.length, ...(saved?.entries || [source]));
     historyIndex = saved?.index ?? 0;
   };
+  function leaveInlineCode(direction) {
+    const selection = window.getSelection?.();
+    if (!selection?.rangeCount || !selection.isCollapsed || !editor.contains(selection.focusNode)) return false;
+    const node = selection.focusNode;
+    const code = (node.nodeType === 3 ? node.parentElement : node)?.closest?.("code");
+    if (!code || code.parentElement?.tagName === "PRE") return false;
+    const edge = document.createRange();
+    edge.selectNodeContents(code);
+    if (direction > 0) edge.setStart(node, selection.focusOffset);
+    else edge.setEnd(node, selection.focusOffset);
+    if (edge.toString() !== "") return false;
+    // Place the caret outside the element, past the hidden Markdown delimiter.
+    // A text offset at the same visible position still belongs to the code.
+    if (direction > 0) edge.setStartAfter(code);
+    else edge.setStartBefore(code);
+    edge.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(edge);
+    savedStart = savedEnd = selectionOffset(false);
+    return true;
+  }
   editor.addEventListener("beforeinput", (event) => {
     if (composing || event.isComposing || !["insertText", "insertLineBreak"].includes(event.inputType)) return;
+    if (event.inputType === "insertText" && event.data === " ") leaveInlineCode(1);
     // Applying text to the Markdown model avoids inheriting a code/bold span
     // when the caret is immediately after its closing delimiter.
     event.preventDefault();
@@ -2887,6 +2909,11 @@ function installMarkdownInput(editor, render) {
   editor.addEventListener("input", commit);
   editor.addEventListener("keydown", (event) => {
     if (event.isComposing || composing) return;
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey &&
+        ["ArrowLeft", "ArrowRight"].includes(event.key) && leaveInlineCode(event.key === "ArrowRight" ? 1 : -1)) {
+      event.preventDefault();
+      return;
+    }
     if (!(event.metaKey || event.ctrlKey) || !["z", "y"].includes(event.key.toLowerCase())) return;
     event.preventDefault();
     const redo = event.key.toLowerCase() === "y" || event.shiftKey;

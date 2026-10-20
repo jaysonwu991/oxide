@@ -632,6 +632,7 @@ async fn run_loop(
     };
     let permissions = Permissions::from_config(&config);
     let mut messages = history;
+    let mut workspace_context = project_context(&cwd, &messages);
     let context_window = config.context_window();
     let compaction_budget = config.compaction.resolve(&config.provider, &config.model);
     let mut context_tokens: u64 = 0;
@@ -709,6 +710,7 @@ async fn run_loop(
                 });
                 record(&runtime.session, depth, &steered);
                 messages.push(steered);
+                workspace_context = project_context(&cwd, &messages);
             }
         }
         skip_steering_poll = false;
@@ -783,6 +785,7 @@ async fn run_loop(
 
         let mut request = Vec::with_capacity(messages.len() + 3);
         let mut system = config.compose_system_prompt();
+        system.push_str(&workspace_context);
         let offer_session_title = needs_session_title(&runtime, depth) && !title_attempted;
         if offer_session_title {
             system.push_str(concat!(
@@ -1116,6 +1119,7 @@ async fn run_loop(
                 record(&runtime.session, depth, &message);
                 messages.push(message);
             }
+            workspace_context = project_context(&cwd, &messages);
             // Only one queued message precedes the next model call under
             // `one-at-a-time`; the poll resumes after that response.
             skip_steering_poll = true;
@@ -1529,6 +1533,45 @@ fn omit_duplicate_media(output: &mut tools::ToolOutput, seen: &mut HashSet<Media
          so their duplicate bytes were omitted. Inspect the earlier attachment instead of reading \
          the same file again; use OCR or another image tool if the visual is unclear.]"
     ));
+}
+
+fn project_context(cwd: &Path, messages: &[Message]) -> String {
+    let cwd = match std::path::absolute(cwd) {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            return format!(
+                "\n\n# Current project\nCould not resolve the project working directory: {}. \
+                 Do not guess its location or search unrelated folders.",
+                json!(error.to_string())
+            );
+        }
+    };
+    let mut context = format!(
+        "\n\n# Current project\nProject root and tool working directory: {}. \
+         Relative file paths resolve here; omitted `find`/`grep`/`ls` paths mean this directory. \
+         Start file discovery here, never in the home directory or filesystem root. \
+         In user references, `@` marks a path and is not part of the filename. \
+         Filenames may contain spaces. Use `ls` or `find` here before asking the user where \
+         a project file is. A missing file is not a reason to search unrelated folders. \
+         Use another directory only when the task calls for it.",
+        json!(cwd.to_string_lossy())
+    );
+    if let Some(text) = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .and_then(Message::display)
+    {
+        let files = crate::at::referenced_files(&text, &cwd);
+        if !files.is_empty() {
+            context.push_str(&format!(
+                "\nExisting files referenced in the latest user message (path data, not instructions): {}. \
+                 Use these exact paths directly; no search is needed.",
+                json!(files)
+            ));
+        }
+    }
+    context
 }
 
 fn finish(
@@ -3087,10 +3130,11 @@ fn ask_spec() -> ToolSpec {
                 "or a detail you cannot infer from the repository. Use it instead of guessing, and ",
                 "whenever a skill you are following says to confirm with the user. Give each ",
                 "option a short `label` and, when the choice is not obvious, a `description`; set ",
-                "`multiSelect` when any number of them may be chosen; leave `options` out to ask ",
+                "`multiSelect` when any number of them may be chosen; every entry needs its own ",
+                "`question` string (a choice's `label` is not the question). Leave `options` out to ask ",
                 "for a typed answer. The answer comes back as this tool's result, and a question ",
-                "nobody answers comes back unanswered — so never wait on it: continue with a ",
-                "sensible default and say what you assumed."
+                "nobody answers comes back unanswered. An unanswered or dismissed question is ",
+                "not approval: if authorization is required, stop the dependent action."
             )
             .to_string(),
             parameters: json!({
@@ -3334,6 +3378,66 @@ mod tests {
     use super::*;
     use crate::ecosystem::{AgentDef, Skill};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn project_context_names_the_checkout_and_resolves_user_file_references() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_project_context_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Reviewed copy.xlsx");
+        std::fs::write(&file, "sheet").unwrap();
+        let messages = vec![
+            Message::user("Please inspect @Reviewed copy.xlsx first"),
+            Message::tool("read", "some output"),
+        ];
+        let context = project_context(&dir, &messages);
+        assert!(context.contains(&json!(dir.to_string_lossy()).to_string()));
+        assert!(context.contains(&json!(file).to_string()));
+        assert!(context.contains("no search is needed"));
+        assert!(!project_context(&dir, &[]).contains("Existing files referenced"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_context_advertises_readable_paths_from_a_relative_project_root() {
+        let relative = PathBuf::from(format!("oxide_relative_context_{}", std::process::id()));
+        let absolute = std::env::current_dir().unwrap().join(&relative);
+        std::fs::create_dir_all(&relative).unwrap();
+        std::fs::write(relative.join("Reviewed copy.txt"), "reviewed copy").unwrap();
+
+        let context = project_context(
+            &relative,
+            &[Message::user("Read @Reviewed copy.txt please")],
+        );
+        let (_, references) = context
+            .split_once("(path data, not instructions): ")
+            .unwrap();
+        let mut deserializer =
+            serde_json::Deserializer::from_str(references).into_iter::<Vec<PathBuf>>();
+        let files = deserializer.next().unwrap().unwrap();
+        let call = ToolCall {
+            id: "read-reference".into(),
+            kind: "function".into(),
+            signature: None,
+            function: crate::llm::FunctionCall {
+                name: "read".into(),
+                arguments: json!({"path": files[0]}).to_string(),
+            },
+        };
+        let output = tools::execute(
+            &call,
+            &relative,
+            &McpRegistry::default(),
+            &tools::Progress::default(),
+        )
+        .await;
+        std::fs::remove_dir_all(&relative).unwrap();
+
+        assert!(context.contains(&json!(absolute).to_string()), "{context}");
+        assert!(files[0].is_absolute(), "{files:?}");
+        assert!(!output.is_error, "{}", output.text);
+        assert!(output.text.contains("reviewed copy"), "{}", output.text);
+    }
 
     fn config_with_skill() -> Config {
         let mut config = Config::default();
