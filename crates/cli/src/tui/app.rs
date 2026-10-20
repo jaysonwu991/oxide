@@ -252,11 +252,11 @@ pub enum ConnectField {
 }
 
 impl ConnectField {
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: crate::i18n::Language) -> &'static str {
         match self {
-            ConnectField::Model => "Model",
-            ConnectField::BaseUrl => "Base URL",
-            ConnectField::PortkeyConfig => "Portkey Config",
+            ConnectField::Model => crate::i18n::t(lang, "composer.model"),
+            ConnectField::BaseUrl => crate::i18n::t(lang, "ui.baseURL"),
+            ConnectField::PortkeyConfig => crate::i18n::t(lang, "ui.portkeyConfig"),
         }
     }
 }
@@ -372,15 +372,15 @@ impl UsageField {
         UsageField::Endpoint,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: crate::i18n::Language) -> &'static str {
         match self {
-            UsageField::Enabled => "Enabled",
-            UsageField::User => "User",
-            UsageField::Metadata => "Metadata",
-            UsageField::Budget => "Budget",
-            UsageField::Currency => "Currency",
-            UsageField::ApiKey => "API key",
-            UsageField::Endpoint => "Endpoint",
+            UsageField::Enabled => crate::i18n::t(lang, "ui.enabled"),
+            UsageField::User => crate::i18n::t(lang, "ui.user"),
+            UsageField::Metadata => crate::i18n::t(lang, "ui.metadata"),
+            UsageField::Budget => crate::i18n::t(lang, "ui.budget"),
+            UsageField::Currency => crate::i18n::t(lang, "ui.currency"),
+            UsageField::ApiKey => crate::i18n::t(lang, "dialog.connect.key"),
+            UsageField::Endpoint => crate::i18n::t(lang, "ui.endpoint"),
         }
     }
 

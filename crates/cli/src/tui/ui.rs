@@ -137,18 +137,18 @@ fn draw_trust(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, area);
 
     let mut lines = vec![Line::from(Span::styled(
-        format!(" Trust project {}?", state.dir),
+        app.tf("tui.trustProject", &[("path", &state.dir)]),
         Style::default()
             .fg(app.theme.tool)
             .add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Trust loads project resources that may change the agent or execute",
+        app.t("ui.trustLoadsProjectResourcesThatMayChangeTheAgentOrExecute"),
         Style::default().fg(app.theme.info),
     )));
     lines.push(Line::from(Span::styled(
-        "code. The decision is shared across all front-ends.",
+        app.t("ui.codeTheDecisionIsSharedAcrossAllFrontEnds"),
         Style::default().fg(app.theme.info),
     )));
     lines.push(Line::from(""));
@@ -159,7 +159,7 @@ fn draw_trust(frame: &mut Frame, app: &App) {
         )));
     }
     lines.push(Line::from(""));
-    let options = ["Trust project", "Do not trust project"];
+    let options = [app.t("dialog.trust.allow"), app.t("ui.doNotTrustProject")];
     for (index, label) in options.iter().enumerate() {
         let selected = state.selected == index;
         let style = if selected {
@@ -176,12 +176,12 @@ fn draw_trust(frame: &mut Frame, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "←/→ choose · Enter confirm · Esc decline for this session",
+        app.t("ui.chooseEnterConfirmEscDeclineForThisSession"),
         Style::default().fg(app.theme.info),
     )));
 
     frame.render_widget(
-        Paragraph::new(lines).block(panel("project trust", app.theme.tool)),
+        Paragraph::new(lines).block(panel(app.t("ui.projectTrust"), app.theme.tool)),
         area,
     );
 }
@@ -214,18 +214,21 @@ fn draw_connect(frame: &mut Frame, app: &App) {
 
     let (prompt, value) = match &state.step {
         ConnectStep::Provider => (
-            "Choose a provider, or type a custom provider name",
+            app.t("ui.chooseAProviderOrTypeACustomProviderName"),
             state.input.clone(),
         ),
-        ConnectStep::Browser { .. } => ("Approve the login in your browser", state.input.clone()),
+        ConnectStep::Browser { .. } => (
+            app.t("ui.approveTheLoginInYourBrowser"),
+            state.input.clone(),
+        ),
         ConnectStep::Key { provider } => (
             crate::auth::provider_option(provider)
                 .map(|option| option.key_url)
-                .unwrap_or("Paste the API key for this provider"),
+                .unwrap_or(app.t("ui.pasteTheAPIKeyForThisProvider")),
             "*".repeat(state.input.chars().count()),
         ),
         ConnectStep::Options { .. } => (
-            "Optional settings — blank keeps the provider default",
+            app.t("ui.optionalSettingsBlankKeepsTheProviderDefault"),
             state.input.clone(),
         ),
     };
@@ -286,7 +289,7 @@ fn draw_connect(frame: &mut Frame, app: &App) {
                 ];
                 if state.is_connected(option.name) {
                     spans.push(Span::styled(
-                        " · connected",
+                        app.t("tui.connectedMark"),
                         Style::default().fg(app.theme.success),
                     ));
                 }
@@ -298,7 +301,7 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             lines.push(Line::from(""));
             if let Some(error) = &state.error {
                 lines.push(Line::from(Span::styled(
-                    format!("error: {error}"),
+                    app.tf("tui.error", &[("error", error)]),
                     Style::default().fg(app.theme.error),
                 )));
                 lines.push(Line::from(""));
@@ -315,11 +318,11 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             match &state.authorization {
                 Some(Authorization { url, code }) => {
                     lines.push(Line::from(vec![
-                        Span::styled("  open ", Style::default().fg(app.theme.info)),
+                        Span::styled(app.t("tui.openLabel"), Style::default().fg(app.theme.info)),
                         Span::styled(url.clone(), Style::default().fg(app.theme.accent)),
                     ]));
                     lines.push(Line::from(vec![
-                        Span::styled("  code ", Style::default().fg(app.theme.info)),
+                        Span::styled(app.t("ui.code"), Style::default().fg(app.theme.info)),
                         Span::styled(
                             code.clone(),
                             Style::default()
@@ -328,19 +331,19 @@ fn draw_connect(frame: &mut Frame, app: &App) {
                         ),
                     ]));
                     lines.push(Line::from(Span::styled(
-                        "  the code is also in your clipboard",
+                        app.t("ui.theCodeIsAlsoInYourClipboard"),
                         Style::default().fg(app.theme.info),
                     )));
                 }
                 None => lines.push(Line::from(Span::styled(
-                    "  asking GitHub for a code...",
+                    app.t("ui.askingGitHubForACode"),
                     Style::default().fg(app.theme.info),
                 ))),
             }
             lines.push(Line::from(""));
             if let Some(error) = &state.error {
                 lines.push(Line::from(Span::styled(
-                    format!("error: {error}"),
+                    app.tf("tui.error", &[("error", error)]),
                     Style::default().fg(app.theme.error),
                 )));
                 lines.push(Line::from(""));
@@ -350,14 +353,14 @@ fn draw_connect(frame: &mut Frame, app: &App) {
             lines.push(Line::from(""));
             if connected {
                 lines.push(Line::from(Span::styled(
-                    "This provider is connected — Enter reuses the stored key.",
+                    app.t("ui.thisProviderIsConnectedEnterReusesTheStoredKey"),
                     Style::default().fg(app.theme.success),
                 )));
                 lines.push(Line::from(""));
             }
             if let Some(error) = &state.error {
                 lines.push(Line::from(Span::styled(
-                    format!("error: {error}"),
+                    app.tf("tui.error", &[("error", error)]),
                     Style::default().fg(app.theme.error),
                 )));
                 lines.push(Line::from(""));
@@ -371,8 +374,16 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         }
         ConnectStep::Options { provider } => {
             lines.push(Line::from(""));
-            let value_width = inner.width.saturating_sub(18) as usize;
-            for field in ConnectState::option_fields(provider) {
+            let fields = ConnectState::option_fields(provider);
+            let label_width = fields
+                .iter()
+                .map(|field| text_width(field.label(app.lang)))
+                .max()
+                .unwrap_or(0)
+                .max(14);
+            let prefix_width = 3 + label_width;
+            let value_width = (inner.width as usize).saturating_sub(prefix_width + 1);
+            for field in fields {
                 let focused = field == state.focus;
                 let marker = if focused { "›" } else { " " };
                 let style = if focused {
@@ -390,21 +401,24 @@ fn draw_connect(frame: &mut Frame, app: &App) {
                 let display = if row_value.is_empty() {
                     "—".to_string()
                 } else {
-                    truncate(&row_value, value_width)
+                    form_value(&row_value, value_width)
                 };
                 lines.push(Line::from(vec![
-                    Span::styled(format!(" {marker} {:<14}", field.label()), style),
+                    Span::styled(
+                        form_label(marker, field.label(app.lang), label_width),
+                        style,
+                    ),
                     Span::styled(display, Style::default().fg(app.theme.info)),
                 ]));
                 if focused {
-                    let column = 17 + state.input.chars().count().min(value_width) as u16;
-                    cursor = Some((lines.len() - 1, column));
+                    let column = prefix_width + text_width(&form_value(&state.input, value_width));
+                    cursor = Some((lines.len() - 1, column as u16));
                 }
             }
             lines.push(Line::from(""));
             if let Some(error) = &state.error {
                 lines.push(Line::from(Span::styled(
-                    format!("error: {error}"),
+                    app.tf("tui.error", &[("error", error)]),
                     Style::default().fg(app.theme.error),
                 )));
                 lines.push(Line::from(""));
@@ -412,17 +426,17 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         }
     }
     let hint = match (state.step.clone(), connected) {
-        (ConnectStep::Provider, _) => "↑/↓ choose · Enter continue · Esc cancel".to_string(),
-        (ConnectStep::Browser { .. }, _) => "waiting for the approval · Esc cancel".to_string(),
-        (ConnectStep::Key { .. }, true) => {
-            "Enter use stored key · type to replace it · Backspace back · Esc cancel".to_string()
-        }
+        (ConnectStep::Provider, _) => app.t("ui.chooseEnterContinueEscCancel").to_string(),
+        (ConnectStep::Browser { .. }, _) => app.t("ui.waitingForTheApprovalEscCancel").to_string(),
+        (ConnectStep::Key { .. }, true) => app
+            .t("ui.enterUseStoredKeyTypeToReplaceItBackspaceBackEscCancel")
+            .to_string(),
         (ConnectStep::Key { .. }, false) => {
-            "Enter connect · Backspace back · Esc cancel".to_string()
+            app.t("ui.enterConnectBackspaceBackEscCancel").to_string()
         }
-        (ConnectStep::Options { .. }, _) => {
-            "↑/↓ field · Enter next/save · Backspace back · Esc cancel".to_string()
-        }
+        (ConnectStep::Options { .. }, _) => app
+            .t("ui.fieldEnterNextSaveBackspaceBackEscCancel")
+            .to_string(),
     };
     let hint = match shown_range {
         Some((start, end, total)) => format!("{hint} · {}-{} of {total} shown", start + 1, end),
@@ -459,13 +473,20 @@ fn draw_usage(frame: &mut Frame, app: &App) {
     let area = centered_rect(72, 56, frame.area());
     frame.render_widget(Clear, area);
 
-    let block = panel("portkey usage", app.theme.accent);
+    let block = panel(app.t("ui.portkeyUsage"), app.theme.accent);
     let inner = block.inner(area);
-    let value_width = inner.width.saturating_sub(13) as usize;
+    let label_width = UsageField::ALL
+        .iter()
+        .map(|field| text_width(field.label(app.lang)))
+        .max()
+        .unwrap_or(0)
+        .max(10);
+    let prefix_width = 3 + label_width;
+    let value_width = (inner.width as usize).saturating_sub(prefix_width + 1);
 
     let mut lines = vec![
         Line::from(Span::styled(
-            "Portkey spend bar",
+            app.t("ui.portkeySpendBar"),
             Style::default().fg(app.theme.info),
         )),
         Line::from(""),
@@ -491,28 +512,31 @@ fn draw_usage(frame: &mut Frame, app: &App) {
             Style::default().fg(app.theme.info)
         };
         lines.push(Line::from(vec![
-            Span::styled(format!(" {marker} {:<10}", field.label()), style),
-            Span::styled(truncate(&value, value_width), value_style),
+            Span::styled(
+                form_label(marker, field.label(app.lang), label_width),
+                style,
+            ),
+            Span::styled(form_value(&value, value_width), value_style),
         ]));
     }
     lines.push(Line::from(""));
     if let Some(error) = &state.error {
         lines.push(Line::from(Span::styled(
-            format!("error: {error}"),
+            app.tf("tui.error", &[("error", error)]),
             Style::default().fg(app.theme.error),
         )));
         lines.push(Line::from(""));
     }
     let hint = if state.editing {
         if state.field() == UsageField::ApiKey {
-            "Enter apply · Esc cancel · empty uses the provider key"
+            app.t("ui.enterApplyEscCancelEmptyUsesTheProviderKey")
         } else {
-            "Enter apply · Esc cancel"
+            app.t("ui.enterApplyEscCancel")
         }
     } else if state.field().is_toggle() {
-        "↑/↓ move · Enter toggle · Esc save & close"
+        app.t("ui.moveEnterToggleEscSaveClose")
     } else {
-        "↑/↓ move · Enter edit · Esc save & close"
+        app.t("ui.moveEnterEditEscSaveClose")
     };
     lines.push(Line::from(Span::styled(
         hint,
@@ -526,13 +550,30 @@ fn draw_usage(frame: &mut Frame, app: &App) {
         area,
     );
     if state.editing && inner.width > 0 {
-        let value = truncate(&usage_edit_value(&state.input, state.field()), value_width);
-        let column = 13 + value.chars().count() as u16;
+        let value = form_value(&usage_edit_value(&state.input, state.field()), value_width);
+        let column = (prefix_width + text_width(&value)) as u16;
         frame.set_cursor_position((
             (inner.x + column).min(inner.x + inner.width.saturating_sub(1)),
             inner.y + 2 + state.selected as u16,
         ));
     }
+}
+
+fn form_value(value: &str, width: usize) -> String {
+    if text_width(value) <= width {
+        return value.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    format!("{}…", take_width(value, width - 1))
+}
+
+fn form_label(marker: &str, label: &str, width: usize) -> String {
+    format!(
+        " {marker} {label}{}",
+        " ".repeat(width.saturating_sub(text_width(label)))
+    )
 }
 
 /// The value an editing row shows: the API key is masked like a password.
@@ -595,7 +636,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
     let mut lines: Vec<Line> = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Models from every logged-in provider. Use /connect to add more.",
+            app.t("ui.modelsFromEveryLoggedInProviderUseConnectToAddMore"),
             Style::default().fg(app.theme.tool),
         )),
         Line::from(""),
@@ -621,7 +662,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
     if let Some(message) = &state.error {
         lines.push(Line::from(Span::styled(format!("  {message}"), error)));
     } else if !state.loading && models.is_empty() {
-        lines.push(Line::from(Span::styled("  No matching models", dim)));
+        lines.push(Line::from(Span::styled(app.t("ui.noMatchingModels"), dim)));
     } else if !models.is_empty() {
         let visible = models.len().min(MAX_MODEL_ROWS).min(capacity);
         let start = selected
@@ -647,7 +688,7 @@ fn draw_models(frame: &mut Frame, app: &App) {
                 Span::styled(format!(" [{}]", choice.provider), dim),
             ];
             if is_default {
-                spans.push(Span::styled(" · default", dim));
+                spans.push(Span::styled(app.t("tui.defaultMark"), dim));
             }
             lines.push(Line::from(spans));
         }
@@ -670,18 +711,18 @@ fn draw_models(frame: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     if state.loading {
         lines.push(Line::from(Span::styled(
-            "  Refreshing model catalogs…",
+            app.t("ui.refreshingModelCatalogs"),
             dim,
         )));
     } else if state.refreshed {
         lines.push(Line::from(Span::styled(
-            "  Model catalogs refreshed.",
+            app.t("ui.modelCatalogsRefreshed"),
             Style::default().fg(app.theme.success),
         )));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel",
+        app.t("ui.enterToSelectCtrlSToSetAsDefaultEscapeCtrlCToCancel"),
         dim,
     )));
     lines.push(Line::from(""));
@@ -697,13 +738,13 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, area);
 
     let title = if state.renaming {
-        " rename session ".to_string()
+        app.t("ui.renameSession").to_string()
     } else if state.confirm_delete {
-        " delete session? ".to_string()
+        app.t("ui.deleteSession").to_string()
     } else if state.filter.is_empty() {
-        " sessions ".to_string()
+        app.t("ui.sessions").to_string()
     } else {
-        format!(" sessions · {} ", state.filter)
+        app.tf("tui.sessionsFiltered", &[("filter", &state.filter)])
     };
     let block = panel(&title, app.theme.accent);
     let inner = block.inner(area);
@@ -711,7 +752,7 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
 
     if state.renaming {
         let mut lines = vec![Line::from(Span::styled(
-            "Rename the selected session",
+            app.t("ui.renameTheSelectedSession"),
             Style::default().fg(app.theme.info),
         ))];
         if let Some(summary) = state.selected_session() {
@@ -720,7 +761,7 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
                 .clone()
                 .unwrap_or_else(|| summary.preview.clone());
             lines.push(Line::from(Span::styled(
-                format!("session: {label}"),
+                app.tf("tui.sessionLabel", &[("label", &label)]),
                 Style::default().fg(app.theme.assistant),
             )));
         }
@@ -734,7 +775,7 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Enter save · Esc cancel",
+            app.t("ui.enterSaveEscCancel"),
             Style::default().fg(app.theme.info),
         )));
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
@@ -753,19 +794,19 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
             .unwrap_or_default();
         let lines = vec![
             Line::from(Span::styled(
-                format!("Delete session `{label}`?"),
+                app.tf("tui.deleteSession", &[("label", &label)]),
                 Style::default()
                     .fg(app.theme.error)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "The session file will be moved to trash when available.",
+                app.t("ui.theSessionFileWillBeMovedToTrashWhenAvailable"),
                 Style::default().fg(app.theme.info),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "Enter/y confirm · Esc/n cancel",
+                app.t("ui.enterYConfirmEscNCancel"),
                 Style::default().fg(app.theme.info),
             )),
         ];
@@ -776,7 +817,7 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
     if let Some(error) = &state.error {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                format!("error: {error}"),
+                app.tf("tui.error", &[("error", error)]),
                 Style::default().fg(app.theme.error),
             )),
             inner,
@@ -787,9 +828,9 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
     let sessions = state.filtered();
     if sessions.is_empty() {
         let message = if state.all.is_empty() {
-            "no sessions for this project yet"
+            app.t("ui.noSessionsForThisProjectYet")
         } else {
-            "no matching sessions"
+            app.t("ui.noMatchingSessions")
         };
         frame.render_widget(
             Paragraph::new(Span::styled(message, Style::default().fg(app.theme.info))),
@@ -816,7 +857,7 @@ fn draw_sessions(frame: &mut Frame, app: &App) {
                 "{} msg{} · {}",
                 summary.message_count,
                 if summary.message_count == 1 { "" } else { "s" },
-                relative_time(now, summary.modified_at)
+                crate::i18n::relative_time(app.lang, now, summary.modified_at)
             );
             if state.show_paths {
                 meta.push_str(&format!(" · {}", summary.cwd));
@@ -911,11 +952,11 @@ fn draw_marketplaces(frame: &mut Frame, app: &App) {
     }
 
     if state.adding {
-        draw_marketplace_add(frame, state, inner, theme);
+        draw_marketplace_add(frame, state, inner, theme, app.lang);
         return;
     }
     if state.confirm_remove {
-        draw_marketplace_remove(frame, state, inner, theme);
+        draw_marketplace_remove(frame, state, inner, theme, app.lang);
         return;
     }
 
@@ -928,7 +969,7 @@ fn draw_marketplaces(frame: &mut Frame, app: &App) {
         ])
         .split(inner);
 
-    draw_marketplace_header(frame, state, rows[0], theme);
+    draw_marketplace_header(frame, state, rows[0], theme, app.lang);
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -951,9 +992,9 @@ fn draw_marketplaces(frame: &mut Frame, app: &App) {
         width: columns[2].width.saturating_sub(1),
         ..columns[2]
     };
-    draw_marketplace_list(frame, state, columns[0], theme);
-    draw_marketplace_detail(frame, state, detail, theme);
-    draw_marketplace_footer(frame, state, rows[2], theme);
+    draw_marketplace_list(frame, state, columns[0], theme, app.lang);
+    draw_marketplace_detail(frame, state, detail, theme, app.lang);
+    draw_marketplace_footer(frame, state, rows[2], theme, app.lang);
 }
 
 fn draw_marketplace_header(
@@ -961,12 +1002,16 @@ fn draw_marketplace_header(
     state: &crate::tui::app::MarketplacesState,
     area: Rect,
     theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
 ) {
     let dim = Style::default().fg(theme.dim);
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Marketplaces publish plugins from a git repository or local path.",
+            crate::i18n::t(
+                lang,
+                "ui.marketplacesPublishPluginsFromAGitRepositoryOrLocalPath",
+            ),
             Style::default().fg(theme.info),
         )),
         Line::from(""),
@@ -974,7 +1019,7 @@ fn draw_marketplace_header(
             Span::styled("> ", Style::default().fg(theme.accent)),
             Span::styled(state.filter.clone(), Style::default().fg(theme.assistant)),
             if state.filter.is_empty() {
-                Span::styled("filter marketplaces or plugins…", dim)
+                Span::styled(crate::i18n::t(lang, "ui.filterMarketplacesOrPlugins"), dim)
             } else {
                 Span::raw("")
             },
@@ -991,13 +1036,14 @@ fn draw_marketplace_list(
     state: &crate::tui::app::MarketplacesState,
     area: Rect,
     theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
 ) {
     let marketplaces = state.marketplaces();
     if marketplaces.is_empty() {
         let message = if state.all.is_empty() {
-            "No marketplaces yet.\n\nPress Ctrl+A to add one."
+            crate::i18n::t(lang, "ui.noMarketplacesYetPressCtrlAToAddOne")
         } else {
-            "No matching marketplaces."
+            crate::i18n::t(lang, "ui.noMatchingMarketplaces")
         };
         frame.render_widget(
             Paragraph::new(Span::styled(message, Style::default().fg(theme.dim)))
@@ -1065,11 +1111,12 @@ fn draw_marketplace_detail(
     state: &crate::tui::app::MarketplacesState,
     area: Rect,
     theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
 ) {
     let Some(marketplace) = state.selected_marketplace() else {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "Select a marketplace to see its plugins.",
+                crate::i18n::t(lang, "ui.selectAMarketplaceToSeeItsPlugins"),
                 Style::default().fg(theme.dim),
             )),
             area,
@@ -1117,7 +1164,7 @@ fn draw_marketplace_detail(
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Plugins",
+        crate::i18n::t(lang, "ui.plugins"),
         Style::default().fg(theme.tool).add_modifier(bold),
     )));
 
@@ -1126,9 +1173,9 @@ fn draw_marketplace_detail(
     let available = (area.height as usize).saturating_sub(lines.len());
     if plugins.is_empty() {
         let message = if marketplace.plugins.is_empty() {
-            "  this marketplace lists no plugins"
+            crate::i18n::t(lang, "ui.thisMarketplaceListsNoPlugins")
         } else {
-            "  no matching plugins"
+            crate::i18n::t(lang, "ui.noMatchingPlugins")
         };
         lines.push(Line::from(Span::styled(
             message.to_string(),
@@ -1176,9 +1223,9 @@ fn draw_marketplace_detail(
             if plugin.installed {
                 spans.push(Span::styled(
                     if plugin.enabled {
-                        "  enabled"
+                        crate::i18n::t(lang, "tui.enabledMark")
                     } else {
-                        "  disabled"
+                        crate::i18n::t(lang, "tui.disabledMark")
                     },
                     Style::default().fg(theme.dim),
                 ));
@@ -1212,11 +1259,12 @@ fn draw_marketplace_footer(
     state: &crate::tui::app::MarketplacesState,
     area: Rect,
     theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
 ) {
     let mut lines: Vec<Line> = Vec::new();
     if state.busy {
         lines.push(Line::from(Span::styled(
-            "  working…",
+            crate::i18n::t(lang, "ui.working"),
             Style::default().fg(theme.tool),
         )));
     } else if let Some(error) = &state.error {
@@ -1233,7 +1281,10 @@ fn draw_marketplace_footer(
         lines.push(Line::from(""));
     }
     lines.push(Line::from(Span::styled(
-        "  ↑/↓ move · Tab pane · Enter install/disable · Ctrl+U update · Ctrl+A add · Ctrl+X remove · Ctrl+R reload · Esc close",
+        crate::i18n::t(
+            lang,
+            "ui.moveTabPaneEnterInstallDisableCtrlUUpdateCtrlAAddCtrlXRemoveCtrlRReloadEscClose",
+        ),
         Style::default().fg(theme.dim),
     )));
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
@@ -1244,16 +1295,17 @@ fn draw_marketplace_add(
     state: &crate::tui::app::MarketplacesState,
     area: Rect,
     theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
 ) {
     let bold = Modifier::BOLD;
     let lines = vec![
         Line::from(Span::styled(
-            "Add a marketplace",
+            crate::i18n::t(lang, "ui.addAMarketplace"),
             Style::default().fg(theme.accent).add_modifier(bold),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Git URL, owner/repo shorthand, or local path with a",
+            crate::i18n::t(lang, "ui.gitURLOwnerRepoShorthandOrLocalPathWithA"),
             Style::default().fg(theme.info),
         )),
         Line::from(Span::styled(
@@ -1270,7 +1322,7 @@ fn draw_marketplace_add(
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Enter add · Esc cancel",
+            crate::i18n::t(lang, "ui.enterAddEscCancel"),
             Style::default().fg(theme.dim),
         )),
     ];
@@ -1284,6 +1336,7 @@ fn draw_marketplace_remove(
     state: &crate::tui::app::MarketplacesState,
     area: Rect,
     theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
 ) {
     let Some(marketplace) = state.selected_marketplace() else {
         return;
@@ -1318,7 +1371,7 @@ fn draw_marketplace_remove(
         lines.push(Line::from(""));
     }
     lines.push(Line::from(Span::styled(
-        "Enter/y confirm · Esc/n cancel",
+        crate::i18n::t(lang, "ui.enterYConfirmEscNCancel"),
         Style::default().fg(theme.dim),
     )));
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
@@ -1437,9 +1490,9 @@ fn draw_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let title = if is_command {
-        "commands · click or Tab to complete"
+        app.t("ui.commandsClickOrTabToComplete")
     } else {
-        "files · click or Tab to complete"
+        app.t("ui.filesClickOrTabToComplete")
     };
     let block = panel(title, app.theme.border);
     let list = List::new(items)
@@ -1575,11 +1628,19 @@ fn footer_stats(app: &App, dim: Style) -> Vec<Span<'static>> {
         }
     }
     if app.cost > 0.0 || app.subscription {
-        let sub = if app.subscription { " (sub)" } else { "" };
+        let sub = if app.subscription {
+            app.t("ui.sub")
+        } else {
+            ""
+        };
         push(&mut parts, format!("${:.3}{sub}", app.cost), dim);
     }
     if app.context_limit > 0 {
-        let auto = if app.auto_compact { " (auto)" } else { "" };
+        let auto = if app.auto_compact {
+            app.t("usage.auto")
+        } else {
+            ""
+        };
         let (text, color) = if app.context_used > 0 {
             let pct = context_percent_tenths(app.context_used, app.context_limit);
             (
@@ -1614,15 +1675,19 @@ fn footer_stats(app: &App, dim: Style) -> Vec<Span<'static>> {
 /// footer has room for.
 fn footer_model(app: &App) -> String {
     let mut right = if app.model.is_empty() {
-        "no-model".to_string()
+        app.t("ui.noModel").to_string()
     } else {
         app.model.clone()
     };
     if app.show_thinking {
         if app.reasoning == Reasoning::Off {
-            right.push_str(" • thinking off");
+            right.push_str(app.t("ui.thinkingOff"));
         } else {
-            right.push_str(&format!(" • {}", app.reasoning.label()));
+            right.push_str(&format!(
+                " • {}",
+                crate::i18n::t(app.lang, &format!("reasoning.{}", app.reasoning.label()))
+                    .to_lowercase()
+            ));
         }
     }
     right
@@ -2391,7 +2456,10 @@ fn render_item_themed(
         ChatItem::User(text) => lines.extend(wrapped_with_prefix(
             vec![
                 Span::styled("❯ ", Style::default().fg(theme.user).add_modifier(bold)),
-                Span::styled("you", Style::default().fg(theme.user).add_modifier(bold)),
+                Span::styled(
+                    crate::i18n::t(lang, "ui.you"),
+                    Style::default().fg(theme.user).add_modifier(bold),
+                ),
                 Span::styled(" ", Style::default()),
             ],
             text,
@@ -2419,7 +2487,7 @@ fn render_item_themed(
             if !expand_thinking && !empty {
                 header.push(Span::styled(" · ", Style::default().fg(theme.dim)));
                 header.push(Span::styled(
-                    "Ctrl+T to expand",
+                    crate::i18n::t(lang, "ui.ctrlTToExpand"),
                     Style::default().fg(theme.dim),
                 ));
             }
@@ -2458,9 +2526,9 @@ fn render_item_themed(
             let mut panel = Rows::default();
             if let Some(path) = file_tool_path(name, args) {
                 let (verb, color) = if matches!(name.as_str(), "write" | "edit") {
-                    ("Edit", theme.tool)
+                    (crate::i18n::t(lang, "composer.edit"), theme.tool)
                 } else {
-                    ("Read", theme.accent)
+                    (crate::i18n::t(lang, "ui.read"), theme.accent)
                 };
                 panel.extend(action_lines(verb, &path, color, bold, inner));
             } else if let Some(command) = bash_command(name, args) {
@@ -2471,7 +2539,13 @@ fn render_item_themed(
                         format_duration(elapsed.elapsed.as_millis() as u64)
                     ));
                 }
-                panel.extend(action_lines("Run", &subject, theme.tool, bold, inner));
+                panel.extend(action_lines(
+                    crate::i18n::t(lang, "ui.run"),
+                    &subject,
+                    theme.tool,
+                    bold,
+                    inner,
+                ));
             } else {
                 let mut subject = format!(" {}", tool_arg_summary(name, args));
                 let active = running.as_ref().filter(|active| active.name == name);
@@ -2555,9 +2629,9 @@ fn render_item_themed(
                     bg = theme.tool_error_bg;
                 }
                 let (verb, color) = if failed {
-                    ("Edit failed", theme.error)
+                    (crate::i18n::t(lang, "ui.editFailed"), theme.error)
                 } else {
-                    ("Edited", theme.success)
+                    (crate::i18n::t(lang, "ui.edited"), theme.success)
                 };
                 panel.extend(action_lines(verb, &diff.path, color, bold, inner));
                 let (mut body, hidden) = diff_body(diff, expand_tools, inner, theme);
@@ -2593,7 +2667,13 @@ fn render_item_themed(
                 if name == "read" {
                     if *is_error {
                         bg = theme.tool_error_bg;
-                        panel.extend(action_lines("Read failed", &path, theme.error, bold, inner));
+                        panel.extend(action_lines(
+                            crate::i18n::t(lang, "ui.readFailed"),
+                            &path,
+                            theme.error,
+                            bold,
+                            inner,
+                        ));
                         panel.push(Line::from(""));
                         push_tool_body(
                             &mut panel,
@@ -2604,7 +2684,13 @@ fn render_item_themed(
                             tool_preview(name),
                         );
                     } else {
-                        panel.extend(action_lines("Read", &path, theme.success, bold, inner));
+                        panel.extend(action_lines(
+                            crate::i18n::t(lang, "ui.read"),
+                            &path,
+                            theme.success,
+                            bold,
+                            inner,
+                        ));
                         if !output.trim().is_empty() {
                             panel.push(Line::from(""));
                             push_tool_body(
@@ -2619,7 +2705,13 @@ fn render_item_themed(
                     }
                 } else if *is_error {
                     bg = theme.tool_error_bg;
-                    panel.extend(action_lines("Edit failed", &path, theme.error, bold, inner));
+                    panel.extend(action_lines(
+                        crate::i18n::t(lang, "ui.editFailed"),
+                        &path,
+                        theme.error,
+                        bold,
+                        inner,
+                    ));
                     panel.push(Line::from(""));
                     push_tool_body(
                         &mut panel,
@@ -2630,7 +2722,13 @@ fn render_item_themed(
                         tool_preview(name),
                     );
                 } else {
-                    panel.extend(action_lines("Edited", &path, theme.success, bold, inner));
+                    panel.extend(action_lines(
+                        crate::i18n::t(lang, "ui.edited"),
+                        &path,
+                        theme.success,
+                        bold,
+                        inner,
+                    ));
                     if let Some((_, rest)) = output.split_once("\n\n") {
                         if !rest.trim().is_empty() {
                             panel.push(Line::from(""));
@@ -2657,7 +2755,11 @@ fn render_item_themed(
                     Some(code) => format!("{command}{timeout} · exit {code}"),
                     None => format!("{command}{timeout}"),
                 };
-                let verb = if failed { "Run failed" } else { "Ran" };
+                let verb = if failed {
+                    crate::i18n::t(lang, "ui.runFailed")
+                } else {
+                    crate::i18n::t(lang, "ui.ran")
+                };
                 panel.extend(action_lines(verb, &subject, color, bold, inner));
                 if exit.is_none() && !output.trim().is_empty() {
                     panel.push(Line::from(""));
@@ -2778,7 +2880,7 @@ fn render_item_themed(
             if expand_tools {
                 push_wrapped(
                     lines,
-                    "Branch summary",
+                    crate::i18n::t(lang, "ui.branchSummary"),
                     width,
                     Style::default().fg(theme.dim).add_modifier(bold),
                 );
@@ -2824,7 +2926,7 @@ fn render_item_themed(
             command,
             url,
         } => {
-            render_update_themed(width, theme, version, command, url, lines);
+            render_update_themed(width, theme, lang, version, command, url, lines);
         }
         ChatItem::Progress { label, since } => {
             let elapsed = since.elapsed();
@@ -2865,6 +2967,7 @@ fn progress_bar(elapsed: std::time::Duration) -> String {
 fn render_update_themed(
     width: usize,
     theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
     version: &str,
     command: &str,
     url: &str,
@@ -2874,20 +2977,24 @@ fn render_update_themed(
     let rule_line = || Line::from(Span::styled("─".repeat(width.max(1)), rule));
     lines.push(rule_line());
     lines.push(Line::from(Span::styled(
-        "Update Available",
+        crate::i18n::t(lang, "tui.updateAvailable"),
         Style::default()
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD),
     )));
     push_wrapped(
         lines,
-        &format!("New version {version} is available. Run `{command}`"),
+        &crate::i18n::tf(
+            lang,
+            "tui.newVersion",
+            &[("version", version), ("command", command)],
+        ),
         width,
         Style::default().fg(theme.info),
     );
     push_wrapped(
         lines,
-        &format!("Changelog: {url}"),
+        &crate::i18n::tf(lang, "tui.changelog", &[("url", url)]),
         width,
         Style::default().fg(theme.dim),
     );
@@ -3125,7 +3232,10 @@ fn attachment_rows(app: &App, width: usize) -> Vec<Line<'static>> {
     }
     let hidden = app.attachments.len() - shown;
     if hidden > 0 {
-        rows.push(Line::from(Span::styled(format!(" • {hidden} more"), style)));
+        rows.push(Line::from(Span::styled(
+            app.tf("tui.moreAttachments", &[("count", &hidden.to_string())]),
+            style,
+        )));
     }
     rows
 }
@@ -4471,6 +4581,29 @@ mod tests {
         assert_eq!(link_at(&app, 0, 5).as_deref(), Some("https://example.com"));
         assert_eq!(link_at(&app, 0, 23).as_deref(), Some("https://example.com"));
         assert_eq!(link_at(&app, 0, 24), None);
+    }
+
+    #[test]
+    fn chinese_trust_dialog_keeps_the_project_name() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = App::new("model".into(), "/tmp/falcon".into(), Reasoning::Auto);
+        app.lang = crate::i18n::Language::ZhCn;
+        app.trust = Some(crate::tui::app::TrustState::new("falcon".into(), vec![]));
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        assert!(text.contains("信任项目falcon"));
+        assert!(text.contains("不信任项目"));
+        assert!(!text.contains("Trustproject"));
     }
 
     #[test]
@@ -6526,6 +6659,73 @@ mod tests {
         // A cramped terminal must not panic in any of the sub-layouts.
         let mut small = Terminal::new(TestBackend::new(40, 12)).unwrap();
         small.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn translated_form_labels_align_values_and_carets_in_terminal_cells() {
+        use crate::tui::app::{ConnectField, UsageState};
+        use ratatui::backend::{Backend, TestBackend};
+        use ratatui::Terminal;
+
+        for lang in crate::i18n::Language::ALL {
+            for value in ["z".to_string(), "界x".to_string(), "界".repeat(100)] {
+                for connect in [true, false] {
+                    let mut app = App::new("model".into(), "/tmp/project".into(), Reasoning::Auto);
+                    app.lang = *lang;
+                    if connect {
+                        app.connect = Some(ConnectState {
+                            step: ConnectStep::Options {
+                                provider: "portkey".into(),
+                            },
+                            focus: ConnectField::Model,
+                            input: value.clone(),
+                            model: "z".into(),
+                            base_url: "z".into(),
+                            portkey_config: "z".into(),
+                            ..ConnectState::new()
+                        });
+                    } else {
+                        let mut state =
+                            UsageState::new(crate::portkey_usage::UsageSettings::default());
+                        state.selected = UsageField::ALL
+                            .iter()
+                            .position(|field| *field == UsageField::User)
+                            .unwrap();
+                        state.editing = true;
+                        state.input = value.clone();
+                        state.settings.metadata_key = "z".into();
+                        app.usage_modal = Some(state);
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+                    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                    let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let first = value.chars().next().unwrap().to_string();
+                    let value_start = (0..cursor.x)
+                        .find(|x| buffer[(*x, cursor.y)].symbol() == first)
+                        .unwrap_or_else(|| {
+                            panic!("missing value: {lang:?}, connect={connect}, cursor={cursor:?}")
+                        });
+                    assert_eq!(
+                        buffer[(value_start, cursor.y + 1)].symbol(),
+                        "z",
+                        "aligned values: {lang:?}, connect={connect}"
+                    );
+                    let last = if value.chars().count() > 10 {
+                        "…"
+                    } else if value == "z" {
+                        "z"
+                    } else {
+                        "x"
+                    };
+                    assert_eq!(
+                        buffer[(cursor.x - 1, cursor.y)].symbol(),
+                        last,
+                        "caret follows the displayed value: {lang:?}, connect={connect}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

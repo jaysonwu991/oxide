@@ -103,7 +103,7 @@ describe("MCP server listing", () => {
     // servers, so a window with no folder refuses instead of acting on the
     // directory the extension host happens to run in.
     assert.ok(showMcps.includes("const cwd = this.cwd();"), "resolves the workspace folder");
-    assert.ok(showMcps.includes('showNotice("Open a folder first."'), "says so when there is none");
+    assert.ok(showMcps.includes('showNotice(this.t("ui.openAFolderFirst", "Open a folder first.")'), "says so when there is none");
     assert.ok(!showMcps.includes("process.cwd()"), "uses no fallback directory");
   });
 

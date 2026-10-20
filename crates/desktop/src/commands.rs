@@ -428,7 +428,9 @@ pub async fn list_commands(project: String) -> CmdResult<Vec<oxide_core::command
 /// state's `/` lists those instead of answering with nothing.
 fn palette_entries(project: &str) -> Result<Vec<oxide_core::commands::CommandEntry>, String> {
     if project.trim().is_empty() {
-        return Ok(oxide_core::commands::builtin_entries());
+        return Ok(oxide_core::commands::localized_builtin_entries(
+            oxide_core::i18n::resolve(std::path::Path::new("")),
+        ));
     }
     Ok(oxide_core::commands::palette(&project_dir(project)?))
 }

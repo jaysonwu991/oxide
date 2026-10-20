@@ -762,6 +762,7 @@ export class ChatController {
     const project = this.project;
     const agent = this.setting<string>("agent", "").trim();
     return footerState({
+      language: this.languageInfo,
       model: project?.model || "",
       provider: project?.provider ?? "",
       contextWindow: this.contextWindow ?? project?.contextWindow ?? 0,
@@ -890,7 +891,7 @@ export class ChatController {
   private queuedMessages(): QueuedMessage[] {
     return this.queue.map((message, index) => ({
       index,
-      text: firstLine(message.message) || "Attachment",
+      text: firstLine(message.message) || this.t("composer.attachment", "Attachment"),
       attachmentCount: message.attachments.length,
     }));
   }
@@ -1036,12 +1037,12 @@ export class ChatController {
   async showWorktrees(): Promise<void> {
     const folder = this.folder()?.uri.fsPath;
     if (!folder) {
-      this.showNotice("Open a folder first.", "error");
+      this.showNotice(this.t("ui.openAFolderFirst", "Open a folder first."), "error");
       return;
     }
     const name = path.basename(folder);
     const epoch = ++this.worktreeProbe;
-    this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, "Checking checkouts…"));
+    this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, "Checking checkouts…", undefined, this.languageInfo));
     const result = await runCapture(this.binary(), worktreeListArgs(folder), folder);
     // A read a newer one has superseded paints nothing, and a folder that moved
     // under it is no longer the one it was about.
@@ -1050,13 +1051,13 @@ export class ChatController {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not read this project's worktrees: ${detail}`;
       this.showNotice(failed, "error");
-      this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, failed));
+      this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, failed, undefined, this.languageInfo));
       return;
     }
     this.worktrees = parseWorktrees(result.stdout);
     // Keep the thread's checkout even when it is absent from the listing:
     // falling back would send its next edits into the workspace folder.
-    this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, "", this.transcript.sessionId));
+    this.showDialog(worktreeDialog(this.worktrees, this.worktree, name, "", this.transcript.sessionId, this.languageInfo));
     this.broadcastStatus();
   }
 
@@ -1070,7 +1071,7 @@ export class ChatController {
     if (this.turn) {
       this.showDialog(
         worktreeDialog(this.worktrees, this.worktree, path.basename(folder),
-          "A turn is running; stop it before switching checkouts."),
+          "A turn is running; stop it before switching checkouts.", undefined, this.languageInfo),
       );
       return;
     }
@@ -1096,13 +1097,13 @@ export class ChatController {
   private async createWorktree(): Promise<void> {
     const folder = this.folder()?.uri.fsPath;
     if (!folder) {
-      this.showNotice("Open a folder first.", "error");
+      this.showNotice(this.t("ui.openAFolderFirst", "Open a folder first."), "error");
       return;
     }
     if (this.turn) {
       this.showDialog(
         worktreeDialog(this.worktrees, this.worktree, path.basename(folder),
-          "A turn is running; stop it before making a worktree."),
+          "A turn is running; stop it before making a worktree.", undefined, this.languageInfo),
       );
       return;
     }
@@ -1113,7 +1114,7 @@ export class ChatController {
       ignoreFocusOut: true,
     });
     if (name === undefined) return;
-    const base = await vscode.window.showInputBox({ title: "Starting branch or commit", value: "HEAD", ignoreFocusOut: true });
+    const base = await vscode.window.showInputBox({ title: this.t("ui.startingBranchOrCommit", "Starting branch or commit"), value: "HEAD", ignoreFocusOut: true });
     if (base === undefined) return;
     const mode = await vscode.window.showQuickPick(["Detached HEAD", "New oxide/<name> branch"], { title: "Worktree mode", ignoreFocusOut: true });
     if (!mode) return;
@@ -1125,16 +1126,16 @@ export class ChatController {
     if (folder !== this.folder()?.uri.fsPath) return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
-      const failed = `Could not create the worktree: ${detail}`;
+      const failed = this.t("ui.couldNotCreateTheWorktree", "Could not create the worktree: {value0}", { value0: String(detail) });
       this.showNotice(failed, "error");
-      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed));
+      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed, undefined, this.languageInfo));
       return;
     }
     const entry = parseWorktree(result.stdout);
     if (!entry) {
       const failed = "The worktree was made, but the CLI did not name it.";
       this.showNotice(failed, "warn");
-      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed));
+      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed, undefined, this.languageInfo));
       return;
     }
     this.worktrees = [entry, ...this.worktrees.filter((each) => each.path !== entry.path)];
@@ -1153,22 +1154,22 @@ export class ChatController {
     if (this.turn) {
       this.showDialog(
         worktreeDialog(this.worktrees, this.worktree, path.basename(folder),
-          "A turn is running; stop it before removing a worktree."),
+          "A turn is running; stop it before removing a worktree.", undefined, this.languageInfo),
       );
       return;
     }
     const answer = await vscode.window.showWarningMessage(
-      `Remove the worktree ${entry.name} at ${entry.path}?`,
+      this.t("ui.removeTheWorktreeAt", "Remove the worktree {value0} at {value1}?", { value0: String(entry.name), value1: String(entry.path) }),
       { modal: true },
-      "Remove worktree",
+      { title: this.t("ui.removeWorktree", "Remove worktree"), action: "remove-worktree" },
     );
-    if (answer !== "Remove worktree") return;
+    if (answer?.action !== "remove-worktree") return;
     const result = await runCapture(this.binary(), worktreeRemoveArgs(folder, name), folder);
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
-      const failed = `Could not remove the worktree: ${detail}`;
+      const failed = this.t("ui.couldNotRemoveTheWorktree", "Could not remove the worktree: {value0}", { value0: String(detail) });
       this.showNotice(failed, "error");
-      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed));
+      this.showDialog(worktreeDialog(this.worktrees, this.worktree, path.basename(folder), failed, undefined, this.languageInfo));
       return;
     }
     this.worktrees = this.worktrees.filter((each) => each.name !== name);
@@ -1176,7 +1177,7 @@ export class ChatController {
       this.worktree = null;
       this.newSession();
     }
-    this.showNotice(`Removed ${entry.name}. Its branch ${entry.branch} is still in the repository.`);
+    this.showNotice(this.t("ui.removedItsBranchIsStillInTheRepository", "Removed {value0}. Its branch {value1} is still in the repository.", { value0: String(entry.name), value1: String(entry.branch) }));
     await this.showWorktrees();
     this.refreshProject();
   }
@@ -1185,11 +1186,11 @@ export class ChatController {
     const folder = this.folder()?.uri.fsPath;
     const entry = worktreeAt(this.worktrees, this.worktree);
     if (!folder || !entry || this.turn || this.handingOff) return;
-    const branch = await vscode.window.showInputBox({ title: "Create branch here", value: `oxide/${entry.name}`, ignoreFocusOut: true });
+    const branch = await vscode.window.showInputBox({ title: this.t("dialog.worktrees.createBranch", "Create branch here"), value: `oxide/${entry.name}`, ignoreFocusOut: true });
     if (!branch || this.turn || folder !== this.folder()?.uri.fsPath) return;
     const result = await runCapture(this.binary(), worktreeBranchArgs(folder, entry.name, branch), folder);
     if (result.error || result.code !== 0) {
-      this.showNotice(`Could not create branch: ${result.error || firstLine(result.stderr)}`, "error");
+      this.showNotice(this.t("ui.couldNotCreateBranch", "Could not create branch: {value0}", { value0: String(result.error || firstLine(result.stderr)) }), "error");
       return;
     }
     await this.showWorktrees();
@@ -1204,12 +1205,12 @@ export class ChatController {
     const toWorktree = !this.worktree;
     const target = this.transcript;
     const answer = await vscode.window.showWarningMessage(
-      `Move this chat and its changes to ${toWorktree ? "Worktree" : "Local"}? The destination must have no uncommitted changes.`,
-      { modal: true }, "Hand off",
+      this.t("ui.moveThisChatAndItsChangesToTheDestinationMustHaveNoUncommittedChanges", "Move this chat and its changes to {value0}? The destination must have no uncommitted changes.", { value0: String(toWorktree ? "Worktree" : "Local") }),
+      { modal: true }, { title: this.t("ui.handOff", "Hand off"), action: "handoff" },
     );
-    if (answer !== "Hand off" || this.turn || target !== this.transcript || folder !== this.folder()?.uri.fsPath) return;
+    if (answer?.action !== "handoff" || this.turn || target !== this.transcript || folder !== this.folder()?.uri.fsPath) return;
     this.handingOff = true;
-    this.showNotice("Moving chat and changes…");
+    this.showNotice(this.t("ui.movingChatAndChanges", "Moving chat and changes…"));
     try {
       const result = await runCapture(this.binary(), worktreeHandoffArgs(folder, source, id, toWorktree), folder);
       if (result.error || result.code !== 0) throw new Error(result.error || firstLine(result.stderr));
@@ -1225,9 +1226,9 @@ export class ChatController {
       await this.loadHistory(id, title);
       await this.showWorktrees();
       this.refreshProject();
-      this.showNotice(`Chat moved to ${toWorktree ? "Worktree" : "Local"}.`);
+      this.showNotice(this.t("ui.chatMovedTo", "Chat moved to {value0}.", { value0: String(toWorktree ? "Worktree" : "Local") }));
     } catch (error) {
-      this.showNotice(`Could not hand off chat: ${String(error)}`, "error");
+      this.showNotice(this.t("ui.couldNotHandOffChat", "Could not hand off chat: {value0}", { value0: String(String(error)) }), "error");
     } finally {
       this.handingOff = false;
       this.broadcastStatus();
@@ -1730,7 +1731,7 @@ export class ChatController {
       // the desktop app and the terminal make.
       if (!this.viewingRun()) {
         this.showNotice(
-          `A turn is running in “${this.runLabel()}”; open it to queue or steer, or stop it.`,
+          this.t("ui.aTurnIsRunningInOpenItToQueueOrSteerOrStopIt", "A turn is running in “{value0}”; open it to queue or steer, or stop it.", { value0: String(this.runLabel()) }),
           "warn",
         );
         return;
@@ -1739,7 +1740,7 @@ export class ChatController {
       if (mode === "queue") {
         this.queue.push(prepared);
         this.dropComposerChips();
-        this.showNotice(`Queued: ${firstLine(prepared.message) || "an attachment"}`);
+        this.showNotice(this.t("ui.queued", "Queued: {value0}", { value0: String(firstLine(prepared.message) || "an attachment") }));
         this.broadcastStatus();
         return;
       }
@@ -1784,11 +1785,11 @@ export class ChatController {
       if (target !== index) {
         const [message] = this.queue.splice(index, 1);
         if (message) this.queue.splice(target, 0, message);
-        this.showNotice(`Moved queued message to position ${target + 1} of ${this.queue.length}.`);
+        this.showNotice(this.t("ui.movedQueuedMessageToPositionOf", "Moved queued message to position {value0} of {value1}.", { value0: String(target + 1), value1: String(this.queue.length) }));
       }
     } else if (action === "edit") {
       if (draft.length > 0 || this.contextCount > 0) {
-        this.showNotice("Send or clear the current draft before editing a queued message.", "warn");
+        this.showNotice(this.t("ui.sendOrClearTheCurrentDraftBeforeEditingAQueuedMessage", "Send or clear the current draft before editing a queued message."), "warn");
         return;
       }
       const [message] = this.queue.splice(index, 1);
@@ -1817,7 +1818,7 @@ export class ChatController {
   private prepareSend(message: string): PreparedSend | null {
     const cwd = this.cwd();
     if (!cwd) {
-      this.showNotice("Open a folder to run Oxide: sessions and context are per project.", "error");
+      this.showNotice(this.t("home.openFolder", "Open a folder to run Oxide: sessions and context are per project."), "error");
       return null;
     }
     // The agent may have written `.oxide/` files, committed, or the user may
@@ -2018,7 +2019,7 @@ export class ChatController {
     this.turn.cancel();
     // The turn's own transcript carries the phase: the thread on screen is not
     // the one being stopped, so its status stays what it is.
-    (this.runTranscript ?? this.transcript).status = "Stopping…";
+    (this.runTranscript ?? this.transcript).status = this.t("composer.stopping", "Stopping…");
     this.broadcastStatus();
   }
 
@@ -2207,7 +2208,7 @@ export class ChatController {
         note,
         this.liveSession(),
         this.sessionQuery,
-        this.liveRun(),
+        this.liveRun(), this.languageInfo
       ),
     );
   }
@@ -2278,7 +2279,7 @@ export class ChatController {
   async openSessions(): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) {
-      this.showNotice("Open a folder first.", "error");
+      this.showNotice(this.t("ui.openAFolderFirst", "Open a folder first."), "error");
       return;
     }
     // The listing being opened starts unfiltered: the query belongs to the one
@@ -2321,7 +2322,7 @@ export class ChatController {
       return;
     }
     if (!this.cwd()) {
-      this.showNotice("Open a folder first.", "error");
+      this.showNotice(this.t("ui.openAFolderFirst", "Open a folder first."), "error");
       return;
     }
     this.newSession();
@@ -2470,14 +2471,14 @@ export class ChatController {
     const running = this.turn && (this.transcript.sessionId === id ||
       (this.runTranscript ?? this.transcript).sessionId === id);
     if (action === "archive" && running) {
-      this.showSessions("A turn is running; stop it before archiving this thread.");
+      this.showSessions(this.t("ui.aTurnIsRunningStopItBeforeArchivingThisThread", "A turn is running; stop it before archiving this thread."));
       return;
     }
     const operation = action === "pin" && session.pinned ? "unpin" : action;
     const result = await runCapture(this.binary(), sessionActionArgs(id, operation), cwd);
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
-      this.showNotice(`Could not ${operation} thread: ${detail}`, "error");
+      this.showNotice(this.t("ui.couldNotThread", "Could not {value0} thread: {value1}", { value0: String(operation), value1: String(detail) }), "error");
       return;
     }
     if (action === "archive") {
@@ -2528,7 +2529,7 @@ export class ChatController {
     // servers, and an empty path would resolve to whatever directory the
     // extension host was launched from, so the workspace is required first.
     if (!cwd) {
-      this.showNotice("Open a folder first.", "error");
+      this.showNotice(this.t("ui.openAFolderFirst", "Open a folder first."), "error");
       return;
     }
     // Every server is started or reached to learn its state, which is quick
@@ -2536,7 +2537,7 @@ export class ChatController {
     // wait is shown rather than looking like nothing happened.
     const probe = ++this.mcpProbe;
     void vscode.window.setStatusBarMessage("Oxide: checking MCP servers…", 20_000);
-    this.showDialog(mcpDialog(this.servers, "Checking servers…"));
+    this.showDialog(mcpDialog(this.servers, "Checking servers…", this.languageInfo));
     const result = await runCapture(this.binary(), mcpListArgs(), cwd);
     // Recheck stays available while a probe runs, and a toggle re-lists when it
     // is done, so two probes can be in flight at once: the older answer is
@@ -2546,11 +2547,11 @@ export class ChatController {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not list MCP servers: ${detail}`;
       this.showNotice(failed, "error");
-      this.showDialog(mcpDialog(this.servers, failed));
+      this.showDialog(mcpDialog(this.servers, failed, this.languageInfo));
       return;
     }
     this.servers = parseMcpList(result.stdout);
-    this.showDialog(mcpDialog(this.servers));
+    this.showDialog(mcpDialog(this.servers, undefined, this.languageInfo));
   }
 
   // ---------- providers ----------
@@ -2594,7 +2595,7 @@ export class ChatController {
   /// beside the title and the empty-list note stay in step with the filter.
   private showProviders(note = ""): void {
     if (note) this.providerNote = note;
-    this.showDialog(providerDialog(this.providers, this.providerQuery, this.providerNote));
+    this.showDialog(providerDialog(this.providers, this.providerQuery, this.providerNote, this.languageInfo));
   }
 
   /// The provider table's search box: the query narrows the rows the CLI has
@@ -2632,7 +2633,7 @@ export class ChatController {
 
   private showLogout(note = ""): void {
     if (note) this.logoutNote = note;
-    this.showDialog(logoutDialog(this.providers, this.logoutQuery, this.logoutNote));
+    this.showDialog(logoutDialog(this.providers, this.logoutQuery, this.logoutNote, this.languageInfo));
   }
 
   private searchLogout(text: string): void {
@@ -2668,12 +2669,12 @@ export class ChatController {
   async showApprovals(): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) {
-      this.showNotice("Open a folder first.", "error");
+      this.showNotice(this.t("ui.openAFolderFirst", "Open a folder first."), "error");
       return;
     }
     const probe = ++this.approvalsProbe;
     this.approvalsNote = "";
-    this.showDialog(permissionsDialog(cwd, this.approvals, "Reading saved approvals…"));
+    this.showDialog(permissionsDialog(cwd, this.approvals, "Reading saved approvals…", this.languageInfo));
     const result = await runCapture(this.binary(), approvalsArgs(cwd), cwd);
     if (probe !== this.approvalsProbe) return;
     if (this.dialog?.kind !== "permissions") return;
@@ -2681,11 +2682,11 @@ export class ChatController {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       this.approvals = [];
       this.approvalsNote = `Could not read the saved approvals: ${detail}`;
-      this.showDialog(permissionsDialog(cwd, [], this.approvalsNote));
+      this.showDialog(permissionsDialog(cwd, [], this.approvalsNote, this.languageInfo));
       return;
     }
     this.approvals = parseApprovals(result.stdout).tools;
-    this.showDialog(permissionsDialog(cwd, this.approvals, this.approvalsNote));
+    this.showDialog(permissionsDialog(cwd, this.approvals, this.approvalsNote, this.languageInfo));
   }
 
   /// The listing's own row: forget every rule this project has, which is the one
@@ -2725,7 +2726,7 @@ export class ChatController {
         prompt: provider.keyUrl
           ? `Paste the API key for ${provider.label} — issued at ${provider.keyUrl}`
           : `Paste the API key for ${provider.label}`,
-        placeHolder: "API key",
+        placeHolder: this.t("dialog.connect.key", "API key"),
         password: true,
         ignoreFocusOut: true,
       });
@@ -2839,7 +2840,7 @@ export class ChatController {
   /// replaced.
   async checkForUpdates(headline = ""): Promise<CheckOutcome> {
     const probe = ++this.updateProbe;
-    this.showDialog(updateDialog({ k: "checking" }));
+    this.showDialog(updateDialog({ k: "checking" }, this.languageInfo));
     const read = await this.readUpdateCheck();
     // A check asked for after this one — the command is a palette entry — owns
     // the dialog now, and its answer is the newer look at the same installation.
@@ -2855,12 +2856,12 @@ export class ChatController {
           path: this.binary(),
           // A headline composed from the check has no check to compose here.
           headline: typeof headline === "string" ? headline : "",
-        }),
+        }, this.languageInfo),
       );
       return { k: "legacy" };
     }
     if (read.k === "failed") {
-      this.showDialog(updateDialog({ k: "failed", stage: "check", message: read.message }));
+      this.showDialog(updateDialog({ k: "failed", stage: "check", message: read.message }, this.languageInfo));
       return { k: "failed" };
     }
     const check = read.check;
@@ -2873,7 +2874,7 @@ export class ChatController {
       const installed = this.installedUpdate;
       if (installed && check.latest === installed.latest) {
         this.update = null;
-        this.showDialog(updateDialog({ k: "installed", check: installed }));
+        this.showDialog(updateDialog({ k: "installed", check: installed }, this.languageInfo));
         return { k: "installed", check: installed };
       }
       this.showNotice(
@@ -2887,7 +2888,7 @@ export class ChatController {
     // extension, and its answer raises a notification rather than a dialog.
     const cli = await this.readCliCheck();
     if (probe !== this.updateProbe) return { k: "superseded" };
-    this.showDialog(updateDialog({ k: "ready", check, cli }));
+    this.showDialog(updateDialog({ k: "ready", check, cli }, this.languageInfo));
     return { k: "release", check };
   }
 
@@ -2925,7 +2926,7 @@ export class ChatController {
     // disk rather than a newer look at the installation.
     const probe = ++this.updateProbe;
     this.installing = true;
-    if (report) this.showDialog(updateDialog({ k: "installing", what: `Oxide ${check.latest}` }));
+    if (report) this.showDialog(updateDialog({ k: "installing", what: `Oxide ${check.latest}` }, this.languageInfo));
     let download: Download | null = null;
     try {
       download = await downloadUpdate(vsix);
@@ -2943,7 +2944,7 @@ export class ChatController {
       if (!report) return false;
       if (probe === this.updateProbe) {
         this.showDialog(
-          updateDialog({ k: "failed", stage: "install", message: messageOf(error) }),
+          updateDialog({ k: "failed", stage: "install", message: messageOf(error) }, this.languageInfo),
         );
       }
       return false;
@@ -2971,7 +2972,7 @@ export class ChatController {
     });
     if (report) {
       this.showNotice(`Installed Oxide ${check.latest}.`);
-      this.showDialog(updateDialog({ k: "installed", check }));
+      this.showDialog(updateDialog({ k: "installed", check }, this.languageInfo));
     }
     return true;
   }
@@ -2984,14 +2985,14 @@ export class ChatController {
     if (this.installing) return;
     const probe = ++this.updateProbe;
     this.installing = true;
-    this.showDialog(updateDialog({ k: "installing", what: "the newest CLI" }));
+    this.showDialog(updateDialog({ k: "installing", what: "the newest CLI" }, this.languageInfo));
     const cwd = this.cwd() ?? os.homedir();
     const result = await runCapture(this.binary(), updateInstallArgs(), cwd, UPDATE_INSTALL_TIMEOUT);
     this.installing = false;
     if (probe !== this.updateProbe) return;
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
-      this.showDialog(updateDialog({ k: "failed", stage: "install", message: detail }));
+      this.showDialog(updateDialog({ k: "failed", stage: "install", message: detail }, this.languageInfo));
       return;
     }
     this.showNotice(
@@ -3017,7 +3018,7 @@ export class ChatController {
           headline: "Ran oxide update",
           subtitle:
             "The report above is the CLI's own: an install that landed is the version this panel, the terminal and the desktop app run now, while a machine that was already current answered that there was nothing to install.",
-        }),
+        }, this.languageInfo),
       );
     }
   }
@@ -3191,7 +3192,7 @@ export class ChatController {
       undoChangesDialog({
         id,
         detail: [card.title, card.totals].filter(Boolean).join(" · "),
-      }),
+      }, this.languageInfo),
     );
   }
 
@@ -3383,8 +3384,8 @@ export class ChatController {
   /// A reading of the catalog for a caller that draws a line of its own — the
   /// header's title, a notice — so one word of the interface is asked for by
   /// its key rather than written into this file twice.
-  private t(key: string, fallback: string): string {
-    return translate(this.languageInfo, key, fallback);
+  private t(key: string, fallback: string, vars?: Record<string, unknown>): string {
+    return translate(this.languageInfo, key, fallback, vars);
   }
 
   /// Turns one server off (or back on) in the file that defines it, then paints
@@ -3400,7 +3401,7 @@ export class ChatController {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       const failed = `Could not ${enabling ? "enable" : "disable"} ${server.name}: ${detail}`;
       this.showNotice(failed, "error");
-      this.showDialog(mcpDialog(this.servers, failed));
+      this.showDialog(mcpDialog(this.servers, failed, this.languageInfo));
       return;
     }
     this.showNotice(
@@ -3532,7 +3533,7 @@ export class ChatController {
     const configured = this.project?.model ?? "";
     const provider = this.project?.provider ?? "";
     this.showDialog(
-      modelDialog(configured, provider, current, this.modelCatalog, this.modelQuery, this.modelNote),
+      modelDialog(configured, provider, current, this.modelCatalog, this.modelQuery, this.modelNote, this.languageInfo),
     );
   }
 
@@ -3545,14 +3546,14 @@ export class ChatController {
   private showAgentDialog(query: string): void {
     const current = this.setting<string>("agent", "").trim();
     const agents = this.project?.agents ?? [];
-    this.showDialog(agentDialog(agents, current, query));
+    this.showDialog(agentDialog(agents, current, query, this.languageInfo));
   }
 
   async setReasoning(): Promise<void> {
     this.showDialog(
       reasoningDialog(
         this.currentReasoning(),
-        reasoningChoices({ reasoningLevels: this.reasoningLevels, supportsReasoning: this.supportsReasoning }),
+        reasoningChoices({ reasoningLevels: this.reasoningLevels, supportsReasoning: this.supportsReasoning }), this.languageInfo
       ),
     );
   }
@@ -3568,7 +3569,7 @@ export class ChatController {
     })) return;
     this.trustPrompted.add(folder);
     this.trustDialogFolder = folder;
-    this.showDialog(trustDialog({ setting: this.trust(), saved: this.project.savedTrust }));
+    this.showDialog(trustDialog({ setting: this.trust(), saved: this.project.savedTrust }, this.languageInfo));
   }
 
   /// The folder's own access as the panel last read it, for the trust dialog's
@@ -3577,7 +3578,7 @@ export class ChatController {
     this.refreshProject();
     this.trustDialogFolder = this.folder()?.uri.fsPath ?? null;
     this.showDialog(
-      trustDialog({ setting: this.trust(), saved: this.project?.savedTrust }),
+      trustDialog({ setting: this.trust(), saved: this.project?.savedTrust }, this.languageInfo),
     );
   }
 
@@ -3736,7 +3737,7 @@ export class ChatController {
   /// desktop app's own `runThreadLabel`, said the same way, so the two front-ends
   /// name the same conversation identically.
   private runLabel(): string {
-    return this.runTitle || this.runTranscript?.title() || "another thread";
+    return this.runTitle || this.runTranscript?.title() || this.t("ui.anotherThread", "another thread");
   }
 
   get running(): boolean {

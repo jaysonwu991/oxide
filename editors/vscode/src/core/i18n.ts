@@ -83,12 +83,12 @@ export function translate(
   info: LanguageInfo | null,
   key: string,
   fallback: string,
-  vars?: Record<string, string>,
+  vars?: Record<string, unknown>,
 ): string {
   let text = info?.strings?.[key] || fallback;
   if (vars) {
     for (const [name, value] of Object.entries(vars)) {
-      text = text.split(`{${name}}`).join(value);
+      text = text.split(`{${name}}`).join(String(value));
     }
   }
   return text;

@@ -328,6 +328,7 @@ const state = {
   // window shows before the answer lands.
   language: "en-GB",
   strings: {},
+  currentModel: "",
   // The languages the picker offers, as the core last answered with them.
   languages: [],
   // One card per finished turn that changed something, in the order the turns
@@ -415,6 +416,7 @@ function applyLanguage(info) {
   renderLanguageRows(info);
   if (statusKey) state.statusText = t(statusKey, statusKey === "composer.ready" ? "Ready" : "Working…");
   repaintLanguage();
+  void invoke("set_native_language", { strings: state.strings }).catch(() => {});
 }
 
 /// Reads the language the core resolved and paints it. The window starts in
@@ -494,11 +496,20 @@ async function switchLanguage(tag) {
 /// language switch, since a translation the markup carries is already painted
 /// by `applyLanguage`.
 function repaintLanguage() {
+  paintChatTabs();
+  closeSidebarCards();
+  if (!el("create-project-modal").hidden) {
+    el("create-project-title").textContent = createProjectState.editing ? t("ui.editProject", "Edit project") : t("dialog.createProject.title", "Create project");
+    el("create-project-save").textContent = createProjectState.editing ? t("common.save", "Save") : t("dialog.createProject.title", "Create project");
+  }
+  if (!el("reasoning-modal").hidden) renderReasoning();
   updateChips();
   updateSendState();
   updateTrustButton();
   paintStatus();
   paintQueue();
+  paintRunClock();
+  for (const card of state.changes) if (card.title) paintChanges(card);
   repaintWelcome();
   void renderProjectsTree();
 }
@@ -519,13 +530,13 @@ function formatTime(secs) {
   const date = new Date(secs * 1000);
   const diff = Date.now() - date.getTime();
   const mins = Math.round(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("ui.justNow", "just now");
+  if (mins < 60) return t("ui.mAgo", "{value0}m ago", { value0: mins });
   const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t("ui.hAgo", "{value0}h ago", { value0: hours });
   const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  if (days < 30) return t("ui.dAgo", "{value0}d ago", { value0: days });
+  return date.toLocaleDateString(state.language, { month: "short", day: "numeric" });
 }
 
 function baseName(path) {
@@ -576,7 +587,7 @@ function showToast(text, level = "info", action = null) {
       } catch (error) {
         button.disabled = false;
         pending = false;
-        showToast(`Could not undo: ${error}`, "error");
+        showToast(t("ui.couldNotUndo", "Could not undo: {value0}", { value0: error }), "error");
       }
     };
     toast.appendChild(button);
@@ -584,7 +595,7 @@ function showToast(text, level = "info", action = null) {
   const close = document.createElement("button");
   close.className = "icon-button toast-close";
   close.innerHTML = ICONS.close;
-  close.title = "Dismiss notification";
+  close.title = t("ui.dismissNotification", "Dismiss notification");
   close.setAttribute("aria-label", close.title);
   close.onclick = dismiss;
   toast.appendChild(close);
@@ -640,7 +651,7 @@ function paintRunClock() {
   clock.hidden = !visible;
   if (!visible) return;
   const elapsed = active ? Date.now() - state.runStartedAt : state.runElapsed;
-  el("run-time-text").textContent = `${active ? "Working" : "Worked"} for ${runDuration(elapsed)}`;
+  el("run-time-text").textContent = t(active ? "run.workingFor" : "run.workedFor", active ? "Working for {duration}" : "Worked for {duration}", { duration: runDuration(elapsed) });
 }
 
 function startRunClock() {
@@ -661,7 +672,7 @@ function finishRunClock() {
 
 /// The word the window is idle under: the words are dropped for it and the icon
 /// speaks, since a row that says `Ready` is a row saying nothing.
-const IDLE_STATUS = "Ready";
+const IDLE_STATUS = t("composer.ready", "Ready");
 
 /// The idle word in the language on screen, which is what the status row
 /// compares against before it decides the row has nothing to say.
@@ -822,9 +833,10 @@ function paintChatTabs() {
     }
     const label = document.createElement("span");
     label.className = "chat-tab-title";
-    label.textContent = tab.title;
+    const tabLabel = tab.title === "New chat" ? t("panel.newChat", "New chat") : tab.title;
+    label.textContent = tabLabel;
     select.appendChild(label);
-    select.title = running ? `${tab.title} · Running` : tab.title;
+    select.title = running ? `${tabLabel} · ${t("ui.running", "Running")}` : tabLabel;
     select.setAttribute("aria-label", select.title);
     select.onclick = () => activateChatTab(tab.id);
     select.onkeydown = (event) => {
@@ -838,7 +850,7 @@ function paintChatTabs() {
     const close = document.createElement("button");
     close.className = "chat-tab-close";
     close.innerHTML = ICONS.close;
-    close.title = `Close ${tab.title}`;
+    close.title = t("ui.close", "Close {value0}", { value0: tabLabel });
     close.setAttribute("aria-label", close.title);
     close.onclick = async (event) => {
       event?.stopPropagation();
@@ -898,7 +910,7 @@ async function activateChatTab(id) {
     setThreadTitle(tab.title === "New chat" ? "" : tab.title);
     renderAttachments();
     updateChips();
-    el("agents").title = `Agents: ${state.agent || "Default"}`;
+    el("agents").title = t("ui.agents", "Agents: {value0}", { value0: state.agent || "Default" });
     paintQueue();
     updateRunBanner();
     updateSendState();
@@ -973,8 +985,8 @@ function renderMessageNavigator() {
   prompts.forEach((message, index) => {
     const mark = document.createElement("button");
     mark.className = "message-marker";
-    const summary = messageSummary(message) || "Attachment";
-    mark.setAttribute("aria-label", `Jump to message ${index + 1}: ${summary.slice(0, 100)}`);
+    const summary = messageSummary(message) || t("composer.attachment", "Attachment");
+    mark.setAttribute("aria-label", t("ui.jumpToMessage", "Jump to message {value0}: {value1}", { value0: index + 1, value1: summary.slice(0, 100) }));
     mark.title = summary;
     const show = () => {
       const preview = el("message-preview");
@@ -1624,7 +1636,7 @@ function recentList(threads) {
     // files are.
     meta.textContent = [
       projectNameOf(sessionProject(session)),
-      session.worktree ? `worktree ${session.worktree}` : "",
+      session.worktree ? t("worktree.label", "worktree {value0}", { value0: session.worktree }) : "",
       sessionAge(session.modified_at),
     ]
       .filter(Boolean)
@@ -1655,7 +1667,7 @@ async function loadProjects() {
     // is closed and opened again.
     if (!el("projects-modal").hidden) renderProjects();
   } catch (error) {
-    showToast(`Failed to load projects: ${error}`, "error");
+    showToast(t("ui.failedToLoadProjects", "Failed to load projects: {value0}", { value0: error }), "error");
   }
 }
 
@@ -1694,7 +1706,7 @@ function renderProjects() {
   box.innerHTML = "";
   const projects = state.projects || [];
   if (!projects.length) {
-    box.innerHTML = '<div class="dialog-empty">No projects yet. Add a folder to run in.</div>';
+    box.innerHTML = `<div class="dialog-empty">${escapeHtml(t("desktop.empty.projects", "No projects yet. Add a folder to run in."))}</div>`;
     return;
   }
   for (const project of projects) {
@@ -1740,7 +1752,7 @@ async function selectProject(project) {
   const wasOpen = Boolean(state.project);
   if (state.project !== project.path) {
     state.agent = "";
-    el("agents").title = "Agents: Default";
+    el("agents").title = t("ui.agentsDefault", "Agents: Default");
   }
   state.project = project.path;
   state.projectName = project.name;
@@ -1852,13 +1864,14 @@ async function refreshContextWindow() {
 /// provider is already that chip, so only what the user has to act on — a
 /// missing key, project resources left off — is written beside the title.
 function renderProjectMeta(info) {
+  state.currentModel = info.model || "";
   const window = state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "";
-  labelControl("model", `model: ${info.model}${window}`, "Switch model");
+  labelControl("model", t("ui.model", "model: {value0}{value1}", { value0: info.model, value1: window }), t("ui.switchModel", "Switch model"));
   el("model-value").textContent = info.model;
   const notes = [];
-  if (!info.hasKey) notes.push("no API key");
+  if (!info.hasKey) notes.push(t("ui.noAPIKey", "no API key"));
   if (info.trust && info.trust.required && !info.trust.trusted) {
-    notes.push("project resources off");
+    notes.push(t("ui.projectResourcesOff", "project resources off"));
   }
   el("project-meta").textContent = notes.join(" · ");
   el("project-meta").hidden = notes.length === 0;
@@ -1872,15 +1885,15 @@ async function openAgents() {
     if (state.project !== project) return;
     const list = el("agents-list");
     list.replaceChildren();
-    for (const agent of [{ name: "", description: "Default agent" }, ...(info.agents || [])]) {
+    for (const agent of [{ name: "", description: t("ui.defaultAgent", "Default agent") }, ...(info.agents || [])]) {
       const row = document.createElement("button");
       row.className = "details-row";
-      row.textContent = agent.name || "Default";
+      row.textContent = agent.name || t("ui.default", "Default");
       row.title = agent.description || agent.name;
       row.setAttribute("aria-pressed", String(state.agent === agent.name));
       row.onclick = () => {
         state.agent = agent.name;
-        el("agents").title = `Agents: ${agent.name || "Default"}`;
+        el("agents").title = t("ui.agents", "Agents: {value0}", { value0: agent.name || "Default" });
         el("agents-modal").hidden = true;
         el("agents").focus();
       };
@@ -1898,8 +1911,8 @@ function updateTrustButton() {
   button.hidden = false;
   button.classList.toggle("active", Boolean(state.trust && state.trust.trusted));
   const label = state.trust && state.trust.trusted
-    ? "Project access: trusted · click to review"
-    : "Project access: project resources are not trusted";
+    ? t("ui.projectAccessTrustedClickToReview", "Project access: trusted · click to review")
+    : t("ui.projectAccessProjectResourcesAreNotTrusted", "Project access: project resources are not trusted");
   button.title = label;
   button.setAttribute("aria-label", label);
 }
@@ -1927,16 +1940,22 @@ async function answerTrust(trusted) {
     state.trust = info.trust || null;
     renderProjectMeta(info);
     updateTrustButton();
-    showToast(trusted ? "Project trusted" : "Project resources left untrusted");
+    showToast(trusted ? t("ui.projectTrusted", "Project trusted") : t("ui.projectResourcesLeftUntrusted", "Project resources left untrusted"));
   } catch (error) {
-    showToast(`Trust update failed: ${error}`, "error");
+    showToast(t("ui.trustUpdateFailed", "Trust update failed: {value0}", { value0: error }), "error");
   }
 }
 
+function reasoningLabel(level) {
+  return t(`reasoning.${level}`, level.charAt(0).toUpperCase() + level.slice(1));
+}
+
 function updateChips() {
-  labelControl("reasoning", `thinking: ${state.reasoning}`, "Choose the reasoning level (Shift+Tab cycles)");
+  el("model-value").textContent = state.currentModel || t("composer.model", "Model");
+  labelControl("model", state.currentModel ? t("ui.model", "model: {value0}{value1}", { value0: state.currentModel, value1: state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "" }) : t("composer.model", "Model"), t("ui.switchModel", "Switch model"));
+  labelControl("reasoning", t("ui.thinking", "thinking: {value0}", { value0: t(`reasoning.${state.reasoning}`, state.reasoning) }), t("ui.chooseTheReasoningLevelShiftTabCycles", "Choose the reasoning level (Shift+Tab cycles)"));
   el("reasoning").hidden = state.supportsReasoning === false;
-  el("reasoning-value").textContent = state.reasoning.charAt(0).toUpperCase() + state.reasoning.slice(1);
+  el("reasoning-value").textContent = reasoningLabel(state.reasoning);
   updateProjectChip();
   paintWorktreeChip();
   // A folder switch resets the transcript, which is where the header's own
@@ -1958,8 +1977,8 @@ function updateProjectChip() {
   const name = open ? projectNameOf(state.project) : placeholder;
   el("project-name").textContent = name;
   el("project").classList.toggle("unset", !open);
-  el("project").title = open ? `project: ${name}\n${hint}` : `${placeholder}\n${hint}`;
-  el("project").setAttribute("aria-label", open ? `project: ${name}` : placeholder);
+  el("project").title = open ? t("ui.project", "project: {value0}\n{value1}", { value0: name, value1: hint }) : `${placeholder}\n${hint}`;
+  el("project").setAttribute("aria-label", open ? t("project.label", "project: {value0}", { value0: name }) : placeholder);
 }
 
 /// Keep each selector's full value and keyboard hint accessible.
@@ -2019,8 +2038,8 @@ function paintComposerFacts() {
   if (branch) {
     const root = info.root ? `\n${info.root}` : "";
     chip.title = info.branch
-      ? `On branch ${branch}${root}`
-      : `HEAD is detached at ${branch}${root}`;
+      ? t("ui.onBranch", "On branch {value0}{value1}", { value0: branch, value1: root })
+      : t("ui.hEADIsDetachedAt", "HEAD is detached at {value0}{value1}", { value0: branch, value1: root });
   }
 
   const ring = el("context-ring");
@@ -2042,16 +2061,16 @@ function paintComposerFacts() {
   // reading, and a thread that has spent nothing yet has none to spell out.
   el("context-percent").textContent = percent == null ? "" : `${percent.toFixed(0)}%`;
   const limit = state.contextWindow ? formatTokens(state.contextWindow) : "";
-  let label = "No request yet";
+  let label = t("ui.noRequestYet", "No request yet");
   if (percent != null) {
     label = `${percent.toFixed(0)}% · ${formatTokens(state.usage?.prompt || 0)}${
       limit ? `/${limit}` : ""
     }`;
   } else if (limit) {
-    label = `No request yet · ${limit} window`;
+    label = t("ui.noRequestYetWindow", "No request yet · {value0} window", { value0: limit });
   }
   ring.title = label;
-  ring.setAttribute("aria-label", `context window: ${label}`);
+  ring.setAttribute("aria-label", t("ui.contextWindow", "context window: {value0}", { value0: label }));
 }
 
 // ---------- worktrees ----------
@@ -2136,10 +2155,10 @@ function paintWorktreeChip() {
     name.textContent = entry ? entry.name : "";
     name.hidden = !entry;
   }
-  const label = entry ? `worktree: ${entry.name}` : "Worktree";
+  const label = entry ? t("ui.worktree", "worktree: {value0}", { value0: entry.name }) : t("composer.worktree", "Worktree");
   chip.title = entry
-    ? `${label}\n${entry.path}\nSwitch the checkout the next turn runs in`
-    : "Worktree\nRun a thread in a copy of the project on its own branch";
+    ? t("ui.switchTheCheckoutTheNextTurnRunsIn", "{value0}\n{value1}\nSwitch the checkout the next turn runs in", { value0: label, value1: entry.path })
+    : t("ui.worktreeRunAThreadInACopyOfTheProjectOnItsOwnBranch", "Worktree\nRun a thread in a copy of the project on its own branch");
   chip.setAttribute("aria-label", label);
   paintThreadWorktree();
 }
@@ -2157,7 +2176,7 @@ function paintThreadWorktree() {
     return;
   }
   badge.innerHTML = `${ICONS.worktree}<span>${escapeHtml(entry.name)}</span>`;
-  badge.title = `Worktree ${entry.name} on ${entry.branch}\n${entry.path}`;
+  badge.title = t("ui.worktreeOn", "Worktree {value0} on {value1}\n{value2}", { value0: entry.name, value1: entry.branch, value2: entry.path });
 }
 
 function openWorktrees() {
@@ -2192,12 +2211,12 @@ function renderWorktrees() {
   if (!box) return;
   box.innerHTML = "";
   if (state.worktreesError) {
-    box.innerHTML = `<div class="dialog-empty">Could not read this project's worktrees: ${escapeHtml(state.worktreesError)}</div>`;
+    box.innerHTML = `<div class="dialog-empty">${escapeHtml(t("desktop.worktreeReadError", "Could not read this project's worktrees: {error}", { error: state.worktreesError }))}</div>`;
     return;
   }
   el("worktree-branch").hidden = !state.worktree;
   el("worktree-handoff").hidden = !state.session;
-  el("worktree-handoff").textContent = state.worktree ? "Hand off chat to Local" : "Hand off chat to Worktree";
+  el("worktree-handoff").textContent = state.worktree ? t("ui.handOffChatToLocal", "Hand off chat to Local") : t("dialog.worktrees.handoff", "Hand off chat to Worktree");
   box.appendChild(worktreeRow(null));
   for (const entry of state.worktrees || []) box.appendChild(worktreeRow(entry));
 }
@@ -2215,18 +2234,18 @@ function worktreeRow(entry) {
   row.setAttribute("aria-pressed", String(selected));
   const name = document.createElement("div");
   name.className = "worktree-label";
-  name.textContent = entry ? entry.name : "Local checkout";
+  name.textContent = entry ? entry.name : t("ui.localCheckout", "Local checkout");
   row.appendChild(name);
   const detail = document.createElement("div");
   detail.className = "worktree-detail";
   const folder = state.project ? baseName(state.project) : "";
   detail.textContent = entry
     ? `${entry.branch} · ${entry.path}`
-    : `this project's own folder${folder ? ` · ${folder}` : ""}`;
+    : t("ui.thisProjectSOwnFolder", "this project's own folder{value0}", { value0: folder ? ` · ${folder}` : "" });
   row.appendChild(detail);
   row.title = entry
-    ? `Run a thread in ${entry.name}\n${entry.branch} · ${entry.path}`
-    : "Run a thread in this project's own folder";
+    ? t("ui.runAThreadIn", "Run a thread in {value0}\n{value1} · {value2}", { value0: entry.name, value1: entry.branch, value2: entry.path })
+    : t("ui.runAThreadInThisProjectSOwnFolder", "Run a thread in this project's own folder");
   const take = () => selectWorktree(entry ? entry.path : null);
   row.onclick = take;
   row.onkeydown = (event) => {
@@ -2241,7 +2260,7 @@ function worktreeRow(entry) {
   const remove = document.createElement("button");
   remove.type = "button";
   remove.className = "row-remove worktree-remove";
-  remove.title = `Remove the worktree ${entry.name}`;
+  remove.title = t("ui.removeTheWorktree", "Remove the worktree {value0}", { value0: entry.name });
   remove.setAttribute("aria-label", remove.title);
   remove.innerHTML = ICONS.close;
   remove.onclick = (event) => {
@@ -2275,8 +2294,8 @@ function selectWorktree(path) {
   loadGit();
   showToast(
     entry
-      ? `Threads run in the worktree ${entry.name} on ${entry.branch}.`
-      : "Threads run in this project's own folder.",
+      ? t("ui.threadsRunInTheWorktreeOn", "Threads run in the worktree {value0} on {value1}.", { value0: entry.name, value1: entry.branch })
+      : t("ui.threadsRunInThisProjectSOwnFolder", "Threads run in this project's own folder."),
   );
   closeWorktrees();
 }
@@ -2310,9 +2329,9 @@ async function createWorktree() {
     await loadWorktrees();
     if (!state.worktrees.some((item) => item.path === entry.path)) state.worktrees.push(entry);
     selectWorktree(entry.path);
-    showToast(`Created the worktree ${entry.name} at ${entry.branch}.`);
+    showToast(t("ui.createdTheWorktreeAt", "Created the worktree {value0} at {value1}.", { value0: entry.name, value1: entry.branch }));
   } catch (error) {
-    showToast(`Could not create the worktree: ${error}`, "error");
+    showToast(t("ui.couldNotCreateTheWorktree", "Could not create the worktree: {value0}", { value0: error }), "error");
   } finally {
     button.disabled = false;
   }
@@ -2320,13 +2339,13 @@ async function createWorktree() {
 
 async function removeWorktree(entry) {
   const project = state.project;
-  if (busyRefusal("removing a worktree")) return;
+  if (busyRefusal(t("ui.removingAWorktree", "removing a worktree"))) return;
   const ok = await confirmDialog(
-    "Remove worktree",
-    `Remove the worktree ${entry.name} at ${entry.path}?\n\nIts commits will be kept on a branch in the repository. Uncommitted changes prevent removal.`,
-    "Remove worktree",
+    t("ui.removeWorktree", "Remove worktree"),
+    t("ui.removeTheWorktreeAtItsCommitsWillBeKeptOnABranchInTheRepositoryUncommittedChange", "Remove the worktree {value0} at {value1}?\n\nIts commits will be kept on a branch in the repository. Uncommitted changes prevent removal.", { value0: entry.name, value1: entry.path }),
+    t("ui.removeWorktree", "Remove worktree"),
   );
-  if (!ok || project !== state.project || busyRefusal("removing a worktree")) return;
+  if (!ok || project !== state.project || busyRefusal(t("ui.removingAWorktree", "removing a worktree"))) return;
   try {
     const removed = await invoke("remove_worktree", { project, name: entry.name });
     if (project !== state.project) return;
@@ -2336,14 +2355,14 @@ async function removeWorktree(entry) {
       loadGit();
     }
     await loadWorktrees();
-    showToast(`Removed ${entry.name}. Its branch ${removed.branch} is still in the repository.`);
+    showToast(t("ui.removedItsBranchIsStillInTheRepository", "Removed {value0}. Its branch {value1} is still in the repository.", { value0: entry.name, value1: removed.branch }));
   } catch (error) {
-    showToast(`Could not remove the worktree: ${error}`, "error");
+    showToast(t("ui.couldNotRemoveTheWorktree", "Could not remove the worktree: {value0}", { value0: error }), "error");
   }
 }
 
 async function createWorktreeBranch() {
-  if (busyRefusal("creating a branch")) return;
+  if (busyRefusal(t("ui.creatingABranch", "creating a branch"))) return;
   const project = state.project;
   const entry = worktreeNamed(state.worktree);
   if (!entry) return;
@@ -2351,30 +2370,30 @@ async function createWorktreeBranch() {
     `oxide/${entry.name}`,
     t("dialog.worktrees.createBranch", "Create branch here"),
   );
-  if (!branch || project !== state.project || busyRefusal("creating a branch")) return;
+  if (!branch || project !== state.project || busyRefusal(t("ui.creatingABranch", "creating a branch"))) return;
   try {
     await invoke("create_worktree_branch", { project, name: entry.name, branch });
     if (project !== state.project) return;
     await loadWorktrees();
     await loadGit();
     await refreshProjectDetails();
-    showToast(`Created branch ${branch}.`);
+    showToast(t("ui.createdBranch", "Created branch {value0}.", { value0: branch }));
   } catch (error) {
-    showToast(`Could not create branch: ${error}`, "error");
+    showToast(t("ui.couldNotCreateBranch", "Could not create branch: {value0}", { value0: error }), "error");
   }
 }
 
 async function handoffSession() {
-  if (!state.session || busyRefusal("handing off this chat")) return;
+  if (!state.session || busyRefusal(t("ui.handingOffThisChat", "handing off this chat"))) return;
   const project = state.project;
   const id = state.session;
   const source = runFolder();
   const toWorktree = !state.worktree;
-  const confirmed = await confirmDialog("Hand off chat", `Move this chat and its changes to ${toWorktree ? "its worktree" : "Local"}? The destination must have no uncommitted changes.`, "Hand off");
-  if (!confirmed || state.session !== id || project !== state.project || busyRefusal("handing off this chat")) return;
+  const confirmed = await confirmDialog(t("ui.handOffChat", "Hand off chat"), t("ui.moveThisChatAndItsChangesToTheDestinationMustHaveNoUncommittedChanges", "Move this chat and its changes to {value0}? The destination must have no uncommitted changes.", { value0: toWorktree ? t("ui.itsWorktree", "its worktree") : t("ui.local", "Local") }), t("ui.handOff", "Hand off"));
+  if (!confirmed || state.session !== id || project !== state.project || busyRefusal(t("ui.handingOffThisChat", "handing off this chat"))) return;
   state.handingOff = true;
   el("worktree-handoff").disabled = true;
-  const dismissHandoff = showToast("Moving chat and changes…");
+  const dismissHandoff = showToast(t("ui.movingChatAndChanges", "Moving chat and changes…"));
   try {
     const result = await invoke("handoff_session", { project, source, id, toWorktree });
     if (state.session !== id || project !== state.project) return;
@@ -2386,9 +2405,9 @@ async function handoffSession() {
     await openSession({ ...session, cwd: result.cwd });
     state.applyingHandoff = false;
     closeWorktrees();
-    showToast(`Chat moved to ${toWorktree ? "Worktree" : "Local"}.`);
+    showToast(t("ui.chatMovedTo", "Chat moved to {value0}.", { value0: toWorktree ? t("composer.worktree", "Worktree") : t("ui.local", "Local") }));
   } catch (error) {
-    showToast(`Could not hand off chat: ${error}`, "error");
+    showToast(t("ui.couldNotHandOffChat", "Could not hand off chat: {value0}", { value0: error }), "error");
   } finally {
     dismissHandoff();
     state.handingOff = false;
@@ -2413,7 +2432,7 @@ async function loadSessions() {
     repaintWelcome();
     return "";
   } catch (error) {
-    showToast(`Failed to load threads: ${error}`, "error");
+    showToast(t("ui.failedToLoadThreads", "Failed to load threads: {value0}", { value0: error }), "error");
     state.sessionsError = String(error);
     // The home state is painted before either listing answers, so a store that
     // cannot be read still lets the folders that did arrive repaint it: the
@@ -2506,7 +2525,7 @@ async function openSession(session) {
       });
     }
   } catch (error) {
-    showToast(`Failed to open thread: ${error}`, "error");
+    showToast(t("ui.failedToOpenThread", "Failed to open thread: {value0}", { value0: error }), "error");
   }
   loadSessions();
 }
@@ -2537,11 +2556,11 @@ function resetTranscript() {
 /// process itself, is refused while one runs.
 function busyRefusal(what) {
   if (state.handingOff) {
-    setStatus(`Wait for the handoff before ${what}.`);
+    setStatus(t("ui.waitForTheHandoffBefore", "Wait for the handoff before {value0}.", { value0: what }));
     return true;
   }
   if (!state.busy) return false;
-  setStatus(`A turn is running; stop it before ${what}.`);
+  setStatus(t("ui.aTurnIsRunningStopItBefore", "A turn is running; stop it before {value0}.", { value0: what }));
   return true;
 }
 
@@ -2551,7 +2570,7 @@ function busyRefusal(what) {
 /// Every path that starts a fresh thread asks here first, as the VS Code panel
 /// refuses its own new chat while a turn is live.
 function canStartNewChat() {
-  return !busyRefusal("starting a new thread");
+  return !busyRefusal(t("ui.startingANewThread", "starting a new thread"));
 }
 
 function newChat() {
@@ -2620,7 +2639,7 @@ function speakerLabel(kind) {
   const label = document.createElement("div");
   label.className = "label";
   if (kind !== "assistant") {
-    label.textContent = "you";
+    label.textContent = t("ui.you", "you");
     return label;
   }
   const mark = document.createElement("span");
@@ -3072,7 +3091,7 @@ function paintQueue() {
     more.type = "button";
     more.className = "queued-more";
     more.dataset.menu = String(index);
-    more.title = "More queued-message actions";
+    more.title = t("ui.moreQueuedMessageActions", "More queued-message actions");
     more.setAttribute("aria-label", more.title);
     more.setAttribute("aria-haspopup", "menu");
     more.setAttribute("aria-expanded", "false");
@@ -3158,7 +3177,7 @@ function runThreadLabel() {
   const id = bannerThread();
   const listed = id ? sessionById(id) : null;
   const title = id === state.runSession ? state.runTitle : state.parked?.title;
-  return title || (listed ? sessionLabel(listed) : "") || "another thread";
+  return title || (listed ? sessionLabel(listed) : "") || t("ui.anotherThread", "another thread");
 }
 
 /// The transcript the run's own output is painted into: the one on screen while
@@ -3275,11 +3294,11 @@ function updateRunBanner() {
   if (away) {
     const label = runThreadLabel();
     const text = state.runSession
-      ? `A turn is running in “${label}”`
-      : `A turn finished in “${label}”`;
+      ? t("ui.aTurnIsRunningIn", "A turn is running in “{value0}”", { value0: label })
+      : t("ui.aTurnFinishedIn", "A turn finished in “{value0}”", { value0: label });
     el("run-banner-text").textContent = text;
-    banner.title = `Open “${label}”`;
-    banner.setAttribute("aria-label", `${text}. Open it.`);
+    banner.title = t("ui.open", "Open “{value0}”", { value0: label });
+    banner.setAttribute("aria-label", t("ui.openIt", "{value0}. Open it.", { value0: text }));
   }
   paintQueue();
   paintRunningChrome();
@@ -3385,11 +3404,11 @@ function isPaintableImage(dataUrl) {
 function addAttachment(name, dataUrl) {
   const mime = dataUrlMime(dataUrl);
   if (state.attachments.some((attachment) => attachment.dataUrl === dataUrl)) {
-    setStatus("Already attached");
+    setStatus(t("ui.alreadyAttached", "Already attached"));
     return false;
   }
   if (state.attachments.length >= 8) {
-    setStatus("At most 8 attachments per message");
+    setStatus(t("ui.atMost8AttachmentsPerMessage", "At most 8 attachments per message"));
     return false;
   }
   state.attachments.push({
@@ -3457,7 +3476,7 @@ async function addAttachmentFiles(files, { fallbackToClipboard = false } = {}) {
   for (const file of files) {
     if (file.size > MAX_ATTACHMENT_BYTES) {
       setStatus(
-        `${file.name} is ${formatBytes(file.size)}; the attachment limit is ${formatBytes(MAX_ATTACHMENT_BYTES)}`,
+        t("ui.isTheAttachmentLimitIs", "{value0} is {value1}; the attachment limit is {value2}", { value0: file.name, value1: formatBytes(file.size), value2: formatBytes(MAX_ATTACHMENT_BYTES) }),
       );
       continue;
     }
@@ -3473,7 +3492,7 @@ async function addAttachmentFiles(files, { fallbackToClipboard = false } = {}) {
       addAttachment(file.name, dataUrl);
     } catch (error) {
       failed = true;
-      setStatus(`Could not read ${file.name}: ${error}`, "error");
+      setStatus(t("ui.couldNotRead", "Could not read {value0}: {value1}", { value0: file.name, value1: error }), "error");
     }
   }
   // macOS refuses a webview's read of a file in the Desktop, Documents or
@@ -3517,7 +3536,7 @@ function renderAttachments() {
     const remove = document.createElement("button");
     remove.className = "att-remove";
     remove.innerHTML = ICONS.close;
-    remove.title = "Remove attachment";
+    remove.title = t("ui.removeAttachment", "Remove attachment");
     remove.onclick = () => {
       state.attachments.splice(index, 1);
       renderAttachments();
@@ -3543,12 +3562,12 @@ function clearAttachments() {
 
 let imageReturnFocus = null;
 
-function openImage(dataUrl, name = "Attachment preview") {
+function openImage(dataUrl, name = t("ui.attachmentPreview", "Attachment preview")) {
   imageReturnFocus = document.activeElement || null;
   el("image-view-img").src = dataUrl;
-  el("image-view-img").alt = name || "Attachment preview";
-  el("image-view-img").title = name || "Attachment preview";
-  el("image-view-name").textContent = name || "Attachment preview";
+  el("image-view-img").alt = name || t("ui.attachmentPreview", "Attachment preview");
+  el("image-view-img").title = name || t("ui.attachmentPreview", "Attachment preview");
+  el("image-view-name").textContent = name || t("ui.attachmentPreview", "Attachment preview");
   closeOverlays("image-modal");
   el("image-modal").hidden = false;
   el("image-view-close").focus();
@@ -3568,8 +3587,8 @@ function openableImage(dataUrl, name) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "att-open";
-  button.title = "Open preview";
-  button.setAttribute("aria-label", name ? `Open ${name}` : "Open image preview");
+  button.title = t("ui.openPreview", "Open preview");
+  button.setAttribute("aria-label", name ? t("common.openNamed", "Open {value0}", { value0: name }) : t("ui.openImagePreview", "Open image preview"));
   const img = document.createElement("img");
   img.src = dataUrl;
   img.alt = name || "attachment";
@@ -3583,7 +3602,7 @@ function openableImage(dataUrl, name) {
 }
 
 async function send(opposite = false) {
-  if (state.handingOff) { busyRefusal("sending a message"); return; }
+  if (state.handingOff) { busyRefusal(t("ui.sendingAMessage", "sending a message")); return; }
   const textarea = el("prompt");
   const prompt = textarea.value.trim();
   const attachments = attachmentPayload();
@@ -3623,7 +3642,7 @@ async function send(opposite = false) {
     // to land. The header names the thread it is in, and opening it is where a
     // Queue or a Steer belongs.
     if (!viewingRun()) {
-      setStatus(`A turn is running in “${runThreadLabel()}”; open it to queue or steer, or stop it.`);
+      setStatus(t("ui.aTurnIsRunningInOpenItToQueueOrSteerOrStopIt", "A turn is running in “{value0}”; open it to queue or steer, or stop it.", { value0: runThreadLabel() }));
       return;
     }
     const defaultQueue = state.followUpBehavior === "queue";
@@ -3642,7 +3661,7 @@ async function send(opposite = false) {
       });
       paintQueue();
       updateSendState();
-      setStatus(`Queued: ${prompt.split(/\r?\n/, 1)[0] || "an attachment"}`);
+      setStatus(t("ui.queued", "Queued: {value0}", { value0: prompt.split(/\r?\n/, 1)[0] || "an attachment" }));
       return;
     }
     el("transcript").appendChild(
@@ -3666,7 +3685,7 @@ async function send(opposite = false) {
         session: state.session,
         showBubble: false,
       });
-      setStatus("The response finished; starting this as the next turn…");
+      setStatus(t("ui.theResponseFinishedStartingThisAsTheNextTurn", "The response finished; starting this as the next turn…"));
       // The end event may have beaten the command reply to the renderer.
       await startNextPendingSend();
       return;
@@ -3724,7 +3743,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
       attachments: attachments.length ? attachments : null,
     });
   } catch (error) {
-    setStatus(`Error: ${error}`, "error");
+    setStatus(t("common.errorDetail", "Error: {value0}", { value0: error }), "error");
     setIdle();
   }
 }
@@ -3749,11 +3768,11 @@ async function queueAction(action, index, direction = 0) {
     if (target !== index) {
       const [pending] = state.pendingSends.splice(index, 1);
       state.pendingSends.splice(target, 0, pending);
-      setStatus(`Moved queued message to position ${target + 1} of ${state.pendingSends.length}.`);
+      setStatus(t("ui.movedQueuedMessageToPositionOf", "Moved queued message to position {value0} of {value1}.", { value0: target + 1, value1: state.pendingSends.length }));
     }
   } else if (action === "edit") {
     if (el("prompt").value.length > 0 || state.attachments.length > 0) {
-      setStatus("Send or clear the current draft before editing a queued message.");
+      setStatus(t("ui.sendOrClearTheCurrentDraftBeforeEditingAQueuedMessage", "Send or clear the current draft before editing a queued message."));
       return;
     }
     const [pending] = state.pendingSends.splice(index, 1);
@@ -3858,7 +3877,7 @@ function toolSummary(name, argsJson) {
   if ((name === "grep" || name === "find") && raw) {
     const path = String(args.path || ".").trim();
     text = `${JSON.stringify(raw)}${path && path !== "." ? ` · ${path}` : ""}`;
-    title = `${name === "grep" ? "Search for" : "Find"} ${JSON.stringify(raw)} in ${path || "."}`;
+    title = t("ui.in", "{value0} {value1} in {value2}", { value0: name === "grep" ? t("ui.searchFor", "Search for") : t("ui.find", "Find"), value1: JSON.stringify(raw), value2: path || "." });
   }
   if (name === "bash" && raw) {
     const parts = raw
@@ -4001,7 +4020,7 @@ function paintLiveChanges() {
   pill.hidden = !hasChat() || changes?.project !== runFolder() || !changes.files.length;
   if (pill.hidden) return;
   const count = changes.files.length;
-  pill.innerHTML = `<span>${count} file${count === 1 ? "" : "s"} changed</span>${statsHtml(changes.added, changes.removed)}`;
+  pill.innerHTML = `<span>${escapeHtml(t(count === 1 ? "changes.fileChanged" : "changes.filesChanged", count === 1 ? "{count} file changed" : "{count} files changed", { count }))}</span>${statsHtml(changes.added, changes.removed)}`;
 }
 
 /// Marks a card finished. A call that changed a file reads as the one line its
@@ -4027,7 +4046,7 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
   if (tool.quiet) tool.block.classList.add("quiet");
   const counts = diff ? diffCounts(diff.text) : "";
   tool.tstate.textContent = tool.quiet
-    ? `0 matches${elapsed ? ` · ${formatDuration(elapsed)}` : ""}`
+    ? t("ui.0Matches", "0 matches{value0}", { value0: elapsed ? ` · ${formatDuration(elapsed)}` : "" })
     : `${isError ? "✖" : "✔"}${counts ? ` ${counts}` : ""}${
         elapsed ? ` ${formatDuration(elapsed)}` : ""
       }`;
@@ -4074,7 +4093,7 @@ function paintTool(tool) {
   const { text, more } = previewText(tool.full, 3);
   tool.pre.textContent = text;
   tool.hint.hidden = more === 0;
-  tool.hint.textContent = `⋯ ${more} more line${more === 1 ? "" : "s"} · click to expand`;
+  tool.hint.textContent = t(more === 1 ? "changes.moreLine" : "changes.moreLines", more === 1 ? "⋯ {count} more line · click to expand" : "⋯ {count} more lines · click to expand", { count: more });
   markToolToggle(tool, more > 0);
 }
 
@@ -4201,7 +4220,7 @@ function statsHtml(added, removed, showZero = false) {
 
 function statusBadge(status) {
   const key = CHANGE_LETTERS[status] ? status : "modified";
-  return `<span class="change-status ${key}" title="${key}">${CHANGE_LETTERS[key]}</span>`;
+  return `<span class="change-status ${key}" title="${escapeHtml(t(`changes.${key}`, key))}">${CHANGE_LETTERS[key]}</span>`;
 }
 
 function changeRow(file, onOpen = null) {
@@ -4213,15 +4232,15 @@ function changeRow(file, onOpen = null) {
     const split = Math.max(file.path.lastIndexOf("/"), file.path.lastIndexOf("\\")) + 1;
     row.innerHTML =
       `<span class="change-path"><span class="change-directory">${escapeHtml(file.path.slice(0, split))}</span><span class="change-filename">${escapeHtml(file.path.slice(split))}</span></span>` +
-      `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed, true)}</span>`;
-    row.title = `${file.path} · ${file.status}`;
-    row.setAttribute("aria-label", `View changes for ${file.path}`);
+      `<span class="change-stats">${file.binary ? t("changes.binary", "binary") : statsHtml(file.added, file.removed, true)}</span>`;
+    row.title = `${file.path} · ${t(`changes.${file.status}`, file.status)}`;
+    row.setAttribute("aria-label", t("ui.viewChangesFor", "View changes for {value0}", { value0: file.path }));
     row.onclick = onOpen;
   } else {
     row.innerHTML =
       statusBadge(file.status) +
       `<span class="change-path">${escapeHtml(file.path)}</span>` +
-      `<span class="change-stats">${file.binary ? "binary" : statsHtml(file.added, file.removed) || "no line changes"}</span>` +
+      `<span class="change-stats">${file.binary ? t("changes.binary", "binary") : statsHtml(file.added, file.removed) || t("changes.noLines", "no line changes")}</span>` +
       `<span class="change-chev">${ICONS.caret}</span>`;
   }
   return row;
@@ -4252,7 +4271,7 @@ function changesCard(card) {
   const review = document.createElement("button");
   review.type = "button";
   review.className = "changes-review";
-  review.textContent = "View changes";
+  review.textContent = t("topbar.viewChanges", "View changes");
   review.onclick = (event) => {
     event.stopPropagation();
     openReview(card);
@@ -4260,7 +4279,7 @@ function changesCard(card) {
   const undo = document.createElement("button");
   undo.type = "button";
   undo.className = "changes-undo";
-  undo.textContent = "Undo";
+  undo.textContent = t("ui.undo", "Undo");
   const undoIcon = document.createElement("span");
   undoIcon.setAttribute("aria-hidden", "true");
   undoIcon.innerHTML = ICONS.undo;
@@ -4294,6 +4313,7 @@ function changesCard(card) {
   card.moreLabel = moreLabel;
   card.note = note;
   card.undo = undo;
+  card.review = review;
   card.title = title;
   card.total = total;
   for (const [index, file] of card.files.entries()) {
@@ -4311,8 +4331,11 @@ function changesCard(card) {
 }
 
 function paintChanges(card) {
+  card.review.textContent = t("topbar.viewChanges", "View changes");
+  card.undo.innerHTML = escapeHtml(t("ui.undo", "Undo")) + ICONS.undo;
+  if (card.undone) card.note.textContent = t("ui.undone", "Undone");
   const count = card.files.length;
-  card.title.textContent = `Edited ${count} file${count === 1 ? "" : "s"}`;
+  card.title.textContent = t(count === 1 ? "changes.editedFile" : "changes.editedFiles", count === 1 ? "Edited {count} file" : "Edited {count} files", { count });
   card.total.innerHTML = statsHtml(card.added, card.removed, Boolean(card.added || card.removed));
   // An undo restores the state before its own turn, so it is only offered while
   // that turn is the newest one of its own thread: anything made after it would
@@ -4325,7 +4348,7 @@ function paintChanges(card) {
   const hidden = count - shown.length;
   card.more.hidden = count <= CHANGES_VISIBLE;
   card.more.setAttribute("aria-expanded", String(card.all));
-  card.moreLabel.textContent = card.all ? "Show less" : `Show ${hidden} more file${hidden === 1 ? "" : "s"}`;
+  card.moreLabel.textContent = card.all ? t("sidebar.showLess", "Show less") : t(hidden === 1 ? "changes.moreFile" : "changes.moreFiles", hidden === 1 ? "Show {count} more file" : "Show {count} more files", { count: hidden });
   card.more.classList.toggle("expanded", card.all);
 }
 
@@ -4339,9 +4362,9 @@ async function undoChanges(card) {
   if (!card.baseline || card.undone) return;
   const count = card.files.length;
   const ok = await confirmDialog(
-    "Undo changes",
-    `Put ${count} file${count === 1 ? "" : "s"} back to how ${count === 1 ? "it was" : "they were"} before this turn?`,
-    "Undo changes",
+    t("ui.undoChanges", "Undo changes"),
+    t(count === 1 ? "changes.undoConfirmOne" : "changes.undoConfirm", count === 1 ? "Put {count} file back to how it was before this turn?" : "Put {count} files back to how they were before this turn?", { count }),
+    t("ui.undoChanges", "Undo changes"),
   );
   if (!ok) return;
   try {
@@ -4351,14 +4374,14 @@ async function undoChanges(card) {
       after: card.after,
     });
   } catch (error) {
-    showToast(`Could not undo: ${error}`, "error");
+    showToast(t("ui.couldNotUndo", "Could not undo: {value0}", { value0: error }), "error");
     return;
   }
   card.undone = true;
-  card.note.textContent = "Undone";
+  card.note.textContent = t("ui.undone", "Undone");
   card.note.hidden = false;
   card.undo.hidden = true;
-  showToast("Put the turn's files back");
+  showToast(t("ui.putTheTurnSFilesBack", "Put the turn's files back"));
 }
 
 // ---------- review ----------
@@ -4376,7 +4399,7 @@ const REVIEW_CONTEXT = 3;
 
 function openReview(card, index = 0) {
   reviewState = { card, index, sides: new Map(), reads: new Map(), expanded: new Set(), openFiles: new Set(card.files.slice(index, index + 1).map((file) => file.path)) };
-  el("review-title").textContent = "Changes";
+  el("review-title").textContent = t("ui.changes", "Changes");
   el("review-total").innerHTML = statsHtml(card.added, card.removed);
   closeOverlays("review-modal");
   el("review-modal").hidden = false;
@@ -4397,12 +4420,12 @@ function closeReview() {
 function paintReview() {
   if (!reviewState) return;
   const { card } = reviewState;
-  el("review-title").textContent = "Changes";
+  el("review-title").textContent = t("ui.changes", "Changes");
   el("review-total").innerHTML = statsHtml(card.added, card.removed);
   const list = el("review-files");
   list.innerHTML = "";
   if (!card.files.length) {
-    list.appendChild(reviewNote("No changes."));
+    list.appendChild(reviewNote(t("ui.noChanges", "No changes.")));
     return;
   }
   card.files.forEach((file, index) => {
@@ -4437,7 +4460,7 @@ function paintReviewFile(file, target) {
     target.replaceChildren(...reviewBody(file, sides));
     return;
   }
-  target.replaceChildren(reviewNote("Reading the change⋯"));
+  target.replaceChildren(reviewNote(t("ui.readingTheChange", "Reading the change⋯")));
   const args = { project: current.card.project, path: file.path };
   if (!current.card.repository) args.baseline = current.card.baseline;
   let reading = current.reads.get(file.path);
@@ -4472,10 +4495,10 @@ function reviewNote(text) {
 /// diff uses.
 function reviewBody(file, sides) {
   if (sides.failed) return [reviewNote(sides.failed)];
-  if (sides.binary) return [reviewNote("Binary file — no text diff.")];
-  if (sides.omitted) return [reviewNote("File too large to diff line by line.")];
+  if (sides.binary) return [reviewNote(t("ui.binaryFileNoTextDiff", "Binary file — no text diff."))];
+  if (sides.omitted) return [reviewNote(t("ui.fileTooLargeToDiffLineByLine", "File too large to diff line by line."))];
   const lines = sides.lines || [];
-  if (!lines.length) return [reviewNote("No textual changes.")];
+  if (!lines.length) return [reviewNote(t("ui.noTextualChanges", "No textual changes."))];
   return [reviewSplit(file, lines)];
 }
 
@@ -4518,7 +4541,7 @@ function unmodifiedBar(file, start, hidden) {
   const bar = document.createElement("button");
   bar.type = "button";
   bar.className = "unmodified";
-  bar.textContent = `${hidden} unmodified line${hidden === 1 ? "" : "s"}`;
+  bar.textContent = t(hidden === 1 ? "changes.contextLine" : "changes.contextLines", hidden === 1 ? "{count} unmodified line" : "{count} unmodified lines", { count: hidden });
   bar.onclick = () => {
     reviewState.expanded.add(`${file.path}:${start}`);
     paintReview();
@@ -4599,10 +4622,10 @@ function openProjectDetails() {
 async function refreshProjectDetails() {
   const project = runFolder();
   const read = ++detailsRead;
-  el("details-project").textContent = state.project ? projectNameOf(state.project) : "Choose a project";
+  el("details-project").textContent = state.project ? projectNameOf(state.project) : t("composer.chooseProject", "Choose a project");
   el("details-project").title = state.project || "";
   const checkout = el("details-checkout");
-  checkout.innerHTML = ICONS.worktree + `<span>${escapeHtml(state.worktree ? baseName(state.worktree) : "Local checkout")}</span>`;
+  checkout.innerHTML = ICONS.worktree + `<span>${escapeHtml(state.worktree ? baseName(state.worktree) : t("ui.localCheckout", "Local checkout"))}</span>`;
   checkout.title = project || "";
   const changes = state.repositoryChanges;
   el("details-stats").innerHTML = changes?.project === project ? statsHtml(changes.added, changes.removed) : "";
@@ -4610,7 +4633,7 @@ async function refreshProjectDetails() {
   el("details-more").disabled = !project;
   el("details-branch").hidden = !state.git?.repo || !project;
   el("details-branch").innerHTML = ICONS.branch + `<span>${escapeHtml(project ? state.git?.branch || state.git?.detached || "" : "")}</span>`;
-  el("details-sources").textContent = project ? "Loading sources…" : "Select a project to see its sources.";
+  el("details-sources").textContent = project ? t("ui.loadingSources", "Loading sources…") : t("ui.selectAProjectToSeeItsSources", "Select a project to see its sources.");
   if (!project) return;
   const current = () => read === detailsRead && project === runFolder();
   await Promise.all([
@@ -4620,7 +4643,7 @@ async function refreshProjectDetails() {
       state.sourceServers = { project, servers };
       paintProjectSources();
     }).catch((error) => {
-      if (current()) el("details-sources").textContent = `Could not load sources: ${error}`;
+      if (current()) el("details-sources").textContent = t("ui.couldNotLoadSources", "Could not load sources: {value0}", { value0: error });
     }),
   ]);
 }
@@ -4629,10 +4652,10 @@ function chatSources() {
   const sources = new Map();
   for (const node of el("transcript").children) {
     for (const attachment of node.chatAttachments || []) {
-      sources.set(attachment.dataUrl, { kind: "attachment", name: attachment.name || "Attachment", attachment });
+      sources.set(attachment.dataUrl, { kind: "attachment", name: attachment.name || t("composer.attachment", "Attachment"), attachment });
     }
     if (/^(?:webfetch|web_search|websearch|search_query)$/.test(node.chatTool?.name || "")) {
-      sources.set("web", { kind: "web", name: "Web search" });
+      sources.set("web", { kind: "web", name: t("ui.webSearch", "Web search") });
     }
   }
   if (state.sourceServers?.project === runFolder()) {
@@ -4664,13 +4687,13 @@ function sourceRow(source) {
   if (source.server) {
     const status = document.createElement("span");
     status.className = "source-state";
-    status.textContent = source.server.status || source.server.state || "";
+    status.textContent = mcpStatusText(source.server);
     row.appendChild(status);
   }
   row.onclick = () => {
     if (attachment && isPaintableImage(attachment.dataUrl)) openImage(attachment.dataUrl, attachment.name);
     else if (source.kind === "mcp") openMcps();
-    else if (attachment) { setStatus(`${attachment.name || "Attachment"} is included in this chat.`); }
+    else if (attachment) { setStatus(t("ui.isIncludedInThisChat", "{value0} is included in this chat.", { value0: attachment.name || "Attachment" })); }
     else openSources();
   };
   return row;
@@ -4680,7 +4703,7 @@ function paintProjectSources() {
   const sources = chatSources();
   const box = el("details-sources");
   box.replaceChildren(...sources.slice(0, 5).map(sourceRow));
-  if (!sources.length) box.textContent = "No sources yet.";
+  if (!sources.length) box.textContent = t("ui.noSourcesYet", "No sources yet.");
   if (!el("sources-modal").hidden) el("sources-list").replaceChildren(...sources.map(sourceRow));
 }
 
@@ -4705,7 +4728,7 @@ async function readProjectChanges(project) {
     paintLiveChanges();
     paintProjectSources();
     el("details-stats").innerHTML = statsHtml(changes.added, changes.removed);
-    el("details-changes").title = `${changes.files.length} changed files`;
+    el("details-changes").title = t("ui.changedFiles", "{value0} changed files", { value0: changes.files.length });
     if (reviewState?.card.repository) showRepositoryCard({ ...changes, project, repository: true });
   } catch (error) {
     if (!current()) return;
@@ -4759,9 +4782,9 @@ async function openRepositoryChanges() {
   if (!hasChat()) return;
   el("review-modal").hidden = false;
   el("review-scope").value = "repository";
-  el("review-title").textContent = "Changes";
+  el("review-title").textContent = t("ui.changes", "Changes");
   el("review-total").innerHTML = "";
-  el("review-files").replaceChildren(reviewNote("Reading changes…"));
+  el("review-files").replaceChildren(reviewNote(t("ui.readingChanges", "Reading changes…")));
   paintDockToggles();
   const project = runFolder();
   reviewState = { card: { repository: true, project, files: [] } };
@@ -4774,7 +4797,7 @@ function changeReviewScope() {
   if (card) return openReview(card);
   reviewState = null;
   el("review-total").innerHTML = "";
-  el("review-files").replaceChildren(reviewNote("No changes from a turn in this chat yet."));
+  el("review-files").replaceChildren(reviewNote(t("ui.noChangesFromATurnInThisChatYet", "No changes from a turn in this chat yet.")));
 }
 
 /// The events that write into the thread a turn is in. The transcript events go
@@ -4869,17 +4892,17 @@ function handleEvent(event) {
       // A retry re-streams the response from the start, so the partial output
       // of the failed attempt is dropped instead of being extended.
       discardAttempt();
-      setStatus(`Retrying (${event.attempt}/${event.maxAttempts})…`);
+      setStatus(t("ui.retrying", "Retrying ({value0}/{value1})…", { value0: event.attempt, value1: event.maxAttempts }));
       break;
     case "usage": {
       addUsage(event);
       break;
     }
     case "compaction":
-      setStatus(`Compacted ${event.summarized} earlier messages`);
+      setStatus(t("ui.compactedEarlierMessages", "Compacted {value0} earlier messages", { value0: event.summarized }));
       break;
     case "error":
-      setStatus(`Error: ${event.message}`, "error");
+      setStatus(t("common.errorDetail", "Error: {value0}", { value0: event.message }), "error");
       break;
     default:
       break;
@@ -4981,8 +5004,8 @@ function questionBlock(question, index) {
     own.className = "question-choice question-own-choice";
     const label = document.createElement("span");
     label.className = "question-label";
-    label.textContent = "Type your own answer";
-    free.placeholder = "Type your answer…";
+    label.textContent = t("ui.typeYourOwnAnswer", "Type your own answer");
+    free.placeholder = t("ui.typeYourAnswer", "Type your answer…");
     own.addEventListener("change", () => {
       if (own.checked) free.focus();
     });
@@ -4994,7 +5017,7 @@ function questionBlock(question, index) {
     row.append(own, label);
     block.append(row, free);
   } else {
-    free.placeholder = options.length ? "Or type your own answer…" : "Type your answer…";
+    free.placeholder = options.length ? t("ui.orTypeYourOwnAnswer", "Or type your own answer…") : t("ui.typeYourAnswer", "Type your answer…");
     block.appendChild(free);
   }
   return block;
@@ -5016,7 +5039,7 @@ function showQuestionStep(index) {
   });
   // One question needs no counter: there is nothing to step through.
   el("question-step-row").hidden = total < 2;
-  el("question-step").textContent = `${pending.index + 1} of ${total} questions`;
+  el("question-step").textContent = t("ui.ofQuestions", "{value0} of {value1} questions", { value0: pending.index + 1, value1: total });
   const progress = el("question-progress");
   progress.replaceChildren();
   if (total > 1) {
@@ -5033,12 +5056,12 @@ function showQuestionStep(index) {
   const hint = el("question-hint");
   hint.textContent = options.length
     ? question.multiSelect
-      ? "Select all that apply"
-      : "Select one answer"
+      ? t("ui.selectAllThatApply", "Select all that apply")
+      : t("ui.selectOneAnswer", "Select one answer")
     : "";
   hint.hidden = !hint.textContent;
   el("question-back").hidden = pending.index === 0;
-  el("question-submit").textContent = pending.index + 1 < total ? "Next" : "Submit";
+  el("question-submit").textContent = pending.index + 1 < total ? t("common.next", "Next") : t("common.submit", "Submit");
   const block = blocks[pending.index];
   // A question answered in the user's own words puts the caret where the answer
   // goes; one that offers options is left alone, so a keystroke is not taken by
@@ -5182,7 +5205,7 @@ let confirmResolution = null;
 let confirmAlt = null;
 let renameResolution = null;
 
-function confirmDialog(title, message, confirmLabel = "Confirm", alt = null) {
+function confirmDialog(title, message, confirmLabel = t("dialog.confirm.ok", "Confirm"), alt = null) {
   el("confirm-title").textContent = title;
   el("confirm-message").textContent = message;
   el("confirm-ok").textContent = confirmLabel;
@@ -5270,7 +5293,7 @@ function renderProviders() {
   box.innerHTML = "";
   if (!rows.length) {
     box.innerHTML =
-      '<div class="empty" style="margin:8px 0">No provider matches that search.</div>';
+      `<div class="empty" style="margin:8px 0">${escapeHtml(t("desktop.empty.providers", "No provider matches that search."))}</div>`;
     renderLoginFields();
     return;
   }
@@ -5279,8 +5302,8 @@ function renderProviders() {
     row.type = "button";
     row.className = "provider" + (provider.name === state.providerName ? " active" : "");
     const marks = [];
-    if (provider.active) marks.push("in use");
-    if (provider.stored) marks.push("stored");
+    if (provider.active) marks.push(t("ui.inUse", "in use"));
+    if (provider.stored) marks.push(t("provider.storedMark", "stored"));
     row.innerHTML =
       `<span class="p-name">${escapeHtml(provider.label)}</span>` +
       `<span class="p-desc">${escapeHtml(provider.name)} · ${escapeHtml(provider.description)}</span>` +
@@ -5307,29 +5330,29 @@ function renderLoginFields() {
   field.hidden = keyless;
   note.hidden = !keyless;
   if (!provider) {
-    el("login-key").placeholder = "Paste your API key";
+    el("login-key").placeholder = t("dialog.connect.keyPlaceholder", "Paste your API key");
     return;
   }
   el("login-key").placeholder = provider.stored
-    ? "Leave empty to reuse the stored key"
-    : "Paste your API key";
+    ? t("ui.leaveEmptyToReuseTheStoredKey", "Leave empty to reuse the stored key")
+    : t("dialog.connect.keyPlaceholder", "Paste your API key");
   if (provider.local) {
-    note.textContent = `${provider.label} is a server on this machine — no key needed.`;
+    note.textContent = t("ui.isAServerOnThisMachineNoKeyNeeded", "{value0} is a server on this machine — no key needed.", { value0: provider.label });
   } else if (keyless) {
-    note.textContent = `${provider.label} authorizes with a credential this machine already has — no key needed.`;
+    note.textContent = t("ui.authorizesWithACredentialThisMachineAlreadyHasNoKeyNeeded", "{value0} authorizes with a credential this machine already has — no key needed.", { value0: provider.label });
   }
 }
 
 async function saveConnect() {
   const provider = state.providers.find((one) => one.name === state.providerName);
   if (!provider) {
-    showToast("Choose a provider first.");
+    showToast(t("ui.chooseAProviderFirst", "Choose a provider first."));
     return;
   }
   // A login reads the provider's own catalog before it answers, so the model the
   // chip names is one that account really serves — which is a round trip, and
   // this dialog waits on it.
-  const dismissConnecting = showToast(`Connecting ${provider.label}…`);
+  const dismissConnecting = showToast(t("ui.connecting", "Connecting {value0}…", { value0: provider.label }));
   try {
     const outcome = await invoke("login", {
       provider: provider.name,
@@ -5342,12 +5365,13 @@ async function saveConnect() {
     if (state.project) await loadInfo();
     else if (outcome?.model) {
       // No folder to read a window off, so the chip names the model alone.
-      labelControl("model", `model: ${outcome.model}`, "Switch model");
+      labelControl("model", t("model.label", "model: {value0}", { value0: outcome.model }), t("ui.switchModel", "Switch model"));
+      state.currentModel = outcome.model;
       el("model-value").textContent = outcome.model;
     }
-    showToast(`Connected ${provider.label}`);
+    showToast(t("provider.connected", "Connected {value0}", { value0: provider.label }));
   } catch (error) {
-    showToast(`Login failed: ${error}`, "error");
+    showToast(t("ui.loginFailed", "Login failed: {value0}", { value0: error }), "error");
   } finally {
     dismissConnecting();
   }
@@ -5368,7 +5392,7 @@ async function openModels() {
   el("models-modal").hidden = false;
   syncSettingsDropdowns();
   positionSettingsDropdowns();
-  el("model-list").innerHTML = '<div class="empty" style="margin:14px">Loading…</div>';
+  el("model-list").innerHTML = `<div class="empty" style="margin:14px">${escapeHtml(t("desktop.empty.loadingModels", "Loading\u2026"))}</div>`;
   el("model-filter").value = "";
   el("model-filter").focus();
   const project = state.project;
@@ -5392,7 +5416,7 @@ function renderModels() {
     if (!models.length) continue;
     const header = document.createElement("div");
     header.className = "model-provider";
-    header.textContent = provider.provider + (provider.active ? " (active)" : "");
+    header.textContent = provider.provider + (provider.active ? t("ui.active", " (active)") : "");
     box.appendChild(header);
     for (const model of models) {
       const row = document.createElement("button");
@@ -5410,7 +5434,7 @@ function renderModels() {
     }
   }
   if (!box.children.length) {
-    box.innerHTML = '<div class="empty" style="margin:14px">No models found.</div>';
+    box.innerHTML = `<div class="empty" style="margin:14px">${escapeHtml(t("desktop.empty.models", "No models found."))}</div>`;
   }
 }
 
@@ -5519,12 +5543,12 @@ function renderReasoning() {
 
     const name = document.createElement("span");
     name.className = "reasoning-option-name";
-    name.textContent = level;
+    name.textContent = t(`reasoning.${level}`, level);
     row.appendChild(name);
 
     const hint = document.createElement("span");
     hint.className = "reasoning-option-detail";
-    hint.textContent = REASONING_HINTS[level] || "";
+    hint.textContent = t(`reasoning.hint.${level}`, REASONING_HINTS[level] || "");
     row.appendChild(hint);
 
     const check = document.createElement("span");
@@ -5548,7 +5572,7 @@ async function openThemes() {
   closeOverlays("themes-modal");
   el("themes-modal").hidden = false;
   const box = el("theme-list");
-  box.innerHTML = '<div class="theme-empty">Loading themes…</div>';
+  box.innerHTML = `<div class="theme-empty">${escapeHtml(t("desktop.empty.loadingThemes", "Loading themes\u2026"))}</div>`;
   try {
     const themes = await invoke("list_themes", { project: themeProject() });
     const names = themes.names || [];
@@ -5565,7 +5589,7 @@ async function openThemes() {
     renderThemes(entries, themes.current);
   } catch (error) {
     box.innerHTML = "";
-    showToast(`Themes failed: ${error}`, "error");
+    showToast(t("ui.themesFailed", "Themes failed: {value0}", { value0: error }), "error");
   }
 }
 
@@ -5592,7 +5616,7 @@ function renderThemes(entries, current) {
   const box = el("theme-list");
   box.innerHTML = "";
   if (!entries.length) {
-    box.innerHTML = '<div class="theme-empty">No themes available.</div>';
+    box.innerHTML = `<div class="theme-empty">${escapeHtml(t("desktop.empty.themes", "No themes available."))}</div>`;
     return;
   }
   for (const { name, colors } of entries) {
@@ -5637,7 +5661,7 @@ async function selectTheme(name, row) {
       if (check) setCheck(check, isActive);
     }
   } catch (error) {
-    showToast(`Theme failed: ${error}`, "error");
+    showToast(t("ui.themeFailed", "Theme failed: {value0}", { value0: error }), "error");
   }
 }
 
@@ -5690,14 +5714,14 @@ async function openPermissions() {
   if (!state.project) {
     el("permissions-clear").disabled = true;
     box.innerHTML =
-      '<div class="empty" style="margin:6px">Select a project to review its tool approvals.</div>';
+      `<div class="empty" style="margin:6px">${escapeHtml(t("desktop.empty.selectApprovals", "Select a project to review its tool approvals."))}</div>`;
     return;
   }
   el("permissions-clear").disabled = false;
   const list = await invoke("list_approvals", { project: state.project });
   box.innerHTML = "";
   if (!list.length) {
-    box.innerHTML = '<div class="empty" style="margin:6px">No saved approvals.</div>';
+    box.innerHTML = `<div class="empty" style="margin:6px">${escapeHtml(t("desktop.empty.approvals", "No saved approvals."))}</div>`;
   } else {
     for (const tool of list) {
       const row = document.createElement("div");
@@ -5768,7 +5792,7 @@ async function openUpdate() {
   // repaint here would put it back; a check started since — the menu and the
   // button pressed one after the other — owns the dialog now.
   if (probe !== updateProbe || el("update-modal").hidden) return;
-  if (answer.failed) paintUpdateFailure("Could not check for updates", answer.failed);
+  if (answer.failed) paintUpdateFailure(t("ui.couldNotCheckForUpdates", "Could not check for updates"), answer.failed);
   else paintUpdate(answer.check);
 }
 
@@ -5783,7 +5807,7 @@ async function readUpdate() {
 }
 
 function checkingLine() {
-  return '<div class="update-line">Checking the newest release…</div>';
+  return `<div class="update-line">${escapeHtml(t("desktop.empty.checkingRelease", "Checking the newest release\u2026"))}</div>`;
 }
 
 /// Sets the one heading and the one line under it, which every step writes and
@@ -5811,13 +5835,13 @@ function updateButtons(shown) {
     el(id).hidden = !shown[id];
     el(id).disabled = false;
   }
-  el("update-close").textContent = "Close";
+  el("update-close").textContent = t("common.close", "Close");
 }
 
 /// The dialog before anything is known: the check is in flight, and the only
 /// thing to do about it is leave.
 function paintChecking() {
-  updateHead("Updates", "");
+  updateHead(t("dialog.update.title", "Updates"), "");
   el("update-body").innerHTML = checkingLine();
   paintChangelog(null);
   paintProgressBar(null);
@@ -5829,7 +5853,7 @@ function paintChecking() {
 function paintUpdate(check) {
   updateCheck = check || null;
   if (!check) {
-    updateHead("Updates", "");
+    updateHead(t("dialog.update.title", "Updates"), "");
     el("update-body").innerHTML = "";
     paintChangelog(null);
     paintProgressBar(null);
@@ -5855,8 +5879,8 @@ function paintUpdate(check) {
           version: check.current,
         }),
     available
-      ? "Installing downloads the release for this machine and puts it in this app's place. " +
-          "The app keeps running until it is restarted."
+      ? t("ui.installingDownloadsTheReleaseForThisMachineAndPutsItInThisAppSPlace", "Installing downloads the release for this machine and puts it in this app's place. ") +
+          t("update.keepsRunning", "The app keeps running until it is restarted.")
       : "",
   );
   paintFacts(check);
@@ -5876,20 +5900,20 @@ function paintUpdate(check) {
   if (available) el("update-close").textContent = t("common.dismiss", "Dismiss");
   // The button says what it does rather than naming the release again: the
   // dialog's own title already carries the version it is about.
-  if (install) el("update-install").textContent = "Update";
+  if (install) el("update-install").textContent = t("dialog.update.install", "Update");
 }
 
 /// The facts a check leaves: what this machine has, what the release is, and
 /// which installation the app found itself in.
 function paintFacts(check) {
-  const lines = [`Current ${mono(check.current)}`, `Latest ${mono(check.latest)}`];
+  const lines = [t("update.currentVersion", "Current {value0}", { value0: mono(check.current) }), t("ui.latest", "Latest {value0}", { value0: mono(check.latest) })];
   if (check.installation || check.path) {
     lines.push(
       `<span class="update-path">${escapeHtml(check.installation || "unknown")} \u00b7 ${escapeHtml(check.path || "")}</span>`,
     );
   }
   if (check.asset && check.asset.name) {
-    lines.push(`Download ${escapeHtml(check.asset.name)}`);
+    lines.push(t("ui.download", "Download {value0}", { value0: escapeHtml(check.asset.name) }));
   }
   if (check.advice) lines.push(`<span class="update-advice">${escapeHtml(check.advice)}</span>`);
   el("update-body").innerHTML = lines
@@ -5928,27 +5952,27 @@ function paintChangelog(check) {
 /// the transfer ended is a number going backwards in front of the reader.
 function paintDownloading(install) {
   const version = install.version || (updateCheck && updateCheck.latest) || "";
-  const named = version ? `Oxide ${version}` : "The release";
+  const named = version ? `Oxide ${version}` : t("ui.theRelease", "The release");
   const stage = install.stage || "downloading";
   const transferring = stage === "downloading";
   const doing =
     {
-      checking: `${named} is being looked up`,
-      verifying: `${named} is being verified`,
-      installing: `${named} is being put in place`,
+      checking: t("ui.isBeingLookedUp", "{value0} is being looked up", { value0: named }),
+      verifying: t("ui.isBeingVerified", "{value0} is being verified", { value0: named }),
+      installing: t("ui.isBeingPutInPlace", "{value0} is being put in place", { value0: named }),
     }[stage] ||
     (version
-      ? `Oxide ${version} is being downloaded and put in place`
-      : "The release is being downloaded and put in place");
+      ? t("ui.oxideIsBeingDownloadedAndPutInPlace", "Oxide {value0} is being downloaded and put in place", { value0: version })
+      : t("ui.theReleaseIsBeingDownloadedAndPutInPlace", "The release is being downloaded and put in place"));
   updateHead(
-    stage === "installing" ? "Installing update" : "Downloading update",
-    `${doing}. The app keeps running until it is restarted.`,
+    stage === "installing" ? t("ui.installingUpdate", "Installing update") : t("ui.downloadingUpdate", "Downloading update"),
+    t("ui.theAppKeepsRunningUntilItIsRestarted", "{value0}. The app keeps running until it is restarted.", { value0: doing }),
   );
   paintProgressBar(transferring ? install : null);
   const lines = [];
   if (transferring) {
     const asset = (updateCheck && updateCheck.asset && updateCheck.asset.name) || "";
-    if (asset) lines.push(`Downloading ${escapeHtml(asset)}`);
+    if (asset) lines.push(t("ui.downloading", "Downloading {value0}", { value0: escapeHtml(asset) }));
     lines.push(downloadedLine(install));
   } else {
     lines.push(escapeHtml(doing));
@@ -5976,9 +6000,9 @@ const UPDATE_CANCELABLE = ["checking", "downloading", "verifying"];
 function downloadedLine(install) {
   const total = Number(install.total) || 0;
   const received = Number(install.received) || 0;
-  if (total <= 0) return `${megabytes(received)} downloaded`;
+  if (total <= 0) return t("ui.downloaded", "{value0} downloaded", { value0: megabytes(received) });
   const share = Math.min(100, Math.round((received / total) * 100));
-  return `${megabytes(received)} of ${megabytes(total)} \u00b7 ${share}%`;
+  return t("ui.of", "{value0} of {value1} · {value2}%", { value0: megabytes(received), value1: megabytes(total), value2: share });
 }
 
 /// The bar, which is the transfer's own: it moves with the bytes written, works
@@ -6049,7 +6073,7 @@ async function installUpdate() {
   if (!updateInstall || updateInstall.token !== install.token) return;
   if (!answer || answer.ok !== true) {
     updateInstall = null;
-    reportUpdateFailure((answer && answer.text) || "The install did not finish.");
+    reportUpdateFailure((answer && answer.text) || t("ui.theInstallDidNotFinish", "The install did not finish."));
     return;
   }
   // The install owns the dialog from here, whatever a check started while it
@@ -6080,7 +6104,7 @@ function cancelUpdate() {
   el("update-modal").hidden = true;
   if (!token) return;
   invoke("cancel_update", { token }).catch((error) =>
-    showToast(`Could not stop the update: ${error}`, "error"),
+    showToast(t("ui.couldNotStopTheUpdate", "Could not stop the update: {value0}", { value0: error }), "error"),
   );
 }
 
@@ -6091,10 +6115,10 @@ function cancelUpdate() {
 /// watching reports itself.
 function reportUpdateFailure(text) {
   if (el("update-modal").hidden) {
-    showToast(`Could not install the update: ${text}`, "error");
+    showToast(t("update.installError", "Could not install the update: {value0}", { value0: text }), "error");
     return;
   }
-  paintUpdateFailure("Could not install the update", text);
+  paintUpdateFailure(t("ui.couldNotInstallTheUpdate", "Could not install the update"), text);
 }
 
 /// Reports an install that landed. The version named is the one the install
@@ -6110,14 +6134,14 @@ function paintInstalled(answer) {
   // rather than a version it cannot claim is in place.
   const pending = answer.pending === true;
   updateHead(
-    pending ? `The Oxide ${answer.version} installer is running` : "Restart and install update",
+    pending ? t("ui.theOxideInstallerIsRunning", "The Oxide {value0} installer is running", { value0: answer.version }) : t("dialog.update.restart", "Restart and install update"),
     pending
-      ? "Finish the installer, then open Oxide again to run the new version."
-      : "Update downloaded. You need to restart Oxide to install the update.",
+      ? t("ui.finishTheInstallerThenOpenOxideAgainToRunTheNewVersion", "Finish the installer, then open Oxide again to run the new version.")
+      : t("ui.updateDownloadedYouNeedToRestartOxideToInstallTheUpdate", "Update downloaded. You need to restart Oxide to install the update."),
   );
   const lines = [];
-  if (answer.version) lines.push(`Release ${mono(answer.version)}`);
-  if (answer.asset) lines.push(`Downloaded ${escapeHtml(answer.asset)}`);
+  if (answer.version) lines.push(t("ui.release", "Release {value0}", { value0: mono(answer.version) }));
+  if (answer.asset) lines.push(t("update.downloadedAsset", "Downloaded {value0}", { value0: escapeHtml(answer.asset) }));
   if (answer.path) lines.push(`<span class="update-path">${escapeHtml(answer.path)}</span>`);
   if (answer.text) lines.push(`<span class="update-advice">${escapeHtml(answer.text)}</span>`);
   el("update-body").innerHTML = lines
@@ -6140,7 +6164,7 @@ function paintUpdateFailure(title, text) {
   updateHead(
     title,
     title === "Could not check for updates"
-      ? "The check asks GitHub for the newest release, so a machine with no network — or a request the network refuses — says so here."
+      ? t("ui.theCheckAsksGitHubForTheNewestReleaseSoAMachineWithNoNetworkOrARequestTheNetwork", "The check asks GitHub for the newest release, so a machine with no network — or a request the network refuses — says so here.")
       : "",
   );
   el("update-body").innerHTML = `<div class="update-error">${escapeHtml(text)}</div>`;
@@ -6259,8 +6283,8 @@ function openInstallUpdate(payload) {
 /// version. A turn is work this process owns, so a restart mid-turn is refused
 /// the way starting a new thread is.
 function restartApp() {
-  if (busyRefusal("restarting Oxide")) return;
-  invoke("restart_app").catch((error) => showToast(`Could not restart Oxide: ${error}`, "error"));
+  if (busyRefusal(t("ui.restartingOxide", "restarting Oxide"))) return;
+  invoke("restart_app").catch((error) => showToast(t("ui.couldNotRestartOxide", "Could not restart Oxide: {value0}", { value0: error }), "error"));
 }
 
 /// Opens the release the dialog is showing in the platform browser, the way a
@@ -6268,7 +6292,7 @@ function restartApp() {
 function openReleaseNotes() {
   if (!updateCheck || !updateCheck.releaseUrl) return;
   invoke("open_url", { url: updateCheck.releaseUrl }).catch((error) =>
-    showToast(`Could not open link: ${error}`, "error"),
+    showToast(t("ui.couldNotOpenLink", "Could not open link: {value0}", { value0: error }), "error"),
   );
 }
 
@@ -6283,7 +6307,7 @@ function mono(value) {
 async function openMcps() {
   closeOverlays("mcps-modal");
   el("mcps-modal").hidden = false;
-  el("mcp-list").innerHTML = '<div class="mcp-empty">Checking servers…</div>';
+  el("mcp-list").innerHTML = `<div class="mcp-empty">${escapeHtml(t("desktop.empty.checkingServers", "Checking servers\u2026"))}</div>`;
   await loadMcps();
 }
 
@@ -6297,17 +6321,23 @@ async function loadMcps() {
   renderMcps();
 }
 
+function mcpStatusText(server) {
+  const keys = { connected: "ui.connected", "needs-auth": "ui.needsAuth", "needs-trust": "ui.needsTrust", disabled: "ui.disabled" };
+  if (server.state === "error" && server.status?.startsWith("Error: ")) return t("common.errorDetail", "Error: {value0}", { value0: server.status.slice(7) });
+  return t(keys[server.state], server.status || server.state || "");
+}
+
 function renderMcps() {
   const box = el("mcp-list");
   box.innerHTML = "";
   if (state.mcpError) {
-    box.innerHTML = `<div class="mcp-empty">Could not list MCP servers: ${escapeHtml(state.mcpError)}</div>`;
+    box.innerHTML = `<div class="mcp-empty">${escapeHtml(t("desktop.mcpReadError", "Could not list MCP servers: {error}", { error: state.mcpError }))}</div>`;
     return;
   }
   const servers = state.mcps || [];
   if (!servers.length) {
     box.innerHTML =
-      '<div class="mcp-empty">No MCP servers configured. Add one with <code>oxide mcp add</code>, or a <code>.mcp.json</code> in the project.</div>';
+      `<div class="mcp-empty">${t("desktop.mcpEmpty", "No MCP servers configured. Add one with {command}, or a {file} in the project.", { command: "<code>oxide mcp add</code>", file: "<code>.mcp.json</code>" })}</div>`;
     return;
   }
   for (const server of servers) {
@@ -6321,7 +6351,7 @@ function renderMcps() {
     name.textContent = server.name;
     const status = document.createElement("span");
     status.className = `mcp-status state-${server.state}`;
-    status.textContent = server.status;
+    status.textContent = mcpStatusText(server);
     const toggle = document.createElement("button");
     toggle.type = "button";
     // Icon-only: the listing is a row per server, so the switch is sized to the
@@ -6329,8 +6359,8 @@ function renderMcps() {
     toggle.className = `icon mcp-toggle${server.enabled ? " on" : ""}`;
     toggle.innerHTML = ICONS.power;
     toggle.title = server.enabled
-      ? `Disable ${server.name}: turn it off in the file that defines it`
-      : `Enable ${server.name}: turn it back on`;
+      ? t("ui.disableTurnItOffInTheFileThatDefinesIt", "Disable {value0}: turn it off in the file that defines it", { value0: server.name })
+      : t("ui.enableTurnItBackOn", "Enable {value0}: turn it back on", { value0: server.name });
     toggle.setAttribute("aria-label", toggle.title);
     toggle.onclick = () => toggleMcp(server, toggle);
     head.append(name, status, toggle);
@@ -6340,7 +6370,7 @@ function renderMcps() {
     detail.textContent = [server.transport, server.detail].filter(Boolean).join(" · ");
     const source = document.createElement("div");
     source.className = "mcp-source";
-    source.textContent = `source: ${server.source}`;
+    source.textContent = t("ui.source", "source: {value0}", { value0: server.source });
 
     row.append(head, detail, source);
     box.appendChild(row);
@@ -6366,7 +6396,7 @@ async function toggleMcp(server, button) {
     showToast(`${server.name} ${enabled ? "enabled" : "disabled"}`);
   } catch (error) {
     button.disabled = false;
-    showToast(`Could not change ${server.name}: ${error}`, "error");
+    showToast(t("ui.couldNotChange", "Could not change {value0}: {value1}", { value0: server.name, value1: error }), "error");
   } finally {
     dismissProgress();
   }
@@ -6385,7 +6415,7 @@ async function openSessions() {
   }
   closeOverlays("sessions-modal");
   el("sessions-modal").hidden = false;
-  el("sessions-list").innerHTML = '<div class="dialog-empty">Loading threads…</div>';
+  el("sessions-list").innerHTML = `<div class="dialog-empty">${escapeHtml(t("desktop.empty.loadingThreads", "Loading threads\u2026"))}</div>`;
   await loadSessions();
   renderSessions();
 }
@@ -6396,13 +6426,13 @@ function renderSessions() {
   // The store could not be read, so the empty listing that would be painted
   // from no threads is not a fact about this project.
   if (state.sessionsError) {
-    box.innerHTML = `<div class="dialog-empty">Could not read this project's threads: ${escapeHtml(state.sessionsError)}</div>`;
+    box.innerHTML = `<div class="dialog-empty">${escapeHtml(t("desktop.threadReadError", "Could not read this project's threads: {error}", { error: state.sessionsError }))}</div>`;
     return;
   }
   const threads = listedSessions().filter((session) => sessionProject(session) === state.project);
   if (!threads.length) {
     box.innerHTML =
-      '<div class="dialog-empty">No threads for this project yet. Send a message to start one.</div>';
+      `<div class="dialog-empty">${escapeHtml(t("desktop.empty.threads", "No threads for this project yet. Send a message to start one."))}</div>`;
     return;
   }
   for (const session of threads) {
@@ -6416,7 +6446,7 @@ function renderSessions() {
 
     const name = session.name || session.preview || session.id.slice(0, 8);
     const meta = [
-      session.worktree ? `worktree ${session.worktree}` : "",
+      session.worktree ? t("worktree.label", "worktree {value0}", { value0: session.worktree }) : "",
       sessionAge(session.modified_at),
       sessionMessages(session.message_count),
     ]
@@ -6448,7 +6478,7 @@ function renderSessions() {
     // The strings, not the elements they were written into: a tooltip built
     // from a node reads as `[object HTMLDivElement]`.
     row.title = running
-      ? `${meta ? `${name} — ${meta} · ` : `${name} — `}a turn is running`
+      ? t("ui.aTurnIsRunning", "{value0}a turn is running", { value0: meta ? `${name} — ${meta} · ` : `${name} — ` })
       : meta
         ? `${name} — ${meta}`
         : name;
@@ -6465,15 +6495,15 @@ function renderSessions() {
 function sessionAge(seconds) {
   if (!seconds) return "";
   const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - Number(seconds));
-  if (elapsed < 60) return "just now";
-  if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ago`;
-  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}h ago`;
-  return `${Math.floor(elapsed / 86400)}d ago`;
+  if (elapsed < 60) return t("ui.justNow", "just now");
+  if (elapsed < 3600) return t("ui.mAgo", "{value0}m ago", { value0: Math.floor(elapsed / 60) });
+  if (elapsed < 86400) return t("ui.hAgo", "{value0}h ago", { value0: Math.floor(elapsed / 3600) });
+  return t("ui.dAgo", "{value0}d ago", { value0: Math.floor(elapsed / 86400) });
 }
 
 function sessionMessages(count) {
   if (count === undefined || count === null) return "";
-  return `${count} message${Number(count) === 1 ? "" : "s"}`;
+  return t(Number(count) === 1 ? "session.messageCountOne" : "session.messageCount", Number(count) === 1 ? "{count} message" : "{count} messages", { count });
 }
 
 // ---------- slash commands ----------
@@ -6533,7 +6563,7 @@ async function runSlashCommand(text) {
       return true;
     case "trust":
       if (state.trust) showTrust(state.trust);
-      else showToast("Nothing to decide — this project needs no trust decision.");
+      else showToast(t("ui.nothingToDecideThisProjectNeedsNoTrustDecision", "Nothing to decide — this project needs no trust decision."));
       return true;
     case "connect":
       await openConnect();
@@ -6568,20 +6598,20 @@ async function runSlashCommand(text) {
       if (!target) {
         setStatus(
           stored.length
-            ? `Name a provider: /logout ${stored.map((entry) => entry.name).join("|")}`
-            : "No provider is connected.",
+            ? t("ui.nameAProviderLogout", "Name a provider: /logout {value0}", { value0: stored.map((entry) => entry.name).join("|") })
+            : t("ui.noProviderIsConnected", "No provider is connected."),
         );
         return true;
       }
       const ok = await confirmDialog(
-        "Sign out",
-        `Forget the stored credential for ${target.label}?`,
-        "Sign out",
+        t("ui.signOut", "Sign out"),
+        t("ui.forgetTheStoredCredentialFor", "Forget the stored credential for {value0}?", { value0: target.label }),
+        t("ui.signOut", "Sign out"),
       );
       if (!ok) return true;
       await invoke("logout", { provider: target.name });
       await loadInfo();
-      showToast(`Signed out of ${target.label}`);
+      showToast(t("ui.signedOutOf", "Signed out of {value0}", { value0: target.label }));
       return true;
     }
     case "session":
@@ -6607,14 +6637,14 @@ async function runSlashCommand(text) {
       } else if ((state.reasoningLevels || REASONING).includes(args)) {
         pickReasoning(args);
       } else {
-        setStatus(`Reasoning must be one of ${(state.reasoningLevels || REASONING).join(", ")}.`);
+        setStatus(t("ui.reasoningMustBeOneOf", "Reasoning must be one of {value0}.", { value0: (state.reasoningLevels || REASONING).join(", ") }));
       }
       return true;
     case "attach":
       el("attach-input").click();
       return true;
     case "usage":
-      setStatus(el("usage").textContent ? `This chat: ${el("usage").textContent}` : "No usage reported yet.");
+      setStatus(el("usage").textContent ? t("ui.thisChat", "This chat: {value0}", { value0: el("usage").textContent }) : t("ui.noUsageReportedYet", "No usage reported yet."));
       return true;
     default: {
       // A client command the app does not implement yet is still worth naming,
@@ -6627,10 +6657,10 @@ async function runSlashCommand(text) {
         .filter((front) => front !== "desktop")
         .map((front) => FRONT_END_LABELS[front] || front);
       if ((builtin.front_ends || []).length && elsewhere.length) {
-        setStatus(`/${builtin.name} is the ${elsewhere.join(" and ")}'s command.`);
+        setStatus(t("ui.isTheSCommand", "/{value0} is the {value1}'s command.", { value0: builtin.name, value1: elsewhere.join(" and ") }));
         return true;
       }
-      setStatus(`/${builtin.name} is not available in the desktop app yet.`);
+      setStatus(t("ui.isNotAvailableInTheDesktopAppYet", "/{value0} is not available in the desktop app yet.", { value0: builtin.name }));
       return true;
     }
   }
@@ -6730,8 +6760,8 @@ function renderAt() {
     item.setAttribute("aria-selected", index === atIndex ? "true" : "false");
     item.title =
       row.kind === "folder"
-        ? `${row.label} — a folder in this project`
-        : `${row.label} — referenced in this message`;
+        ? t("ui.aFolderInThisProject", "{value0} — a folder in this project", { value0: row.label })
+        : t("ui.referencedInThisMessage", "{value0} — referenced in this message", { value0: row.label });
     item.innerHTML =
       `<span class="at-glyph">${row.kind === "folder" ? "\u25b8" : "\u00b7"}</span>` +
       `<span class="at-path">${escapeHtml(row.label)}</span>`;
@@ -6846,8 +6876,8 @@ async function refreshPaletteEntries() {
 /// The front-ends the catalog names a command for, as the core labels them.
 const FRONT_END_LABELS = {
   terminal: "terminal",
-  desktop: "desktop app",
-  panel: "VS Code panel",
+  desktop: t("ui.desktopApp", "desktop app"),
+  panel: t("ui.vSCodePanel", "VS Code panel"),
 };
 
 /// Whether this app is one of the front-ends a command is offered to. A row the
@@ -6880,7 +6910,7 @@ function renderPalette() {
   }
   list.innerHTML = "";
   if (!matches.length) {
-    list.innerHTML = '<div class="palette-empty">No matching command.</div>';
+    list.innerHTML = `<div class="palette-empty">${escapeHtml(t("desktop.empty.commands", "No matching command."))}</div>`;
     return;
   }
   state.paletteIndex = Math.min(state.paletteIndex, matches.length - 1);
@@ -6962,7 +6992,7 @@ function setReasoning(level) {
   state.reasoningPicked = true;
   reasoningSave = reasoningSave.then(() => invoke("set_reasoning", { reasoning: level })).catch(async (error) => {
     if (state.reasoning === level) await loadInfo();
-    showToast(`Could not save reasoning: ${error}`, "error");
+    showToast(t("ui.couldNotSaveReasoning", "Could not save reasoning: {value0}", { value0: error }), "error");
   });
   updateChips();
   // A level set while the picker is up — `Ctrl+R`, or a row — moves the mark, so
@@ -7104,8 +7134,8 @@ function openCreateProject() {
   el("create-project-folders").innerHTML = "";
   el("create-project-error").hidden = true;
   el("create-project-sources").hidden = false;
-  el("create-project-title").textContent = "Create project";
-  el("create-project-save").textContent = "Create project";
+  el("create-project-title").textContent = t("dialog.createProject.title", "Create project");
+  el("create-project-save").textContent = t("dialog.createProject.title", "Create project");
   el("create-project-remove").hidden = true;
   el("create-project-modal").hidden = false;
   el("create-project-name").focus();
@@ -7123,8 +7153,8 @@ function openEditProject(project) {
   // changes its display name only; do not offer add/remove folder controls whose
   // changes the command cannot persist.
   el("create-project-sources").hidden = true;
-  el("create-project-title").textContent = "Edit project";
-  el("create-project-save").textContent = "Save";
+  el("create-project-title").textContent = t("ui.editProject", "Edit project");
+  el("create-project-save").textContent = t("common.save", "Save");
   el("create-project-remove").hidden = false;
   el("create-project-modal").hidden = false;
   el("create-project-name").focus();
@@ -7140,7 +7170,7 @@ async function addCreateProjectFolder() {
       if (!nameInput.value.trim()) nameInput.value = folderBasename(path);
     }
   } catch (error) {
-    showCreateProjectError(`Could not open folder chooser: ${error}`);
+    showCreateProjectError(t("ui.couldNotOpenFolderChooser", "Could not open folder chooser: {value0}", { value0: error }));
   }
 }
 
@@ -7152,7 +7182,7 @@ function addCreateProjectTypedPath() {
   const path = input.value.trim();
   if (!path) return;
   if (createProjectState.folders.includes(path)) {
-    showCreateProjectError("That folder is already in the list");
+    showCreateProjectError(t("ui.thatFolderIsAlreadyInTheList", "That folder is already in the list"));
     return;
   }
   createProjectState.folders.push(path);
@@ -7179,7 +7209,7 @@ function renderCreateProjectFolders() {
     pathEl.textContent = folder;
     const removeBtn = document.createElement("button");
     removeBtn.className = "folder-item-remove ghost small";
-    removeBtn.textContent = "Remove";
+    removeBtn.textContent = t("common.remove", "Remove");
     removeBtn.onclick = () => removeCreateProjectFolder(folder);
     item.appendChild(pathEl);
     item.appendChild(removeBtn);
@@ -7196,7 +7226,7 @@ function showCreateProjectError(message) {
 
 async function saveCreateProject() {
   if (createProjectState.folders.length === 0) {
-    showCreateProjectError("At least one source folder is required");
+    showCreateProjectError(t("ui.atLeastOneSourceFolderIsRequired", "At least one source folder is required"));
     return;
   }
   const nameInput = el("create-project-name");
@@ -7206,7 +7236,7 @@ async function saveCreateProject() {
     nameInput.value = name;
   }
   if (!name) {
-    showCreateProjectError("Project name is required");
+    showCreateProjectError(t("ui.projectNameIsRequired", "Project name is required"));
     return;
   }
   try {
@@ -7235,7 +7265,7 @@ async function saveCreateProject() {
       selectProject(added);
     }
   } catch (error) {
-    showCreateProjectError(`Could not create project: ${error}`);
+    showCreateProjectError(t("ui.couldNotCreateProject", "Could not create project: {value0}", { value0: error }));
   }
 }
 
@@ -7714,7 +7744,7 @@ function init() {
     if (!link) return;
     event.preventDefault();
     invoke("open_url", { url: link.getAttribute("href") }).catch((error) =>
-      showToast(`Could not open link: ${error}`, "error"),
+      showToast(t("ui.couldNotOpenLink", "Could not open link: {value0}", { value0: error }), "error"),
     );
   });
 
@@ -8022,7 +8052,7 @@ async function dropProject(fromId, toId, after) {
     });
   } catch (error) {
     state.projects = before;
-    showToast(`Could not reorder projects: ${error}`, "error");
+    showToast(t("ui.couldNotReorderProjects", "Could not reorder projects: {value0}", { value0: error }), "error");
   }
   renderProjectsTree();
 }
@@ -8069,7 +8099,8 @@ function placeSidebarCard(card, row) {
 
 function projectActivity(project, sessions) {
   const active = state.busy && state.runProject === project.path ? 1 : 0;
-  return `${sessions.length} task${sessions.length === 1 ? "" : "s"}${active ? ` · ${active} active` : ""}`;
+  return t(sessions.length === 1 ? "sidebar.taskCountOne" : "sidebar.taskCount", sessions.length === 1 ? "{count} task" : "{count} tasks", { count: sessions.length }) +
+    (active ? ` · ${t("sidebar.activeCount", "{count} active", { count: active })}` : "");
 }
 
 function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
@@ -8082,7 +8113,7 @@ function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
   card.id = "project-actions-menu";
   card.className = "sidebar-floating-card project-actions-card";
   card.setAttribute("role", "menu");
-  card.setAttribute("aria-label", `${project.name} project actions`);
+  card.setAttribute("aria-label", t("ui.projectActions", "{value0} project actions", { value0: project.name }));
   // A hover card remains under the pointer when it crosses the narrow gap from
   // the sidebar. Once the pointer leaves both surfaces it closes; a card opened
   // with the ellipsis stays up until the menu is dismissed.
@@ -8106,7 +8137,7 @@ function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
   const pin = document.createElement("button");
   pin.type = "button";
   pin.className = "sidebar-card-pin";
-  pin.title = project.pinned ? "Unpin project" : "Pin project";
+  pin.title = project.pinned ? t("ui.unpinProject", "Unpin project") : t("ui.pinProject", "Pin project");
   pin.setAttribute("aria-label", pin.title);
   pin.setAttribute("role", "menuitem");
   pin.innerHTML = ICONS.pin;
@@ -8132,8 +8163,8 @@ function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
     button.append(icon(drawing), text);
     return button;
   };
-  const edit = project.registered ? action("edit-project", ICONS.gear, "Edit project") : null;
-  const remove = project.registered ? null : action("remove-project", ICONS.close, "Remove project");
+  const edit = project.registered ? action("edit-project", ICONS.gear, t("ui.editProject", "Edit project")) : null;
+  const remove = project.registered ? null : action("remove-project", ICONS.close, t("dialog.createProject.remove", "Remove project"));
   card.append(head, pin, meta, path);
   if (edit) card.append(edit);
   if (remove) card.append(remove);
@@ -8144,7 +8175,7 @@ function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
       closeSidebarCards();
       renderProjectsTree();
     } catch (error) {
-      showToast(`Could not ${project.pinned ? "unpin" : "pin"} project: ${error}`, "error");
+      showToast(t("ui.couldNotProject", "Could not {value0} project: {value1}", { value0: project.pinned ? t("ui.unpin", "unpin") : t("ui.pin", "pin"), value1: error }), "error");
     }
   };
   if (edit) edit.onclick = () => openEditProject(project);
@@ -8241,14 +8272,14 @@ async function pinSession(session) {
     renderProjectsTree();
     repaintWelcome();
   } catch (error) {
-    showToast(`Could not ${session.pinned ? "unpin" : "pin"} thread: ${error}`, "error");
+    showToast(t("ui.couldNotThread", "Could not {value0} thread: {value1}", { value0: session.pinned ? t("ui.unpin", "unpin") : t("ui.pin", "pin"), value1: error }), "error");
   }
 }
 
 async function archiveSession(session) {
   if (!session || session.unstored) return;
   if (state.busy && (state.session === session.id || state.runSession === session.id)) {
-    showToast("A turn is running; stop it before archiving this thread.");
+    showToast(t("ui.aTurnIsRunningStopItBeforeArchivingThisThread", "A turn is running; stop it before archiving this thread."));
     return;
   }
   try {
@@ -8263,8 +8294,8 @@ async function archiveSession(session) {
     closeSidebarCards();
     renderProjectsTree();
     repaintWelcome();
-    showToast("Chat archived", "info", {
-      label: "Undo",
+    showToast(t("ui.chatArchived", "Chat archived"), "info", {
+      label: t("ui.undo", "Undo"),
       run: async () => {
         state.sessions = await invoke("unarchive_session", { id: session.id, pinned: Boolean(session.pinned) });
         renderProjectsTree();
@@ -8272,7 +8303,7 @@ async function archiveSession(session) {
       },
     });
   } catch (error) {
-    showToast(`Could not archive thread: ${error}`, "error");
+    showToast(t("ui.couldNotArchiveThread", "Could not archive thread: {value0}", { value0: error }), "error");
   }
 }
 
@@ -8284,7 +8315,7 @@ async function renderProjectsTree() {
   container.innerHTML = "";
   
   if (!state.projects || !state.projects.length) {
-    container.innerHTML = '<div class="empty" style="margin:12px; font-size:12px; color:var(--faint);">No projects yet. Add a folder with the + above.</div>';
+    container.innerHTML = `<div class="empty" style="margin:12px; font-size:12px; color:var(--faint);">${escapeHtml(t("desktop.empty.sidebar", "No projects yet. Add a folder with the + above."))}</div>`;
     return;
   }
   
@@ -8335,7 +8366,7 @@ async function renderProjectsTree() {
     const moreBtn = document.createElement("button");
     moreBtn.type = "button";
     moreBtn.className = "row-more";
-    moreBtn.title = `Project options for ${project.name}`;
+    moreBtn.title = t("ui.projectOptionsFor", "Project options for {value0}", { value0: project.name });
     moreBtn.setAttribute("aria-label", moreBtn.title);
     moreBtn.setAttribute("aria-haspopup", "menu");
     moreBtn.setAttribute("aria-controls", "project-actions-menu");
@@ -8364,7 +8395,7 @@ async function renderProjectsTree() {
     const newTaskBtn = document.createElement("button");
     newTaskBtn.type = "button";
     newTaskBtn.className = "row-add";
-    newTaskBtn.title = `New task in ${project.name}`;
+    newTaskBtn.title = t("ui.newTaskIn", "New task in {value0}", { value0: project.name });
     newTaskBtn.setAttribute("aria-label", newTaskBtn.title);
     newTaskBtn.innerHTML = ICONS.compose;
     newTaskBtn.onclick = (event) => {
@@ -8451,7 +8482,7 @@ async function renderProjectsTree() {
     if (!sessionsForProject.length) {
       const empty = document.createElement("div");
       empty.className = "project-empty";
-      empty.textContent = "No chats";
+      empty.textContent = t("sidebar.noChats", "No chats");
       sessionsContainer.appendChild(empty);
     }
 
@@ -8473,7 +8504,7 @@ async function renderProjectsTree() {
       if (session.worktree) {
         const checkout = document.createElement("span");
         checkout.className = "session-worktree";
-        checkout.title = `Runs in the worktree ${session.worktree}`;
+        checkout.title = t("ui.runsInTheWorktree", "Runs in the worktree {value0}", { value0: session.worktree });
         checkout.setAttribute("aria-hidden", "true");
         checkout.innerHTML = ICONS.worktree;
         sessionItem.appendChild(checkout);
@@ -8489,7 +8520,7 @@ async function renderProjectsTree() {
       if (running) {
         const mark = document.createElement("span");
         mark.className = "session-run";
-        mark.title = "A turn is running in this thread";
+        mark.title = t("ui.aTurnIsRunningInThisThread", "A turn is running in this thread");
         mark.setAttribute("aria-hidden", "true");
         const spinner = document.createElement("span");
         spinner.className = "spinner";
@@ -8503,7 +8534,7 @@ async function renderProjectsTree() {
         const pinBtn = document.createElement("button");
         pinBtn.type = "button";
         pinBtn.className = "row-pin" + (session.pinned ? " active" : "");
-        pinBtn.title = session.pinned ? "Unpin thread" : "Pin thread";
+        pinBtn.title = session.pinned ? t("ui.unpinThread", "Unpin thread") : t("ui.pinThread", "Pin thread");
         pinBtn.setAttribute("aria-label", pinBtn.title);
         pinBtn.innerHTML = ICONS.pin;
         pinBtn.onclick = (event) => {
@@ -8515,7 +8546,7 @@ async function renderProjectsTree() {
         const archiveBtn = document.createElement("button");
         archiveBtn.type = "button";
         archiveBtn.className = "row-archive";
-        archiveBtn.title = "Archive thread";
+        archiveBtn.title = t("ui.archiveThread", "Archive thread");
         archiveBtn.setAttribute("aria-label", archiveBtn.title);
         archiveBtn.innerHTML = ICONS.archive;
         archiveBtn.onclick = (event) => {
@@ -8544,8 +8575,8 @@ async function renderProjectsTree() {
       const more = document.createElement("button");
       more.type = "button";
       more.className = "sidebar-show-more project-show-more";
-      more.textContent = "Show more";
-      more.title = `Show ${sessionsForProject.length - SIDEBAR_THREAD_LIMIT} more chats in ${project.name}`;
+      more.textContent = t("sidebar.showMore", "Show more");
+      more.title = t("ui.showMoreChatsIn", "Show {value0} more chats in {value1}", { value0: sessionsForProject.length - SIDEBAR_THREAD_LIMIT, value1: project.name });
       more.onclick = (event) => {
         event.stopPropagation();
         state.expandedSidebarProjects.add(project.id);
@@ -8563,8 +8594,8 @@ async function renderProjectsTree() {
     const moreProjects = document.createElement("button");
     moreProjects.type = "button";
     moreProjects.className = "sidebar-show-more projects-show-more";
-    moreProjects.textContent = "Show more";
-    moreProjects.title = `Show ${state.projects.length - SIDEBAR_PROJECT_LIMIT} more projects`;
+    moreProjects.textContent = t("sidebar.showMore", "Show more");
+    moreProjects.title = t("ui.showMoreProjects", "Show {value0} more projects", { value0: state.projects.length - SIDEBAR_PROJECT_LIMIT });
     moreProjects.onclick = () => {
       state.sidebarProjectsExpanded = true;
       renderProjectsTree();
@@ -8579,7 +8610,7 @@ async function renderProjectsTree() {
   recentSection.className = "sidebar-recents";
   const recentTitle = document.createElement("div");
   recentTitle.className = "sidebar-section-title";
-  recentTitle.textContent = "Recents";
+  recentTitle.textContent = t("sidebar.recents", "Recents");
   recentSection.appendChild(recentTitle);
 
   const recentSessions = [...listedSessions()]
@@ -8680,15 +8711,15 @@ function selectedProjectStillListed() {
 
 async function removeProject(project) {
   if (state.busy && (state.runProject || state.project) === project.path) {
-    showToast("A turn is running; stop it before removing this project.");
+    showToast(t("ui.aTurnIsRunningStopItBeforeRemovingThisProject", "A turn is running; stop it before removing this project."));
     return;
   }
 
   try {
     const choice = await confirmDialog(
-      "Remove project",
-      `Remove “${project.name}” from the sidebar?\n\nIts sessions stay on disk. Use oxide sessions delete from the project folder to delete sessions permanently.`,
-      "Remove project",
+      t("dialog.createProject.remove", "Remove project"),
+      t("ui.removeFromTheSidebarItsSessionsStayOnDiskUseOxideSessionsDeleteFromTheProjectFol", "Remove “{value0}” from the sidebar?\n\nIts sessions stay on disk. Use oxide sessions delete from the project folder to delete sessions permanently.", { value0: project.name }),
+      t("dialog.createProject.remove", "Remove project"),
     );
     if (!choice) return;
     state.projects = await invoke("remove_project", { id: project.id });
@@ -8699,6 +8730,6 @@ async function removeProject(project) {
     await loadSessions();
     renderProjectsTree();
   } catch (error) {
-    showToast(`Could not remove project: ${error}`, "error");
+    showToast(t("ui.couldNotRemoveProject", "Could not remove project: {value0}", { value0: error }), "error");
   }
 }

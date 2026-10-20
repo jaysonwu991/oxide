@@ -164,6 +164,7 @@ async fn event_loop(
     app.show_thinking_blocks = !crate::config::load_hide_thinking_block();
     app.theme = crate::theme::load(&cwd, &theme_name);
     app.lang = crate::i18n::resolve(&cwd);
+    app.status = app.t("tui.status.Ready").to_string();
     app.usage_settings = crate::portkey_usage::UsageSettings::load().unwrap_or_default();
     if app.usage_settings.enabled && app.usage_settings.available(&config) {
         app.usage = Some(crate::portkey_usage::UsageBar::new(&app.usage_settings));
@@ -356,7 +357,7 @@ async fn event_loop(
                     app.clear_progress();
                     app.items.push(mcp_listing(&statuses));
                     app.auto_scroll = true;
-                    app.status = "ready".to_string();
+                    app.status = app.t("tui.status.Ready").to_string();
                 }
             }
             listing = listings_rx.recv() => {
@@ -369,14 +370,14 @@ async fn event_loop(
                         }
                         Err(err) => app.items.push(ChatItem::Error(format!("plugins: {err}"))),
                     }
-                    app.status = "ready".to_string();
+                    app.status = app.t("tui.status.Ready").to_string();
                 }
             }
             plugin_result = plugins_rx.recv() => {
                 if let Some(text) = plugin_result {
                     app.items.push(ChatItem::Info(text));
                     app.auto_scroll = true;
-                    app.status = "ready".to_string();
+                    app.status = app.t("tui.status.Ready").to_string();
                 }
             }
             marketplace_result = marketplaces_rx.recv() => {
@@ -717,9 +718,9 @@ fn handle_key(
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_tool_output();
             app.show_status(if app.expand_tools {
-                "tool output expanded".to_string()
+                app.t("ui.toolOutputExpanded").to_string()
             } else {
-                "tool output collapsed".to_string()
+                app.t("ui.toolOutputCollapsed").to_string()
             });
         }
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -829,7 +830,7 @@ fn handle_key(
                 *rx = Some(new_rx);
                 app.busy = true;
                 app.busy_since = Some(std::time::Instant::now());
-                app.status = "compacting...".to_string();
+                app.status = app.t("tui.status.Compacting").to_string();
                 tokio::spawn(async move {
                     let Some(log) = log else {
                         let fallback = history.clone();
@@ -928,7 +929,7 @@ fn handle_key(
                                     crate::auth::provider_label(&name),
                                     config.model
                                 )));
-                                app.status = "ready".to_string();
+                                app.status = app.t("tui.status.Ready").to_string();
                             }
                             Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
                         }
@@ -937,7 +938,7 @@ fn handle_key(
                     state.step = ConnectStep::Key { provider: name };
                 }
                 app.connect = Some(state);
-                app.status = "connecting...".to_string();
+                app.status = app.t("tui.status.Connecting").to_string();
                 return;
             }
             if raw == "/logout" || raw.starts_with("/logout ") {
@@ -968,7 +969,7 @@ fn handle_key(
                             )));
                         }
                         app.available_providers = available_providers(config);
-                        app.status = "ready".to_string();
+                        app.status = app.t("tui.status.Ready").to_string();
                         sync_usage_bar(app, config, usage_tx);
                     }
                     Ok(false) => app.items.push(ChatItem::Info(format!(
@@ -981,8 +982,8 @@ fn handle_key(
             if raw == "/mcp" {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                app.status = "checking MCP servers...".to_string();
-                app.show_progress("Checking MCP servers");
+                app.status = app.t("tui.status.CheckingMcpServers").to_string();
+                app.show_progress(app.t("ui.checkingMCPServers"));
                 let mcp = Arc::clone(mcp);
                 let tx = mcps_tx.clone();
                 tokio::spawn(async move {
@@ -996,7 +997,7 @@ fn handle_key(
                 match crate::plugin_registry::marketplace_overview() {
                     Ok(all) => {
                         app.marketplaces = Some(MarketplacesState::ready(all));
-                        app.status = "marketplaces".to_string();
+                        app.status = app.t("tui.status.Marketplaces").to_string();
                     }
                     Err(err) => app
                         .items
@@ -1014,8 +1015,8 @@ fn handle_key(
                 };
                 match verb {
                     "" | "list" => {
-                        app.status = "loading plugins...".to_string();
-                        app.show_progress("Loading plugins");
+                        app.status = app.t("tui.status.LoadingPlugins").to_string();
+                        app.show_progress(app.t("ui.loadingPlugins"));
                         let tx = listings_tx.clone();
                         tokio::task::spawn_blocking(move || {
                             let result = plugins_listing().map_err(|err| format!("{err:#}"));
@@ -1222,7 +1223,7 @@ fn handle_key(
                 );
                 state.filter = filter;
                 app.models = Some(state);
-                app.status = "loading models...".to_string();
+                app.status = app.t("tui.status.LoadingModels").to_string();
                 let tx = models_tx.clone();
                 tokio::spawn(async move {
                     let fetched = futures::future::join_all(providers.into_iter().map(
@@ -1253,7 +1254,7 @@ fn handle_key(
             if raw == "/help" {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                app.items.push(ChatItem::Info(help_text(config)));
+                app.items.push(ChatItem::Info(help_text(config, app.lang)));
                 return;
             }
             if raw == "/clone" {
@@ -1586,7 +1587,7 @@ fn handle_key(
             if raw == "/hotkeys" {
                 app.clear_input();
                 refresh_suggestions(app, config);
-                app.items.push(ChatItem::Info(hotkeys_text()));
+                app.items.push(ChatItem::Info(hotkeys_text(app.lang)));
                 return;
             }
             if raw == "/export" || raw.starts_with("/export ") {
@@ -1690,7 +1691,7 @@ fn handle_key(
             app.auto_scroll = true;
             app.assistant_open = false;
             app.notify_on_finish = true;
-            app.status = "thinking...".to_string();
+            app.status = app.t("tui.status.Thinking").to_string();
 
             let (tx, new_rx) = unbounded_channel();
             *rx = Some(new_rx);
@@ -1871,7 +1872,7 @@ fn answer_approval(app: &mut App, approvals: &ApprovalBroker, decision: Decision
     };
     app.status = match &decision {
         Decision::Deny { .. } => "denied".to_string(),
-        _ => "thinking...".to_string(),
+        _ => app.t("tui.status.Thinking").to_string(),
     };
     if approvals.answer(pending.id, decision) {
         app.items.push(ChatItem::Info(outcome));
@@ -1921,90 +1922,140 @@ fn available_providers(config: &Config) -> usize {
 /// The `/help` rows for the commands only the terminal has: the left cell as it
 /// is shown and the description beside it. Nothing here is shared with the other
 /// front-ends, so nothing here can drift out of the catalog.
-const TERMINAL_HELP_ROWS: &[(&str, &str)] = &[
-    ("/hotkeys", "Show the keyboard shortcuts"),
-    ("/exit", "Quit Oxide"),
+const TERMINAL_HELP_ROWS: &[(&str, &str, &str)] = &[
+    (
+        "/hotkeys",
+        "terminal.help.hotkeys",
+        "Show the keyboard shortcuts",
+    ),
+    ("/exit", "terminal.help.exit", "Quit Oxide"),
     (
         "/<skill>",
+        "terminal.help.skill",
         "Load a skill by name (also written /skill:<name>)",
     ),
-    ("/name <name>", "Name the current session"),
-    ("/status", "Show this session's file, id, name, and stats"),
-    ("/tree [n]", "List branch points, or branch at message n"),
-    ("/fork [n]", "Branch a new session from message n"),
-    ("/clone", "Duplicate the current session"),
-    ("/export [file]", "Export the session to HTML"),
-    ("/reload", "Reload config, commands, and skills"),
-    ("/init", "Create or update AGENTS.md for this project"),
+    (
+        "/name <name>",
+        "terminal.help.name",
+        "Name the current session",
+    ),
+    (
+        "/status",
+        "terminal.help.status",
+        "Show this session's file, id, name, and stats",
+    ),
+    (
+        "/tree [n]",
+        "terminal.help.tree",
+        "List branch points, or branch at message n",
+    ),
+    (
+        "/fork [n]",
+        "terminal.help.fork",
+        "Branch a new session from message n",
+    ),
+    (
+        "/clone",
+        "terminal.help.clone",
+        "Duplicate the current session",
+    ),
+    (
+        "/export [file]",
+        "terminal.help.export",
+        "Export the session to HTML",
+    ),
+    (
+        "/reload",
+        "terminal.help.reload",
+        "Reload config, commands, and skills",
+    ),
+    (
+        "/init",
+        "terminal.help.init",
+        "Create or update AGENTS.md for this project",
+    ),
     (
         "/models [filter]",
+        "terminal.help.models",
         "List models from every logged-in provider",
     ),
     (
         "/plugins [list|install|uninstall|enable|disable|marketplace]",
+        "terminal.help.plugins",
         "Manage plugins and marketplaces",
     ),
     (
         "/marketplaces [list|add|update|remove]",
+        "terminal.help.marketplaces",
         "Browse, add, and remove plugin marketplaces",
     ),
     (
         "/notify [on|off]",
+        "terminal.help.notify",
         "Show or set completion notifications (sound too)",
     ),
     (
         "/spend [on|off]",
+        "terminal.help.spend",
         "Configure the Portkey spend bar (dialog)",
     ),
     (
         "/updates [on|off]",
+        "terminal.help.updates",
         "Check for a newer release at launch; show the last one seen",
     ),
-    ("/undo, /redo", "Revert or reapply the agent's file changes"),
+    (
+        "/undo, /redo",
+        "terminal.help.undo",
+        "Revert or reapply the agent's file changes",
+    ),
     (
         "/compact [focus]",
+        "terminal.help.compact",
         "Summarize older context, optionally with a focus",
     ),
     (
         "/copy [all]",
+        "terminal.help.copy",
         "Copy the last assistant message, or the whole transcript",
     ),
 ];
 
-fn help_text(config: &Config) -> String {
+fn help_text(config: &Config, lang: crate::i18n::Language) -> String {
     // The catalog's rows first — the names, argument hints and descriptions the
     // desktop app's palette and the panel's menu show too — then the commands
     // only the terminal has. One spelling per command, the catalog's.
-    let mut rows: Vec<(String, String)> =
-        crate::commands::builtin_entries_for(crate::commands::FrontEnd::Terminal)
-            .into_iter()
-            .map(|entry| {
-                let left = match &entry.arguments {
-                    Some(arguments) => format!("/{} <{}>", entry.name, arguments),
-                    None => format!("/{}", entry.name),
-                };
-                (left, entry.description)
-            })
-            .collect();
-    rows.extend(
-        TERMINAL_HELP_ROWS
-            .iter()
-            .map(|(left, description)| (left.to_string(), description.to_string())),
-    );
+    let mut rows: Vec<(String, String)> = crate::commands::localized_builtin_entries(lang)
+        .into_iter()
+        .filter(|entry| entry.front_ends.contains(&"terminal"))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|entry| {
+            let left = match &entry.arguments {
+                Some(arguments) => format!("/{} <{}>", entry.name, arguments),
+                None => format!("/{}", entry.name),
+            };
+            (left, entry.description)
+        })
+        .collect();
+    rows.extend(TERMINAL_HELP_ROWS.iter().map(|(left, key, _description)| {
+        (left.to_string(), crate::i18n::t(lang, key).to_string())
+    }));
     let width = rows
         .iter()
         .map(|(left, _)| left.chars().count())
         .max()
         .unwrap_or(0)
         .max(22);
-    let mut lines = vec!["built-in commands:".to_string()];
+    let mut lines = vec![crate::i18n::t(lang, "tui.helpTitle").to_string()];
     lines.extend(
         rows.iter()
             .map(|(left, description)| format!("  {left:<width$}  {description}")),
     );
-    lines.push(format!(
-        "keys: Enter send/steer · Shift+Enter newline · Alt+Enter queue for after · {} edit queued · Shift+Tab/Ctrl+R reasoning · Ctrl+O tool details · Ctrl+T thinking · Ctrl+V image · Ctrl+A/E message start/end · ↑/↓ history · PgUp/PgDn/wheel scroll · Ctrl+U/D half page · drag to select and copy · Ctrl+C copy selection/quit",
-        dequeue_key_label()
+    lines.push(crate::i18n::tf(
+        lang,
+        "tui.helpKeys",
+        &[("key", dequeue_key_label())],
     ));
     if !config.ecosystem.commands.is_empty() {
         let names: Vec<String> = config
@@ -2149,7 +2200,7 @@ fn handle_updates_command(
                 notice.version,
                 relative_time(ui::now_secs(), notice.checked_at)
             ),
-            None => "no release seen yet".to_string(),
+            None => app.t("ui.noReleaseSeenYet").to_string(),
         };
         let command = update_notice_command();
         let installable = if command.is_none() {
@@ -2252,10 +2303,15 @@ fn handle_language_command(app: &mut App, requested: &str) {
             .iter()
             .map(|language| language.tag())
             .collect();
-        app.items.push(ChatItem::Info(format!(
-            "{}; available: {}",
-            app.tf("language.current", &[("language", app.lang.tag())]),
-            names.join(", ")
+        app.items.push(ChatItem::Info(app.tf(
+            "language.available",
+            &[
+                (
+                    "current",
+                    &app.tf("language.current", &[("language", app.lang.tag())]),
+                ),
+                ("languages", &names.join(", ")),
+            ],
         )));
         return;
     }
@@ -2268,9 +2324,9 @@ fn handle_language_command(app: &mut App, requested: &str) {
                     app.tf("language.changed", &[("language", language.native_label())]),
                 ));
             }
-            Err(error) => app.items.push(ChatItem::Error(format!(
-                "Could not save language: {error:#}"
-            ))),
+            Err(error) => app.items.push(ChatItem::Error(
+                app.tf("language.saveError", &[("error", &format!("{error:#}"))]),
+            )),
         },
         None => {
             let names: Vec<&str> = crate::i18n::Language::ALL
@@ -2314,8 +2370,9 @@ fn handle_notify_command(app: &mut App, config: &mut Config, raw: &str) {
                 "Test notification — all tasks completed.",
                 settings.sound,
             );
-            app.items
-                .push(ChatItem::Info("sent a test notification".to_string()));
+            app.items.push(ChatItem::Info(
+                app.t("ui.sentATestNotification").to_string(),
+            ));
             return;
         }
         "sound" => {
@@ -2393,9 +2450,9 @@ fn handle_permissions_command(
                 "tool approvals: {} ({}); always allowed here: {rules}\n{HINT}",
                 if config.auto_approve { "off" } else { "on" },
                 if config.auto_approve {
-                    "gated tools run without asking"
+                    app.t("ui.gatedToolsRunWithoutAsking")
                 } else {
-                    "asked before a gated tool runs"
+                    app.t("ui.askedBeforeAGatedToolRuns")
                 },
             )));
         }
@@ -2446,10 +2503,10 @@ fn usage_summary(app: &App) -> String {
     use crate::tui::ui::{context_percent, format_tokens};
     let mut parts: Vec<String> = Vec::new();
     if app.tokens_in > 0 {
-        parts.push(format!("↑{} in", format_tokens(app.tokens_in)));
+        parts.push(app.tf("usage.input", &[("count", &format_tokens(app.tokens_in))]));
     }
     if app.tokens_out > 0 {
-        parts.push(format!("↓{} out", format_tokens(app.tokens_out)));
+        parts.push(app.tf("usage.output", &[("count", &format_tokens(app.tokens_out))]));
     }
     if app.tokens_cache_read > 0 {
         parts.push(format!("R{}", format_tokens(app.tokens_cache_read)));
@@ -2466,27 +2523,37 @@ fn usage_summary(app: &App) -> String {
         parts.push(format!("${:.3}", app.cost));
     }
     let usage = if parts.is_empty() {
-        "no tokens reported yet".to_string()
+        app.t("ui.noTokensReportedYet").to_string()
     } else {
         parts.join(" ")
     };
-    let mut lines = vec![format!("this chat: {usage}")];
+    let mut lines = vec![app.tf("usage.thisChat", &[("usage", &usage)])];
     if app.context_limit > 0 {
-        let auto = if app.auto_compact { "auto" } else { "manual" };
+        let auto = app.t(if app.auto_compact {
+            "usage.automatic"
+        } else {
+            "usage.manual"
+        });
         lines.push(if app.context_used > 0 {
-            format!(
-                "context: {}% of {} ({auto} compaction)",
-                context_percent(app.context_used, app.context_limit),
-                format_tokens(app.context_limit)
+            app.tf(
+                "usage.context",
+                &[
+                    (
+                        "percent",
+                        &context_percent(app.context_used, app.context_limit).to_string(),
+                    ),
+                    ("limit", &format_tokens(app.context_limit)),
+                    ("mode", auto),
+                ],
             )
         } else {
-            format!(
-                "context: ? of {} ({auto} compaction)",
-                format_tokens(app.context_limit)
+            app.tf(
+                "usage.contextEmpty",
+                &[("limit", &format_tokens(app.context_limit)), ("mode", auto)],
             )
         });
     }
-    lines.push("the Portkey account's spend is /spend".to_string());
+    lines.push(app.t("usage.portkeyHint").to_string());
     lines.join("\n")
 }
 
@@ -2548,7 +2615,11 @@ fn handle_spend_command(
         }
         "off" => {
             settings.enabled = false;
-            (true, Some("portkey usage bar off".to_string()), false)
+            (
+                true,
+                Some(app.t("ui.portkeyUsageBarOff").to_string()),
+                false,
+            )
         }
         "user" => {
             if rest.is_empty() || rest.split_whitespace().count() > 1 {
@@ -2603,7 +2674,7 @@ fn handle_spend_command(
                     "portkey month budget set to {}",
                     settings.currency.format(budget)
                 ),
-                None => "portkey month budget cleared".to_string(),
+                None => app.t("ui.portkeyMonthBudgetCleared").to_string(),
             };
             (true, Some(note), false)
         }
@@ -2730,7 +2801,7 @@ fn handle_usage_key(
             if let Err(err) = settings.save() {
                 app.items.push(ChatItem::Error(format!("usage: {err:#}")));
             } else {
-                app.show_status("portkey usage settings saved");
+                app.show_status(app.t("ui.portkeyUsageSettingsSaved"));
             }
             if settings.enabled && !settings.available(config) {
                 app.items.push(ChatItem::Error(
@@ -2875,38 +2946,12 @@ fn mask(key: &str) -> String {
 }
 
 /// Keyboard shortcuts shown by `/hotkeys`.
-fn hotkeys_text() -> String {
-    [
-        "keyboard shortcuts:".to_string(),
-        "  Enter                 send (steers the response while busy)".to_string(),
-        "  Shift+Enter           insert a newline".to_string(),
-        "  Alt+Enter             queue a follow-up while busy".to_string(),
-        format!(
-            "  {:<22}pull queued messages back into the editor",
-            dequeue_key_label()
-        ),
-        "  Esc                   clear the input, or deny a waiting tool".to_string(),
-        "  Shift+Tab / Ctrl+R    cycle reasoning/thinking level".to_string(),
-        "  Ctrl+O                toggle tool output".to_string(),
-        "  Ctrl+T                show or hide thinking blocks".to_string(),
-        "  Ctrl+V                attach the clipboard image or copied file".to_string(),
-        "  Tab                   complete the selected command or @path".to_string(),
-        "  Ctrl+A / Ctrl+E       jump to the start/end of the message (when it is not empty)"
-            .to_string(),
-        "  Ctrl+Y                scroll up one line".to_string(),
-        "  Ctrl+E                scroll down one line (when the message is empty)".to_string(),
-        "  Ctrl+U / Ctrl+D       scroll half a page".to_string(),
-        "  PgUp / PgDn / wheel   scroll the transcript".to_string(),
-        "  Ctrl+G / Home         scroll to the top".to_string(),
-        "  End                   return to the latest message".to_string(),
-        "  Up / Down             input history".to_string(),
-        "  drag (mouse)          select text; copies on release".to_string(),
-        "  Ctrl+C                copy the selection, or quit".to_string(),
-        "  /exit                 quit Oxide".to_string(),
-        "  /copy                 copy the last assistant message".to_string(),
-        "  /copy all             copy the whole transcript".to_string(),
-    ]
-    .join("\n")
+fn hotkeys_text(lang: crate::i18n::Language) -> String {
+    crate::i18n::tf(
+        lang,
+        "tui.hotkeys",
+        &[("dequeue", &format!("{:<22}", dequeue_key_label()))],
+    )
 }
 
 /// 1-based positions and text of user messages, for `/tree` and `/fork`.
@@ -2976,7 +3021,7 @@ fn fork_session(
             *rx = Some(new_rx);
             app.busy = true;
             app.busy_since = Some(std::time::Instant::now());
-            app.status = "summarizing branch...".to_string();
+            app.status = app.t("tui.status.SummarizingBranch").to_string();
             tokio::spawn(async move {
                 match crate::compact::summarize_branch(&config, &abandoned, None).await {
                     Ok((summary, usage)) => {
@@ -3063,7 +3108,8 @@ fn branch_in_place(
     *rx = Some(new_rx);
     app.busy = true;
     app.busy_since = Some(std::time::Instant::now());
-    app.status = "summarizing branch...".to_string();
+    app.status = app.t("tui.status.SummarizingBranch").to_string();
+    let lang = app.lang;
     tokio::spawn(async move {
         match crate::compact::summarize_branch(&config, &abandoned, None).await {
             Ok((summary, usage)) => {
@@ -3094,7 +3140,7 @@ fn branch_in_place(
                 let _ = tx.send(AgentEvent::Branch {
                     history,
                     prompt,
-                    message: "branch summary failed".to_string(),
+                    message: crate::i18n::t(lang, "ui.branchSummaryFailed").to_string(),
                     summary: None,
                 });
             }
@@ -3206,7 +3252,7 @@ fn handle_attach_command(app: &mut App, raw: &str) -> bool {
             let removed = app.attachments.len();
             app.attachments.clear();
             app.items.push(ChatItem::Info(if removed == 0 {
-                "no attachments".to_string()
+                app.t("ui.noAttachments").to_string()
             } else {
                 format!(
                     "cleared {removed} attachment{}",
@@ -3242,26 +3288,35 @@ fn handle_attach_command(app: &mut App, raw: &str) -> bool {
 /// performs, then the ones only the terminal has. A shared command is named and
 /// described in the catalog, so `/mcp` completes as `/mcp` everywhere and a
 /// spelling is written down once.
-fn builtin_commands() -> Vec<CommandHint> {
-    let mut hints: Vec<CommandHint> =
-        crate::commands::builtin_entries_for(crate::commands::FrontEnd::Terminal)
-            .into_iter()
-            .map(|entry| CommandHint {
-                name: entry.name,
-                description: entry.description,
-            })
-            .collect();
-    hints.extend(terminal_only_commands());
+fn builtin_commands(lang: crate::i18n::Language) -> Vec<CommandHint> {
+    let mut hints: Vec<CommandHint> = crate::commands::localized_builtin_entries(lang)
+        .into_iter()
+        .filter(|entry| entry.front_ends.contains(&"terminal"))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|entry| CommandHint {
+            name: entry.name,
+            description: entry.description,
+        })
+        .collect();
+    hints.extend(terminal_only_commands(lang));
     hints
 }
 
 /// The commands only the terminal performs — session branching, attachment
 /// editing, the spend bar, the transcript and its tools. They are described here
 /// because no other front-end offers them.
-fn terminal_only_commands() -> Vec<CommandHint> {
+fn terminal_only_commands(lang: crate::i18n::Language) -> Vec<CommandHint> {
     let hint = |name: &str, description: &str| CommandHint {
         name: name.to_string(),
-        description: description.to_string(),
+        description: {
+            let text = crate::i18n::t(lang, &format!("terminal.command.{name}"));
+            if text.is_empty() {
+                description.to_string()
+            } else {
+                text.to_string()
+            }
+        },
     };
     vec![
         hint("hotkeys", "Show keyboard shortcuts"),
@@ -3710,7 +3765,7 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
     // `/skill:aud` narrows the same list: the prefix is the terminal's other way
     // of naming a skill, not part of its name.
     let query = query.strip_prefix("skill:").unwrap_or(&query).to_string();
-    let mut hints = builtin_commands();
+    let mut hints = builtin_commands(app.lang);
     for command in &config.ecosystem.commands {
         hints.push(CommandHint {
             name: command.name.clone(),
@@ -3827,11 +3882,11 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     match key.code {
         KeyCode::Esc => {
             keep = false;
-            app.show_status("model unchanged");
+            app.show_status(app.t("ui.modelUnchanged"));
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             keep = false;
-            app.show_status("model unchanged");
+            app.show_status(app.t("ui.modelUnchanged"));
         }
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if let Some(choice) = state.selected_model().cloned() {
@@ -3845,7 +3900,7 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                             config.default_model = Some(choice.model.clone());
                             app.items
                                 .push(ChatItem::Info(format!("default model: {}", choice.model)));
-                            app.status = "ready".to_string();
+                            app.status = app.t("tui.status.Ready").to_string();
                             keep = false;
                         }
                     }
@@ -3885,7 +3940,7 @@ fn handle_models_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                             "model set to {} [{}]",
                             choice.model, choice.provider
                         )));
-                        app.status = "ready".to_string();
+                        app.status = app.t("tui.status.Ready").to_string();
                         keep = false;
                     }
                     Err(err) => state.error = Some(format!("{err:#}")),
@@ -3998,7 +4053,7 @@ fn handle_sessions_key(
     match key.code {
         KeyCode::Esc => {
             keep = false;
-            app.show_status("session unchanged");
+            app.show_status(app.t("ui.sessionUnchanged"));
         }
         KeyCode::Up => {
             state.selected = state.selected.saturating_sub(1);
@@ -4038,7 +4093,7 @@ fn handle_sessions_key(
                     Ok(log) => switch_session(app, config, session, log),
                     Err(err) => {
                         app.items.push(ChatItem::Error(format!("session: {err:#}")));
-                        app.status = "ready".to_string();
+                        app.status = app.t("tui.status.Ready").to_string();
                     }
                 }
                 keep = false;
@@ -4091,7 +4146,7 @@ fn handle_marketplace_outcome(outcome: MarketplaceOutcome, app: &mut App) {
         app.items.push(ChatItem::Info(text));
         app.auto_scroll = true;
     }
-    app.status = "ready".to_string();
+    app.status = app.t("tui.status.Ready").to_string();
 }
 
 type MarketplacesTx = UnboundedSender<MarketplaceOutcome>;
@@ -4170,7 +4225,7 @@ fn handle_marketplaces_key(key: KeyEvent, app: &mut App, marketplaces_tx: &Marke
     match key.code {
         KeyCode::Esc => {
             keep = false;
-            app.show_status("marketplaces closed");
+            app.show_status(app.t("ui.marketplacesClosed"));
         }
         KeyCode::Up => match state.pane {
             MarketplacePane::Marketplaces => {
@@ -4354,7 +4409,7 @@ fn switch_session(
         }
         Err(err) => {
             app.items.push(ChatItem::Error(format!("session: {err:#}")));
-            app.status = "ready".to_string();
+            app.status = app.t("tui.status.Ready").to_string();
         }
     }
 }
@@ -4489,12 +4544,12 @@ fn handle_model_result(catalogs: ModelCatalogs, app: &mut App) {
     if catalogs.choices.is_empty() {
         app.models = None;
         let message = if catalogs.errors.is_empty() {
-            "provider returned no models".to_string()
+            app.t("ui.providerReturnedNoModels").to_string()
         } else {
             format!("models: {}", catalogs.errors.join("; "))
         };
         app.items.push(ChatItem::Error(message));
-        app.status = "ready".to_string();
+        app.status = app.t("tui.status.Ready").to_string();
         return;
     }
     if !catalogs.errors.is_empty() {
@@ -4737,7 +4792,7 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
         for attachment in composer {
             app.restore_attachment(attachment);
         }
-        app.show_status("response finished; press Enter to send as the next turn");
+        app.show_status(app.t("tui.status.ResponseFinishedPressEnterToSendAsTheNextTurn"));
         return;
     }
     // The message carries the attachment's bytes; the file name it was shown by
@@ -4754,9 +4809,9 @@ fn queue_while_busy(app: &mut App, raw: &str, cwd: &Path, follow_up: bool) {
     // composer's `Steering:`/`Follow-up:` list (above the box) until the run
     // delivers it, when `AgentEvent::Steered` paints it as a turn, like Pi.
     if follow_up {
-        app.status = "queued as the next turn...".to_string();
+        app.status = app.t("tui.status.QueuedAsTheNextTurn").to_string();
     } else {
-        app.status = "steering active response...".to_string();
+        app.status = app.t("tui.status.SteeringActiveResponse").to_string();
     }
 }
 
@@ -4771,7 +4826,7 @@ fn dequeue_messages(app: &mut App) {
         // Nothing is waiting, so every recorded attachment belongs to a message
         // the run has already consumed.
         app.queued_attachments.clear();
-        app.show_status("no queued messages to restore");
+        app.show_status(app.t("ui.noQueuedMessagesToRestore"));
         return;
     }
 
@@ -4894,7 +4949,7 @@ fn copy_selection(app: &mut App) -> bool {
     };
     let text = selection.text(&app.lines, &app.line_joins);
     if text.trim().is_empty() {
-        app.show_status("nothing to copy");
+        app.show_status(app.t("ui.nothingToCopy"));
         return true;
     }
     match crate::clipboard::copy(&text) {
@@ -4916,13 +4971,13 @@ fn copy_command(app: &mut App, all: bool) {
         }) {
             Some(text) => text,
             None => {
-                app.show_status("nothing to copy");
+                app.show_status(app.t("ui.nothingToCopy"));
                 return;
             }
         }
     };
     if text.trim().is_empty() {
-        app.show_status("nothing to copy");
+        app.show_status(app.t("ui.nothingToCopy"));
         return;
     }
     match crate::clipboard::copy(&text) {
@@ -4945,8 +5000,9 @@ fn handle_trust_key(key: KeyEvent, app: &mut App, config: &mut Config, cwd: &Pat
             // Escape declines for this session without saving a decision.
             config.trusted = false;
             config.reload_ecosystem(cwd);
-            app.items
-                .push(ChatItem::Info("project resources not trusted".to_string()));
+            app.items.push(ChatItem::Info(
+                app.t("ui.projectResourcesNotTrusted").to_string(),
+            ));
             return;
         }
         KeyCode::Enter => {
@@ -5225,7 +5281,7 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
     match key.code {
         KeyCode::Esc => {
             keep = false;
-            app.show_status("connect cancelled");
+            app.show_status(app.t("ui.connectCancelled"));
         }
         KeyCode::Enter => {
             let value = state.input.trim().to_string();
@@ -5288,7 +5344,7 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                                 // loop reads while the reader is back at the
                                 // prompt.
                                 app.pending_catalog = Some(name);
-                                app.status = "ready".to_string();
+                                app.status = app.t("tui.status.Ready").to_string();
                                 keep = false;
                             }
                             Err(err) => state.error = Some(format!("{err:#}")),
@@ -5453,9 +5509,10 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         // elsewhere (a client that drives the same loop), which nobody can
         // answer in this transcript.
         AgentEvent::QuestionRequest { .. } => {
-            app.status = "waiting for an answer".to_string();
+            app.status = app.t("ui.waitingForAnAnswer").to_string();
             app.items.push(ChatItem::Info(
-                "a question arrived that this terminal cannot answer".to_string(),
+                app.t("ui.aQuestionArrivedThatThisTerminalCannotAnswer")
+                    .to_string(),
             ));
             app.auto_scroll = true;
         }
@@ -5474,9 +5531,9 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             follow_up,
         } => {
             app.status = if follow_up {
-                "queued follow-up sent".to_string()
+                app.t("tui.status.QueuedFollowUpSent").to_string()
             } else {
-                "steering message sent".to_string()
+                app.t("ui.steeringMessageSent").to_string()
             };
             // The records for this message's attachments are consumed with it,
             // so a later dequeue does not try to restore them onto another
@@ -5496,14 +5553,14 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         AgentEvent::Text(delta) => {
             app.auto_scroll = true;
             // Clear any `retrying...` notice now that output is flowing again.
-            app.status = "thinking...".to_string();
+            app.status = app.t("tui.status.Thinking").to_string();
             app.push_assistant_delta(delta);
         }
         AgentEvent::ThinkingDelta(delta) => {
             app.auto_scroll = true;
             app.assistant_open = false;
             app.push_thinking_delta(delta);
-            app.status = "thinking...".to_string();
+            app.status = app.t("tui.status.Thinking").to_string();
         }
         AgentEvent::Thought { millis } => app.finish_thinking(millis),
         AgentEvent::ThoughtDone { .. } => {
@@ -5540,7 +5597,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.auto_scroll = true;
             app.running_tool = Some((name.clone(), std::time::Instant::now()));
             app.items.push(ChatItem::Tool { name, args });
-            app.status = "running tool...".to_string();
+            app.status = app.t("tui.status.RunningTool").to_string();
         }
         AgentEvent::ToolProgress { name, chunk } => {
             app.auto_scroll = true;
@@ -5582,7 +5639,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
                 app.pending_approval = None;
             }
             app.resolve_tool(name, args, output, is_error, diff, millis);
-            app.status = "thinking...".to_string();
+            app.status = app.t("tui.status.Thinking").to_string();
         }
         AgentEvent::Usage {
             input,
@@ -5633,7 +5690,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.busy_since = None;
             app.pending_approval = None;
             app.assistant_open = false;
-            app.status = "ready".to_string();
+            app.status = app.t("tui.status.Ready").to_string();
             app.reset_history(history);
             app.set_input(prompt);
             if let Some(summary) = summary {
@@ -5663,7 +5720,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.pending_approval = None;
             app.assistant_open = false;
             app.auto_scroll = true;
-            app.status = "ready".to_string();
+            app.status = app.t("tui.status.Ready").to_string();
         }
     }
 }
@@ -7111,7 +7168,7 @@ mod tests {
                 subtask: false,
             });
 
-        let help = help_text(&config);
+        let help = help_text(&config, crate::i18n::Language::DEFAULT);
         assert!(help.contains("built-in commands"));
         assert!(help.contains("/connect"));
         assert!(help.contains("/mcp"));
@@ -7641,7 +7698,7 @@ mod tests {
         refresh_suggestions(&mut app, &config);
         assert_eq!(app.suggestions.len(), 1);
         assert_eq!(app.suggestions[0].name, "init");
-        assert!(help_text(&config).contains("/init"));
+        assert!(help_text(&config, crate::i18n::Language::DEFAULT).contains("/init"));
         assert!(init_prompt().contains("AGENTS.md"));
     }
 
@@ -7683,9 +7740,23 @@ mod tests {
                 handle_language_command(&mut app, requested);
                 assert_eq!(app.lang, *language);
                 assert!(matches!(app.items.last(), Some(ChatItem::Info(text))
-                    if text.contains(language.tag()) && text.contains("available: en-GB, zh-CN")));
+                    if text.contains(language.tag()) && text.contains("en-GB, zh-CN") && (language == &crate::i18n::Language::EnGb || text.contains("可选"))));
             }
         }
+    }
+
+    #[test]
+    fn chinese_help_and_usage_preserve_command_names() {
+        let config = crate::config::Config::default();
+        let help = help_text(&config, crate::i18n::Language::ZhCn);
+        assert!(help.contains("内置命令："));
+        assert!(help.contains("/mcp") && help.contains("列出 MCP 服务器"));
+        assert!(help.contains("/copy") && help.contains("复制上一条助手消息"));
+        let keys = hotkeys_text(crate::i18n::Language::ZhCn);
+        assert!(keys.contains("键盘快捷键") && keys.contains("Shift+Enter"));
+        let mut app = test_app();
+        app.lang = crate::i18n::Language::ZhCn;
+        assert!(usage_summary(&app).contains("尚未报告词元用量"));
     }
 
     #[test]

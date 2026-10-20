@@ -281,6 +281,20 @@ pub fn builtin_entries() -> Vec<CommandEntry> {
     BUILTINS.iter().map(CommandEntry::builtin).collect()
 }
 
+pub fn localized_builtin_entries(language: crate::i18n::Language) -> Vec<CommandEntry> {
+    builtin_entries()
+        .into_iter()
+        .map(|mut entry| {
+            let key = format!("command.{}", entry.name);
+            let text = crate::i18n::t(language, &key);
+            if !text.is_empty() {
+                entry.description = text.to_string();
+            }
+            entry
+        })
+        .collect()
+}
+
 /// The built-ins one front-end performs, in the catalog's own order: the rows of
 /// its `/` menu, so a client names and describes them from here rather than from
 /// a list of its own that drifts.
@@ -333,7 +347,7 @@ pub fn palette_with(cwd: &Path, project_trusted: bool) -> Vec<CommandEntry> {
         },
     );
 
-    let mut entries: Vec<CommandEntry> = builtin_entries();
+    let mut entries = localized_builtin_entries(crate::i18n::resolve(cwd));
     // The project load already merges the global scope, so the global listing
     // is what is compared against to tell where an entry came from.
     let global = configured(&global);

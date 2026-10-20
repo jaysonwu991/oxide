@@ -954,7 +954,7 @@ function installMarkdownInput(editor, render) {
       arg.classList.add("pathlike");
       arg.dataset.path = target;
       arg.dataset.line = String(args.offset || 0);
-      arg.title = `Open ${target}`;
+      arg.title = t("common.openNamed", "Open {value0}", { value0: target });
     }
     const state = document.createElement("span");
     state.className = "tstate";
@@ -1116,9 +1116,9 @@ function installMarkdownInput(editor, render) {
     // no time here and carries none.
     const spent = item.elapsed ? ` ${formatDuration(item.elapsed)}` : "";
     entry.state.textContent = quietSearch
-      ? `0 matches${item.elapsed ? ` · ${formatDuration(item.elapsed)}` : ""}`
+      ? t("ui.0Matches", "0 matches{value0}", { value0: item.elapsed ? ` · ${formatDuration(item.elapsed)}` : "" })
       : `${mark}${counts ? ` ${counts}` : ""}${spent}`;
-    entry.state.title = item.unknown ? "Resumed thread: how this call ended was not recorded" : "";
+    entry.state.title = item.unknown ? t("ui.resumedThreadHowThisCallEndedWasNotRecorded", "Resumed thread: how this call ended was not recorded") : "";
     entry.inline = Boolean(item.diff);
     if (item.diff && !entry.diffEl) {
       entry.diffEl = document.createElement("div");
@@ -1141,7 +1141,7 @@ function installMarkdownInput(editor, render) {
       // A card with something folded offers the fold back where the output
       // ends, so a long result can be closed from under it as well.
       entry.hint.hidden = !entry.folded;
-      entry.hint.textContent = "Show less";
+      entry.hint.textContent = t("sidebar.showLess", "Show less");
     } else if (entry.inline) {
       entry.folded = false;
       entry.pre.hidden = true;
@@ -1205,7 +1205,7 @@ function installMarkdownInput(editor, render) {
     lock.textContent = "\u{1F512}";
     const title = document.createElement("span");
     title.className = "atitle";
-    title.textContent = "Permission required";
+    title.textContent = t("dialog.approval.title", "Permission required");
     head.append(lock, title);
     const what = document.createElement("div");
     what.className = "awhat";
@@ -1238,7 +1238,7 @@ function installMarkdownInput(editor, render) {
     if (!waiting) {
       const done = document.createElement("span");
       done.className = "adone";
-      done.textContent = item.label || "Answered";
+      done.textContent = item.label || t("ui.answered", "Answered");
       entry.actions.appendChild(done);
       return;
     }
@@ -1246,8 +1246,8 @@ function installMarkdownInput(editor, render) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = action.className;
-      button.textContent = action.label;
-      button.title = action.title;
+      button.textContent = t(`dialog.approval.${action.decision}`, action.label);
+      button.title = t(`dialog.approval.${action.decision}Hint`, action.title);
       button.addEventListener("click", () =>
         vscode.postMessage({
           k: "approval",
@@ -1259,7 +1259,7 @@ function installMarkdownInput(editor, render) {
     }
     const hint = document.createElement("span");
     hint.className = "awaiting";
-    hint.textContent = "Waiting for your answer…";
+    hint.textContent = t("ui.waitingForYourAnswer", "Waiting for your answer…");
     entry.actions.appendChild(hint);
   }
 
@@ -1286,7 +1286,7 @@ function installMarkdownInput(editor, render) {
     mark.textContent = "?";
     const title = document.createElement("span");
     title.className = "qtitle";
-    title.textContent = String(item.title || "Question");
+    title.textContent = String(item.title || t("dialog.question.title", "Question"));
     head.append(mark, title);
     const body = document.createElement("div");
     body.className = "qbody";
@@ -1303,7 +1303,7 @@ function installMarkdownInput(editor, render) {
   function questionHint(question) {
     const options = Array.isArray(question.options) ? question.options : [];
     if (!options.length) return "";
-    return question.multiSelect ? "Select all that apply" : "Select one answer";
+    return question.multiSelect ? t("ui.selectAllThatApply", "Select all that apply") : t("ui.selectOneAnswer", "Select one answer");
   }
 
   /// One question's own fields: its options, and the row that takes an answer in
@@ -1358,8 +1358,8 @@ function installMarkdownInput(editor, render) {
       own.className = "qchoice qownchoice";
       const label = document.createElement("span");
       label.className = "qlabel";
-      label.textContent = "Type your own answer";
-      free.placeholder = "Type your answer…";
+      label.textContent = t("ui.typeYourOwnAnswer", "Type your own answer");
+      free.placeholder = t("ui.typeYourAnswer", "Type your answer…");
       own.addEventListener("change", () => {
         if (own.checked) free.focus();
       });
@@ -1371,7 +1371,7 @@ function installMarkdownInput(editor, render) {
       row.append(own, label);
       block.append(row, free);
     } else {
-      free.placeholder = options.length ? "Or type your own answer…" : "Type your answer…";
+      free.placeholder = options.length ? t("ui.orTypeYourOwnAnswer", "Or type your own answer…") : t("ui.typeYourAnswer", "Type your answer…");
       block.appendChild(free);
     }
     return block;
@@ -1409,8 +1409,8 @@ function installMarkdownInput(editor, render) {
     const dismiss = document.createElement("button");
     dismiss.type = "button";
     dismiss.className = "ghost";
-    dismiss.textContent = "Dismiss";
-    dismiss.title = "Answer nothing and let the agent continue with its own default";
+    dismiss.textContent = t("common.dismiss", "Dismiss");
+    dismiss.title = t("ui.answerNothingAndLetTheAgentContinueWithItsOwnDefault", "Answer nothing and let the agent continue with its own default");
     dismiss.addEventListener("click", () =>
       vscode.postMessage({ k: "question", requestId: entry.item.requestId, answers: [] }),
     );
@@ -1421,8 +1421,8 @@ function installMarkdownInput(editor, render) {
       // Whichever button leads the group on the right carries the margin that
       // pushes it there, since Back is only there once there is one.
       back.className = "ghost qback";
-      back.textContent = "Back";
-      back.title = "Go back to the previous question";
+      back.textContent = t("common.back", "Back");
+      back.title = t("ui.goBackToThePreviousQuestion", "Go back to the previous question");
       back.addEventListener("click", () => {
         entry.stepIndex -= 1;
         paintQuestionStep(entry);
@@ -1432,8 +1432,8 @@ function installMarkdownInput(editor, render) {
     const next = document.createElement("button");
     next.type = "button";
     next.className = entry.stepIndex > 0 ? "primary" : "primary qlead";
-    next.textContent = last ? "Submit" : "Next";
-    next.title = last ? "Send these answers to the agent" : "Go to the question after this one";
+    next.textContent = last ? t("common.submit", "Submit") : t("common.next", "Next");
+    next.title = last ? t("ui.sendTheseAnswersToTheAgent", "Send these answers to the agent") : t("ui.goToTheQuestionAfterThisOne", "Go to the question after this one");
     next.addEventListener("click", () => {
       if (!last) {
         entry.stepIndex += 1;
@@ -1449,7 +1449,7 @@ function installMarkdownInput(editor, render) {
     entry.actions.appendChild(next);
     const hint = document.createElement("span");
     hint.className = "awaiting";
-    hint.textContent = "Waiting for your answer…";
+    hint.textContent = t("ui.waitingForYourAnswer", "Waiting for your answer…");
     entry.actions.appendChild(hint);
   }
 
@@ -1465,7 +1465,7 @@ function installMarkdownInput(editor, render) {
     const question = questions[index] || {};
     // One question needs no counter: there is nothing to step through.
     entry.step.hidden = count < 2;
-    entry.steplabel.textContent = count < 2 ? "" : `${index + 1} of ${count} questions`;
+    entry.steplabel.textContent = count < 2 ? "" : t("ui.ofQuestions", "{value0} of {value1} questions", { value0: index + 1, value1: count });
     entry.dashes.textContent = "";
     for (let position = 0; count > 1 && position < count; position += 1) {
       const dash = document.createElement("span");
@@ -1512,7 +1512,7 @@ function installMarkdownInput(editor, render) {
     if (!waiting) {
       const done = document.createElement("span");
       done.className = "qdone";
-      done.textContent = item.label || "Answered";
+      done.textContent = item.label || t("ui.answered", "Answered");
       entry.actions.appendChild(done);
       return;
     }
@@ -1570,11 +1570,12 @@ function installMarkdownInput(editor, render) {
     open.className = "changes-open";
     open.dataset.action = "openAllChanges";
     open.innerHTML = CHANGES_ICON;
-    open.title = "Open every file in VS Code's diff editor";
+    open.title = t("ui.openEveryFileInVSCodeSDiffEditor", "Open every file in VS Code's diff editor");
     open.setAttribute("aria-label", open.title);
     const label = document.createElement("span");
     label.className = "changes-title";
-    label.textContent = item.title || `Edited ${(item.rows || []).length} files`;
+    const fileCount = (item.rows || []).length;
+    label.textContent = t(fileCount === 1 ? "changes.editedFile" : "changes.editedFiles", item.title || `Edited ${fileCount} files`, { count: fileCount });
     head.append(open, label);
     if (item.totals) {
       const total = document.createElement("span");
@@ -1587,7 +1588,7 @@ function installMarkdownInput(editor, render) {
     // card a newer turn took the Undo away from says nothing and offers nothing.
     const note = document.createElement("span");
     note.className = "changes-note";
-    note.textContent = "Undone";
+    note.textContent = t("ui.undone", "Undone");
     note.hidden = true;
     head.appendChild(note);
     const rows = item.rows || [];
@@ -1595,15 +1596,15 @@ function installMarkdownInput(editor, render) {
       const review = document.createElement("button");
       review.type = "button";
       review.className = "changes-review";
-      review.textContent = "Review";
-      review.title = "Walk this turn's files, each in VS Code's diff editor";
+      review.textContent = t("ui.review", "Review");
+      review.title = t("ui.walkThisTurnSFilesEachInVSCodeSDiffEditor", "Walk this turn's files, each in VS Code's diff editor");
       review.setAttribute("aria-label", review.title);
       review.addEventListener("click", () => openReview(item));
       const undo = document.createElement("button");
       undo.type = "button";
       undo.className = "changes-undo";
-      undo.textContent = "Undo";
-      undo.title = "Put this turn's files back to how the run found them";
+      undo.textContent = t("ui.undo", "Undo");
+      undo.title = t("ui.putThisTurnSFilesBackToHowTheRunFoundThem", "Put this turn's files back to how the run found them");
       undo.setAttribute("aria-label", undo.title);
       undo.addEventListener("click", () => {
         vscode.postMessage({ k: "undoChanges", id: item.id });
@@ -1628,7 +1629,7 @@ function installMarkdownInput(editor, render) {
       name.textContent = row.path;
       const detail = document.createElement("span");
       detail.className = "change-detail";
-      detail.textContent = row.detail;
+      detail.textContent = row.detail === "binary" ? t("changes.binary", "binary") : row.detail === "no line changes" ? t("changes.noLines", "no line changes") : row.detail;
       el.append(badge, name, detail);
       el.title = row.title || row.path;
       list.appendChild(el);
@@ -1638,7 +1639,11 @@ function installMarkdownInput(editor, render) {
     // the rows past it are the view's to hide, and the words the row reads with
     // — including the way back — are the host's.
     if (item.more) {
-      const more = item.more;
+      const hiddenCount = rows.length - item.more.visible;
+      const more = { ...item.more,
+        closed: t(hiddenCount === 1 ? "changes.moreCompactOne" : "changes.moreCompact", item.more.closed, { count: hiddenCount }),
+        open: t("sidebar.showLess", item.more.open),
+      };
       let all = false;
       const toggle = document.createElement("button");
       toggle.type = "button";
@@ -1685,8 +1690,8 @@ function installMarkdownInput(editor, render) {
     const el = document.createElement("button");
     el.type = "button";
     el.className = "chip pic";
-    el.title = `${chip.label} · open the full-size image`;
-    el.setAttribute("aria-label", `Open ${chip.label || "the image"}`);
+    el.title = t("attachment.openFullImage", "{value0} · open the full-size image", { value0: chip.label });
+    el.setAttribute("aria-label", t("common.openNamed", "Open {value0}", { value0: chip.label || "the image" }));
     const image = document.createElement("img");
     image.src = chip.preview;
     image.alt = chip.label || "";
@@ -1963,15 +1968,15 @@ function installMarkdownInput(editor, render) {
     const away = Boolean(runThread);
     runStrip.hidden = !away;
     if (away) {
-      const label = runThread.title || "another thread";
+      const label = runThread.title || t("ui.anotherThread", "another thread");
       const text = runThread.running
-        ? `A turn is running in “${label}”`
-        : `A turn finished in “${label}”`;
+        ? t("ui.aTurnIsRunningIn", "A turn is running in “{value0}”", { value0: label })
+        : t("ui.aTurnFinishedIn", "A turn finished in “{value0}”", { value0: label });
       runStripText.textContent = text;
-      runStrip.title = `Open “${label}”`;
-      runOpenButton.title = `Open “${label}”`;
-      runOpenButton.setAttribute("aria-label", `Open “${label}”`);
-      runStrip.setAttribute("aria-label", `${text}. Open it.`);
+      runStrip.title = t("ui.open", "Open “{value0}”", { value0: label });
+      runOpenButton.title = t("ui.open", "Open “{value0}”", { value0: label });
+      runOpenButton.setAttribute("aria-label", t("ui.open", "Open “{value0}”", { value0: label }));
+      runStrip.setAttribute("aria-label", t("ui.openIt", "{value0}. Open it.", { value0: text }));
     } else {
       runStrip.removeAttribute("aria-label");
       runStrip.title = "";
@@ -2006,7 +2011,7 @@ function installMarkdownInput(editor, render) {
     statusLabel.hidden = !busy && queued === 0;
     statusLabel.textContent = label;
     statusLabel.classList.toggle("busy", busy);
-    statusLabel.title = busy ? "Oxide is working" : "Ready for the next message";
+    statusLabel.title = busy ? t("ui.oxideIsWorking", "Oxide is working") : t("ui.readyForTheNextMessage", "Ready for the next message");
     if (busy) {
       statusLabel.hidden = true;
       stopButton.title = `${t("composer.stopHint", "Stop the running turn")} (Esc)${label ? ` · ${label}` : ""}`;
@@ -2030,7 +2035,7 @@ function installMarkdownInput(editor, render) {
       if (finished && startedAt) finishedElapsed = Math.max(0, Date.now() - startedAt);
       const belongsHere = clockSession === currentSession && clockFolder === currentFolder;
       runTime.hidden = runAway() || !startedAt || !belongsHere;
-      if (startedAt) runTimeText.textContent = `Worked for ${workingDuration(finishedElapsed)}`;
+      if (startedAt) runTimeText.textContent = t("ui.workedFor", "Worked for {value0}", { value0: workingDuration(finishedElapsed) });
       return;
     }
     if (!startedAt || finishedElapsed) {
@@ -2040,7 +2045,7 @@ function installMarkdownInput(editor, render) {
       clockFolder = currentFolder;
     }
     runTime.hidden = runAway();
-    runTimeText.textContent = `Working for ${workingDuration(Date.now() - startedAt)}`;
+    runTimeText.textContent = t("ui.workingFor", "Working for {value0}", { value0: workingDuration(Date.now() - startedAt) });
     if (!elapsedTimer) elapsedTimer = setInterval(updateElapsed, 500);
   }
 
@@ -2062,12 +2067,12 @@ function installMarkdownInput(editor, render) {
     modelSettings.innerHTML = "";
     for (const chip of footer.chips || []) {
       const box = chip.id === "model" || chip.id === "reasoning" ? modelSettings : metaBox;
-      box.appendChild(chipNode(chip.label, chip.id, chip.title));
+      box.appendChild(chipNode(chip.label, chip.id, chip.title, chip.value, chip.active));
     }
     syncSettingDropdown();
     const info = footer.info || "";
     branchLabel.textContent = info;
-    branchLabel.title = info ? `Current branch: ${info}` : "";
+    branchLabel.title = info ? t("ui.currentBranch", "Current branch: {value0}", { value0: info }) : "";
     branchWrap.hidden = !info;
     // The checkout the chat runs in is a fact of the folder like the branch, so
     // it is read on the bar above the box rather than as one of the message's
@@ -2078,42 +2083,42 @@ function installMarkdownInput(editor, render) {
     worktreeName.hidden = !worktree.name;
     worktreeButton.hidden = !currentFolder;
     worktreeButton.classList.toggle("active", Boolean(worktree.name));
-    const worktreeLabel = worktree.name ? `worktree: ${worktree.name}` : "Worktree";
+    const worktreeLabel = worktree.name ? t("ui.worktree", "worktree: {value0}", { value0: worktree.name }) : t("composer.worktree", "Worktree");
     worktreeButton.setAttribute("aria-label", worktreeLabel);
     worktreeButton.title = worktree.title ? `${worktreeLabel}\n${worktree.title}` : worktreeLabel;
     const percent = typeof footer.percent === "number" ? footer.percent : null;
     usageText.textContent = percent === null ? "—" : `${percent}%`;
     usageText.title = footer.usage || "";
     usageText.setAttribute("tabindex", "0");
-    usageText.setAttribute("aria-label", footer.usage ? `Usage: ${footer.usage}` : "No usage reported");
+    usageText.setAttribute("aria-label", footer.usage ? `Usage: ${footer.usage}` : t("ui.noUsageReported", "No usage reported"));
     usageRow.title = footer.usage || "";
     usageRow.hidden = true;
     gauge.hidden = !footer.usage && percent === null;
     gauge.dataset.level = footer.level || "ok";
-    gauge.title = footer.usage || (percent === null ? "No usage reported" : `${percent}% of the context window used`);
+    gauge.title = footer.usage || (percent === null ? t("ui.noUsageReported", "No usage reported") : t("ui.ofTheContextWindowUsed", "{value0}% of the context window used", { value0: percent }));
     gauge.setAttribute("aria-label", `Usage: ${gauge.title}`);
     gauge.style.background = `conic-gradient(currentColor ${percent === null ? 0 : Math.min(percent, 100) * 3.6}deg, color-mix(in srgb, currentColor 25%, transparent) 0)`;
     gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
   }
 
   /// Model and reasoning keep visible values beside the action button.
-  function chipNode(label, control, title) {
+  function chipNode(label, control, title, displayValue, active) {
     const el = document.createElement("button");
     el.type = "button";
     el.className = "meta-chip";
     el.dataset.control = control;
     if (control === "access") {
-      const trusted = label === "access: trusted";
+      const trusted = active ?? (label === "access: trusted");
       el.classList.toggle("active", trusted);
       el.setAttribute("aria-pressed", String(trusted));
     }
-    el.setAttribute("aria-label", control === "access" ? "Project access" : control === "agent" ? "Agents" : String(label));
+    el.setAttribute("aria-label", control === "access" ? t("composer.trust", "Project access") : control === "agent" ? t("dialog.agents.title", "Agents") : String(label));
     if (control === "model" || control === "reasoning") {
       el.classList.add("setting-chip");
       const value = document.createElement("span");
       value.className = "setting-value";
       const name = String(label).replace(/^(model|thinking):\s*/, "").split(" · ")[0];
-      value.textContent = control === "reasoning" ? name.charAt(0).toUpperCase() + name.slice(1) : name;
+      value.textContent = displayValue ?? (control === "reasoning" ? name.charAt(0).toUpperCase() + name.slice(1) : name);
       el.appendChild(value);
       const caret = document.createElement("span");
       caret.className = "control-icon selector-caret";
@@ -2128,7 +2133,7 @@ function installMarkdownInput(editor, render) {
       icon.innerHTML = CONTROL_ICONS[control] || CONTROL_ICONS.model;
       el.appendChild(icon);
     }
-    const name = control === "access" ? "Project access" : control === "agent" ? "Agents" : label;
+    const name = control === "access" ? t("composer.trust", "Project access") : control === "agent" ? t("dialog.agents.title", "Agents") : label;
     el.title = title ? `${name === label ? label : `${name}\n${label}`}\n${title}` : `${name} — click to change`;
     return el;
   }
@@ -2151,8 +2156,8 @@ function installMarkdownInput(editor, render) {
       const clear = document.createElement("button");
       clear.type = "button";
       clear.className = "chip-clear";
-      clear.textContent = "Clear";
-      clear.title = "Remove everything pending";
+      clear.textContent = t("ui.clear", "Clear");
+      clear.title = t("ui.removeEverythingPending", "Remove everything pending");
       clear.addEventListener("click", () => vscode.postMessage({ k: "clearChips" }));
       chipBox.appendChild(clear);
     }
@@ -2213,8 +2218,8 @@ function installMarkdownInput(editor, render) {
       const open = document.createElement("button");
       open.type = "button";
       open.className = "chip-open";
-      open.title = "Open the full-size image";
-      open.setAttribute("aria-label", `Open ${attachment.label || "the image"}`);
+      open.title = t("ui.openTheFullSizeImage", "Open the full-size image");
+      open.setAttribute("aria-label", t("common.openNamed", "Open {value0}", { value0: attachment.label || "the image" }));
       const image = document.createElement("img");
       image.src = thumbnailFor(attachment);
       image.alt = attachment.label;
@@ -2323,7 +2328,7 @@ function installMarkdownInput(editor, render) {
       : t("composer.send", "Send"));
     for (const button of [sendButton, stopButton]) {
       button.dataset.level = busy ? "busy" : "info";
-      button.setAttribute("aria-description", statusLabel.textContent || "Ready");
+      button.setAttribute("aria-description", statusLabel.textContent || t("composer.ready", "Ready"));
     }
   }
 
@@ -2347,10 +2352,10 @@ function installMarkdownInput(editor, render) {
     queueMenuTrigger = trigger;
     trigger.setAttribute("aria-expanded", "true");
     for (const [action, label, direction] of [
-      ["move", "Move up", -1],
-      ["move", "Move down", 1],
-      ["edit", "Edit", 0],
-      ["behavior", followUpBehavior === "queue" ? "Use Steer for new messages" : "Use Queue for new messages", 0],
+      ["move", t("composer.moveUp", "Move up"), -1],
+      ["move", t("composer.moveDown", "Move down"), 1],
+      ["edit", t("composer.edit", "Edit"), 0],
+      ["behavior", followUpBehavior === "queue" ? t("composer.useSteer", "Use Steer for new messages") : t("composer.useQueue", "Use Queue for new messages"), 0],
     ]) {
       const button = document.createElement("button");
       button.type = "button";
@@ -2384,13 +2389,13 @@ function installMarkdownInput(editor, render) {
       mark.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10M7 12h7M7 17h5M3.5 6.5v11M1.5 15.5l2 2 2-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       const text = document.createElement("span");
       text.className = "queued-message-text";
-      text.textContent = message.text || "Attachment";
-      if (message.attachmentCount) text.title = `${message.attachmentCount} attachment(s)`;
+      text.textContent = message.text || t("composer.attachment", "Attachment");
+      if (message.attachmentCount) text.title = t("ui.attachmentS", "{value0} attachment(s)", { value0: message.attachmentCount });
       const actions = document.createElement("span");
       actions.className = "queued-message-actions";
       for (const [action, label, direction, icon] of [
-        ["steer", "Steer", 0, '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v2.5A3.5 3.5 0 0 0 5.5 10H14m-3-3 3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'],
-        ["delete", "Delete", 0, TRASH_ICON],
+        ["steer", t("composer.steer", "Steer"), 0, '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4v2.5A3.5 3.5 0 0 0 5.5 10H14m-3-3 3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'],
+        ["delete", t("common.delete", "Delete"), 0, TRASH_ICON],
       ]) {
         const button = document.createElement("button");
         button.type = "button";
@@ -2407,7 +2412,7 @@ function installMarkdownInput(editor, render) {
       more.type = "button";
       more.className = "queued-more";
       more.dataset.menu = String(message.index);
-      more.title = "More queued-message actions";
+      more.title = t("ui.moreQueuedMessageActions", "More queued-message actions");
       more.setAttribute("aria-label", more.title);
       more.setAttribute("aria-haspopup", "menu");
       more.setAttribute("aria-expanded", "false");
@@ -2504,7 +2509,7 @@ function installMarkdownInput(editor, render) {
     // listing was composed with — unless the caret is in it, since a repaint
     // under a reader who is typing would take the text away from them.
     dialogSearch.hidden = dialog.search !== true;
-    dialogSearchInput.placeholder = dialog.searchPlaceholder || "Search sessions…";
+    dialogSearchInput.placeholder = dialog.searchPlaceholder || t("dialog.sessions.search", "Search sessions…");
     if (dialog.search === true && document.activeElement !== dialogSearchInput) {
       dialogSearchInput.value = dialog.query || "";
     }
@@ -2517,7 +2522,7 @@ function installMarkdownInput(editor, render) {
     // The button is an icon with the host's words for a tooltip and for a
     // screen reader, so the shell's own markup is left alone.
     dialogRefresh.hidden = !dialog.refreshLabel;
-    dialogRefresh.title = dialog.refreshLabel || "Recheck";
+    dialogRefresh.title = dialog.refreshLabel || t("ui.recheck", "Recheck");
     dialogRefresh.setAttribute("aria-label", dialogRefresh.title);
     dialogRefresh.dataset.action = dialog.refreshAction || "";
     dialogBox.hidden = false;
@@ -2685,9 +2690,9 @@ function installMarkdownInput(editor, render) {
     if (!preview) return;
     imageReturnFocus = document.activeElement || null;
     imageViewImage.src = preview;
-    imageViewImage.alt = label || "Attachment preview";
-    imageViewImage.title = label || "Attachment preview";
-    imageViewName.textContent = label || "Attachment preview";
+    imageViewImage.alt = label || t("ui.attachmentPreview", "Attachment preview");
+    imageViewImage.title = label || t("ui.attachmentPreview", "Attachment preview");
+    imageViewName.textContent = label || t("ui.attachmentPreview", "Attachment preview");
     imageView.hidden = false;
     imageViewClose.focus();
   }
@@ -2760,7 +2765,8 @@ function installMarkdownInput(editor, render) {
   function paintReview() {
     const item = reviewItem;
     if (!item) return;
-    reviewTitle.textContent = item.title || "Changes";
+    const count = item.rows.length;
+    reviewTitle.textContent = t(count === 1 ? "changes.editedFile" : "changes.editedFiles", item.title || t("ui.changes", "Changes"), { count });
     reviewTotal.textContent = item.totals || "";
     reviewTotal.hidden = !item.totals;
     reviewFiles.innerHTML = "";
@@ -2917,7 +2923,7 @@ function installMarkdownInput(editor, render) {
     el.setAttribute("aria-selected", index === rowIndex ? "true" : "false");
     el.title =
       row.kind === "folder"
-        ? `${row.label} — a folder in this project`
+        ? t("ui.aFolderInThisProject", "{value0} — a folder in this project", { value0: row.label })
         : `${row.label} — inlined into the next message`;
     const glyph = document.createElement("span");
     glyph.className = "at-glyph";
@@ -2977,7 +2983,7 @@ function installMarkdownInput(editor, render) {
     atBox.hidden = rows.length === 0;
     atBox.setAttribute(
       "aria-label",
-      rowKind === "command" ? "Commands and skills" : "Files and folders",
+      rowKind === "command" ? "Commands and skills" : t("ui.filesAndFolders", "Files and folders"),
     );
     rows.forEach((row, index) => atBox.appendChild(rowNode(row, index)));
   }
