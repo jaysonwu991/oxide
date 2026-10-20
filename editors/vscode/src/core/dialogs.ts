@@ -225,26 +225,29 @@ export function providerDialog(
   providers: readonly ProviderView[],
   query = "",
   note = "",
+  info: LanguageInfo | null = null,
 ): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   const rows = filterProviders(providers, query);
   const empty = providers.length
     ? query.trim()
-      ? `No provider matches “${query.trim()}”.`
+      ? t("ui.noProviderMatches", "No provider matches “{value0}”.", { value0: String(query.trim()) })
       : ""
-    : "No providers are configured for this installation.";
+    : t("ui.noProvidersAreConfiguredForThisInstallation", "No providers are configured for this installation.");
   return {
     kind: "provider",
     // The composer's own column, like the MCP list: `/connect` is typed there,
     // and the model chip beside it is where the model is chosen afterwards.
     pin: "footer",
-    title: "Providers",
+    title: t("ui.providers", "Providers"),
     subtitle:
-      "Sign in to a provider. The credential is stored where the terminal's /connect stores it, and the next turn uses it.",
+      t("ui.signInToAProviderTheCredentialIsStoredWhereTheTerminalSConnectStoresItAndTheNext", "Sign in to a provider. The credential is stored where the terminal's /connect stores it, and the next turn uses it."),
     note: note || empty,
     rows: rows.map((provider) =>
       row(provider.name, provider.label, {
         detail: [provider.name, provider.description].filter(Boolean).join(" · "),
-        status: providerState(provider),
+        status: providerState(provider, info),
         // Only the provider in use is called out in the accent: a stored one is
         // ordinary news, and a row with nothing to say is not a disabled one.
         tone: provider.active ? "ok" : "",
@@ -254,7 +257,7 @@ export function providerDialog(
     count: rows.length,
     search: true,
     query,
-    searchPlaceholder: "Search providers…",
+    searchPlaceholder: t("dialog.connect.search", "Search providers…"),
     refreshLabel: "",
     refreshAction: "",
   };
@@ -276,7 +279,10 @@ export function modelDialog(
   models: readonly ModelChoice[],
   query = "",
   note = "",
+  info: LanguageInfo | null = null,
 ): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   const needle = query.trim().toLowerCase();
   const choices =
     current && !models.some((entry) => entry.model === current)
@@ -284,7 +290,7 @@ export function modelDialog(
       : [...models];
   const known = choices.filter((entry) => !needle || entry.model.toLowerCase().includes(needle));
   const exact = choices.some((entry) => entry.model.toLowerCase() === needle);
-  const configLabel = "Oxide config default";
+  const configLabel = t("ui.oxideConfigDefault", "Oxide config default");
   const configMatches =
     !needle ||
     configLabel.toLowerCase().includes(needle) ||
@@ -293,19 +299,19 @@ export function modelDialog(
   return {
     kind: "model",
     pin: "footer",
-    title: "Model",
+    title: t("dialog.models.title", "Model"),
     subtitle: elsewhere
-      ? "Choose a model from any provider you have connected. Picking one from another provider switches to it, which the terminal and the desktop app read too."
-      : "Choose a model available from the active provider, or enter any model ID.",
+      ? t("ui.chooseAModelFromAnyProviderYouHaveConnectedPickingOneFromAnotherProviderSwitches", "Choose a model from any provider you have connected. Picking one from another provider switches to it, which the terminal and the desktop app read too.")
+      : t("ui.chooseAModelAvailableFromTheActiveProviderOrEnterAnyModelID", "Choose a model available from the active provider, or enter any model ID."),
     note,
     rows: [
       ...(configMatches
         ? [
             row("", configLabel, {
               detail: configured
-                ? `Use ${configured}, the model stored in the Oxide config`
-                : "Use the model stored in the Oxide config",
-              status: current ? "" : "Current",
+                ? t("model.useConfigured", "Use {value0}, the model stored in the Oxide config", { value0: configured })
+                : t("ui.useTheModelStoredInTheOxideConfig", "Use the model stored in the Oxide config"),
+              status: current ? "" : t("ui.current", "Current"),
               tone: "muted",
               action: APPLY_MODEL,
             }),
@@ -318,15 +324,15 @@ export function modelDialog(
         // entry that happens to match.
         row(modelChoiceId(entry.provider, entry.model), entry.model, {
           detail: entry.provider
-            ? `Available from ${entry.provider}${entry.provider === provider ? " (active)" : ""}`
-            : "Current model override",
+            ? t("ui.availableFrom", "Available from {value0}{value1}", { value0: entry.provider, value1: entry.provider === provider ? " (active)" : "" })
+            : t("ui.currentModelOverride", "Current model override"),
           status:
             entry.model === current
-              ? "Current"
+              ? t("ui.current", "Current")
               : entry.provider && entry.provider !== provider
                 ? entry.provider
                 : entry.provider === provider
-                  ? "in use"
+                  ? t("ui.inUse", "in use")
                   : "",
           tone: "muted",
           action: APPLY_MODEL,
@@ -334,8 +340,8 @@ export function modelDialog(
       ),
       ...(needle && !exact
         ? [
-            row(query.trim(), `Use “${query.trim()}”`, {
-              detail: "Pass this model ID with --model",
+            row(query.trim(), t("ui.use", "Use “{value0}”", { value0: query.trim() }), {
+              detail: t("ui.passThisModelIDWithModel", "Pass this model ID with --model"),
               action: APPLY_MODEL,
               kind: "action",
             }),
@@ -345,7 +351,7 @@ export function modelDialog(
     count: known.length,
     search: true,
     query,
-    searchPlaceholder: "Filter or enter a model ID…",
+    searchPlaceholder: t("ui.filterOrEnterAModelID", "Filter or enter a model ID…"),
     refreshLabel: "",
     refreshAction: "",
   };
@@ -360,7 +366,10 @@ export function agentDialog(
   agents: readonly AgentChoice[],
   current: string,
   query = "",
+  info: LanguageInfo | null = null,
 ): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   const needle = query.trim().toLowerCase();
   const known = agents.filter(
     (agent) =>
@@ -373,15 +382,15 @@ export function agentDialog(
   return {
     kind: "agent",
     pin: "footer",
-    title: "Agent",
-    subtitle: "Choose a discovered agent, or type an agent name below.",
-    note: agents.length ? "" : "No configured agents were discovered; you can still enter a name.",
+    title: t("ui.agent", "Agent"),
+    subtitle: t("ui.chooseADiscoveredAgentOrTypeAnAgentNameBelow", "Choose a discovered agent, or type an agent name below."),
+    note: agents.length ? "" : t("ui.noConfiguredAgentsWereDiscoveredYouCanStillEnterAName", "No configured agents were discovered; you can still enter a name."),
     rows: [
       ...(defaultMatches
         ? [
-            row("", "Default agent", {
-              detail: "Run without a subagent prompt",
-              status: current ? "" : "Current",
+            row("", t("ui.defaultAgent", "Default agent"), {
+              detail: t("ui.runWithoutASubagentPrompt", "Run without a subagent prompt"),
+              status: current ? "" : t("ui.current", "Current"),
               tone: "muted",
               action: APPLY_AGENT,
             }),
@@ -390,15 +399,15 @@ export function agentDialog(
       ...known.map((agent) =>
         row(agent.name, agent.name, {
           detail: agent.description,
-          status: agent.name === current ? "Current" : "",
+          status: agent.name === current ? t("ui.current", "Current") : "",
           tone: "muted",
           action: APPLY_AGENT,
         }),
       ),
       ...(needle && !exact
         ? [
-            row(query.trim(), `Use “${query.trim()}”`, {
-              detail: "Pass this name with --agent",
+            row(query.trim(), t("ui.use", "Use “{value0}”", { value0: query.trim() }), {
+              detail: t("ui.passThisNameWithAgent", "Pass this name with --agent"),
               action: APPLY_AGENT,
               kind: "action",
             }),
@@ -408,7 +417,7 @@ export function agentDialog(
     count: 0,
     search: true,
     query,
-    searchPlaceholder: "Filter or enter an agent name…",
+    searchPlaceholder: t("ui.filterOrEnterAnAgentName", "Filter or enter an agent name…"),
     refreshLabel: "",
     refreshAction: "",
   };
@@ -449,14 +458,16 @@ export function languageDialog(info: LanguageInfo | null): DialogState {
   };
 }
 
-export function reasoningDialog(current: string, levels: readonly string[]): DialogState {
+export function reasoningDialog(current: string, levels: readonly string[], info: LanguageInfo | null = null): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   return choiceDialog(
     "reasoning",
-    "Reasoning effort",
-    "The effort passed to the next turn with --reasoning.",
+    t("dialog.reasoning.title", "Reasoning effort"),
+    t("ui.theEffortPassedToTheNextTurnWithReasoning", "The effort passed to the next turn with --reasoning."),
     APPLY_REASONING,
-    levels.map((level) => ({ value: level, label: level, detail: "" })),
-    current,
+    levels.map((level) => ({ value: level, label: t(`reasoning.${level}`, level), detail: "" })),
+    current, info
   );
 }
 
@@ -473,23 +484,26 @@ export function permissionsDialog(
   project: string,
   tools: readonly string[],
   note = "",
+  info: LanguageInfo | null = null,
 ): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   const empty = tools.length
     ? ""
     : project
-      ? `No tool is allowed without prompting in ${project}. An “Always allow” answer adds one.`
-      : "Open a folder first.";
+      ? t("ui.noToolIsAllowedWithoutPromptingInAnAlwaysAllowAnswerAddsOne", "No tool is allowed without prompting in {value0}. An “Always allow” answer adds one.", { value0: project })
+      : t("ui.openAFolderFirst", "Open a folder first.");
   return {
     kind: "permissions",
     // Opened from the composer's row, where `/permissions` is typed.
     pin: "footer",
-    title: "Saved approvals",
-    subtitle: "Tools this project runs without asking. Clearing forgets every rule here.",
+    title: t("ui.savedApprovals", "Saved approvals"),
+    subtitle: t("ui.toolsThisProjectRunsWithoutAskingClearingForgetsEveryRuleHere", "Tools this project runs without asking. Clearing forgets every rule here."),
     note: note || empty,
     rows: [
       ...tools.map((tool) =>
         row(tool, tool, {
-          detail: `Runs without asking in ${project}`,
+          detail: t("ui.runsWithoutAskingIn", "Runs without asking in {value0}", { value0: project }),
           status: "allowed",
           tone: "ok",
           action: "",
@@ -497,8 +511,8 @@ export function permissionsDialog(
       ),
       ...(tools.length
         ? [
-            row("clear", "Clear all", {
-              detail: `Forget ${tools.length} rule${tools.length === 1 ? "" : "s"} for this project`,
+            row("clear", t("dialog.permissions.clear", "Clear all"), {
+              detail: t(tools.length === 1 ? "approvals.forgetRule" : "approvals.forgetRules", tools.length === 1 ? "Forget {count} rule for this project" : "Forget {count} rules for this project", { count: tools.length }),
               tone: "muted",
               action: APPROVALS_CLEAR,
               kind: "action" as DialogRowKind,
@@ -521,22 +535,25 @@ export function logoutDialog(
   providers: readonly ProviderView[],
   query = "",
   note = "",
+  info: LanguageInfo | null = null,
 ): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   const stored = filterProviders(providers, query).filter((provider) => provider.stored);
   const empty = providers.some((provider) => provider.stored)
-    ? `No stored credential matches “${query.trim()}”.`
-    : "No provider has a stored credential. /connect adds one.";
+    ? t("ui.noStoredCredentialMatches", "No stored credential matches “{value0}”.", { value0: query.trim() })
+    : t("ui.noProviderHasAStoredCredentialConnectAddsOne", "No provider has a stored credential. /connect adds one.");
   return {
     kind: "logout",
     pin: "footer",
-    title: "Stored providers",
+    title: t("ui.storedProviders", "Stored providers"),
     subtitle:
-      "Sign out of a provider. The credential is removed where it is stored, and a turn that used it switches to another logged-in provider.",
+      t("ui.signOutOfAProviderTheCredentialIsRemovedWhereItIsStoredAndATurnThatUsedItSwitche", "Sign out of a provider. The credential is removed where it is stored, and a turn that used it switches to another logged-in provider."),
     note: note || (stored.length ? "" : empty),
     rows: stored.map((provider) =>
       row(provider.name, provider.label, {
         detail: [provider.name, provider.description].filter(Boolean).join(" · "),
-        status: provider.active ? "in use" : "stored",
+        status: provider.active ? t("ui.inUse", "in use") : "stored",
         tone: provider.active ? "ok" : "muted",
         action: PROVIDER_LOGOUT,
       }),
@@ -544,13 +561,15 @@ export function logoutDialog(
     count: stored.length,
     search: true,
     query,
-    searchPlaceholder: "Search stored providers…",
+    searchPlaceholder: t("ui.searchStoredProviders", "Search stored providers…"),
     refreshLabel: "",
     refreshAction: "",
   };
 }
 
-export function trustDialog(state: { setting: string; saved: boolean | undefined }): DialogState {
+export function trustDialog(state: { setting: string; saved: boolean | undefined }, info: LanguageInfo | null = null): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   // The row that describes what is in force: the panel's own override first,
   // then the decision saved for this folder, then the default. The rows write
   // the shared `trust.json` — the store the terminal's `/trust` and the desktop
@@ -568,27 +587,27 @@ export function trustDialog(state: { setting: string; saved: boolean | undefined
             : "default";
   return choiceDialog(
     "trust",
-    "Project access",
-    "Trusting this folder loads its local resources, which can run commands or change how the agent behaves. The decision is saved in trust.json and shared with the CLI and desktop.",
+    t("composer.trust", "Project access"),
+    t("ui.trustingThisFolderLoadsItsLocalResourcesWhichCanRunCommandsOrChangeHowTheAgentBe", "Trusting this folder loads its local resources, which can run commands or change how the agent behaves. The decision is saved in trust.json and shared with the CLI and desktop."),
     APPLY_TRUST,
     [
       {
         value: "default",
-        label: "Use the saved decision",
-        detail: "Follow trust.json or defaultProjectTrust",
+        label: t("ui.useTheSavedDecision", "Use the saved decision"),
+        detail: t("ui.followTrustJsonOrDefaultProjectTrust", "Follow trust.json or defaultProjectTrust"),
       },
       {
         value: "trusted",
-        label: "Trust this folder",
-        detail: "Write trust.json — every front-end reads the same decision",
+        label: t("ui.trustThisFolder", "Trust this folder"),
+        detail: t("ui.writeTrustJsonEveryFrontEndReadsTheSameDecision", "Write trust.json — every front-end reads the same decision"),
       },
       {
         value: "untrusted",
-        label: "Never trust this folder",
-        detail: "Write trust.json — every front-end reads the same decision",
+        label: t("ui.neverTrustThisFolder", "Never trust this folder"),
+        detail: t("ui.writeTrustJsonEveryFrontEndReadsTheSameDecision", "Write trust.json — every front-end reads the same decision"),
       },
     ],
-    current,
+    current, info
   );
 }
 
@@ -599,7 +618,10 @@ function choiceDialog(
   action: string,
   choices: readonly { value: string; label: string; detail: string }[],
   current: string,
+  info: LanguageInfo | null = null,
 ): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   return {
     kind,
     pin: "footer",
@@ -609,7 +631,7 @@ function choiceDialog(
     rows: choices.map((choice) =>
       row(choice.value, choice.label, {
         detail: choice.detail,
-        status: choice.value === current ? "Current" : "",
+        status: choice.value === current ? t("ui.current", "Current") : "",
         tone: "muted",
         action,
       }),
@@ -626,36 +648,38 @@ function choiceDialog(
 /// probed, and a switch that turns one off or back on in the file that defines
 /// it. `note` overrides the empty-list message, so a listing that failed can say
 /// so in place where a QuickPick would just vanish.
-export function mcpDialog(servers: readonly McpServerView[], note = ""): DialogState {
+export function mcpDialog(servers: readonly McpServerView[], note = "", info: LanguageInfo | null = null): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   return {
     kind: "mcp",
     pin: "footer",
-    title: "MCP servers",
+    title: t("dialog.mcps.title", "MCP servers"),
     subtitle:
-      "The servers this project loads, and whether Oxide can reach them. A toggle is written to the file that defines the server — the same change the terminal's /mcp makes.",
+      t("ui.theServersThisProjectLoadsAndWhetherOxideCanReachThemAToggleIsWrittenToTheFileTh", "The servers this project loads, and whether Oxide can reach them. A toggle is written to the file that defines the server — the same change the terminal's /mcp makes."),
     note:
       note ||
       (servers.length
         ? ""
-        : "No MCP servers configured for this project. Add one with oxide mcp add, or an .mcp.json in the project."),
+        : t("ui.noMCPServersConfiguredForThisProjectAddOneWithOxideMcpAddOrAnMcpJsonInTheProject", "No MCP servers configured for this project. Add one with oxide mcp add, or an .mcp.json in the project.")),
     count: servers.length,
     search: false,
     query: "",
     rows: servers.map((server) =>
       row(server.name, server.name, {
-        detail: [server.transport, server.detail, `source: ${server.source}`]
+        detail: [server.transport, server.detail, t("ui.source", "source: {value0}", { value0: server.source })]
           .filter(Boolean)
           .join(" · "),
         // A server that is switched off reports that rather than the state a
         // probe could not reach.
-        status: server.enabled ? server.status || mcpStateLabel(server.state) : "Disabled",
+        status: server.enabled ? server.status || mcpStateLabel(server.state, info) : t("ui.disabled", "Disabled"),
         tone: MCP_TONES[server.enabled ? server.state : "disabled"] ?? "",
-        button: server.enabled ? `Disable ${server.name}` : `Enable ${server.name}`,
+        button: server.enabled ? t("ui.disable", "Disable {value0}", { value0: server.name }) : t("ui.enable", "Enable {value0}", { value0: server.name }),
         buttonAction: MCP_TOGGLE,
         icon: "power",
       }),
     ),
-    refreshLabel: "Recheck",
+    refreshLabel: t("ui.recheck", "Recheck"),
     refreshAction: MCP_REFRESH,
   };
 }
@@ -674,12 +698,15 @@ export function worktreeDialog(
   projectName: string,
   note = "",
   sessionId?: string | null,
+  info: LanguageInfo | null = null,
 ): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   const inLocal = !worktreeAt(worktrees, active);
-  const local = row("", "Local checkout", {
-    detail: `${projectName}'s own folder — the checkout you have open`,
+  const local = row("", t("ui.localCheckout", "Local checkout"), {
+    detail: t("ui.sOwnFolderTheCheckoutYouHaveOpen", "{value0}'s own folder — the checkout you have open", { value0: projectName }),
     action: WORKTREE_SELECT,
-    status: inLocal ? "in use" : "",
+    status: inLocal ? t("ui.inUse", "in use") : "",
     tone: inLocal ? "ok" : "",
     current: inLocal,
     kind: "thread",
@@ -688,12 +715,12 @@ export function worktreeDialog(
     row(entry.path, entry.name, {
       detail: [entry.branch, entry.path].filter(Boolean).join(" · "),
       action: WORKTREE_SELECT,
-      status: entry.path === active ? "in use" : "",
+      status: entry.path === active ? t("ui.inUse", "in use") : "",
       tone: entry.path === active ? "ok" : "",
       current: entry.path === active,
       kind: "thread",
       buttons: [
-        { label: `Remove the worktree ${entry.name}`, action: WORKTREE_REMOVE, icon: "close" },
+        { label: t("ui.removeTheWorktree", "Remove the worktree {value0}", { value0: String(entry.name) }), action: WORKTREE_REMOVE, icon: "close" },
       ],
     }),
   );
@@ -702,24 +729,24 @@ export function worktreeDialog(
     // The composer's own column: the checkout is chosen where a message is
     // composed, and the transcript stays readable behind it.
     pin: "footer",
-    title: "Worktrees",
+    title: t("dialog.worktrees.title", "Worktrees"),
     subtitle:
-      "Run a chat in an isolated checkout. Start from a branch or commit, then create a branch or hand the chat back to Local when ready.",
-    note: note || (worktrees.length ? "" : "No worktrees yet. Make one from the name of the task."),
+      t("ui.runAChatInAnIsolatedCheckoutStartFromABranchOrCommitThenCreateABranchOrHandTheCh", "Run a chat in an isolated checkout. Start from a branch or commit, then create a branch or hand the chat back to Local when ready."),
+    note: note || (worktrees.length ? "" : t("ui.noWorktreesYetMakeOneFromTheNameOfTheTask", "No worktrees yet. Make one from the name of the task.")),
     rows: [
       local,
       ...rows,
-      ...(sessionId ? [row("", active ? "Hand off chat to Local" : "Hand off chat to Worktree", { action: WORKTREE_HANDOFF })] : []),
-      ...(active ? [row(active, "Create branch here", { action: WORKTREE_BRANCH })] : []),
-      row("", "New worktree…", {
-        detail: "Names a checkout and starts a chat in it",
+      ...(sessionId ? [row("", active ? t("ui.handOffChatToLocal", "Hand off chat to Local") : t("dialog.worktrees.handoff", "Hand off chat to Worktree"), { action: WORKTREE_HANDOFF })] : []),
+      ...(active ? [row(active, t("dialog.worktrees.createBranch", "Create branch here"), { action: WORKTREE_BRANCH })] : []),
+      row("", t("ui.newWorktree", "New worktree…"), {
+        detail: t("ui.namesACheckoutAndStartsAChatInIt", "Names a checkout and starts a chat in it"),
         action: WORKTREE_CREATE,
       }),
     ],
     count: worktrees.length,
     search: false,
     query: "",
-    refreshLabel: "Recheck",
+    refreshLabel: t("ui.recheck", "Recheck"),
     refreshAction: WORKTREE_REFRESH,
   };
 }
@@ -772,7 +799,10 @@ export function sessionDialog(
   live: LiveSession | null = null,
   query = "",
   running: LiveSession | null = null,
+  info: LanguageInfo | null = null,
 ): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   const open = live && live.id === current ? live : null;
   const file = open ? sessions.find((session) => session.id === open.id) : undefined;
   const title = open?.label.trim() || "";
@@ -809,36 +839,36 @@ export function sessionDialog(
   // which is either nothing stored yet or a filter that left none.
   const empty = sessions.length || stands.length
     ? query.trim() && !threads
-      ? `No thread matches “${query.trim()}”.`
+      ? t("ui.noThreadMatches", "No thread matches “{value0}”.", { value0: query.trim() })
       : ""
-    : "No sessions for this project yet — the next message starts one.";
+    : t("ui.noSessionsForThisProjectYetTheNextMessageStartsOne", "No sessions for this project yet — the next message starts one.");
   return {
     kind: "sessions",
     // `/session` grows out of the composer in Desktop. Keeping the extension's
     // copy on that same edge makes the two front-ends read as one operation and
     // leaves the thread title visible above the transcript while the list is up.
     pin: "footer",
-    title: "Sessions",
-    subtitle: "Threads stored for this project, pinned first, then most recent. Picking one opens it here.",
+    title: t("dialog.sessions.title", "Sessions"),
+    subtitle: t("ui.threadsStoredForThisProjectPinnedFirstThenMostRecentPickingOneOpensItHere", "Threads stored for this project, pinned first, then most recent. Picking one opens it here."),
     note: note || empty,
     rows: [
-      row(NEW_SESSION, "New chat", {
+      row(NEW_SESSION, t("panel.newChat", "New chat"), {
         // On a fresh page there is nothing to close, and saying otherwise would
         // be a row describing a thread the project does not have.
-        detail: current ? "Close this thread and start a fresh one" : "Start a fresh thread",
+        detail: current ? t("ui.closeThisThreadAndStartAFreshOne", "Close this thread and start a fresh one") : t("ui.startAFreshThread", "Start a fresh thread"),
         action: OPEN_SESSION,
         kind: "action",
       }),
-      row(CONTINUE_SESSION, "Continue most recent session", {
-        detail: "Pick up the newest session for this project",
+      row(CONTINUE_SESSION, t("ui.continueMostRecentSession", "Continue most recent session"), {
+        detail: t("ui.pickUpTheNewestSessionForThisProject", "Pick up the newest session for this project"),
         action: OPEN_SESSION,
         kind: "action",
       }),
       ...standing.map((entry) =>
         row(entry.id, entry.label || entry.id, {
           // Preferences are offered once the store has a file for the thread.
-          detail: "Open in this panel — the store has no file for it yet",
-          status: entry.id === runningId ? "Running" : "Current",
+          detail: t("ui.openInThisPanelTheStoreHasNoFileForItYet", "Open in this panel — the store has no file for it yet"),
+          status: entry.id === runningId ? t("ui.running", "Running") : t("ui.current", "Current"),
           tone: (entry.id === runningId ? "ok" : "muted") as DialogTone,
           action: OPEN_SESSION,
           kind: "thread",
@@ -850,13 +880,13 @@ export function sessionDialog(
         const live = session.id === runningId;
         const name = session.label || session.id;
         return row(session.id, name, {
-          detail: `${session.messages} message${session.messages === 1 ? "" : "s"}`,
-          status: marked ? "Current" : live ? "Running" : session.pinned ? "Pinned" : session.age,
+          detail: t(session.messages === 1 ? "session.messageCountOne" : "session.messageCount", session.messages === 1 ? "{count} message" : "{count} messages", { count: session.messages }),
+          status: marked ? t("ui.current", "Current") : live ? t("ui.running", "Running") : session.pinned ? t("ui.pinned", "Pinned") : session.age,
           tone: live ? "ok" : "muted",
           action: OPEN_SESSION,
           buttons: [
-            { label: session.pinned ? "Unpin thread" : "Pin thread", action: SESSION_PIN, icon: "pin" },
-            { label: "Archive thread", action: SESSION_ARCHIVE, icon: "archive" },
+            { label: session.pinned ? t("ui.unpinThread", "Unpin thread") : t("ui.pinThread", "Pin thread"), action: SESSION_PIN, icon: "pin" },
+            { label: t("ui.archiveThread", "Archive thread"), action: SESSION_ARCHIVE, icon: "archive" },
           ],
           kind: "thread",
           current: marked,
@@ -877,20 +907,22 @@ export function sessionDialog(
 /// back the same way. What it puts back is the whole turn, so the note says what
 /// a later edit would mean for it — the CLI reports that rather than folding it
 /// into the restore.
-export function undoChangesDialog(card: { id: number; detail: string }): DialogState {
+export function undoChangesDialog(card: { id: number; detail: string }, info: LanguageInfo | null = null): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   return {
     kind: "undo",
     pin: "header",
-    title: "Undo turn",
-    subtitle: "Put this turn's files back to how the run found them.",
-    note: "An edit made since the turn is refused rather than undone.",
+    title: t("ui.undoTurn", "Undo turn"),
+    subtitle: t("changes.restoreTurnFiles", "Put this turn's files back to how the run found them."),
+    note: t("ui.anEditMadeSinceTheTurnIsRefusedRatherThanUndone", "An edit made since the turn is refused rather than undone."),
     rows: [
-      row(String(card.id), "Undo changes", {
+      row(String(card.id), t("ui.undoChanges", "Undo changes"), {
         detail: card.detail,
         tone: "warn",
         action: CHANGES_UNDO_CONFIRM,
       }),
-      row("", "Cancel", { detail: "Keep the turn's files", action: CLOSE_DIALOG }),
+      row("", t("common.cancel", "Cancel"), { detail: t("ui.keepTheTurnSFiles", "Keep the turn's files"), action: CLOSE_DIALOG }),
     ],
     count: 0,
     search: false,
@@ -942,7 +974,9 @@ export type UpdateState =
 /// one exception is the row a CLI too old to answer the check is offered, which
 /// updates that binary — the thing standing between the user and a check at
 /// all — and says so in as many words.
-export function updateDialog(state: UpdateState): DialogState {
+export function updateDialog(state: UpdateState, info: LanguageInfo | null = null): DialogState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) =>
+    translate(info, key, fallback, vars);
   const empty = {
     kind: "update" as const,
     pin: "footer" as const,
@@ -955,20 +989,20 @@ export function updateDialog(state: UpdateState): DialogState {
   if (state.k === "checking") {
     return {
       ...empty,
-      title: "Checking for updates",
+      title: t("ui.checkingForUpdates", "Checking for updates"),
       subtitle:
-        "Oxide asks the installed CLI which release of this extension is newest — the same check the panel runs as `oxide update --check --component extension`.",
-      note: "Asking GitHub for the newest extension release…",
+        t("ui.oxideAsksTheInstalledCLIWhichReleaseOfThisExtensionIsNewestTheSameCheckThePanelR", "Oxide asks the installed CLI which release of this extension is newest — the same check the panel runs as `oxide update --check --component extension`."),
+      note: t("ui.askingGitHubForTheNewestExtensionRelease", "Asking GitHub for the newest extension release…"),
       rows: [],
     };
   }
   if (state.k === "installing") {
     return {
       ...empty,
-      title: `Installing ${state.what}`,
+      title: t("ui.installing", "Installing {value0}", { value0: state.what }),
       subtitle:
-        "The release's .vsix is downloaded, checked against the checksum its release published, and handed to VS Code to install.",
-      note: "This takes as long as the download; the dialog reports what happened when it is done.",
+        t("ui.theReleaseSVsixIsDownloadedCheckedAgainstTheChecksumItsReleasePublishedAndHanded", "The release's .vsix is downloaded, checked against the checksum its release published, and handed to VS Code to install."),
+      note: t("ui.thisTakesAsLongAsTheDownloadTheDialogReportsWhatHappenedWhenItIsDone", "This takes as long as the download; the dialog reports what happened when it is done."),
       rows: [],
     };
   }
@@ -976,24 +1010,24 @@ export function updateDialog(state: UpdateState): DialogState {
     const { check } = state;
     return {
       ...empty,
-      title: `Oxide ${check.latest} is installed`,
+      title: t("ui.oxideIsInstalled", "Oxide {value0} is installed", { value0: check.latest }),
       subtitle:
-        "VS Code holds the new version; the extension running in this window is the one that was there when it was installed.",
+        t("ui.vSCodeHoldsTheNewVersionTheExtensionRunningInThisWindowIsTheOneThatWasThereWhenI", "VS Code holds the new version; the extension running in this window is the one that was there when it was installed."),
       note: [
-        check.current ? `Was ${check.current}` : "",
-        `Installed ${check.latest}`,
+        check.current ? t("ui.was", "Was {value0}", { value0: check.current }) : "",
+        t("ui.installed", "Installed {value0}", { value0: check.latest }),
         check.asset?.name ?? "",
-        "Restart this window to run it",
+        t("ui.restartThisWindowToRunIt", "Restart this window to run it"),
       ]
         .filter(Boolean)
         .join(" · "),
       rows: [
-        row("", "Restart Window", {
-          detail: "Run the version that was just installed",
+        row("", t("ui.restartWindow", "Restart Window"), {
+          detail: t("ui.runTheVersionThatWasJustInstalled", "Run the version that was just installed"),
           action: UPDATE_RELOAD,
         }),
-        row("", "Close", {
-          detail: "Restart later from the command palette",
+        row("", t("common.close", "Close"), {
+          detail: t("ui.restartLaterFromTheCommandPalette", "Restart later from the command palette"),
           action: CLOSE_DIALOG,
         }),
       ],
@@ -1002,13 +1036,13 @@ export function updateDialog(state: UpdateState): DialogState {
   if (state.k === "failed") {
     return {
       ...empty,
-      title: state.stage === "check" ? "Could not check for updates" : "Could not install the update",
+      title: state.stage === "check" ? t("ui.couldNotCheckForUpdates", "Could not check for updates") : t("ui.couldNotInstallTheUpdate", "Could not install the update"),
       subtitle:
         state.stage === "check"
-          ? "The check asks GitHub which release of this extension is newest, so a machine with no network — or a request GitHub refuses — reports it here."
-          : "The install downloads the release's .vsix, checks it against the checksum its release published and hands it to VS Code.",
+          ? t("ui.theCheckAsksGitHubWhichReleaseOfThisExtensionIsNewestSoAMachineWithNoNetworkOrAR", "The check asks GitHub which release of this extension is newest, so a machine with no network — or a request GitHub refuses — reports it here.")
+          : t("ui.theInstallDownloadsTheReleaseSVsixChecksItAgainstTheChecksumItsReleasePublishedA", "The install downloads the release's .vsix, checks it against the checksum its release published and hands it to VS Code."),
       note: state.message,
-      rows: [row("", "Close", { detail: "Leave this extension as it is", action: CLOSE_DIALOG })],
+      rows: [row("", t("common.close", "Close"), { detail: t("ui.leaveThisExtensionAsItIs", "Leave this extension as it is"), action: CLOSE_DIALOG })],
     };
   }
 
@@ -1020,18 +1054,18 @@ export function updateDialog(state: UpdateState): DialogState {
     // rather than leaving the row looking like the extension's own install.
     return {
       ...empty,
-      title: state.headline ?? "The oxide CLI is older than this panel",
+      title: state.headline ?? t("ui.theOxideCLIIsOlderThanThisPanel", "The oxide CLI is older than this panel"),
       subtitle:
         state.subtitle ??
-        "Check for Updates reads the extension's own releases through the installed oxide, and this CLI predates the report it reads — so updating the oxide command line is what makes both the check and the extension's next update reachable from here. It works on any version.",
+        t("ui.checkForUpdatesReadsTheExtensionSOwnReleasesThroughTheInstalledOxideAndThisCLIPr", "Check for Updates reads the extension's own releases through the installed oxide, and this CLI predates the report it reads — so updating the oxide command line is what makes both the check and the extension's next update reachable from here. It works on any version."),
       note: state.text,
       rows: [
-        row("", "Install the newest CLI", {
-          detail: state.path ? `Replaces ${state.path}` : "Runs oxide update",
+        row("", t("ui.installTheNewestCLI", "Install the newest CLI"), {
+          detail: state.path ? t("ui.replaces", "Replaces {value0}", { value0: state.path }) : t("ui.runsOxideUpdate", "Runs oxide update"),
           action: UPDATE_INSTALL,
         }),
-        row("", "Close", {
-          detail: "Leave this installation as it is",
+        row("", t("common.close", "Close"), {
+          detail: t("ui.leaveThisInstallationAsItIs", "Leave this installation as it is"),
           action: CLOSE_DIALOG,
         }),
       ],
@@ -1041,8 +1075,8 @@ export function updateDialog(state: UpdateState): DialogState {
   const { check, cli } = state;
   const vsix = updateVsix(check);
   const notes = [
-    check.current ? `Current ${check.current}` : "",
-    `Latest ${check.latest}`,
+    check.current ? t("update.currentVersion", "Current {value0}", { value0: check.current }) : "",
+    t("ui.latest", "Latest {value0}", { value0: check.latest }),
     vsix?.name ?? "",
     check.pinned ? "pinned" : "",
   ].filter(Boolean);
@@ -1066,47 +1100,47 @@ export function updateDialog(state: UpdateState): DialogState {
   const rows: DialogRow[] = [];
   if (vsix) {
     rows.push(
-      row(vsix.name, `Install ${check.latest}`, {
-        detail: `Downloads and installs ${vsix.name}`,
+      row(vsix.name, t("ui.install", "Install {value0}", { value0: check.latest }), {
+        detail: t("ui.downloadsAndInstalls", "Downloads and installs {value0}", { value0: vsix.name }),
         action: UPDATE_INSTALL,
       }),
     );
   }
   if (cliRow?.installable) {
     rows.push(
-      row(cliRow.latest, `Update the oxide CLI to ${cliRow.latest}`, {
-        detail: `Runs oxide update — replaces the ${cliRow.current || "installed"} binary every turn runs through`,
+      row(cliRow.latest, t("ui.updateTheOxideCLITo", "Update the oxide CLI to {value0}", { value0: cliRow.latest }), {
+        detail: t("ui.runsOxideUpdateReplacesTheBinaryEveryTurnRunsThrough", "Runs oxide update — replaces the {value0} binary every turn runs through", { value0: cliRow.current || "installed" }),
         action: UPDATE_CLI,
       }),
     );
   }
   if (check.releaseUrl) {
     rows.push(
-      row(check.releaseUrl, "Release notes", {
-        detail: "Open the release page in your browser",
+      row(check.releaseUrl, t("dialog.update.notes", "Release notes"), {
+        detail: t("ui.openTheReleasePageInYourBrowser", "Open the release page in your browser"),
         action: UPDATE_NOTES,
       }),
     );
   }
   rows.push(
-    row("", "Close", {
-      detail: check.updateAvailable ? "Keep the version installed now" : "Nothing to install",
+    row("", t("common.close", "Close"), {
+      detail: check.updateAvailable ? t("ui.keepTheVersionInstalledNow", "Keep the version installed now") : t("ui.nothingToInstall", "Nothing to install"),
       action: CLOSE_DIALOG,
     }),
   );
   const title = check.updateAvailable
-    ? `Oxide ${check.latest} is available`
+    ? t("ui.oxideIsAvailable", "Oxide {value0} is available", { value0: check.latest })
     : cliRow?.installable
-      ? `The oxide CLI ${cliRow!.latest} is available`
-      : `Oxide ${check.current || check.latest} is up to date`;
+      ? t("ui.theOxideCLIIsAvailable", "The oxide CLI {value0} is available", { value0: cliRow!.latest })
+      : t("ui.oxideIsUpToDate", "Oxide {value0} is up to date", { value0: check.current || check.latest });
   return {
     ...empty,
     title,
     subtitle: check.updateAvailable
-      ? "Installing downloads this release of the extension — the .vsix published on its own release train — and hands it to VS Code, which runs it from the next window on."
+      ? t("ui.installingDownloadsThisReleaseOfTheExtensionTheVsixPublishedOnItsOwnReleaseTrain", "Installing downloads this release of the extension — the .vsix published on its own release train — and hands it to VS Code, which runs it from the next window on.")
       : cliRow?.installable
-        ? `This extension is current. The oxide CLI this panel runs every turn through is at ${cliRow!.current || "an older release"}: updating it is one row, and it is the binary the terminal and the desktop app share.`
-        : `Oxide ${check.current || check.latest} is the newest released version of this extension.`,
+        ? t("ui.thisExtensionIsCurrentTheOxideCLIThisPanelRunsEveryTurnThroughIsAtUpdatingItIsOn", "This extension is current. The oxide CLI this panel runs every turn through is at {value0}: updating it is one row, and it is the binary the terminal and the desktop app share.", { value0: cliRow!.current || "an older release" })
+        : t("ui.oxideIsTheNewestReleasedVersionOfThisExtension", "Oxide {value0} is the newest released version of this extension.", { value0: check.current || check.latest }),
     note: notes.join(" · "),
     rows,
   };

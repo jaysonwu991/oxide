@@ -1,7 +1,7 @@
 {
   "name": "oxide-vscode",
   "displayName": "Oxide",
-  "description": "The Oxide coding agent inside VS Code: a chat panel and editor actions backed by the oxide CLI.",
+  "description": "%extension.description%",
   "version": "0.0.0",
   "publisher": "jaysonwu991",
   "icon": "media/icon.png",
@@ -38,7 +38,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "Oxide runs a coding agent that reads and writes files in your workspace."
+      "description": "%extension.workspaceTrust%"
     },
     "virtualWorkspaces": false
   },
@@ -64,7 +64,7 @@
         {
           "type": "webview",
           "id": "oxide.chat",
-          "name": "Chat",
+          "name": "%extension.view.chat%",
           "icon": "media/oxide.svg",
           "contextualTitle": "Oxide"
         }
@@ -73,7 +73,7 @@
         {
           "type": "webview",
           "id": "oxide.chatSecondary",
-          "name": "Chat",
+          "name": "%extension.view.chat%",
           "icon": "media/oxide.svg",
           "contextualTitle": "Oxide"
         }
@@ -82,126 +82,126 @@
     "commands": [
       {
         "command": "oxide.openChat",
-        "title": "Open Chat",
+        "title": "%extension.command.openChat%",
         "category": "Oxide",
         "icon": "media/oxide.svg"
       },
       {
         "command": "oxide.focusInput",
-        "title": "Focus Input",
+        "title": "%extension.command.focusInput%",
         "category": "Oxide"
       },
       {
         "command": "oxide.insertReference",
-        "title": "Insert File Reference",
+        "title": "%extension.command.insertReference%",
         "category": "Oxide"
       },
       {
         "command": "oxide.newSession",
-        "title": "New Chat",
+        "title": "%extension.command.newSession%",
         "category": "Oxide",
         "icon": "$(add)"
       },
       {
         "command": "oxide.resumeSession",
-        "title": "Session History",
+        "title": "%extension.command.resumeSession%",
         "category": "Oxide",
         "icon": "$(history)"
       },
       {
         "command": "oxide.continueSession",
-        "title": "Continue Last Session",
+        "title": "%extension.command.continueSession%",
         "category": "Oxide"
       },
       {
         "command": "oxide.stop",
-        "title": "Stop",
+        "title": "%extension.command.stop%",
         "category": "Oxide",
         "icon": "$(debug-stop)"
       },
       {
         "command": "oxide.addToChat",
-        "title": "Add File or Selection to Chat",
+        "title": "%extension.command.addToChat%",
         "category": "Oxide"
       },
       {
         "command": "oxide.askAboutSelection",
-        "title": "Ask About Selection",
+        "title": "%extension.command.askAboutSelection%",
         "category": "Oxide"
       },
       {
         "command": "oxide.explainSelection",
-        "title": "Explain Selection",
+        "title": "%extension.command.explainSelection%",
         "category": "Oxide"
       },
       {
         "command": "oxide.fixSelection",
-        "title": "Fix Selection",
+        "title": "%extension.command.fixSelection%",
         "category": "Oxide"
       },
       {
         "command": "oxide.reviewChanges",
-        "title": "Review Working Tree Changes",
+        "title": "%extension.command.reviewChanges%",
         "category": "Oxide"
       },
       {
         "command": "oxide.openTerminal",
-        "title": "Open Terminal (TUI)",
+        "title": "%extension.command.openTerminal%",
         "category": "Oxide",
         "icon": "$(terminal)"
       },
       {
         "command": "oxide.showOutput",
-        "title": "Show Output Channel",
+        "title": "%extension.command.showOutput%",
         "category": "Oxide"
       },
       {
         "command": "oxide.setModel",
-        "title": "Set Model...",
+        "title": "%extension.command.setModel%",
         "category": "Oxide"
       },
       {
         "command": "oxide.setAgent",
-        "title": "Set Agent...",
+        "title": "%extension.command.setAgent%",
         "category": "Oxide"
       },
       {
         "command": "oxide.setReasoning",
-        "title": "Set Reasoning Effort...",
+        "title": "%extension.command.setReasoning%",
         "category": "Oxide"
       },
       {
         "command": "oxide.setProjectTrust",
-        "title": "Set Project Trust...",
+        "title": "%extension.command.setProjectTrust%",
         "category": "Oxide"
       },
       {
         "command": "oxide.connectProvider",
-        "title": "Connect Provider...",
+        "title": "%extension.command.connectProvider%",
         "category": "Oxide",
         "icon": "$(plug)"
       },
       {
         "command": "oxide.mcpServers",
-        "title": "MCP Servers...",
+        "title": "%extension.command.mcpServers%",
         "category": "Oxide",
         "icon": "$(server-process)"
       },
       {
         "command": "oxide.worktrees",
-        "title": "Worktrees...",
+        "title": "%extension.command.worktrees%",
         "category": "Oxide",
         "icon": "$(git-branch)"
       },
       {
         "command": "oxide.language",
-        "title": "Change Language...",
+        "title": "%extension.command.language%",
         "category": "Oxide",
         "icon": "$(globe)"
       },
       {
         "command": "oxide.checkForUpdates",
-        "title": "Check for Updates...",
+        "title": "%extension.command.checkForUpdates%",
         "category": "Oxide",
         "icon": "$(cloud-download)"
       }
@@ -301,18 +301,18 @@
         "oxide.binaryPath": {
           "type": "string",
           "default": "oxide",
-          "description": "Path to the oxide binary. A bare name is looked up on PATH, then in ~/.local/bin and ~/.cargo/bin."
+          "description": "%extension.setting.binaryPath%"
         },
         "oxide.model": {
           "type": "string",
           "default": "",
           "deprecationMessage": "Choose a model in Oxide. The choice is saved in the shared config.json for CLI, Desktop and VS Code.",
-          "description": "Legacy setting. Model selection now uses the shared Oxide configuration."
+          "description": "%extension.setting.model%"
         },
         "oxide.agent": {
           "type": "string",
           "default": "",
-          "description": "Agent passed with --agent, loaded from the workspace's .oxide/agents (or .claude/agents)."
+          "description": "%extension.setting.agent%"
         },
         "oxide.reasoning": {
           "type": "string",
@@ -328,7 +328,7 @@
           ],
           "default": "auto",
           "deprecationMessage": "Choose a reasoning level in Oxide. The choice is shared with CLI and Desktop.",
-          "description": "Legacy setting. Reasoning now uses the shared Oxide configuration."
+          "description": "%extension.setting.reasoning%"
         },
         "oxide.projectTrust": {
           "type": "string",
@@ -338,22 +338,22 @@
             "never"
           ],
           "enumDescriptions": [
-            "Use the decision saved in trust.json, or defaultProjectTrust.",
-            "Pass --approve: load this workspace's .oxide agents, commands, skills, plugins and hooks.",
-            "Pass --no-approve: ignore this workspace's project-local resources."
+            "%extension.setting.projectTrust.default%",
+            "%extension.setting.projectTrust.always%",
+            "%extension.setting.projectTrust.never%"
           ],
           "default": "default",
-          "markdownDescription": "Project trust for the workspace's own resources (`.oxide/agents`, `.oxide/commands`, `.oxide/skills`, `.oxide/plugins`, `SYSTEM.md`, and the Claude Code equivalents). With the default policy, the panel asks automatically when no shared trust decision is saved. Trust controls resource loading; file and shell access follows the operating-system user permissions."
+          "markdownDescription": "%extension.setting.projectTrust%"
         },
         "oxide.tools": {
           "type": "string",
           "default": "",
-          "description": "Comma-separated tool allowlist passed with --tools (e.g. read,grep,find,ls for a read-only run)."
+          "description": "%extension.setting.tools%"
         },
         "oxide.excludeTools": {
           "type": "string",
           "default": "",
-          "description": "Comma-separated tool denylist passed with --exclude-tools."
+          "description": "%extension.setting.excludeTools%"
         },
         "oxide.additionalArguments": {
           "type": "array",
@@ -361,7 +361,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Extra arguments appended to every oxide invocation."
+          "description": "%extension.setting.additionalArguments%"
         },
         "oxide.followUpBehavior": {
           "type": "string",
@@ -378,27 +378,27 @@
             "Apply the follow-up to the active response."
           ],
           "default": "queue",
-          "description": "How follow-up messages behave while Oxide is running. Press Cmd/Ctrl+Shift+Enter to do the opposite for one message."
+          "description": "%extension.setting.followUpBehavior%"
         },
         "oxide.showThinking": {
           "type": "boolean",
           "default": true,
-          "description": "Show the model's reasoning in the transcript as a collapsible block."
+          "description": "%extension.setting.showThinking%"
         },
         "oxide.autoContext": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Track the file you are editing as a chip in the composer, sent with the next message as context. The chip is read when the message goes, so unsaved edits are included; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. Turn this off to attach only what you add by hand."
+          "markdownDescription": "%extension.setting.autoContext%"
         },
         "oxide.askApprovals": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Ask before running a tool a permission rule gates (`--ask-approvals`). The question appears in the transcript and the turn waits for it; **Always allow** is remembered per project in the shared `approvals.json`, so the terminal and the desktop app honour it too. Turn this off to run gated tools without a prompt (`--no-ask-approvals`). Either way the flag is passed explicitly, so this setting — not `askApprovals` in the shared `settings.json` — decides for a run started from the panel."
+          "markdownDescription": "%extension.setting.askApprovals%"
         },
         "oxide.notifyOnFinish": {
           "type": "boolean",
           "default": true,
-          "description": "Show a notification when a run finishes while the chat view is hidden."
+          "description": "%extension.setting.notifyOnFinish%"
         }
       }
     }

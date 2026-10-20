@@ -1,3 +1,4 @@
+import { translate, type LanguageInfo } from "./i18n";
 // The MCP server list, read from the CLI's own `oxide mcp list --json`.
 //
 // The listing is the one the terminal's `/mcp` draws and the desktop app's MCP
@@ -67,18 +68,18 @@ function stringOf(value: unknown): string {
 /// The word a state is painted with, so the dialog reads at a glance the way the
 /// terminal's colored status does. The webview cannot draw a codicon, so the
 /// state is a label colored by `dialogTone` in the dialog itself.
-export function mcpStateLabel(state: string): string {
+export function mcpStateLabel(state: string, info: LanguageInfo | null = null): string {
   switch (state) {
     case "connected":
-      return "Connected";
+      return translate(info, "ui.connected", "Connected");
     case "needs-auth":
-      return "Needs auth";
+      return translate(info, "state.auth", "Needs auth");
     case "needs-trust":
-      return "Needs trust";
+      return translate(info, "state.trust", "Needs trust");
     case "disabled":
-      return "Disabled";
+      return translate(info, "ui.disabled", "Disabled");
     case "error":
-      return "Error";
+      return translate(info, "ui.error", "Error");
     default:
       return state || "Unknown";
   }

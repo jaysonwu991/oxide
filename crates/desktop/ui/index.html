@@ -85,15 +85,15 @@
       class="sidebar-resizer"
       role="separator"
       aria-orientation="vertical"
-      aria-label="Resize sidebar"
+      aria-label="Resize sidebar" data-i18n-aria="ui.resizeSidebar"
       aria-valuemin="160"
       tabindex="0"
-      title="Drag to resize · double-click to reset"
+      title="Drag to resize · double-click to reset" data-i18n-title="ui.dragToResizeDoubleClickToReset"
     ></div>
 
     <main class="main">
       <header class="topbar">
-        <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs" hidden></div>
+        <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs" data-i18n-aria="ui.chatTabs" hidden></div>
         <div class="thread-title" id="thread-title"></div>
         <!-- The checkout the thread on screen runs in, when it is not the
              project's own folder: a worktree is a copy of the project on its own
@@ -107,7 +107,7 @@
         <button id="run-banner" class="run-banner" type="button" hidden>
           <span class="spinner" aria-hidden="true"></span>
           <span id="run-banner-text" class="run-banner-text"></span>
-          <span class="run-banner-open" aria-hidden="true">Open</span>
+          <span class="run-banner-open" aria-hidden="true" data-i18n="topbar.runOpen">Open</span>
         </button>
         <div class="topbar-actions">
           <button id="changes-toggle" class="icon" title="View changes" aria-label="View changes" aria-expanded="false" data-i18n-title="topbar.viewChanges" data-i18n-aria="topbar.viewChanges"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 9h8M12 5v8M8 17h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
@@ -122,7 +122,7 @@
         <span id="run-time-text"></span>
       </div>
 
-      <nav id="message-nav" class="message-nav" aria-label="Jump to a message" hidden></nav>
+      <nav id="message-nav" class="message-nav" aria-label="Jump to a message" data-i18n-aria="ui.jumpToAMessage" hidden></nav>
       <div id="message-preview" class="message-preview" hidden></div>
       <div id="transcript" class="conversation" role="tabpanel"></div>
       <button id="jump-latest" class="jump-latest" title="Jump to latest message" aria-label="Jump to latest message" data-i18n-title="topbar.jumpLatest" data-i18n-aria="topbar.jumpLatest" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
@@ -185,7 +185,7 @@
           <button id="worktree-branch" class="details-row" data-i18n="dialog.worktrees.createBranch" hidden>Create branch here</button>
           <div class="worktree-options">
             <label for="worktree-base" data-i18n="dialog.worktrees.startFrom">Start from</label>
-            <input id="worktree-base" type="text" placeholder="HEAD (current checkout)" aria-label="Starting branch or commit" autocomplete="off" spellcheck="false" data-i18n-placeholder="dialog.worktrees.basePlaceholder" />
+            <input id="worktree-base" type="text" placeholder="HEAD (current checkout)" aria-label="Starting branch or commit" data-i18n-aria="ui.startingBranchOrCommit" autocomplete="off" spellcheck="false" data-i18n-placeholder="dialog.worktrees.basePlaceholder" />
             <label><input id="worktree-copy" type="checkbox" /> <span data-i18n="dialog.worktrees.includeChanges">Include uncommitted changes from the current checkout</span></label>
             <label><input id="worktree-detached" type="checkbox" checked /> <span data-i18n="dialog.worktrees.detached">Detached HEAD (create a branch later)</span></label>
           </div>
@@ -288,8 +288,8 @@
             <button
               id="worktree"
               class="fact fact-button"
-              title="Worktree"
-              aria-label="Worktree"
+              title="Worktree" data-i18n-title="composer.worktree"
+              aria-label="Worktree" data-i18n-aria="composer.worktree"
               aria-haspopup="dialog"
               aria-expanded="false"
               aria-controls="worktrees-modal"
@@ -328,11 +328,11 @@
               <button
                 id="trust"
                 class="chip chip-icon"
-                title="Project access"
-                aria-label="Project access"
+                title="Project access" data-i18n-title="composer.trust"
+                aria-label="Project access" data-i18n-aria="composer.trust"
                 hidden
               ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.7c1.7 1.2 3.3 1.7 5 1.8v3.8c0 3.2-1.7 5.5-5 7-3.3-1.5-5-3.8-5-7V3.5c1.7-.1 3.3-.6 5-1.8Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="m5.6 8 1.5 1.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-              <button id="agents" class="chip chip-icon" title="Agents" aria-label="Agents" aria-haspopup="dialog" aria-controls="agents-modal"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="5.2" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.2 13.8c.4-3 2-4.4 4.8-4.4s4.4 1.4 4.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+              <button id="agents" class="chip chip-icon" title="Agents" data-i18n-title="dialog.agents.title" aria-label="Agents" data-i18n-aria="dialog.agents.title" aria-haspopup="dialog" aria-controls="agents-modal"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="5.2" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.2 13.8c.4-3 2-4.4 4.8-4.4s4.4 1.4 4.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
               <button
                 id="permissions"
                 class="chip chip-icon"
@@ -358,8 +358,8 @@
                 <button
                   id="model"
                   class="chip setting-chip"
-                  title="Model"
-                  aria-label="Model"
+                  title="Model" data-i18n-title="dialog.models.title"
+                  aria-label="Model" data-i18n-aria="dialog.models.title"
                   aria-haspopup="dialog"
                   aria-expanded="false"
                   aria-controls="models-modal"
@@ -367,8 +367,8 @@
                 <button
                   id="reasoning"
                   class="chip setting-chip"
-                  title="Thinking level"
-                  aria-label="Thinking level"
+                  title="Thinking level" data-i18n-title="composer.thinking"
+                  aria-label="Thinking level" data-i18n-aria="composer.thinking"
                   aria-haspopup="dialog"
                   aria-expanded="false"
                   aria-controls="reasoning-modal"
@@ -393,7 +393,7 @@
       </div>
       </div>
 
-    <aside id="review-modal" class="changes-pane" aria-label="Changes" hidden>
+    <aside id="review-modal" class="changes-pane" aria-label="Changes" data-i18n-aria="ui.changes" hidden>
       <div class="review-dialog">
         <div class="dock-title"><h2 id="review-title" data-i18n="topbar.viewChanges">Changes</h2>
           <button
@@ -406,7 +406,7 @@
           ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         </div>
         <div class="review-head">
-          <select id="review-scope" aria-label="Change scope"><option value="turn">Last turn</option><option value="repository">Uncommitted</option></select>
+          <select id="review-scope" aria-label="Change scope" data-i18n-aria="ui.changeScope"><option value="turn" data-i18n="changes.lastTurn">Last turn</option><option value="repository" data-i18n="changes.uncommitted">Uncommitted</option></select>
           <span id="review-total" class="review-total"></span>
           <button id="review-refresh" class="icon" title="Refresh changes" aria-label="Refresh changes" data-i18n-title="common.refresh" data-i18n-aria="common.refresh"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 4v6h-6M20 10a8 8 0 1 0 0 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
 
@@ -417,7 +417,7 @@
       </div>
     </aside>
 
-    <aside id="details-panel" class="details-pane" aria-label="Project details" hidden>
+    <aside id="details-panel" class="details-pane" aria-label="Project details" data-i18n-aria="topbar.projectDetails" hidden>
       <div class="details-card">
         <div class="details-head"><span id="details-project"></span><button id="details-more" class="icon" title="Project options" aria-label="Project options" aria-haspopup="menu" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
         <button id="details-changes" class="details-row"><span id="details-changes-icon" aria-hidden="true"></span><span data-i18n="topbar.viewChanges">Changes</span><span id="details-stats" class="change-stats"></span></button>
@@ -676,12 +676,12 @@
     </div>
 
     <div id="command-palette" class="palette" hidden>
-      <div id="palette-list" class="palette-list" role="listbox" aria-label="Slash commands"></div>
+      <div id="palette-list" class="palette-list" role="listbox" aria-label="Slash commands" data-i18n-aria="ui.slashCommands"></div>
       <div class="palette-hint" data-i18n="palette.commandsHint">↑↓ choose · Enter run · Esc close</div>
     </div>
 
     <div id="at-list" class="palette" hidden>
-      <div id="at-rows" class="palette-list" role="listbox" aria-label="Files and folders"></div>
+      <div id="at-rows" class="palette-list" role="listbox" aria-label="Files and folders" data-i18n-aria="ui.filesAndFolders"></div>
       <div class="palette-hint" data-i18n="palette.pathsHint">↑↓ choose · Enter insert · Esc close</div>
     </div>
 

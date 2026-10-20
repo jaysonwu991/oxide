@@ -260,7 +260,7 @@ interface PagePacket {
   type?: string;
   /// A request's own number, or — for an announcement — the event's name.
   id?: number | string;
-  params?: { command?: string; args?: { url?: unknown } };
+  params?: { command?: string; args?: { url?: unknown; strings?: unknown } };
 }
 
 function parsePacket(raw: unknown): PagePacket | undefined {
@@ -277,6 +277,15 @@ function parsePacket(raw: unknown): PagePacket | undefined {
 ipcMain.on(TO_HOST, (event, message: unknown) => {
   const request = parsePacket(message);
   if (!request) return;
+  if (request.params?.command === "set_native_language" && typeof request.id === "number") {
+    const strings = request.params.args?.strings;
+    if (strings && typeof strings === "object" && !Array.isArray(strings)) {
+      nativeStrings = Object.fromEntries(Object.entries(strings).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+      installMenu();
+    }
+    answerRequest(BrowserWindow.fromWebContents(event.sender), request.id, null);
+    return;
+  }
   // The folder chooser is the window's own: a native panel cannot be drawn by
   // the harness, so the request is answered here — with the folder the reader
   // picked, or with nothing when they closed it — and never reaches the
@@ -305,7 +314,7 @@ ipcMain.on(TO_HOST, (event, message: unknown) => {
 /// absolute path from memory.
 async function answerPickFolder(window: BrowserWindow | null, id: number): Promise<void> {
   const options: Electron.OpenDialogOptions = {
-    title: "Choose a project folder",
+    title: t("ui.chooseAProjectFolder", "Choose a project folder"),
     properties: ["openDirectory", "createDirectory"],
   };
   const answer = window
@@ -357,6 +366,12 @@ function respond(window: BrowserWindow | null, packet: Record<string, unknown>):
 
 // ---------- the menu bar ----------
 
+let nativeStrings: Record<string, string> = {};
+
+function t(key: string, fallback: string): string {
+  return nativeStrings[key] || fallback;
+}
+
 /// The menu bar the app is, on the platforms that have one. macOS is the only
 /// one: everywhere else the window is the app, as it was before.
 function installMenu(): void {
@@ -369,46 +384,46 @@ function installMenu(): void {
       {
         label: "Oxide",
         submenu: [
-          { label: "About Oxide", role: "about" },
+          { label: t("ui.aboutOxide", "About Oxide"), role: "about" },
           { type: "separator" },
           // The app updates itself from its own release train, and this is the
           // one place the reader can ask it to look: the window paints the
           // dialog, so the click reaches it as the event it understands.
-          { label: "Check for Updates…", click: () => announceCheckUpdates() },
+          { label: t("ui.checkForUpdates", "Check for Updates…"), click: () => announceCheckUpdates() },
           { type: "separator" },
-          { label: "Hide Oxide", role: "hide" },
-          { label: "Hide Others", role: "hideOthers" },
-          { label: "Show All", role: "unhide" },
+          { label: t("ui.hideOxide", "Hide Oxide"), role: "hide" },
+          { label: t("ui.hideOthers", "Hide Others"), role: "hideOthers" },
+          { label: t("ui.showAll", "Show All"), role: "unhide" },
           { type: "separator" },
-          { label: "Quit Oxide", role: "quit" },
+          { label: t("ui.quitOxide", "Quit Oxide"), role: "quit" },
         ],
       },
       {
-        label: "File",
+        label: t("ui.file", "File"),
         submenu: [
-          { label: "New Tab", accelerator: "CmdOrCtrl+T", click: () => announceTab("new") },
-          { label: "Close Tab", accelerator: "CmdOrCtrl+W", click: () => announceTab("close") },
+          { label: t("ui.newTab", "New Tab"), accelerator: "CmdOrCtrl+T", click: () => announceTab("new") },
+          { label: t("ui.closeTab", "Close Tab"), accelerator: "CmdOrCtrl+W", click: () => announceTab("close") },
         ],
       },
       {
-        label: "Edit",
+        label: t("composer.edit", "Edit"),
         submenu: [
-          { label: "Undo", role: "undo" },
-          { label: "Redo", role: "redo" },
+          { label: t("ui.undo", "Undo"), role: "undo" },
+          { label: t("ui.redo", "Redo"), role: "redo" },
           { type: "separator" },
-          { label: "Cut", role: "cut" },
-          { label: "Copy", role: "copy" },
-          { label: "Paste", role: "paste" },
-          { label: "Select All", role: "selectAll" },
+          { label: t("ui.cut", "Cut"), role: "cut" },
+          { label: t("ui.copy", "Copy"), role: "copy" },
+          { label: t("ui.paste", "Paste"), role: "paste" },
+          { label: t("ui.selectAll", "Select All"), role: "selectAll" },
         ],
       },
       {
-        label: "Window",
+        label: t("ui.window", "Window"),
         submenu: [
-          { label: "Minimize", role: "minimize" },
-          { label: "Zoom", role: "zoom" },
+          { label: t("ui.minimize", "Minimize"), role: "minimize" },
+          { label: t("ui.zoom", "Zoom"), role: "zoom" },
           { type: "separator" },
-          { label: "Close Window", role: "close", accelerator: "CmdOrCtrl+Shift+W" },
+          { label: t("ui.closeWindow", "Close Window"), role: "close", accelerator: "CmdOrCtrl+Shift+W" },
         ],
       },
     ]),

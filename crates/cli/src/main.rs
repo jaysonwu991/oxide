@@ -1387,7 +1387,14 @@ fn list_approvals(project: PathBuf, json_output: bool) -> Result<()> {
         return Ok(());
     }
     if tools.is_empty() {
-        println!("{}: no tools allowed without prompting", project.display());
+        println!(
+            "{}",
+            i18n::tf(
+                i18n::resolve(&project),
+                "cli.noTools",
+                &[("path", &project.display().to_string())]
+            )
+        );
         return Ok(());
     }
     println!("{}:", project.display());
@@ -1412,10 +1419,15 @@ fn clear_approvals(project: PathBuf, json_output: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "forgot {} allowed tool{} for {}",
-        tools.len(),
-        if tools.len() == 1 { "" } else { "s" },
-        project.display()
+        "{}",
+        i18n::tf(
+            i18n::resolve(&project),
+            "cli.clearedTools",
+            &[
+                ("count", &tools.len().to_string()),
+                ("path", &project.display().to_string())
+            ]
+        )
     );
     Ok(())
 }
@@ -1506,7 +1518,14 @@ fn show_trust(project: PathBuf, json_output: bool) -> Result<()> {
     println!(
         "{}: {}",
         project.display(),
-        if trusted { "trusted" } else { "untrusted" }
+        i18n::t(
+            i18n::resolve(&project),
+            if trusted {
+                "state.trusted"
+            } else {
+                "state.untrusted"
+            }
+        )
     );
     Ok(())
 }
@@ -1541,7 +1560,14 @@ fn set_trust(project: PathBuf, decision: &str, json_output: bool) -> Result<()> 
     println!(
         "{}: {}",
         project.display(),
-        if trusted { "trusted" } else { "untrusted" }
+        i18n::t(
+            i18n::resolve(&project),
+            if trusted {
+                "state.trusted"
+            } else {
+                "state.untrusted"
+            }
+        )
     );
     Ok(())
 }
@@ -1613,7 +1639,13 @@ fn read_clipboard(json_output: bool) -> Result<()> {
             if json_output {
                 println!("null");
             } else {
-                println!("the clipboard holds no image or PDF to attach");
+                println!(
+                    "{}",
+                    i18n::t(
+                        i18n::resolve(&std::env::current_dir()?),
+                        "cli.noClipboardMedia"
+                    )
+                );
             }
         }
     }
@@ -1941,7 +1973,7 @@ async fn run_print(
     runner::spawn_agent(run, tx).await;
 
     match output {
-        cli::OutputMode::Print => run_print_text(rx).await,
+        cli::OutputMode::Print => run_print_text(rx, i18n::resolve(&cwd)).await,
         cli::OutputMode::Json => {
             let header = log.as_ref().map(cli::session_header);
             cli::run_json(rx, header).await
@@ -1949,7 +1981,10 @@ async fn run_print(
     }
 }
 
-async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) -> Result<()> {
+async fn run_print_text(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    lang: i18n::Language,
+) -> Result<()> {
     let mut stdout = io::stdout();
     // Text is held until the step commits (a tool call, or the turn ending): a
     // dropped stream is retried from scratch, so a partial attempt flushed the
@@ -1972,21 +2007,42 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
                 delay_ms,
             } => {
                 pending.clear();
-                eprintln!("[retry {attempt}/{max} in {delay_ms}ms]");
+                eprintln!(
+                    "{}",
+                    i18n::tf(
+                        lang,
+                        "cli.retry",
+                        &[
+                            ("attempt", &attempt.to_string()),
+                            ("max", &max.to_string()),
+                            ("delay", &delay_ms.to_string())
+                        ]
+                    )
+                );
             }
             AgentEvent::ToolCall { name, args } => {
                 flush_stdout(&mut stdout, &mut pending)?;
                 let subject = tools::search_tool_summary(&name, &args).unwrap_or(args);
-                eprintln!("\n[tool] {name} {subject}");
+                eprintln!(
+                    "{}",
+                    i18n::tf(lang, "cli.tool", &[("name", &name), ("subject", &subject)])
+                );
             }
             AgentEvent::ToolProgress { chunk, .. } => {
                 eprintln!("{chunk}");
             }
             AgentEvent::ToolResult { name, output, .. } => {
                 if tools::is_empty_search_result(&name, &output) {
-                    eprintln!("[result: {name}] 0 matches");
+                    eprintln!("{}", i18n::tf(lang, "cli.matches", &[("name", &name)]));
                 } else {
-                    eprintln!("[result: {name}] {} bytes", output.len());
+                    eprintln!(
+                        "{}",
+                        i18n::tf(
+                            lang,
+                            "cli.bytes",
+                            &[("name", &name), ("count", &output.len().to_string())]
+                        )
+                    );
                 }
             }
             AgentEvent::Usage { .. } => {}
@@ -2005,7 +2061,15 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
                 ..
             } => {
                 eprintln!(
-                    "[compaction] summarized {summarized} messages (~{tokens_before} tokens)"
+                    "{}",
+                    i18n::tf(
+                        lang,
+                        "cli.compaction",
+                        &[
+                            ("count", &summarized.to_string()),
+                            ("tokens", &tokens_before.to_string())
+                        ]
+                    )
                 );
             }
             AgentEvent::Branch { .. } => {}
@@ -2013,7 +2077,7 @@ async fn run_print_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>
             AgentEvent::Steered { .. } => {}
             AgentEvent::Error(message) => {
                 flush_stdout(&mut stdout, &mut pending)?;
-                eprintln!("\nerror: {message}");
+                eprintln!("\n{}", i18n::tf(lang, "tui.error", &[("error", &message)]));
             }
             AgentEvent::Finished(_) => {
                 flush_stdout(&mut stdout, &mut pending)?;

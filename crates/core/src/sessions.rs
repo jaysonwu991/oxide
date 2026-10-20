@@ -18,6 +18,7 @@ pub fn list(
     archived: bool,
     json: bool,
 ) -> Result<()> {
+    let language = crate::i18n::resolve(cwd);
     let mut sessions = if all {
         SessionLog::list_all()?
     } else {
@@ -42,7 +43,11 @@ pub fn list(
                 let mut view = serde_json::to_value(summary)?;
                 view["pinned"] = json!(state.pinned(&summary.id));
                 view["archived"] = json!(archived);
-                view["age"] = json!(relative_age(now_secs(), summary.modified_at));
+                view["age"] = json!(crate::i18n::relative_time(
+                    language,
+                    now_secs(),
+                    summary.modified_at
+                ));
                 Ok(view)
             })
             .collect::<Result<_>>()?;
@@ -50,7 +55,17 @@ pub fn list(
         return Ok(());
     }
     if sessions.is_empty() {
-        println!("no sessions{}", if all { "" } else { " for this project" });
+        println!(
+            "{}",
+            crate::i18n::t(
+                language,
+                if all {
+                    "cli.noSessions"
+                } else {
+                    "cli.noProjectSessions"
+                }
+            )
+        );
         return Ok(());
     }
 
@@ -64,7 +79,7 @@ pub fn list(
             println!(
                 "{}  {:<10}  {:>4} msg  {}  {}",
                 summary.id,
-                relative_age(now, summary.modified_at),
+                crate::i18n::relative_time(language, now, summary.modified_at),
                 summary.message_count,
                 summary.cwd,
                 label
@@ -73,7 +88,7 @@ pub fn list(
             println!(
                 "{}  {:<10}  {:>4} msg  {}",
                 summary.id,
-                relative_age(now, summary.modified_at),
+                crate::i18n::relative_time(language, now, summary.modified_at),
                 summary.message_count,
                 label
             );
@@ -107,14 +122,22 @@ pub fn delete(
     older_than_days: Option<u64>,
     force: bool,
 ) -> Result<()> {
+    let language = crate::i18n::resolve(cwd);
     let targets = delete_targets(&project_dir(cwd), id, all, older_than_days)?;
     if targets.is_empty() {
-        println!("no sessions to delete");
+        println!("{}", crate::i18n::t(language, "cli.noDeleteSessions"));
         return Ok(());
     }
 
     if !force {
-        println!("delete {} session(s)?", targets.len());
+        println!(
+            "{}",
+            crate::i18n::tf(
+                language,
+                "cli.deleteSessions",
+                &[("count", &targets.len().to_string())]
+            )
+        );
         let now = now_secs();
         for summary in &targets {
             let label = summary
@@ -124,7 +147,7 @@ pub fn delete(
             println!(
                 "  {}  {}  {}",
                 summary.id,
-                relative_age(now, summary.modified_at),
+                crate::i18n::relative_time(language, now, summary.modified_at),
                 label
             );
         }
@@ -133,7 +156,7 @@ pub fn delete(
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            println!("aborted");
+            println!("{}", crate::i18n::t(language, "cli.aborted"));
             return Ok(());
         }
     }
@@ -429,19 +452,6 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
-}
-
-fn relative_age(now: u64, then: u64) -> String {
-    let secs = now.saturating_sub(then);
-    if secs < 60 {
-        "just now".to_string()
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86_400)
-    }
 }
 
 #[cfg(test)]

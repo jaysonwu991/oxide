@@ -3,6 +3,8 @@
 // line and the context gauge. The labels are computed here rather than in the
 // webview, so the footer reads the same in both panes and is unit tested.
 
+import { translate, type LanguageInfo } from "./i18n";
+
 import type { TrustSetting } from "./args";
 import { formatTokens, type UsageTotals } from "./protocol";
 import type { Access } from "./trust";
@@ -13,6 +15,8 @@ export interface FooterChip {
   id: "model" | "reasoning" | "agent" | "access";
   label: string;
   title: string;
+  value?: string;
+  active?: boolean;
 }
 
 /// The checkout the chat runs in: a worktree is a copy of the project on its own
@@ -39,6 +43,7 @@ export interface FooterState {
 }
 
 export interface FooterInput {
+  language?: LanguageInfo | null;
   /// The model a turn would run with: the `oxide.model` setting, else the one
   /// in `config.json`.
   model: string;
@@ -99,31 +104,35 @@ export function reasoningChoices(input: Pick<FooterInput, "reasoningLevels" | "s
 }
 
 export function footerState(input: FooterInput): FooterState {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) => translate(input.language ?? null, key, fallback, vars);
   const percent = contextPercent(input.usage.contextTokens, input.contextWindow);
   return {
     chips: [
       {
         id: "model",
-        label: `model: ${input.model || "config.json"}${input.contextWindow ? ` · ${formatTokens(input.contextWindow)}` : ""}`,
-        title: `Model a turn runs with (--model)${input.provider ? ` on ${input.provider}` : ""}. Click to change it.`,
+        value: input.model || "config.json",
+        label: t("ui.model", "model: {value0}{value1}", { value0: input.model || "config.json", value1: input.contextWindow ? ` · ${formatTokens(input.contextWindow)}` : "" }),
+        title: t("ui.modelATurnRunsWithModelClickToChangeIt", "Model a turn runs with (--model){value0}. Click to change it.", { value0: input.provider ? ` on ${input.provider}` : "" }),
       },
       ...(input.supportsReasoning === false ? [] : [{
         id: "reasoning" as const,
-        label: `thinking: ${input.reasoning}`,
-        title: `Reasoning effort (--reasoning): ${reasoningChoices(input).join(" → ")}. Click to choose a level.`,
+        value: translate(input.language ?? null, `reasoning.${input.reasoning}`, input.reasoning.charAt(0).toUpperCase() + input.reasoning.slice(1)),
+        label: t("ui.thinking", "thinking: {value0}", { value0: input.reasoning }),
+        title: t("ui.reasoningEffortReasoningClickToChooseALevel", "Reasoning effort (--reasoning): {value0}. Click to choose a level.", { value0: reasoningChoices(input).join(" → ") }),
       }]),
       {
         id: "access",
-        label: `access: ${input.access}`,
+        active: input.access === "trusted",
+        label: t("ui.access", "access: {value0}", { value0: input.access }),
         title: accessTitle(input),
       },
       {
         id: "agent",
-        label: `agent: ${input.agent || "default"}`,
+        label: t("agent.label", "agent: {value0}", { value0: input.agent || "default" }),
         title:
           input.agentCount > 0
-            ? `Subagent this chat runs with (--agent). ${input.agentCount} discovered. Click to pick one.`
-            : "Subagent this chat runs with (--agent). No agents were found in this project or the global config. Click to type one.",
+            ? t("ui.subagentThisChatRunsWithAgentDiscoveredClickToPickOne", "Subagent this chat runs with (--agent). {value0} discovered. Click to pick one.", { value0: input.agentCount })
+            : t("ui.subagentThisChatRunsWithAgentNoAgentsWereFoundInThisProjectOrTheGlobalConfigClic", "Subagent this chat runs with (--agent). No agents were found in this project or the global config. Click to type one."),
       },
     ],
     // The checkout belongs to the folder rather than to the message, so it is
@@ -147,6 +156,7 @@ export function footerState(input: FooterInput): FooterState {
 /// cache it read and wrote, the hit rate the provider reported, the spend, then
 /// where the context stands.
 export function usageLine(input: FooterInput): string {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) => translate(input.language ?? null, key, fallback, vars);
   const usage = input.usage;
   const parts: string[] = [];
   if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
@@ -159,7 +169,7 @@ export function usageLine(input: FooterInput): string {
   // is marked the way the terminal's footer marks it.
   if (cost) parts.push(input.subscription ? `${cost} (sub)` : cost);
   if (input.contextWindow > 0) {
-    const auto = input.autoCompact ? " (auto)" : "";
+    const auto = input.autoCompact ? t("usage.auto", " (auto)") : "";
     const limit = formatTokens(input.contextWindow);
     const used = contextPercent(usage.contextTokens, input.contextWindow);
     parts.push(used === null ? `ctx ?/${limit}${auto}` : `ctx ${used}%/${limit}${auto}`);
@@ -189,21 +199,22 @@ export function formatCost(cost: number): string {
 }
 
 function accessTitle(input: FooterInput): string {
+  const t = (key: string, fallback: string, vars?: Record<string, unknown>) => translate(input.language ?? null, key, fallback, vars);
   const what =
     input.access === "trusted"
-      ? "Project resources (.oxide agents, commands, skills and plugins) load for this run."
-      : "Project resources are skipped for this run.";
+      ? t("ui.projectResourcesOxideAgentsCommandsSkillsAndPluginsLoadForThisRun", "Project resources (.oxide agents, commands, skills and plugins) load for this run.")
+      : t("ui.projectResourcesAreSkippedForThisRun", "Project resources are skipped for this run.");
   const override =
     input.trustSetting === "always"
-      ? " oxide.projectTrust is always (--approve)."
+      ? t("ui.oxideProjectTrustIsAlwaysApprove", " oxide.projectTrust is always (--approve).")
       : input.trustSetting === "never"
-        ? " oxide.projectTrust is never (--no-approve)."
+        ? t("ui.oxideProjectTrustIsNeverNoApprove", " oxide.projectTrust is never (--no-approve).")
         : "";
   const saved =
     input.trustSetting === "default"
       ? input.savedTrust === undefined
-        ? ` No saved decision for this folder (defaultProjectTrust: ${input.defaultTrust}).`
-        : ` Saved decision for this folder: ${input.savedTrust ? "trusted" : "declined"}.`
+        ? t("ui.noSavedDecisionForThisFolderDefaultProjectTrust", " No saved decision for this folder (defaultProjectTrust: {value0}).", { value0: input.defaultTrust })
+        : t("ui.savedDecisionForThisFolder", " Saved decision for this folder: {value0}.", { value0: input.savedTrust ? "trusted" : "declined" })
       : "";
-  return `${what}${override}${saved} Click to change it.`;
+  return t("ui.clickToChangeIt", "{value0}{value1}{value2} Click to change it.", { value0: what, value1: override, value2: saved });
 }

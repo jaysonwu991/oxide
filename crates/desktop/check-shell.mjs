@@ -610,7 +610,8 @@ console.log("the menu bar");
 // role is the update check, and the page paints the dialog: the click reaches it
 // as the event the page already listens for, so the menu item and the sidebar's
 // own button end at the same dialog.
-const menu = between(shell, "function installMenu()", "function announceCheckUpdates()");
+const localizedMenu = between(shell, "function installMenu()", "function announceCheckUpdates()");
+const menu = localizedMenu.replace(/t\("[^"\n]+", ("[^"\n]+")\)/g, "$1");
 check(
   "offered the app, Edit and Window menus where the platform has one",
   /Menu\.setApplicationMenu\(\s*Menu\.buildFromTemplate/.test(menu) &&
@@ -645,6 +646,37 @@ check(
     shell,
   ) && /listen\("check-updates"/.test(app),
 );
+
+const nativeCatalog = text(`${root}crates/core/src/i18n.rs`);
+const nativeRows = [...nativeCatalog.matchAll(/\(\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,?\s*\)/g)]
+  .map((row) => row.slice(1).map((value) => JSON.parse(value)));
+let nativeTemplate;
+const menuStub = {
+  buildFromTemplate: (template) => template,
+  setApplicationMenu: (template) => { nativeTemplate = template; },
+};
+let updateClicks = 0;
+const runMenu = new Function("process", "Menu", "t", "announceTab", "announceCheckUpdates",
+  localizedMenu.replace("(): void", "()") + "; installMenu();");
+for (const [column, about, updates, edit] of [[1, "About Oxide", "Check for Updates…", "Edit"], [2, "关于 Oxide", "检查更新…", "编辑"]]) {
+  const strings = Object.fromEntries(nativeRows.map((entry) => [entry[0], entry[column]]));
+  runMenu({ platform: "darwin" }, menuStub, (key, fallback) => strings[key] || fallback, () => {}, () => { updateClicks++; });
+  check(`resolved native menu labels from catalog column ${column}`,
+    nativeTemplate[0].submenu[0].label === about && nativeTemplate[0].submenu[2].label === updates && nativeTemplate[2].label === edit);
+  nativeTemplate[0].submenu[2].click();
+}
+check("kept the translated update menu action wired", updateClicks === 2 && /set_native_language/.test(shell) && /set_native_language/.test(app));
+const catalogKeys = new Set(nativeRows.map(([key]) => key));
+const localizedSources = [app, html, shell,
+  ...["media/main.js", "src/chat.ts", "src/core/dialogs.ts", "src/core/footer.ts"].map((file) => text(`${root}editors/vscode/${file}`)),
+  ...["mod.rs", "ui.rs", "app.rs"].map((file) => text(`${root}crates/cli/src/tui/${file}`)),
+];
+const unresolvedKeys = localizedSources.flatMap((source) => [
+  ...source.matchAll(/\bt(?:f)?\(\s*"([\w.]+)"/g),
+  ...source.matchAll(/data-i18n(?:-[a-z]+)?="([\w.]+)"/g),
+]).map((match) => match[1]).filter((key) => !catalogKeys.has(key));
+check("bound every static UI translation key to the shared catalog", unresolvedKeys.length === 0, unresolvedKeys.join(", "));
+
 
 // ---------- the release the app installs itself ----------
 

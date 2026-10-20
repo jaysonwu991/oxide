@@ -1,3 +1,4 @@
+import { translate, type LanguageInfo } from "./i18n";
 // The provider table printed by `oxide providers --json`: the same rows the
 // desktop app's Connect dialog searches, drawn from the one table the core's
 // `known_providers()` holds and the terminal's `/connect` dialog uses. A front-end
@@ -159,11 +160,11 @@ export function parseLoginOutcome(raw: string): LoginOutcome | null {
 
 /// What a row says beside it: the state a login would change, or nothing when
 /// the provider is simply available.
-export function providerState(provider: ProviderView): string {
-  if (provider.active) return "In use";
-  if (provider.stored) return "Stored";
-  if (provider.local) return "No key needed";
-  if (provider.credential === "external") return "Machine credential";
+export function providerState(provider: ProviderView, info: LanguageInfo | null = null): string {
+  if (provider.active) return translate(info, "state.inUse", "In use");
+  if (provider.stored) return translate(info, "ui.stored", "Stored");
+  if (provider.local) return translate(info, "state.noKey", "No key needed");
+  if (provider.credential === "external") return translate(info, "state.machine", "Machine credential");
   return "";
 }
 

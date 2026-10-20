@@ -1072,7 +1072,7 @@ vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState, ICONS," +
     " newChatFromSidebar, openProjects, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
-    " openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
+    " openEditProject, projectActivity, formatTime, openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
     " openConnect, renderProviders, saveConnect, renderLoginFields," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
     " addAttachment, addAttachmentFiles, el, showQuestion, showQuestionStep, questionNext," +
@@ -8743,6 +8743,10 @@ jumpTranscript.fire("scroll", {});
 check("kept the button hidden for a short chat", elementFor("jump-latest").hidden);
 
 console.log("the language");
+const sharedCatalog = readFileSync(`${root}crates/core/src/i18n.rs`, "utf8");
+const catalogRows = [...sharedCatalog.matchAll(/\(\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,?\s*\)/g)]
+  .map((row) => row.slice(1).map((value) => JSON.parse(value)));
+languageAnswer.strings["zh-CN"] = Object.fromEntries(catalogRows.map(([key, _en, zh]) => [key, zh]));
 // The window is drawn in the language the core resolves, and the switch is the
 // core's to make: a row writes the shared `settings.json` key through
 // `set_language`, and the page repaints itself in the answer — no table of its
@@ -8825,6 +8829,19 @@ check(
     elementFor("status-text").hidden,
   `${elementFor("status-text").textContent} / ${elementFor("status-text").hidden}`,
 );
+app.openEditProject({ name: "falcon", path: "/tmp/falcon" });
+check("translated the edit dialog's dynamic heading and primary action",
+  elementFor("create-project-title").textContent === "编辑项目" && elementFor("create-project-save").textContent === "保存");
+check("translated task counts and relative dates without changing project content",
+  app.projectActivity({ path: "/tmp/falcon" }, [{}, {}]) === "2 个任务" &&
+  app.formatTime(Math.floor(Date.now() / 1000) - 7200) === "2 小时前" &&
+  elementFor("create-project-name").value === "falcon");
+app.updateChips();
+check("translated the model fallback and reasoning label",
+  elementFor("reasoning-value").textContent === languageAnswer.strings["zh-CN"][`reasoning.${app.state.reasoning}`]);
+check("synchronised the native menu with the same resolved catalog",
+  calls.some(([name, args]) => name === "set_native_language" && args.strings["ui.aboutOxide"] === "关于 Oxide"));
+elementFor("create-project-modal").hidden = true;
 // Back to English, so a page left on screen is the one this suite was written
 // against.
 app.state.language = "zh-CN";

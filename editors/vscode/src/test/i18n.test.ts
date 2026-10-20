@@ -87,3 +87,65 @@ test("paints the English it was written in for a key the catalog has not", () =>
   assert.equal(translate(null, "composer.send", "Send"), "Send");
   assert.equal(translate(null, "language.name", "Language"), "Language");
 });
+
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { providerDialog, reasoningDialog, sessionDialog, trustDialog, updateDialog } from "../core/dialogs";
+import { footerState } from "../core/footer";
+import { emptyUsage } from "../core/protocol";
+
+const repository = resolve(__dirname, "../../../..");
+const shared = readFileSync(resolve(repository, "crates/core/src/i18n.rs"), "utf8");
+const sharedRows = [...shared.matchAll(/\(\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,?\s*\)/g)]
+  .map((row) => row.slice(1).map((value) => JSON.parse(value) as string));
+const chinese = parseLanguageInfo(JSON.stringify({
+  language: "zh-CN",
+  strings: Object.fromEntries(sharedRows.map(([key, _en, zh]) => [key, zh])),
+}))!;
+
+test("uses the real Chinese catalog for dialogs while preserving action IDs and user content", () => {
+  assert.equal(providerDialog([], "", "", chinese).title, "服务商");
+  const reasoning = reasoningDialog("high", ["auto", "high"], chinese);
+  assert.equal(reasoning.rows[0].label, "自动");
+  assert.equal(reasoning.rows[1].label, "高");
+  assert.equal(reasoning.rows[1].value, "high");
+  assert.equal(reasoning.rows[1].current, false);
+  assert.equal(reasoning.rows[1].status, "当前");
+  const trust = trustDialog({ setting: "default", saved: undefined }, chinese);
+  assert.equal(trust.rows[0].value, "default");
+  assert.equal(trust.rows[0].label, "使用已保存的决定");
+  const sessions = sessionDialog([{ id: "s1", label: "Original English title", age: "", messages: 2, pinned: true }], null, "", null, "", null, chinese);
+  const row = sessions.rows.find((entry) => entry.value === "s1")!;
+  assert.equal(row.label, "Original English title");
+  assert.equal(row.detail, "2 条消息");
+  assert.equal(row.buttons?.[0].label, "取消置顶对话");
+  assert.equal(row.buttons?.[0].icon, "pin");
+  assert.equal(updateDialog({ k: "checking" }, chinese).title, "正在检查更新");
+});
+
+test("keeps chip values and trust state independent of translated labels", () => {
+  const footer = footerState({
+    language: chinese, model: "claude-test", provider: "anthropic", contextWindow: 128000,
+    reasoning: "auto", agent: "", agentCount: 0, access: "trusted", trustSetting: "default",
+    defaultTrust: "ask", savedTrust: true, branch: "main", autoCompact: false,
+    subscription: false, usage: emptyUsage(),
+  });
+  assert.equal(footer.chips.find((chip) => chip.id === "model")?.value, "claude-test");
+  assert.equal(footer.chips.find((chip) => chip.id === "reasoning")?.value, "自动");
+  assert.equal(footer.chips.find((chip) => chip.id === "access")?.active, true);
+  assert.match(footer.chips[0].label, /^模型：/);
+});
+
+test("localizes manifest commands and settings from the same shared catalog", () => {
+  const extension = resolve(repository, "editors/vscode");
+  const english = JSON.parse(readFileSync(resolve(extension, "package.nls.json"), "utf8")) as Record<string, string>;
+  const translated = JSON.parse(readFileSync(resolve(extension, "package.nls.zh-cn.json"), "utf8")) as Record<string, string>;
+  const manifest = readFileSync(resolve(extension, "package.json"), "utf8");
+  const originals = Object.fromEntries(sharedRows.map(([key, en]) => [key, en]));
+  assert.deepEqual(Object.keys(english).sort(), Object.keys(translated).sort());
+  for (const [, key] of manifest.matchAll(/%([\w.]+)%/g)) {
+    assert.equal(english[key], originals[key], key);
+    assert.equal(translated[key], chinese.strings[key], key);
+    assert.ok(/[\u3400-\u9fff]/.test(translated[key]), key);
+  }
+});

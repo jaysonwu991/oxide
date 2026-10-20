@@ -29,7 +29,8 @@ interface Manifest {
   };
 }
 
-const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as Manifest;
+const manifestStrings = JSON.parse(fs.readFileSync(path.join(root, "package.nls.json"), "utf8")) as Record<string, string>;
+const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"), (_key, value: unknown) => typeof value === "string" && /^%.*%$/.test(value) ? manifestStrings[value.slice(1, -1)] : value) as Manifest;
 const extension = readSource(path.join(root, "src", "extension.ts"));
 const chat = readSource(path.join(root, "src", "chat.ts"));
 const chatView = readSource(path.join(root, "src", "chatView.ts"));
@@ -172,7 +173,7 @@ describe("command contributions", () => {
       "and hands to VS Code, which owns what installing an extension means",
     );
     assert.ok(
-      chat.includes('updateDialog({ k: "installed", check })'),
+      chat.includes('updateDialog({ k: "installed", check }, this.languageInfo)'),
       "the install reports the release it put in VS Code",
     );
     assert.ok(
@@ -229,7 +230,7 @@ describe("command contributions", () => {
       install.includes("const probe = ++this.updateProbe;") &&
         install.includes("this.installedUpdate = check;") &&
         install.includes("this.showNotice(`Installed Oxide ${check.latest}.`)") &&
-        install.includes('updateDialog({ k: "installed", check })'),
+        install.includes('updateDialog({ k: "installed", check }, this.languageInfo)'),
       "the install reports itself whether or not a check is in flight behind it",
     );
     // What is on disk is the release waiting for a reload, and the window that
@@ -373,7 +374,7 @@ describe("command contributions", () => {
       install
         .replace(/\s+/g, " ")
         .includes(
-          'if (report) { this.showNotice(`Installed Oxide ${check.latest}.`); this.showDialog(updateDialog({ k: "installed", check })); }',
+          'if (report) { this.showNotice(`Installed Oxide ${check.latest}.`); this.showDialog(updateDialog({ k: "installed", check }, this.languageInfo)); }',
         ),
       "so the launch's own install reports itself to the panel nowhere at all",
     );
@@ -393,7 +394,7 @@ describe("command contributions", () => {
     );
     assert.ok(
       chat.includes('const UPDATE_RESTART = "Restart Window";') &&
-        dialogs.includes('row("", "Restart Window"'),
+        dialogs.includes('row("", t("ui.restartWindow", "Restart Window")'),
       "the restart is the same control the panel's dialog offers, named the same way",
     );
     assert.ok(
@@ -618,7 +619,7 @@ describe("command contributions", () => {
     );
     assert.ok(
       helper.replace(/\s+/g, " ").includes(
-        "sessionDialog( this.sessions, this.transcript.sessionId, note, this.liveSession(), this.sessionQuery, this.liveRun(), )",
+        "sessionDialog( this.sessions, this.transcript.sessionId, note, this.liveSession(), this.sessionQuery, this.liveRun(), this.languageInfo )",
       ),
       "and that place passes the open thread's id, its live stand-in, the filter and the turn's own thread",
     );
@@ -1089,7 +1090,7 @@ describe("command contributions", () => {
     );
     assert.ok(send.includes("this.startTurn(prepared, true)"), "an idle send starts its own turn");
     assert.ok(
-      send.includes('`Queued: ${firstLine(prepared.message)') &&
+      send.includes('this.t("ui.queued", "Queued: {value0}"') &&
         send.includes('`Steering: ${firstLine(prepared.message)'),
       "the selected busy behavior is announced",
     );
@@ -1188,7 +1189,7 @@ describe("command contributions", () => {
     // Stopping reaches the run wherever the reader is, and says so in the run's
     // own transcript rather than in the one on screen.
     const stop = chat.slice(chat.indexOf("stop(): void"), chat.indexOf("private broadcastItem("));
-    assert.ok(stop.includes('(this.runTranscript ?? this.transcript).status = "Stopping…"'));
+    assert.ok(stop.includes('(this.runTranscript ?? this.transcript).status = this.t("composer.stopping", "Stopping…")'));
   });
 
   it("says which thread a turn is in, and offers the way back to it", () => {
@@ -1303,7 +1304,7 @@ describe("command contributions", () => {
     const send = chat.slice(chat.indexOf("async send("), chat.indexOf("private prepareSend("));
     assert.ok(
       send.includes("if (!this.viewingRun()) {") &&
-        send.includes('`A turn is running in “${this.runLabel()}”; open it to queue or steer, or stop it.`'),
+        send.includes('this.t("ui.aTurnIsRunningInOpenItToQueueOrSteerOrStopIt"'),
       "the send says which thread the turn is in",
     );
     assert.ok(
