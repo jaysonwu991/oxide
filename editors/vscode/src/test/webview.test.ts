@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import * as vm from "node:vm";
 
-import { modelDialog, reasoningDialog, updateDialog } from "../core/dialogs";
+import { modelDialog, reasoningDialog, trustDialog, updateDialog } from "../core/dialogs";
 
 const root = path.join(__dirname, "..", "..");
 const renderer = fs.readFileSync(path.join(root, "media", "main.js"), "utf8");
@@ -2735,6 +2735,24 @@ describe("webview dialogs", () => {
   });
 });
 
+describe("translated picker selection", () => {
+  it("marks translated reasoning and trust choices by their explicit selection state", () => {
+    const { byId, send } = loadRenderer();
+    const info = { language: "zh-CN", languages: [], strings: { "ui.current": "当前", "reasoning.high": "高" } };
+    send(stateMessage({ language: info }));
+    send({ k: "dialog", dialog: reasoningDialog("high", ["auto", "high"], info) });
+    const rows = byId.get("dialog-list")!.children;
+    assert.equal(rows[1].classList.contains("current"), true);
+    assert.equal(rows[1].getAttribute("aria-pressed"), "true");
+    assert.equal(rows[0].getAttribute("aria-pressed"), "false");
+    send({ k: "dialog", dialog: trustDialog({ setting: "default", saved: true }, info) });
+    const choices = byId.get("dialog-list")!.children;
+    assert.equal(choices[1].dataset.value, "trusted");
+    assert.equal(choices[1].classList.contains("current"), true);
+    assert.equal(choices[0].classList.contains("current"), false);
+  });
+});
+
 describe("webview approvals", () => {
   /// The card the CLI's `approval_request` becomes: the tool, what it would do,
   /// the command or path it would touch, and the three answers.
@@ -2748,6 +2766,26 @@ describe("webview approvals", () => {
     state: "pending",
     label: "",
   };
+
+  it("resolves approval labels after a delayed language load and keeps decision IDs", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage({ items: [pending] }));
+    const language = { language: "zh-CN", strings: {
+      "dialog.approval.deny": "拒绝", "dialog.approval.once": "允许一次",
+      "dialog.approval.always": "始终允许", "ui.waitingForYourAnswer": "正在等待你的回答…",
+      "dialog.approval.onceHint": "仅此次运行此工具",
+    } };
+    send(stateMessage({ items: [pending], language }));
+    const actions = find(byId.get("transcript")!, "aactions")!;
+    assert.deepEqual(actions.children.slice(0, 3).map((child) => child.textContent), ["拒绝", "允许一次", "始终允许"]);
+    assert.equal(actions.children[1].title, "仅此次运行此工具");
+    for (const [index, decision] of ["deny", "once", "always"].entries()) {
+      actions.children[index].fire("click");
+      assert.deepEqual(shape(posted.at(-1)), { k: "approval", requestId: pending.requestId, decision });
+    }
+    send(stateMessage({ items: [pending] }));
+    assert.equal(find(byId.get("transcript")!, "aactions")!.children[0].textContent, "Deny");
+  });
 
   it("offers the three answers for a waiting request", () => {
     const { byId, send } = loadRenderer();

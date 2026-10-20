@@ -92,6 +92,9 @@ impl std::fmt::Display for Language {
 /// the key rather than by matching a sentence, and two front-ends asking for
 /// the same word cannot drift apart.
 pub const CATALOG: &[(&str, &str, &str)] = &[
+    ("dialog.approval.alwaysHint", "Run it, and stop asking about this tool in this project", "运行此工具，并在此项目中不再询问"),
+    ("dialog.approval.onceHint", "Run the tool this one time", "仅此次运行此工具"),
+    ("dialog.approval.denyHint", "Refuse the tool and tell the agent to stop", "拒绝运行此工具并告知代理停止"),
     ("provider.storedMark", "stored", "已保存"),
     ("changes.filesChanged", "{count} files changed", "{count} 个文件已更改"),
     ("changes.fileChanged", "{count} file changed", "{count} 个文件已更改"),

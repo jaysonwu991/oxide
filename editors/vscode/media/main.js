@@ -1187,9 +1187,9 @@ function installMarkdownInput(editor, render) {
 
   /// The three answers the CLI accepts, in the order the card offers them.
   const APPROVAL_ACTIONS = [
-    { decision: "deny", label: t("dialog.approval.deny", "Deny"), className: "ghost", title: "Refuse the tool and tell the agent to stop" },
-    { decision: "once", label: t("dialog.approval.once", "Allow once"), className: "primary", title: "Run the tool this one time" },
-    { decision: "always", label: t("dialog.approval.always", "Always allow"), className: "primary", title: "Run it, and stop asking about this tool in this project" },
+    { decision: "deny", label: "Deny", className: "ghost", title: "Refuse the tool and tell the agent to stop" },
+    { decision: "once", label: "Allow once", className: "primary", title: "Run the tool this one time" },
+    { decision: "always", label: "Always allow", className: "primary", title: "Run it, and stop asking about this tool in this project" },
   ];
 
   /// A tool the agent is holding until the user answers. The answer travels to
@@ -1246,8 +1246,8 @@ function installMarkdownInput(editor, render) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = action.className;
-      button.textContent = action.label;
-      button.title = action.title;
+      button.textContent = t(`dialog.approval.${action.decision}`, action.label);
+      button.title = t(`dialog.approval.${action.decision}Hint`, action.title);
       button.addEventListener("click", () =>
         vscode.postMessage({
           k: "approval",

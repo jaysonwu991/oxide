@@ -374,8 +374,16 @@ fn draw_connect(frame: &mut Frame, app: &App) {
         }
         ConnectStep::Options { provider } => {
             lines.push(Line::from(""));
-            let value_width = inner.width.saturating_sub(18) as usize;
-            for field in ConnectState::option_fields(provider) {
+            let fields = ConnectState::option_fields(provider);
+            let label_width = fields
+                .iter()
+                .map(|field| text_width(field.label(app.lang)))
+                .max()
+                .unwrap_or(0)
+                .max(14);
+            let prefix_width = 3 + label_width;
+            let value_width = (inner.width as usize).saturating_sub(prefix_width + 1);
+            for field in fields {
                 let focused = field == state.focus;
                 let marker = if focused { "›" } else { " " };
                 let style = if focused {
@@ -393,15 +401,18 @@ fn draw_connect(frame: &mut Frame, app: &App) {
                 let display = if row_value.is_empty() {
                     "—".to_string()
                 } else {
-                    truncate(&row_value, value_width)
+                    form_value(&row_value, value_width)
                 };
                 lines.push(Line::from(vec![
-                    Span::styled(format!(" {marker} {:<14}", field.label(app.lang)), style),
+                    Span::styled(
+                        form_label(marker, field.label(app.lang), label_width),
+                        style,
+                    ),
                     Span::styled(display, Style::default().fg(app.theme.info)),
                 ]));
                 if focused {
-                    let column = 17 + state.input.chars().count().min(value_width) as u16;
-                    cursor = Some((lines.len() - 1, column));
+                    let column = prefix_width + text_width(&form_value(&state.input, value_width));
+                    cursor = Some((lines.len() - 1, column as u16));
                 }
             }
             lines.push(Line::from(""));
@@ -464,7 +475,14 @@ fn draw_usage(frame: &mut Frame, app: &App) {
 
     let block = panel(app.t("ui.portkeyUsage"), app.theme.accent);
     let inner = block.inner(area);
-    let value_width = inner.width.saturating_sub(13) as usize;
+    let label_width = UsageField::ALL
+        .iter()
+        .map(|field| text_width(field.label(app.lang)))
+        .max()
+        .unwrap_or(0)
+        .max(10);
+    let prefix_width = 3 + label_width;
+    let value_width = (inner.width as usize).saturating_sub(prefix_width + 1);
 
     let mut lines = vec![
         Line::from(Span::styled(
@@ -494,8 +512,11 @@ fn draw_usage(frame: &mut Frame, app: &App) {
             Style::default().fg(app.theme.info)
         };
         lines.push(Line::from(vec![
-            Span::styled(format!(" {marker} {:<10}", field.label(app.lang)), style),
-            Span::styled(truncate(&value, value_width), value_style),
+            Span::styled(
+                form_label(marker, field.label(app.lang), label_width),
+                style,
+            ),
+            Span::styled(form_value(&value, value_width), value_style),
         ]));
     }
     lines.push(Line::from(""));
@@ -529,13 +550,30 @@ fn draw_usage(frame: &mut Frame, app: &App) {
         area,
     );
     if state.editing && inner.width > 0 {
-        let value = truncate(&usage_edit_value(&state.input, state.field()), value_width);
-        let column = 13 + value.chars().count() as u16;
+        let value = form_value(&usage_edit_value(&state.input, state.field()), value_width);
+        let column = (prefix_width + text_width(&value)) as u16;
         frame.set_cursor_position((
             (inner.x + column).min(inner.x + inner.width.saturating_sub(1)),
             inner.y + 2 + state.selected as u16,
         ));
     }
+}
+
+fn form_value(value: &str, width: usize) -> String {
+    if text_width(value) <= width {
+        return value.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    format!("{}…", take_width(value, width - 1))
+}
+
+fn form_label(marker: &str, label: &str, width: usize) -> String {
+    format!(
+        " {marker} {label}{}",
+        " ".repeat(width.saturating_sub(text_width(label)))
+    )
 }
 
 /// The value an editing row shows: the API key is masked like a password.
@@ -6621,6 +6659,73 @@ mod tests {
         // A cramped terminal must not panic in any of the sub-layouts.
         let mut small = Terminal::new(TestBackend::new(40, 12)).unwrap();
         small.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn translated_form_labels_align_values_and_carets_in_terminal_cells() {
+        use crate::tui::app::{ConnectField, UsageState};
+        use ratatui::backend::{Backend, TestBackend};
+        use ratatui::Terminal;
+
+        for lang in crate::i18n::Language::ALL {
+            for value in ["z".to_string(), "界x".to_string(), "界".repeat(100)] {
+                for connect in [true, false] {
+                    let mut app = App::new("model".into(), "/tmp/project".into(), Reasoning::Auto);
+                    app.lang = *lang;
+                    if connect {
+                        app.connect = Some(ConnectState {
+                            step: ConnectStep::Options {
+                                provider: "portkey".into(),
+                            },
+                            focus: ConnectField::Model,
+                            input: value.clone(),
+                            model: "z".into(),
+                            base_url: "z".into(),
+                            portkey_config: "z".into(),
+                            ..ConnectState::new()
+                        });
+                    } else {
+                        let mut state =
+                            UsageState::new(crate::portkey_usage::UsageSettings::default());
+                        state.selected = UsageField::ALL
+                            .iter()
+                            .position(|field| *field == UsageField::User)
+                            .unwrap();
+                        state.editing = true;
+                        state.input = value.clone();
+                        state.settings.metadata_key = "z".into();
+                        app.usage_modal = Some(state);
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+                    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                    let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let first = value.chars().next().unwrap().to_string();
+                    let value_start = (0..cursor.x)
+                        .find(|x| buffer[(*x, cursor.y)].symbol() == first)
+                        .unwrap_or_else(|| {
+                            panic!("missing value: {lang:?}, connect={connect}, cursor={cursor:?}")
+                        });
+                    assert_eq!(
+                        buffer[(value_start, cursor.y + 1)].symbol(),
+                        "z",
+                        "aligned values: {lang:?}, connect={connect}"
+                    );
+                    let last = if value.chars().count() > 10 {
+                        "…"
+                    } else if value == "z" {
+                        "z"
+                    } else {
+                        "x"
+                    };
+                    assert_eq!(
+                        buffer[(cursor.x - 1, cursor.y)].symbol(),
+                        last,
+                        "caret follows the displayed value: {lang:?}, connect={connect}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

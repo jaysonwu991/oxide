@@ -12,7 +12,7 @@
 // Oxide's own UI: a native picker takes over the window, hides the transcript
 // the listing is about, and cannot be answered while a turn streams.
 
-import { mcpStateLabel, type McpServerView } from "./mcps";
+import { mcpStatusLabel, type McpServerView } from "./mcps";
 import {
   DEFAULT_LANGUAGE,
   FALLBACK_LANGUAGES,
@@ -632,6 +632,7 @@ function choiceDialog(
       row(choice.value, choice.label, {
         detail: choice.detail,
         status: choice.value === current ? t("ui.current", "Current") : "",
+        current: choice.value === current,
         tone: "muted",
         action,
       }),
@@ -672,7 +673,7 @@ export function mcpDialog(servers: readonly McpServerView[], note = "", info: La
           .join(" · "),
         // A server that is switched off reports that rather than the state a
         // probe could not reach.
-        status: server.enabled ? server.status || mcpStateLabel(server.state, info) : t("ui.disabled", "Disabled"),
+        status: mcpStatusLabel(server, info),
         tone: MCP_TONES[server.enabled ? server.state : "disabled"] ?? "",
         button: server.enabled ? t("ui.disable", "Disable {value0}", { value0: server.name }) : t("ui.enable", "Enable {value0}", { value0: server.name }),
         buttonAction: MCP_TOGGLE,

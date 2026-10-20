@@ -90,7 +90,8 @@ test("paints the English it was written in for a key the catalog has not", () =>
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { providerDialog, reasoningDialog, sessionDialog, trustDialog, updateDialog } from "../core/dialogs";
+import { mcpDialog, providerDialog, reasoningDialog, sessionDialog, trustDialog, updateDialog } from "../core/dialogs";
+import type { McpServerView } from "../core/mcps";
 import { footerState } from "../core/footer";
 import { emptyUsage } from "../core/protocol";
 
@@ -109,11 +110,18 @@ test("uses the real Chinese catalog for dialogs while preserving action IDs and 
   assert.equal(reasoning.rows[0].label, "自动");
   assert.equal(reasoning.rows[1].label, "高");
   assert.equal(reasoning.rows[1].value, "high");
-  assert.equal(reasoning.rows[1].current, false);
+  assert.equal(reasoning.rows[1].current, true);
+  assert.equal(reasoning.rows[0].current, false);
   assert.equal(reasoning.rows[1].status, "当前");
   const trust = trustDialog({ setting: "default", saved: undefined }, chinese);
   assert.equal(trust.rows[0].value, "default");
   assert.equal(trust.rows[0].label, "使用已保存的决定");
+  assert.equal(trust.rows[0].current, true);
+  assert.equal(trust.rows[1].current, false);
+  const savedTrust = trustDialog({ setting: "default", saved: true }, chinese);
+  assert.equal(savedTrust.rows[1].value, "trusted");
+  assert.equal(savedTrust.rows[1].current, true);
+  assert.equal(savedTrust.rows[0].current, false);
   const sessions = sessionDialog([{ id: "s1", label: "Original English title", age: "", messages: 2, pinned: true }], null, "", null, "", null, chinese);
   const row = sessions.rows.find((entry) => entry.value === "s1")!;
   assert.equal(row.label, "Original English title");
@@ -121,6 +129,19 @@ test("uses the real Chinese catalog for dialogs while preserving action IDs and 
   assert.equal(row.buttons?.[0].label, "取消置顶对话");
   assert.equal(row.buttons?.[0].icon, "pin");
   assert.equal(updateDialog({ k: "checking" }, chinese).title, "正在检查更新");
+});
+
+test("localizes real MCP display statuses without discarding diagnostics or unknown states", () => {
+  const server = (state: string, status: string, enabled = true): McpServerView => ({
+    name: state, state, status, enabled, transport: "stdio", detail: "mcp-server", scope: "project", source: "project",
+  });
+  const servers = [server("connected", "Connected"), server("needs-auth", "Needs Auth"),
+    server("needs-trust", "Needs Trust"), server("disabled", "Disabled", false),
+    server("error", "Error: connection refused at localhost:3000"), server("future-state", "Waiting for setup")];
+  assert.deepEqual(mcpDialog(servers, "", chinese).rows.map((row) => row.status),
+    ["已连接", "需要授权", "需要信任", "已禁用", "错误：connection refused at localhost:3000", "Waiting for setup"]);
+  assert.equal(mcpDialog([server("error", "Error")], "", chinese).rows[0].status, "错误");
+  assert.equal(mcpDialog([server("future-state", "")], "", chinese).rows[0].status, "future-state");
 });
 
 test("keeps chip values and trust state independent of translated labels", () => {

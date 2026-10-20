@@ -1161,9 +1161,9 @@ export class ChatController {
     const answer = await vscode.window.showWarningMessage(
       this.t("ui.removeTheWorktreeAt", "Remove the worktree {value0} at {value1}?", { value0: String(entry.name), value1: String(entry.path) }),
       { modal: true },
-      this.t("ui.removeWorktree", "Remove worktree"),
+      { title: this.t("ui.removeWorktree", "Remove worktree"), action: "remove-worktree" },
     );
-    if (answer !== this.t("ui.removeWorktree", "Remove worktree")) return;
+    if (answer?.action !== "remove-worktree") return;
     const result = await runCapture(this.binary(), worktreeRemoveArgs(folder, name), folder);
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
@@ -1206,9 +1206,9 @@ export class ChatController {
     const target = this.transcript;
     const answer = await vscode.window.showWarningMessage(
       this.t("ui.moveThisChatAndItsChangesToTheDestinationMustHaveNoUncommittedChanges", "Move this chat and its changes to {value0}? The destination must have no uncommitted changes.", { value0: String(toWorktree ? "Worktree" : "Local") }),
-      { modal: true }, this.t("ui.handOff", "Hand off"),
+      { modal: true }, { title: this.t("ui.handOff", "Hand off"), action: "handoff" },
     );
-    if (answer !== this.t("ui.handOff", "Hand off") || this.turn || target !== this.transcript || folder !== this.folder()?.uri.fsPath) return;
+    if (answer?.action !== "handoff" || this.turn || target !== this.transcript || folder !== this.folder()?.uri.fsPath) return;
     this.handingOff = true;
     this.showNotice(this.t("ui.movingChatAndChanges", "Moving chat and changes…"));
     try {

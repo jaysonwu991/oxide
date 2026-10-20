@@ -85,6 +85,25 @@ export function mcpStateLabel(state: string, info: LanguageInfo | null = null): 
   }
 }
 
+export function mcpStatusLabel(server: McpServerView, info: LanguageInfo | null = null): string {
+  if (!server.enabled) return mcpStateLabel("disabled", info);
+  switch (server.state) {
+    case "connected":
+    case "needs-auth":
+    case "needs-trust":
+    case "disabled":
+      return mcpStateLabel(server.state, info);
+    case "error": {
+      const detail = server.status.replace(/^Error(?::\s*|$)/, "");
+      return detail
+        ? translate(info, "common.errorDetail", "Error: {value0}", { value0: detail })
+        : mcpStateLabel("error", info);
+    }
+    default:
+      return server.status || mcpStateLabel(server.state, info);
+  }
+}
+
 /// The arguments that turn a server on or off. The scope pins the change to the
 /// file that defines the server, so a name in both scopes toggles the one that
 /// was listed rather than whichever the lookup finds first.
