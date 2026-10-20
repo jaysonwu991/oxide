@@ -886,21 +886,10 @@ fn file_text(name: &str, bytes: &[u8]) -> String {
 /// message as the literal `@path` it was typed as. The input text is left
 /// untouched.
 pub fn referenced_attachments(input: &str, cwd: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    for token in input.split_whitespace() {
-        let Some(raw) = token.strip_prefix('@') else {
-            continue;
-        };
-        let raw = raw.trim_end_matches([',', '.', ')', ']', '"', '\'']);
-        if raw.is_empty() {
-            continue;
-        }
-        let path = expand_path(raw, cwd);
-        if path.is_file() && references_attachment(&path) {
-            found.push(path);
-        }
-    }
-    found
+    crate::at::referenced_files(input, cwd)
+        .into_iter()
+        .filter(|path| references_attachment(path))
+        .collect()
 }
 
 /// A short, stable id for an attachment, derived from its payload. Two copies
@@ -2148,6 +2137,17 @@ mod tests {
         // A readable file is what its bytes say it is, whatever it is called.
         std::fs::write(dir.join("fake.png"), b"not an image").unwrap();
         assert!(referenced_attachments("and @fake.png", &dir).is_empty());
+
+        let spaced = dir.join("screen shot.png");
+        std::fs::write(&spaced, ONE_PX_PNG).unwrap();
+        assert_eq!(
+            referenced_attachments("look at @screen shot.png please", &dir),
+            vec![spaced.clone()]
+        );
+        assert_eq!(
+            referenced_attachments("look at @\"screen shot.png\" please", &dir),
+            vec![spaced]
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

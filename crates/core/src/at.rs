@@ -6,6 +6,54 @@
 //! `editors/vscode/src/core/at.ts` mirrors these rules.
 
 use serde::Serialize;
+use std::path::{Path, PathBuf};
+
+/// Resolve references by probing paths, never by walking outside the project.
+/// Bare names with spaces use the longest existing file prefix on the line.
+pub fn referenced_files(input: &str, cwd: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for (index, _) in input.match_indices('@') {
+        if index > 0 && !input[..index].ends_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = &input[index + 1..];
+        let line = rest.lines().next().unwrap_or_default();
+        // Bound filesystem probes even when a pasted document contains an @.
+        let end = line.char_indices().nth(4096).map_or(line.len(), |(i, _)| i);
+        let line = &line[..end];
+        let candidates: Vec<&str> =
+            if let Some(quote) = line.chars().next().filter(|c| matches!(c, '\'' | '"')) {
+                line[1..]
+                    .find(quote)
+                    .map(|end| vec![&line[1..end + 1]])
+                    .unwrap_or_default()
+            } else {
+                let mut ends: Vec<usize> = line
+                    .char_indices()
+                    .filter_map(|(i, c)| c.is_whitespace().then_some(i))
+                    .take(128)
+                    .collect();
+                ends.push(line.len());
+                ends.into_iter()
+                    .rev()
+                    .map(|end| line[..end].trim_end_matches([',', '.', ')', ']', '"', '\'']))
+                    .collect()
+            };
+        for raw in candidates {
+            if raw.is_empty() {
+                continue;
+            }
+            let path = crate::media::expand_path(raw, cwd);
+            if path.is_file() {
+                if !found.contains(&path) {
+                    found.push(path);
+                }
+                break;
+            }
+        }
+    }
+    found
+}
 
 /// How many rows a bare `@` may offer before the list is cut, so a large
 /// project does not hand a front-end the whole tree.
@@ -133,6 +181,39 @@ fn rank_of(path: &str, query: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_spaced_references_inside_the_project_without_a_tree_search() {
+        let base = std::env::temp_dir().join(format!("oxide_at_files_{}", std::process::id()));
+        let project = base.join("project");
+        let sibling = base.join("sibling");
+        std::fs::create_dir_all(project.join("nested")).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let sheet = project.join("Packages to Country - Things to do component - Reviewed.xlsx");
+        let image = project.join("nested/screen shot.png");
+        std::fs::write(&sheet, "sheet").unwrap();
+        std::fs::write(&image, "image").unwrap();
+        std::fs::write(project.join("Packages"), "shorter prefix").unwrap();
+        std::fs::write(sibling.join("outside.xlsx"), "outside").unwrap();
+
+        assert_eq!(referenced_files(
+            "Submit @Packages to Country - Things to do component - Reviewed.xlsx to falcon_packages.",
+            &project,
+        ), vec![sheet.clone()]);
+        assert_eq!(referenced_files(
+            "Compare @\"nested/screen shot.png\" and @'Packages to Country - Things to do component - Reviewed.xlsx' please",
+            &project,
+        ), vec![image, sheet]);
+        assert!(
+            referenced_files("@outside.xlsx mail@example.com @missing.png", &project).is_empty()
+        );
+        let prose = format!("@Packages {}", "extra words ".repeat(200));
+        assert_eq!(
+            referenced_files(&prose, &project),
+            vec![project.join("Packages")]
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
 
     fn paths() -> Vec<String> {
         [

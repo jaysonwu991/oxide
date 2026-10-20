@@ -576,7 +576,11 @@ pub async fn execute_with_scope(
                     ))),
                 }
             }
-            other => Err(anyhow::anyhow!("unknown tool `{other}`")),
+            other => Err(anyhow::anyhow!(
+                "unknown tool `{other}`. For an MCP tool, call `mcp_load` with its configured \
+                 server name first, then use the exact tool name and schema returned by the \
+                 catalog. Do not guess tool names or resource IDs"
+            )),
         }
     };
 
@@ -1787,6 +1791,12 @@ fn find(cwd: &Path, args: &Value) -> Result<String> {
     let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
     let root = resolve(cwd, base);
 
+    let metadata = std::fs::metadata(&root)
+        .with_context(|| format!("find could not access search root {}", root.display()))?;
+    if !metadata.is_dir() {
+        anyhow::bail!("find search root is not a directory: {}", root.display());
+    }
+
     // Use the same native fd fast path as Pi when it is installed, then
     // ripgrep's parallel file lister. The built-in walker stays available on a
     // minimal system with neither binary.
@@ -1964,6 +1974,9 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
     let context = int_arg(args, "context").unwrap_or(0);
     let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
     let root = resolve(cwd, base);
+
+    std::fs::metadata(&root)
+        .with_context(|| format!("grep could not access search root {}", root.display()))?;
 
     // `rg` applies the same search with far less I/O, so prefer it and fall
     // back to the dependency-free walker when it is unavailable.
@@ -6657,6 +6670,49 @@ mod tests {
         assert!(limited.ends_with("... [truncated]"), "{limited}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn searches_distinguish_invalid_roots_from_no_matches() {
+        let dir = std::env::temp_dir().join(format!("oxide_search_roots_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("root.txt"), "root needle").unwrap();
+        let missing = json!({"pattern": "needle", "path": "missing"});
+        assert!(find(&dir, &missing)
+            .unwrap_err()
+            .to_string()
+            .contains("search root"));
+        assert!(grep(&dir, &missing)
+            .unwrap_err()
+            .to_string()
+            .contains("search root"));
+        assert!(find(&dir, &json!({"pattern": "*", "path": "root.txt"})).is_err());
+        assert_eq!(
+            find(&dir, &json!({"pattern": "*.txt"})).unwrap(),
+            "root.txt"
+        );
+        assert!(grep(&dir, &json!({"pattern": "needle"}))
+            .unwrap()
+            .contains("root.txt:1:"));
+        assert_eq!(
+            find(&dir, &json!({"pattern": "*.absent"})).unwrap(),
+            NO_FILES_FOUND
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_mcp_tool_explains_how_to_load_the_catalog() {
+        let output = execute(
+            &call("atlassian__createConfluencePage", json!({})),
+            Path::new("."),
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(output.is_error);
+        assert!(output.text.contains("mcp_load"));
+        assert!(output.text.contains("exact tool name and schema"));
     }
 
     #[cfg(unix)]

@@ -231,7 +231,8 @@ pub fn parse_questions(arguments: &str) -> Result<Vec<Question>> {
             if detail.contains("missing field `question`") {
                 anyhow::anyhow!(
                     "ask question {} needs a `question` string; `header`, `options`, and \
-                     `multiSelect` are optional",
+                     `multiSelect` are optional. A choice's `label` cannot replace the question. \
+                     Retry with {{\"questions\":[{{\"question\":\"How should we proceed?\",\"options\":[{{\"label\":\"Continue\"}},{{\"label\":\"Cancel\"}}]}}]}}",
                     index + 1
                 )
             } else {
@@ -466,6 +467,10 @@ mod tests {
         let malformed = parse_questions("not json").unwrap_err().to_string();
         assert!(malformed.contains("received invalid JSON"), "{malformed}");
         assert!(!malformed.contains("line 1 column"), "{malformed}");
+
+        let missing = parse_questions(r#"{"questions":[{"label":"Standard review","description":"Use standard review","options":[{"label":"Standard review"},{"label":"Skip review"}]}]}"#).unwrap_err().to_string();
+        assert!(missing.contains("A choice's `label` cannot replace the question"));
+        assert!(missing.contains(r#""question":"How should we proceed?""#));
     }
 
     #[test]
