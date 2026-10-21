@@ -8586,6 +8586,14 @@ const renderedInputCode = (code) => {
 };
 check("kept rendered input editing identical in Desktop and Extension",
   renderedInputCode(source) === renderedInputCode(extensionIcons));
+const referenceCode = (code) => {
+  const start = code.indexOf("function referenceRanges");
+  return code.slice(start, code.indexOf("\n}\n", start) + 3);
+};
+check("kept file reference decoration identical in Desktop and Extension", referenceCode(source) === referenceCode(extensionIcons));
+const spacedReference = "Use @Packages to Country - Things to do component - Reviewed.xlsx please";
+check("decorated the whole spaced filename as one reference", app.renderMarkdown(spacedReference, true).includes('<span class="file-reference">@Packages to Country - Things to do component - Reviewed.xlsx</span>'));
+check("left ordinary transcript references and email as prose", !app.renderMarkdown(spacedReference).includes('file-reference') && !app.renderMarkdown("mail@example.com", true).includes('file-reference'));
 app.state.project = "/preview-test";
 app.state.session = "preview-test";
 app.closeAt();

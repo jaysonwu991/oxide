@@ -24,11 +24,20 @@ demand; its tools then appear as `<server>__<tool>`.
 `edit` performs targeted text replacement: each `oldText` is matched against the
 original file (never incrementally) and must be unique, so a non-unique or
 missing match is rejected rather than silently corrupting a file. Matching is
-byte-exact first, then tolerates trailing whitespace and the `N|` line numbers
-`read` prints, so a block copied straight from a read result still lands; when the
-text has genuinely changed, the error names the closest region to copy. Line
+byte-exact first, then tolerates trailing whitespace and the `N|` / `N+|` line numbers
+`read` prints. Continuation chunks are joined back into their original line in both
+the target and replacement. When text has genuinely changed, a closest-region hint
+is offered only when it shares meaningful content; blank lines and punctuation
+alone do not identify a region. Read the current target before retrying. Line
 endings and a leading BOM are preserved. `write` and `edit` append LSP diagnostics
 for the edited file.
+
+Each `edit` call changes one file. Send separate calls for different files, omit
+replacements whose `oldText` equals `newText`, and merge overlapping changes. A
+no-op that is supplied is still validated. If any replacement fails, the entire
+batch is rejected without writing anything, including the replacements that
+matched. The error names the failures and tells the agent to re-read the correct
+file and resend the corrected batch. CLI, Extension and Desktop share these rules.
 
 `read`, `ls`, `find`, and `grep` accept absolute paths, so they can inspect files
 outside the project without a shell; `ls` marks directories with a trailing `/`

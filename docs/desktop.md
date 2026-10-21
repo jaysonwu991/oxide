@@ -448,7 +448,9 @@ The regions, top to bottom:
   payload that is binary in a way neither reads (`application/octet-stream`, a
   video) is refused by the core with the file named, rather than sent as
   mojibake. A message can also name a
-  file or folder with `@path`, which the composer completes: typing `@` offers
+  file or folder with `@path`, which the composer marks with an accent background
+  and border, including a complete spaced or quoted filename. This decoration
+  leaves the typed message unchanged. The composer completes references: typing `@` offers
   the project's own paths in the same box the `/` palette uses, `↑`/`↓` walk the
   rows, `Enter`/`Tab` takes one, `Escape` closes the list, a folder keeps the
   reference open so the query goes on narrowing inside it (and a folder the

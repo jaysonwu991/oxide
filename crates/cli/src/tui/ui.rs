@@ -1986,16 +1986,16 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let width = inner.width as usize;
     sync_lines(app, width);
 
-    let total = app.lines.len() as u16;
+    let total = app.lines.len();
     let view = inner.height;
     app.view_height = view;
     if app.auto_scroll {
-        app.scroll = total.saturating_sub(view);
+        app.scroll = total.saturating_sub(usize::from(view));
     } else {
-        app.scroll = app.scroll.min(total.saturating_sub(view));
+        app.scroll = app.scroll.min(total.saturating_sub(usize::from(view)));
     }
 
-    let start = app.scroll as usize;
+    let start = app.scroll;
     let end = (start + view as usize).min(app.lines.len());
     // Keep message content inside its own viewport. The separate edge column
     // is cleared explicitly so a panel cannot color it after wrapping or resize.
@@ -2163,7 +2163,7 @@ pub(crate) fn message_position_at(
     }
     let max_column = inner.x.saturating_add(inner.width).saturating_sub(1);
     let column = column.clamp(inner.x, max_column) - inner.x;
-    let line = app.scroll as usize + usize::from(row - inner.y);
+    let line = app.scroll + usize::from(row - inner.y);
     Some((line, usize::from(column)))
 }
 
@@ -2180,7 +2180,7 @@ pub(crate) fn jump_to_end_rect(app: &App, area: Rect) -> Option<Rect> {
         return None;
     }
     let view = app.view_height as usize;
-    if app.scroll as usize + view >= app.lines.len() {
+    if app.scroll + view >= app.lines.len() {
         return None;
     }
     let width = text_width(&jump_to_end_label(app)) as u16;
@@ -3288,34 +3288,21 @@ fn shorten_name(name: &str, width: usize) -> String {
 fn mention_spans<'a>(input: &'a str, theme: &crate::theme::Theme) -> Vec<Span<'a>> {
     let mention = Style::default()
         .fg(theme.accent)
+        .bg(theme.tool_pending_bg)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     let mut spans = Vec::new();
-    let mut token_start: Option<usize> = None;
-    for (index, ch) in input.char_indices() {
-        if ch.is_whitespace() {
-            if let Some(start) = token_start.take() {
-                push_composer_token(&mut spans, &input[start..index], mention);
-            }
-            spans.push(Span::raw(&input[index..index + ch.len_utf8()]));
-        } else if token_start.is_none() {
-            token_start = Some(index);
+    let mut end = 0;
+    for range in oxide_core::at::mention_ranges(input) {
+        if end < range.start {
+            spans.push(Span::raw(&input[end..range.start]));
         }
+        spans.push(Span::styled(&input[range.clone()], mention));
+        end = range.end;
     }
-    if let Some(start) = token_start {
-        push_composer_token(&mut spans, &input[start..], mention);
-    }
-    if spans.is_empty() {
-        spans.push(Span::raw(input));
+    if end < input.len() || spans.is_empty() {
+        spans.push(Span::raw(&input[end..]));
     }
     spans
-}
-
-fn push_composer_token<'a>(spans: &mut Vec<Span<'a>>, token: &'a str, mention: Style) {
-    if token.starts_with('@') && token.len() > 1 {
-        spans.push(Span::styled(token, mention));
-    } else {
-        spans.push(Span::raw(token));
-    }
 }
 
 fn input_rows(input: &str, width: usize) -> usize {
@@ -4607,6 +4594,21 @@ mod tests {
     }
 
     #[test]
+    fn long_transcripts_follow_past_the_terminal_coordinate_limit() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.items.push(ChatItem::Info("output\n".repeat(70_000)));
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal
+            .draw(|frame| draw_messages(frame, &mut app, frame.area()))
+            .unwrap();
+        assert!(app.scroll > usize::from(u16::MAX));
+        assert_eq!(app.scroll + usize::from(app.view_height), app.lines.len());
+        assert!(jump_to_end_rect(&app, Rect::new(0, 0, 80, 10)).is_none());
+    }
+
+    #[test]
     fn jump_to_end_shows_only_when_scrolled_away() {
         let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
         app.lines = (0..20)
@@ -4693,6 +4695,29 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(mentions, vec!["@src/main.rs", "@x"]);
+    }
+
+    #[test]
+    fn composer_marks_a_spaced_filename_as_one_reference_without_moving_the_caret() {
+        let theme = crate::theme::Theme::dark();
+        let input = "Use @Packages to Country - Things to do component - Reviewed.xlsx please";
+        let spans = mention_spans(input, &theme);
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            input
+        );
+        let mention = spans
+            .iter()
+            .find(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
+            .unwrap();
+        assert_eq!(
+            mention.content,
+            "@Packages to Country - Things to do component - Reviewed.xlsx"
+        );
+        assert_eq!(mention.style.bg, Some(theme.tool_pending_bg));
     }
 
     #[test]

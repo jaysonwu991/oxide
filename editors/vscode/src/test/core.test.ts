@@ -239,6 +239,26 @@ describe("@ references", () => {
     label: (absolute) => absolute.slice(3),
   };
 
+  it("resolves spaced and quoted filenames without consuming the surrounding prompt", () => {
+    const name = "Packages to Country - Things to do component - Reviewed.xlsx";
+    const spaced: AtReferenceSources = {
+      ...sources,
+      resolve: (reference) => reference === name || reference === "Packages" || reference === "source file.rs" ? `/w/${reference}` : sources.resolve(reference),
+      read: () => "file contents",
+    };
+    for (const reference of [`@${name}`, `@"${name}"`, `@'${name}'`]) {
+      const result = expandAtReferences(`Use ${reference} please`, spaced);
+      assert.equal(result.message, "Use please");
+      assert.equal(result.blocks[0].path, name);
+      assert.equal(result.blocks[0].text, "file contents");
+    }
+    assert.equal(expandAtReferences(`Use @${name} and @notes.md please`, spaced).blocks.length, 2);
+    const range = expandAtReferences('read @"source file.rs"#1 now', spaced);
+    assert.equal(range.message, "read now");
+    assert.equal(range.blocks[0].startLine, 1);
+    assert.equal(expandAtReferences('keep @"missing file.xlsx" please', spaced).message, 'keep @"missing file.xlsx" please');
+  });
+
   it("turns a reference into a context block and drops it from the message", () => {
     const result = expandAtReferences("why does @src/a.rs do nothing?", sources);
     assert.equal(result.message, "why does do nothing?");

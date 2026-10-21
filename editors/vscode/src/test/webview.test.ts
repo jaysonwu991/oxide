@@ -946,17 +946,8 @@ describe("webview composer", () => {
     assert.match(style, /#image-view-close \{[^}]*--vscode-errorForeground/s);
   });
 
-  /// The review is a panel of its own, over the transcript: the shell has to
-  /// declare every part of it, since the renderer looks them up by id.
-  it("declares the review's own overlay", () => {
-    for (const id of ["review", "review-title", "review-total", "review-files", "review-close"]) {
-      assert.match(shell, new RegExp(`id="${id}"`), id);
-    }
-    assert.match(shell, /id="review"[^>]*hidden/);
-    // The panel lists the files and says so: each row opens the file in the
-    // editor's own diff, which is where both sides are drawn.
-    assert.match(shell, /↑↓ walk the files[^<]*VS Code's diff editor/);
-    assert.doesNotMatch(shell, /review-diff/);
+  it("opens changes in VS Code without a review overlay", () => {
+    assert.doesNotMatch(shell, /id="review(?:-[^"]*)?"/);
   });
 
   it("enables Send only when there is something to send", () => {
@@ -1352,6 +1343,20 @@ describe("webview composer", () => {
     assert.deepEqual(last(posted), { k: "send", text: "explain this repo" });
     assert.equal(input.value, "");
     assert.equal(byId.get("send")!.disabled, true);
+  });
+
+  it("decorates complete file references while preserving the prompt sent to the host", () => {
+    const { byId, posted } = loadRenderer();
+    const input = byId.get("input")!;
+    const prompt = 'Use @Packages to Country - Things to do component - Reviewed.xlsx and @"src/my_file.ts"#2-5 please';
+    input.value = prompt;
+    input.fire("input");
+    assert.match(input.innerHTML, /class="file-reference">@Packages to Country - Things to do component - Reviewed\.xlsx<\/span>/);
+    assert.match(input.innerHTML, /class="file-reference">@&quot;src\/my_file\.ts&quot;#2-5<\/span>/);
+    assert.equal(input.value, prompt);
+    input.fire("keydown", { key: "Enter", shiftKey: false, preventDefault() {} });
+    const sent = posted.filter((message) => message.k === "send").at(-1);
+    assert.equal(sent?.text, prompt);
   });
 
   it("edits rendered Markdown in one input, sends its source, and recalls it with Up", () => {
@@ -3298,6 +3303,9 @@ describe("webview change cards", () => {
     assert.deepEqual(last(posted), { k: "openChangeDiff", id: 4, index: 1 });
     transcript.fire("click", { target: rows[0] });
     assert.deepEqual(last(posted), { k: "openChangeDiff", id: 4, index: 0 });
+    assert.equal(byId.has("review"), false);
+    assert.equal(byId.get("dialog")!.hidden, true);
+    assert.equal(posted.filter((message) => message.k === "openChangeDiff").length, 2);
   });
 
   it("opens the whole turn from the card's own icon", () => {
@@ -3427,11 +3435,7 @@ describe("webview change cards", () => {
   });
 });
 
-describe("webview review", () => {
-  /// The turn's files read over the panel the way a changes view reads: the
-  /// card's own rows, walked with the arrow keys, each one opening that file in
-  /// VS Code's own diff editor — where both sides are drawn — rather than the
-  /// panel painting a diff of its own.
+describe("webview native changes review", () => {
   const card = {
     id: 4,
     kind: "changes",
@@ -3458,152 +3462,19 @@ describe("webview review", () => {
     ],
   };
 
-  function reviewed(rows = card.rows) {
-    const harness = loadRenderer();
-    harness.send(stateMessage());
-    harness.send({ k: "push", item: { ...card, rows } });
-    return {
-      ...harness,
-      /// The messages that name a file to open, which the card's own rows post
-      /// the same way — the review adds only that it is a review, so the host
-      /// opens the diff as a preview beside the panel.
-      diffs: () =>
-        harness.posted
-          .filter((message) => message.k === "openChangeDiff")
-          .map((message) => shape(message)),
-      open: () => {
-        const button = find(harness.byId.get("transcript")!, "changes-review")!;
-        button.fire("click");
-      },
-    };
-  }
-
-  it("opens the turn's files from the card's Review button", () => {
-    const { byId, open, diffs } = reviewed();
-    assert.equal(byId.get("review")!.hidden, true, "nothing is open until it is asked for");
-    open();
-    assert.equal(byId.get("review")!.hidden, false);
-    assert.equal(byId.get("review-title")!.textContent, "Edited 2 files");
-    assert.equal(byId.get("review-total")!.textContent, "+3 −9");
-    // The rows are the card's, which is what keeps the two listings from
-    // disagreeing about the turn.
-    const rows = byId.get("review-files")!.querySelectorAll(".change-row");
-    assert.deepEqual(
-      rows.map((row) => row.children.map((child) => child.textContent)),
-      [
-        ["M", "src/main.rs", "+3 −1"],
-        ["D", "docs/old.md", "−8"],
-      ],
-    );
-    assert.equal(rows[0].classList.contains("active"), true);
-    assert.equal(rows[0].getAttribute("aria-selected"), "true");
-    // It opens on the first file, and says it is the review — so the host draws
-    // it in the editor's own diff view, as a preview beside the listing.
-    assert.deepEqual(diffs(), [{ k: "openChangeDiff", id: 4, index: 0, review: true }]);
+  it("opens Review directly in VS Code's Changes editor", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage({ items: [card] }));
+    find(byId.get("transcript")!, "changes-review")!.fire("click");
+    assert.deepEqual(last(posted), { k: "openAllChanges", id: 4 });
+    assert.equal(byId.has("review"), false);
+    assert.equal(byId.get("dialog")!.hidden, true);
   });
 
-  it("paints no diff of its own, since the editor beside it draws both sides", () => {
-    const { byId, open } = reviewed([
-      card.rows[0],
-      { ...card.rows[1], detail: "binary" },
-    ]);
-    open();
-    const sheet = byId.get("review")!;
-    assert.equal(find(sheet, "diff"), null, "no diff block in the review");
-    assert.equal(sheet.querySelectorAll(".dline").length, 0);
-    const rows = byId.get("review-files")!.querySelectorAll(".change-row");
-    assert.equal(rows.length, 2);
-    // What kind of file it is still reads on the row itself, which is the only
-    // place a file with nothing to line up says so.
-    assert.equal(rows[1].children[2].textContent, "binary");
-  });
-
-  it("opens nothing for a card with no files to review", () => {
+  it("offers no Review button for an empty change card", () => {
     const { byId, send } = loadRenderer();
-    send(stateMessage());
-    send({ k: "push", item: { ...card, rows: [], totals: "" } });
+    send(stateMessage({ items: [{ ...card, rows: [], totals: "" }] }));
     assert.equal(find(byId.get("transcript")!, "changes-review"), null);
-    assert.equal(byId.get("review")!.hidden, true);
-  });
-
-  it("walks the files with the arrow keys, wrapping at both ends", () => {
-    const { byId, fireDocument, open, diffs } = reviewed();
-    open();
-    let prevented = false;
-    const key = (name: string) => fireDocument("keydown", { key: name, preventDefault: () => { prevented = true; } });
-
-    key("ArrowDown");
-    assert.equal(prevented, true, "the arrows do not also move the caret");
-    const rows = byId.get("review-files")!.querySelectorAll(".change-row");
-    assert.equal(rows[1].classList.contains("active"), true);
-    assert.equal(rows[0].classList.contains("active"), false);
-    // Walking to a file is what opens it, so the arrows move the diff in the
-    // editor beside the panel rather than only the highlight.
-    assert.deepEqual(last(diffs()), { k: "openChangeDiff", id: 4, index: 1, review: true });
-    assert.equal(diffs().length, 2, "the file it opened on, then the one it walked to");
-
-    // Past the last file it comes back to the first, and before the first to
-    // the last.
-    key("ArrowDown");
-    assert.equal(
-      byId.get("review-files")!.querySelectorAll(".change-row")[0].classList.contains("active"),
-      true,
-    );
-    assert.deepEqual(last(diffs()), { k: "openChangeDiff", id: 4, index: 0, review: true });
-    key("ArrowUp");
-    assert.equal(
-      byId.get("review-files")!.querySelectorAll(".change-row")[1].classList.contains("active"),
-      true,
-    );
-    assert.deepEqual(last(diffs()), { k: "openChangeDiff", id: 4, index: 1, review: true });
-
-    // Any other key is left to the panel: the composer still stops a turn with
-    // Escape while the review is up, since the review handles none.
-    const opened = diffs().length;
-    prevented = false;
-    key("ArrowLeft");
-    assert.equal(prevented, false);
-    assert.equal(diffs().length, opened, "a key the review does not handle opens nothing");
-    fireDocument("keydown", { key: "Escape" });
-    assert.equal(byId.get("review")!.hidden, true);
-    key("ArrowDown");
-    assert.equal(byId.get("review")!.hidden, true, "a closed review walks nothing");
-    assert.equal(diffs().length, opened, "and opens nothing");
-  });
-
-  it("opens the file a click on the listing names", () => {
-    const { byId, open, diffs } = reviewed();
-    open();
-    byId.get("review-files")!.querySelectorAll(".change-row")[1].fire("click");
-    assert.equal(
-      byId.get("review-files")!.querySelectorAll(".change-row")[1].classList.contains("active"),
-      true,
-    );
-    assert.deepEqual(last(diffs()), { k: "openChangeDiff", id: 4, index: 1, review: true });
-  });
-
-  it("closes its ✕, and closes with a rebuilt transcript", () => {
-    const { byId, send, open } = reviewed();
-    open();
-    byId.get("review-close")!.fire("click");
-    assert.equal(byId.get("review")!.hidden, true);
-    // A state replay rebuilds the transcript the card belonged to, so a review
-    // left open would be showing a card that is no longer there.
-    open();
-    send(stateMessage());
-    assert.equal(byId.get("review")!.hidden, true);
-  });
-
-  /// The sheet covers the panel, so a press on the room around it leaves it the
-  /// way its ✕ does. A press on a row is the row's own and keeps it up.
-  it("closes when the room around it is pressed", () => {
-    const { byId, open } = reviewed();
-    open();
-    const sheet = byId.get("review")!;
-    sheet.fire("click", { target: byId.get("review-files")! });
-    assert.equal(sheet.hidden, false, "a press on the listing keeps it");
-    sheet.fire("click", { target: sheet });
-    assert.equal(sheet.hidden, true);
   });
 });
 
@@ -3815,8 +3686,8 @@ describe("webview tool card", () => {
     assert.equal(pill.hidden, true);
   });
 
-  it("keeps snapshot totals after completion and opens the whole review", () => {
-    const { byId, send } = loadRenderer();
+  it("keeps snapshot totals after completion and opens native Changes", () => {
+    const { byId, send, posted } = loadRenderer();
     send(stateMessage());
     send({ k: "push", item: { id: 3, kind: "user", text: "edit using a shell" } });
     send({ k: "push", item: {
@@ -3830,7 +3701,9 @@ describe("webview tool card", () => {
     assert.match(pill.innerHTML, /\+7/);
     assert.match(pill.innerHTML, /−2/);
     pill.fire("click");
-    assert.equal(byId.get("review")!.hidden, false);
+    assert.deepEqual(last(posted), { k: "openAllChanges", id: 4 });
+    assert.equal(byId.has("review"), false);
+    assert.equal(byId.get("dialog")!.hidden, true);
     send({ k: "changes", id: 4, undone: true, undoable: false });
     assert.equal(pill.hidden, true);
   });

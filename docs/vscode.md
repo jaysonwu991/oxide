@@ -948,6 +948,12 @@ into its chip, which is what carries an unsaved edit into the run. Images and PD
 are not inlined; they are attached as media, named in the `prompt` request the
 CLI reads (`images` in `core/rpc.ts`).
 
+The composer distinguishes `@file` references with an accent background and border,
+including the whole name when it contains spaces. Quoted paths and selection ranges
+keep the same treatment. Decoration leaves the prompt text, caret and undo history
+intact. On send, spaced filenames resolve to the longest existing file prefix on
+that line, so `@Packages to Country - Reviewed.xlsx please` keeps `please` as prose.
+
 Because the prompt is sent on stdin, a message's own `@path` references are
 resolved by the extension instead of the CLI: `@src/main.rs` becomes a context
 block, media (an image — including one the CLI converts — or a PDF) becomes an
@@ -1021,23 +1027,10 @@ takes — `[label, original, modified]`, where the label is the file's own URI �
 and its last two entries are the `[left, right]` pair `vscode.diff` is given off
 the same triple for a single row.
 
-A card also carries **Review**, which opens the turn's files over the panel
-without leaving the chat. It is the card's own rows again — the badge, path and
-`+`/`−` detail — with the arrows walking them with wraparound, and <kbd>Esc</kbd>,
-the ✕ or a click on the backdrop closing it, so the review and the listing behind
-it cannot disagree about what a turn changed. The diff is not painted there: the row it lands on
-opens that file in VS Code's own diff editor, which already draws both sides with
-per-side line numbers and word-level marks. The panel's rows are therefore not a
-second listing to keep in step, and nothing in the webview renders a diff of its
-own.
-
-A review opens its file as a *preview* and without taking the keyboard
-(`preview` and `preserveFocus` on the `vscode.diff` options), since walking on
-replaces the one tab rather than leaving a turn's worth of them behind, and the
-arrows keep working while the editor holds it. A click on a row of the card
-itself is neither: it opens a tab of its own and focuses it, because the reader
-asked for that one file. A rebuilt transcript closes a review left open, since
-the card it was opened from is gone with it.
+A card's **Review** button and the completed turn's changed-files summary open
+all files directly in VS Code's native Changes editor (`vscode.changes`). Clicking
+a file row opens and focuses that file's diff (`vscode.diff`) in its own tab.
+These actions do not open a webview modal or dialog.
 
 A listing longer than five files folds the rest away behind one row (`+N more
 files`, and `Show less` back), as the desktop app's card does. The count and both
@@ -1371,9 +1364,8 @@ it there for the next thing typed, tells the host when the pane takes the
 keyboard and when it gives it up, and leaves a modified Escape (the host's own
 keybinding) to the editor,
 the change card and the diff a row or its header opens (against the CLI's own
-listing, which the host composed), and the review it opens — its rows, no diff of
-its own, the file each row and each arrow names to the editor, the arrows walking
-them with wraparound, and the ✕ or a rebuilt transcript closing it —
+listing, which the host composed), and Review and the changed-files summary
+opening the native Changes editor without a webview dialog —
 the output of a tool card folding from the row that offers the rest of it as
 well as from its header, and a card that already shows everything it has
 offering no fold and no caret —

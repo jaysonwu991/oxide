@@ -2862,10 +2862,16 @@ impl Config {
              is absent; `*.ts` excludes `*.tsx`. Read the implementation and its related tests \
              together before changing behavior, and run the smallest relevant test early instead \
              of discovering a conflicting expectation after a long implementation. Only re-read \
-             a file after you edit it or when you need a region not previously returned. \
+             a file after you or another tool (including a formatter) change it, after an edit \
+             mismatch, or when you need a region not previously returned. \
              Before you edit a region, read it and copy `oldText` from \
              that result — the `N|` line numbers and trailing whitespace are tolerated, but text \
-             that has moved on is not, and a mismatch replies with the closest region to copy. \
+             that has moved on is not. Every replacement in one `edit` call belongs to its \
+             single top-level `path` and is matched against the original file, not the results \
+             of earlier replacements. Use separate calls for different files, omit no-op \
+             replacements, and merge overlapping changes. A failed batch writes nothing: \
+             re-read the correct file, correct the targets, and resend the entire batch. A \
+             closest-region hint is diagnostic context, not permission to replace unrelated text. \
              Prefer the dedicated tools over shell equivalents: `read` to \
              inspect a file, `grep` to find text, `find` to locate files, and `ls` to list a \
              directory. Search the codebase with `grep`/`find`, never with a shell \

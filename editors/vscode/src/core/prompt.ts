@@ -172,6 +172,41 @@ export interface AtExpansion {
   inlined: string;
 }
 
+// Probe complete candidates only when sending, using the longest existing file
+// prefix like oxide_core::at::referenced_files. Keep unresolved text verbatim.
+function referenceParts(message: string, resolve: (reference: string) => string | null): string[] {
+  const parts: string[] = [];
+  let offset = 0;
+  while (offset < message.length) {
+    const rest = message.slice(offset);
+    if (rest.startsWith("@") && (offset === 0 || /\s/.test(message[offset - 1]))) {
+      const line = rest.slice(1).split("\n", 1)[0].slice(0, 4096);
+      const quoted = /^("[^"\n]+"|'[^'\n]+')(?:#\d+(?:-\d+)?)?/.exec(line);
+      let length = quoted?.[0].length ?? 0;
+      if (!quoted) {
+        const ends = [...line.matchAll(/\s/g)].slice(0, 128).map((match) => match.index!);
+        ends.push(line.length);
+        for (const end of ends.reverse()) {
+          const candidate = line.slice(0, end).replace(/[.,;:!?)\]"']+$/, "");
+          if (candidate && resolve(referenceLines(candidate)?.path ?? candidate)) {
+            length = candidate.length;
+            break;
+          }
+        }
+      }
+      if (length) {
+        parts.push(rest.slice(0, length + 1));
+        offset += length + 1;
+        continue;
+      }
+    }
+    const part = /^(?:\s+|\S+)/.exec(rest)![0];
+    parts.push(part);
+    offset += part.length;
+  }
+  return parts;
+}
+
 /// Expands the `@path` references in a message.
 ///
 /// The CLI expands `@file` from its own arguments (`oxide_core::cli::expand_file_args`),
@@ -187,7 +222,7 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
   const blocks: ContextBlock[] = [];
   const attachments: string[] = [];
   const seen = new Set<string>();
-  const parts = message.split(/(\s+)/);
+  const parts = referenceParts(message, sources.resolve);
   const kept: string[] = [];
   const inline: string[] = [];
 
@@ -198,8 +233,10 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
       continue;
     }
     // Trailing punctuation is not part of a path: `see @a.rs, it …`.
-    const match = /^(@[^\s]+?)([.,;:!?)\]]*)$/.exec(part);
-    const reference = match ? match[1].slice(1) : part.slice(1);
+    const match = /^(@[\s\S]+?)([.,;:!?)\]]*)$/.exec(part);
+    const raw = match ? match[1].slice(1) : part.slice(1);
+    const quoted = /^("|')(.*?)\1(#[0-9]+(?:-[0-9]+)?)?$/.exec(raw);
+    const reference = quoted ? quoted[2] + (quoted[3] || "") : raw;
     const tail = match ? match[2] : "";
     if (!part.startsWith("@") || !reference) {
       kept.push(part);

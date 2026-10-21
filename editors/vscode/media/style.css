@@ -2288,85 +2288,6 @@ button.dialog-row:focus-visible {
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
 }
 
-/* ---------- review ---------- */
-
-/* The turn's changes over the panel: the card's own rows, walked with the
-   arrows. The diff itself is VS Code's, opened in the editor beside the panel as
-   the reader walks, so this is a listing rather than a second diff view — a
-   sheet that hugs its rows rather than a pane that fills the panel. */
-.review-overlay {
-  align-items: flex-start;
-  justify-content: center;
-  padding: 12px;
-}
-
-.review-sheet {
-  display: flex;
-  flex: 0 1 auto;
-  flex-direction: column;
-  width: 100%;
-  max-width: 520px;
-  max-height: calc(100vh - 24px);
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  border-radius: var(--surface-radius);
-  line-height: var(--ui-line-height);
-  background: var(--vscode-editor-background);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-}
-
-.review-head {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  min-height: 52px;
-  padding: 10px 12px;
-  flex-wrap: wrap;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-}
-
-.review-head h2 {
-  margin: 0;
-  font-size: 1em;
-  font-weight: 600;
-}
-
-#review-close { margin-left: auto; }
-
-.review-total {
-  color: var(--vscode-descriptionForeground);
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.85em;
-}
-
-.review-hint {
-  margin-left: auto;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.8em;
-  opacity: 0.8;
-}
-
-.review-files {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 4px 12px 8px;
-}
-
-.review-files .change-row {
-  width: 100%;
-}
-
-.review-files .change-row.active {
-  position: relative;
-  box-shadow: inset 3px 0 0 var(--vscode-focusBorder);
-  background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.25));
-  color: var(--vscode-list-activeSelectionForeground, inherit);
-}
-
 /* ---------- desktop visual parity ---------- */
 
 /* Keep VS Code's colors and accessibility modes, but use the desktop app's
@@ -2568,7 +2489,6 @@ footer {
   #transcript { padding: 14px 10px 8px; }
   footer { padding: 8px 10px 6px; }
   .msg.user { max-width: 88%; margin-right: 0; }
-  .review-hint { display: none; }
 }
 
 #send, #stop { flex: none; }
@@ -2679,3 +2599,15 @@ footer {
 }
 .jump-latest svg { display: block; flex: none; }
 .jump-latest:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 3px; }
+
+.markdown-input .file-reference {
+  color: var(--vscode-textLink-foreground);
+  background-color: color-mix(in srgb, var(--vscode-textLink-foreground) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground) 35%, transparent);
+  border-radius: 4px;
+  padding: 1px 3px;
+  font-weight: 600;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  overflow-wrap: anywhere;
+}

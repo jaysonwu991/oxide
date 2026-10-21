@@ -8,6 +8,67 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+/// Syntax ranges for composer decoration, without filesystem probes per frame.
+/// Quoted paths and bare filenames with spaces stay together. Resolution when
+/// sending still checks which files actually exist.
+pub fn mention_ranges(input: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for (start, _) in input.match_indices('@') {
+        if (start > 0 && !input[..start].ends_with(char::is_whitespace))
+            || ranges.last().is_some_and(|range| start < range.end)
+        {
+            continue;
+        }
+        let line = input[start + 1..].split('\n').next().unwrap_or_default();
+        let limit = line.char_indices().nth(4096).map_or(line.len(), |(i, _)| i);
+        let line = &line[..limit];
+        let Some(first) = line.chars().next().filter(|ch| !ch.is_whitespace()) else {
+            continue;
+        };
+        let length = if matches!(first, '\'' | '"') {
+            let end = line[1..].find(first).map_or(line.len(), |index| index + 2);
+            let suffix = line[end..].strip_prefix('#').map_or(0, |rest| {
+                1 + rest
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
+                    .count()
+            });
+            end + suffix
+        } else {
+            let first_word = line.split_whitespace().next().unwrap_or_default();
+            let mut length = first_word
+                .trim_end_matches([',', '.', ';', '!', '?', ')', ']'])
+                .len();
+            let mut offset = 0;
+            for word in line.split_whitespace().take(128) {
+                let at = offset + line[offset..].find(word).unwrap_or_default();
+                offset = at + word.len();
+                if at > 0 && word.starts_with('@') {
+                    break;
+                }
+                let candidate = word.trim_end_matches([',', '.', ';', '!', '?', ')', ']']);
+                let path = candidate.split('#').next().unwrap_or_default();
+                if path.rsplit_once('.').is_some_and(|(_, extension)| {
+                    !extension.is_empty()
+                        && extension.len() <= 12
+                        && extension.chars().all(|ch| ch.is_ascii_alphanumeric())
+                }) {
+                    length = at + candidate.len();
+                    break;
+                }
+                if at == 0 && word.ends_with('/') {
+                    break;
+                }
+            }
+            length
+        };
+        if length > 0 {
+            ranges.push(start..start + 1 + length);
+        }
+    }
+    ranges
+}
+
 /// Resolve references by probing paths, never by walking outside the project.
 /// Bare names with spaces use the longest existing file prefix on the line.
 pub fn referenced_files(input: &str, cwd: &Path) -> Vec<PathBuf> {
@@ -181,6 +242,33 @@ fn rank_of(path: &str, query: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decorates_full_filenames_without_changing_the_input() {
+        for (input, expected) in [
+            ("read @src/main.rs and @x", vec!["@src/main.rs", "@x"]),
+            (
+                "Use @Packages to Country - Things to do component - Reviewed.xlsx please",
+                vec!["@Packages to Country - Things to do component - Reviewed.xlsx"],
+            ),
+            (
+                "Compare @\"screen shot.png\" and @'目录/表格 一.xlsx'",
+                vec!["@\"screen shot.png\"", "@'目录/表格 一.xlsx'"],
+            ),
+            (
+                "read @\"source file.rs\"#2-5 now",
+                vec!["@\"source file.rs\"#2-5"],
+            ),
+            (
+                "mail@example.com @ @docs/ then @notes.md, please",
+                vec!["@docs/", "@notes.md"],
+            ),
+        ] {
+            let ranges = mention_ranges(input);
+            let mentions: Vec<_> = ranges.iter().map(|range| &input[range.clone()]).collect();
+            assert_eq!(mentions, expected, "{input}");
+        }
+    }
 
     #[test]
     fn resolves_spaced_references_inside_the_project_without_a_tree_search() {

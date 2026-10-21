@@ -1221,7 +1221,7 @@ function inlineLinks(text, stash) {
   return output + text.slice(copied);
 }
 
-function inline(text) {
+function inline(text, references = false) {
   const stashed = [];
   const stash = (html) => {
     stashed.push(html);
@@ -1233,6 +1233,12 @@ function inline(text) {
   // after the placeholders are in place.
   let s = String(text);
   s = s.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  if (references) {
+    for (const [start, end] of referenceRanges(s).reverse()) {
+      const reference = s.slice(start, end);
+      s = s.slice(0, start) + stash(`<span class="file-reference">${escapeHtml(reference)}</span>`) + s.slice(end);
+    }
+  }
   s = inlineLinks(s, stash);
   s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
   s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
@@ -1386,10 +1392,10 @@ function isTableSeparator(line) {
   return /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(line) && line.includes("-");
 }
 
-function tableHtml(header, rows) {
-  const head = header.map((cell) => `<th>${inline(cell)}</th>`).join("");
+function tableHtml(header, rows, references = false) {
+  const head = header.map((cell) => `<th>${inline(cell, references)}</th>`).join("");
   const body = rows
-    .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join("")}</tr>`)
+    .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell, references)}</td>`).join("")}</tr>`)
     .join("");
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
@@ -1436,7 +1442,7 @@ function renderMarkdown(text, softBreaks = false) {
     if (heading) {
       closeList();
       const level = heading[1].length;
-      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      out.push(`<h${level}>${inline(heading[2], softBreaks)}</h${level}>`);
       i += 1;
       continue;
     }
@@ -1460,7 +1466,7 @@ function renderMarkdown(text, softBreaks = false) {
         list = "ul";
       }
       const mark = task[1].toLowerCase() === "x" ? "☑" : "☐";
-      out.push(`<li class="task">${mark} ${inline(task[2])}</li>`);
+      out.push(`<li class="task">${mark} ${inline(task[2], softBreaks)}</li>`);
       i += 1;
       continue;
     }
@@ -1472,7 +1478,7 @@ function renderMarkdown(text, softBreaks = false) {
         out.push("<ul>");
         list = "ul";
       }
-      out.push(`<li>${inline(bullet[1])}</li>`);
+      out.push(`<li>${inline(bullet[1], softBreaks)}</li>`);
       i += 1;
       continue;
     }
@@ -1484,7 +1490,7 @@ function renderMarkdown(text, softBreaks = false) {
         out.push("<ol>");
         list = "ol";
       }
-      out.push(`<li>${inline(ordered[1])}</li>`);
+      out.push(`<li>${inline(ordered[1], softBreaks)}</li>`);
       i += 1;
       continue;
     }
@@ -1498,7 +1504,7 @@ function renderMarkdown(text, softBreaks = false) {
         rows.push(splitRow(lines[i]));
         i += 1;
       }
-      out.push(tableHtml(header, rows));
+      out.push(tableHtml(header, rows, softBreaks));
       continue;
     }
 
@@ -1515,7 +1521,7 @@ function renderMarkdown(text, softBreaks = false) {
       para.push(lines[i]);
       i += 1;
     }
-    out.push(`<p>${softBreaks ? para.map(inline).join("<br>") : inline(para.join(" "))}</p>`);
+    out.push(`<p>${softBreaks ? para.map((line) => inline(line, true)).join("<br>") : inline(para.join(" "))}</p>`);
   }
   closeList();
   return out.join("");
@@ -2661,6 +2667,8 @@ function scrollDown(node = el("transcript"), force = false) {
   if (node.followLatest !== false) {
     node.scrollTop = node.scrollHeight;
     node.followScrollTop = node.scrollTop;
+    node.followScrollHeight = node.scrollHeight;
+    node.followClientHeight = node.clientHeight;
   }
   if (node === el("transcript")) paintJumpLatest();
 }
@@ -2700,14 +2708,52 @@ function resetTurn() {
 const lastInputs = new Map();
 const inputHistoryKey = () => JSON.stringify([state.project, state.session]);
 
-// A scroll event can arrive after the next streamed update. Compare positions
-// before painting too, and never treat content growth as a reader scrolling up.
+// Tool previews can shrink and clamp/anchor scrollTop before a scroll event.
+// Keep following when a shorter preview or taller viewport moves the end.
 function updateTranscriptFollow(transcript) {
   const top = transcript.scrollTop;
   const previous = transcript.followScrollTop ?? top;
-  if (top < previous) transcript.followLatest = false;
-  else if (top > previous && transcript.scrollHeight - transcript.clientHeight - top <= 2) transcript.followLatest = true;
+  const height = transcript.scrollHeight;
+  const view = transcript.clientHeight;
+  const shrank = height < (transcript.followScrollHeight ?? height)
+    || view > (transcript.followClientHeight ?? view);
+  if (top < previous && !shrank) transcript.followLatest = false;
+  else if (top > previous && height - view - top <= 2) transcript.followLatest = true;
   transcript.followScrollTop = top;
+  transcript.followScrollHeight = height;
+  transcript.followClientHeight = view;
+}
+
+// Reference decoration is syntax only; sending still resolves against real files.
+function referenceRanges(text) {
+  const ranges = [];
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "@" || (start > 0 && !/\s/.test(text[start - 1]))) continue;
+    if (ranges.length && start < ranges[ranges.length - 1][1]) continue;
+    const line = text.slice(start + 1).split("\n", 1)[0].slice(0, 4096);
+    if (!line || /^\s/.test(line)) continue;
+    let length = 0;
+    if (line[0] === '"' || line[0] === "'") {
+      const close = line.indexOf(line[0], 1);
+      length = close < 0 ? line.length : close + 1;
+      const suffix = /^#\d+(?:-\d+)?/.exec(line.slice(length));
+      if (suffix) length += suffix[0].length;
+    } else {
+      const words = [...line.matchAll(/\S+/g)].slice(0, 128);
+      length = words[0]?.[0].replace(/[.,;!?)\]]+$/, "").length || 0;
+      for (const word of words) {
+        if (word.index > 0 && word[0].startsWith("@")) break;
+        const candidate = word[0].replace(/[.,;!?)\]]+$/, "");
+        if (/\.[a-zA-Z0-9]{1,12}(?:#\d+(?:-\d+)?)?$/.test(candidate)) {
+          length = word.index + candidate.length;
+          break;
+        }
+        if (word.index === 0 && word[0].endsWith("/")) break;
+      }
+    }
+    if (length > 0) ranges.push([start, start + 1 + length]);
+  }
+  return ranges;
 }
 
 // One rendered, editable surface. The value/selection facade keeps completion,
