@@ -326,14 +326,14 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "edit",
-            "Edit a single file using targeted text replacement. Put the file path once in the top-level `path`, not inside each edit. Every edits[].oldText must match a unique region of the file. Replacements that leave the matched text unchanged are validated but skipped. A match is exact first; trailing whitespace differences and the `N|` line numbers that `read` prints are tolerated, so a block copied from a read result still lands. If the text has genuinely changed, the error names the closest region so you can copy it exactly. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+            "Edit a single file using targeted text replacement. Put the file path once in the top-level `path`; use separate calls for different files. Copy every edits[].oldText from a recent read of that same path, and read it again after a formatter or another tool changes it. Every target must be unique in the original file, before any replacements in this call. Omit edits whose oldText equals newText; they are still validated if supplied. The batch is atomic: if any edit fails, none are written, so correct and resend the whole batch. A match is exact first; trailing whitespace differences and the `N|` / `N+|` line numbers that `read` prints are tolerated. If the text has genuinely changed, read the reported region before retrying. Merge overlapping or nested changes into one replacement. Do not include large unchanged regions just to connect distant changes.",
             json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": path_description },
                     "edits": {
                         "type": "array",
-                        "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
+                        "description": "One or more replacements for the top-level path only. Each edit is matched against the original file, not incrementally. Omit no-op edits. Do not include overlapping or nested edits. If any edit fails, nothing in this batch is written.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1409,20 +1409,33 @@ fn closest_region(
         return None;
     }
     let width = old_lines.len().min(base_lines.len());
+    let base_keys: Vec<String> = base_lines
+        .iter()
+        .map(|line| match_key(line.text.trim()))
+        .collect();
+    let old_keys: Vec<String> = old_lines
+        .iter()
+        .map(|line| match_key(line.text.trim()))
+        .collect();
     // A line counts as shared when it is equal apart from trailing whitespace,
     // or when one side begins the other for a run long enough to mean it: a
     // block cut off mid-line — the newline written where the file holds `\n` —
     // would otherwise score nothing and leave the failure with no region to
     // name at all.
     let shared = |base: &str, old: &str| {
-        let (base, old) = (base.trim(), old.trim());
+        // Blank lines and punctuation-only delimiters do not locate a block:
+        // a Chinese paragraph must not be "closest" to an English heading
+        // just because both have a blank line under them.
+        if !old.chars().any(char::is_alphanumeric) {
+            return false;
+        }
         let width = base.len().min(old.len());
         base == old || (width >= 8 && (base.starts_with(old) || old.starts_with(base)))
     };
     let mut best: Option<(usize, usize)> = None;
     for start in 0..=base_lines.len() - width {
         let score = (0..width)
-            .filter(|&k| shared(base_lines[start + k].text, old_lines[k].text))
+            .filter(|&k| shared(&base_keys[start + k], &old_keys[k]))
             .count();
         let better = match best {
             Some((best_score, _)) => score > best_score,
@@ -1471,32 +1484,38 @@ fn first_differing_line(old: &str, region: &str) -> Option<(usize, String, Strin
 
 /// Strips the `N|` / `N+|` prefixes `read` adds, so a block copied straight out
 /// of a numbered listing still matches. A single numbered line is accepted too
-/// (`read` numbers its first line as `1|`), and the remaining lines must carry a
-/// strictly ascending number, so a multi-line block that merely contains `|` is
-/// left untouched.
+/// (`read` numbers its first line as `1|`). Continuations repeat their physical
+/// line's number and join without a newline; new lines must increase it.
 fn strip_line_prefixes(text: &str) -> Option<String> {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let mut previous = 0u64;
-    let mut stripped = Vec::with_capacity(lines.len());
+    let mut previous = None;
+    let mut stripped = String::new();
     let mut found = false;
-    for line in &lines {
+    for (index, line) in text.split('\n').enumerate() {
         if line.trim().is_empty() {
-            stripped.push((*line).to_string());
+            if index > 0 {
+                stripped.push('\n');
+            }
+            stripped.push_str(line);
             continue;
         }
-        let (number, rest) = line_prefix(line)?;
-        if number <= previous {
-            return None;
+        let (number, continuation, rest) = line_prefix(line)?;
+        if let Some(previous) = previous {
+            if (continuation && number != previous) || (!continuation && number <= previous) {
+                return None;
+            }
         }
-        previous = number;
+        if index > 0 && !continuation {
+            stripped.push('\n');
+        }
+        previous = Some(number);
         found = true;
-        stripped.push(rest.to_string());
+        stripped.push_str(rest);
     }
-    found.then(|| stripped.join("\n"))
+    found.then_some(stripped)
 }
 
 /// Splits a `12|text` or `12+|text` read line into its number and text.
-fn line_prefix(line: &str) -> Option<(u64, &str)> {
+fn line_prefix(line: &str) -> Option<(u64, bool, &str)> {
     let digits = line
         .find(|ch: char| !ch.is_ascii_digit())
         .unwrap_or(line.len());
@@ -1505,17 +1524,27 @@ fn line_prefix(line: &str) -> Option<(u64, &str)> {
     }
     let number = line[..digits].parse().ok()?;
     let trailing = &line[digits..];
+    let continuation = trailing.starts_with('+');
     let rest = trailing.strip_prefix('+').unwrap_or(trailing);
-    Some((number, rest.strip_prefix('|')?))
+    Some((number, continuation, rest.strip_prefix('|')?))
 }
 
 /// Removes `N|` / `N+|` prefixes from every line, used for the replacement text
 /// once the old text was recognized as a copied numbered block.
 fn strip_all_line_prefixes(text: &str) -> String {
-    text.split('\n')
-        .map(|line| line_prefix(line).map(|(_, rest)| rest).unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut stripped = String::new();
+    let mut previous = None;
+    for (index, line) in text.split('\n').enumerate() {
+        let prefix = line_prefix(line);
+        let joins = prefix
+            .is_some_and(|(number, continuation, _)| continuation && previous == Some(number));
+        if index > 0 && !joins {
+            stripped.push('\n');
+        }
+        stripped.push_str(prefix.map(|(_, _, rest)| rest).unwrap_or(line));
+        previous = prefix.map(|(number, _, _)| number);
+    }
+    stripped
 }
 
 /// Applies targeted text replacements. Each `oldText` is matched against the
@@ -1609,6 +1638,7 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
                 _ => (missing, false),
             },
         };
+        let failures_before = failures.len();
         match found {
             Ok(range) => {
                 let mut new = replacement.new.replace("\r\n", "\n");
@@ -1649,14 +1679,19 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
                          holds {in_block}"
                     ));
                 }
-                message.push_str("\nCopy it exactly, then retry.");
+                message.push_str("\nRead this region from the target file before correcting oldText; the closest text is a hint, not an automatic replacement.");
                 failures.push(message);
             }
             Err(MatchFailure::Missing(None)) => failures.push(format!(
-                "edits[{index}].oldText did not match anything in {path}; check the exact text \
-                 (each call edits one file, so split edits for different files into separate \
-                 calls)"
+                "edits[{index}].oldText did not match anything in {path}. No similar text was \
+                 found. Check that this replacement belongs to this file; use separate edit \
+                 calls for different files. Read the target file again rather than guessing."
             )),
+        }
+        if failures.len() > failures_before && replacement.old == replacement.new {
+            failures.last_mut().expect("a failure was added").push_str(
+                "\nThis replacement is a no-op (oldText equals newText); remove it from the batch.",
+            );
         }
     }
 
@@ -1676,7 +1711,14 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     }
 
     if !failures.is_empty() {
-        anyhow::bail!("{}", failures.join("\n\n"));
+        anyhow::bail!(
+            "No changes were written to {path}; the entire edit batch was rejected.\n\n{}\n\n\
+             Read the current target with `read` {}. Correct the failed replacements, omit \
+             no-ops, merge overlaps, and resend the entire batch; even matching replacements \
+             were not applied.",
+            failures.join("\n\n"),
+            json!({ "path": path }),
+        );
     }
 
     // Apply from the end so the ranges computed against the original stay
@@ -4802,6 +4844,49 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn copied_read_continuations_rejoin_physical_lines() {
+        let numbered = "8|first\n8+| continuation\n8+| end\n9|next\n";
+        let expected = "first continuation end\nnext\n";
+        assert_eq!(strip_line_prefixes(numbered).as_deref(), Some(expected));
+        assert_eq!(strip_all_line_prefixes(numbered), expected);
+        assert_eq!(
+            strip_line_prefixes("8+|partial\n9|next").as_deref(),
+            Some("partial\nnext")
+        );
+        for invalid in ["8|first\n8|next", "8|first\n9+|next", "8|first\n7|next"] {
+            assert!(strip_line_prefixes(invalid).is_none(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn edit_round_trips_long_unicode_lines_from_read() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_chunks_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = format!("start {} end\nnext line\n", "界".repeat(MAX_LINE_LEN * 2));
+        let replacement = format!("changed {} end\nnext line\n", "新".repeat(MAX_LINE_LEN * 2));
+        std::fs::write(dir.join("original.txt"), &original).unwrap();
+        std::fs::write(dir.join("replacement.txt"), &replacement).unwrap();
+        let old = read(&dir, &json!({ "path": "original.txt" })).unwrap().text;
+        let new = read(&dir, &json!({ "path": "replacement.txt" }))
+            .unwrap()
+            .text;
+        assert!(old.contains("1+|"));
+        let output = edit(
+            &dir,
+            &json!({
+                "path": "original.txt", "edits": [{ "oldText": old, "newText": new }]
+            }),
+        )
+        .unwrap();
+        assert!(!output.is_error);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("original.txt")).unwrap(),
+            replacement
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn edit_accepts_file_path_and_typographic_variants() {
         let dir = std::env::temp_dir().join(format!("oxide_edit_alias_{}", std::process::id()));
@@ -4940,12 +5025,84 @@ mod tests {
             out.text
         );
         assert!(out.text.contains("    let x = 1;"), "{}", out.text);
+        assert!(
+            out.text.contains("entire edit batch was rejected"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("resend the entire batch"), "{}", out.text);
         assert_eq!(
             std::fs::read_to_string(dir.join("f.rs")).unwrap(),
             "fn main() {\n    let x = 1;\n    let y = 2;\n}\n"
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn closest_edit_hint_requires_shared_content() {
+        let english = "---\ntitle: Agent\n---\n\n# How to Build an AI Coding Agent Like Pi\n\nEnglish paragraph\n";
+        let chinese =
+            "## 加入基础工具（read/write/bash……）\n\n工具是 Agent 停止空谈、开始改动你仓库的地方。";
+        assert!(closest_region(&source_lines(english), &source_lines(chinese)).is_none());
+        assert!(closest_region(&source_lines("{\n}\n"), &source_lines("{\nmissing\n}")).is_none());
+        let hint = closest_region(
+            &source_lines("unrelated\n\nHe said “hello” — today\nold content\n"),
+            &source_lines("He said \"hello\" - today\nnew content"),
+        )
+        .unwrap();
+        assert_eq!((hint.0, hint.1), (3, 4));
+    }
+
+    #[tokio::test]
+    async fn mixed_file_edits_reject_atomically_then_recover_as_separate_calls() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_languages_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let english =
+            "---\n\n# Build an Agent\n\n## Add basic tools\n\nTools bridge text and the world.\n";
+        let chinese = "## 加入基础工具\n\n工具连接文本与世界。\n";
+        std::fs::write(dir.join("en.md"), english).unwrap();
+        std::fs::write(dir.join("zh.md"), chinese).unwrap();
+        let en_edit = json!({ "oldText": "## Add basic tools", "newText": "## Tools explained" });
+        let zh_edit = json!({ "oldText": "## 加入基础工具\n\n工具连接文本与世界。", "newText": "## 工具详解\n\n工具连接文本与世界。" });
+        let output = execute(
+            &call(
+                "edit",
+                json!({ "path": "en.md", "edits": [en_edit.clone(), zh_edit.clone()] }),
+            ),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(output.is_error);
+        assert!(!output.terminate);
+        assert!(output.diff.is_none());
+        assert!(output.model_text().starts_with("error:"));
+        assert!(output.text.contains("edits[1].oldText"), "{}", output.text);
+        assert!(
+            output.text.contains("No changes were written"),
+            "{}",
+            output.text
+        );
+        assert!(
+            output.text.contains("separate edit calls"),
+            "{}",
+            output.text
+        );
+        assert!(!output.text.contains("closest text"), "{}", output.text);
+        assert_eq!(std::fs::read_to_string(dir.join("en.md")).unwrap(), english);
+        assert_eq!(std::fs::read_to_string(dir.join("zh.md")).unwrap(), chinese);
+        for (path, replacement) in [("en.md", en_edit), ("zh.md", zh_edit)] {
+            edit(&dir, &json!({ "path": path, "edits": [replacement] })).unwrap();
+        }
+        assert!(std::fs::read_to_string(dir.join("en.md"))
+            .unwrap()
+            .contains("## Tools explained"));
+        assert!(std::fs::read_to_string(dir.join("zh.md"))
+            .unwrap()
+            .contains("## 工具详解"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A block that looks identical in a transcript can still differ by
@@ -5153,6 +5310,11 @@ mod tests {
         )
         .await;
         assert!(out.is_error);
+        assert!(
+            out.text.contains("This replacement is a no-op"),
+            "{}",
+            out.text
+        );
         assert!(!std::fs::read_to_string(&path).unwrap().contains("oops"));
         std::fs::remove_dir_all(dir).unwrap();
     }

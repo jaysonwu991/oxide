@@ -16,6 +16,10 @@ const editorCode = (source) => {
   return source.slice(start, source.indexOf("\n}\n", start) + 3);
 };
 assert.equal(editorCode(desktop), editorCode(extension), "Both apps use the same editing behavior");
+const referenceCode = (source) => {
+  const start = source.indexOf("function referenceRanges");
+  return source.slice(start, source.indexOf("\n}\n", start) + 3);
+};
 
 function exerciseEditor() {
   const editor = document.querySelector("[contenteditable]");
@@ -187,6 +191,32 @@ function exerciseEditor() {
     check("undo", editor.value === "hello");
     editor.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: true, cancelable: true }));
     check("redo", editor.value === "hello!");
+    for (const [source, code] of [
+      ["Update @README using `cargo fmt` and Cargo.toml", ["cargo fmt"]],
+      ['Update @"README" using `cargo fmt` and Cargo.toml', ["cargo fmt"]],
+      ["Update @README using `cargo fmt`, then `cargo test`, and Cargo.toml", ["cargo fmt", "cargo test"]],
+      ["Update `@README` using `cargo fmt` and Cargo.toml", ["@README", "cargo fmt"]],
+      ["Update @README using `cargo fmt` and @src/main.rs", ["cargo fmt"]],
+    ]) {
+      editor.value = source;
+      editor.focus();
+      check("inline code survives reference decoration", JSON.stringify([...editor.querySelectorAll("code")].map((node) => node.textContent)) === JSON.stringify(code));
+      check("no unresolved placeholders", !/[\u0000\uFFFD]/.test(editor.innerHTML));
+      // Force a DOM-backed edit: reading only the saved source would hide a
+      // damaged rendering until a paste, deletion or IME commit reads it back.
+      const tail = editor.querySelector("[data-editor-tail]").firstChild;
+      tail.appendData("!");
+      const caret = document.createRange();
+      caret.setStart(tail, tail.length);
+      caret.collapse(true);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(caret);
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      check("DOM-backed editing preserves the full Markdown prompt", editor.value === source + "!");
+      check("caret follows the DOM edit", editor.selectionStart === source.length + 1);
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+      check("undo restores the mixed reference/code prompt", editor.value === source);
+    }
     editor.value = "";
     check("clearing", editor.innerHTML === "");
     results.textContent += "ALL PASSED";
@@ -203,7 +233,7 @@ try {
   ]) {
     const escape = source.match(/function escapeHtml\(text\) \{[\s\S]*?\n {0,2}\}(?=\r?\n)/)[0];
     const helpers = source.slice(source.indexOf("function anchor"), source.indexOf(lastHelper));
-    const script = `${escape}\n${helpers}\n${editorCode(source)}\n(${exerciseEditor})();`.replaceAll("</script", "<\\/script");
+    const script = `${escape}\n${referenceCode(source)}\n${helpers}\n${editorCode(source)}\n(${exerciseEditor})();`.replaceAll("</script", "<\\/script");
     const page = join(scratch, `${name}.html`);
     const css = readFileSync(new URL(name === "Desktop" ? "ui/style.css" : "../../editors/vscode/media/style.css", import.meta.url), "utf8");
     const id = name === "Desktop" ? "prompt" : "input";

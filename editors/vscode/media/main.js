@@ -10,14 +10,52 @@
 // desktop app (crates/desktop/ui/app.js) so a reply reads the same in both
 // front-ends.
 
-// A scroll event can arrive after the next streamed update. Compare positions
-// before painting too, and never treat content growth as a reader scrolling up.
+// Tool previews can shrink and clamp/anchor scrollTop before a scroll event.
+// Keep following when a shorter preview or taller viewport moves the end.
 function updateTranscriptFollow(transcript) {
   const top = transcript.scrollTop;
   const previous = transcript.followScrollTop ?? top;
-  if (top < previous) transcript.followLatest = false;
-  else if (top > previous && transcript.scrollHeight - transcript.clientHeight - top <= 2) transcript.followLatest = true;
+  const height = transcript.scrollHeight;
+  const view = transcript.clientHeight;
+  const shrank = height < (transcript.followScrollHeight ?? height)
+    || view > (transcript.followClientHeight ?? view);
+  if (top < previous && !shrank) transcript.followLatest = false;
+  else if (top > previous && height - view - top <= 2) transcript.followLatest = true;
   transcript.followScrollTop = top;
+  transcript.followScrollHeight = height;
+  transcript.followClientHeight = view;
+}
+
+// Reference decoration is syntax only; sending still resolves against real files.
+function referenceRanges(text) {
+  const ranges = [];
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "@" || (start > 0 && !/\s/.test(text[start - 1]))) continue;
+    if (ranges.length && start < ranges[ranges.length - 1][1]) continue;
+    const line = text.slice(start + 1).split("\n", 1)[0].slice(0, 4096);
+    if (!line || /^\s/.test(line)) continue;
+    let length = 0;
+    if (line[0] === '"' || line[0] === "'") {
+      const close = line.indexOf(line[0], 1);
+      length = close < 0 ? line.length : close + 1;
+      const suffix = /^#\d+(?:-\d+)?/.exec(line.slice(length));
+      if (suffix) length += suffix[0].length;
+    } else {
+      const words = [...line.matchAll(/\S+/g)].slice(0, 128);
+      length = words[0]?.[0].replace(/[.,;!?)\]]+$/, "").length || 0;
+      for (const word of words) {
+        if (word.index > 0 && word[0].startsWith("@")) break;
+        const candidate = word[0].replace(/[.,;!?)\]]+$/, "");
+        if (/\.[a-zA-Z0-9]{1,12}(?:#\d+(?:-\d+)?)?$/.test(candidate)) {
+          length = word.index + candidate.length;
+          break;
+        }
+        if (word.index === 0 && word[0].endsWith("/")) break;
+      }
+    }
+    if (length > 0) ranges.push([start, start + 1 + length]);
+  }
+  return ranges;
 }
 
 // One rendered, editable surface. The value/selection facade keeps completion,
@@ -390,11 +428,6 @@ function installMarkdownInput(editor, render) {
   const imageViewImage = $("image-view-img");
   const imageViewName = $("image-view-name");
   const imageViewClose = $("image-view-close");
-  const reviewBox = $("review");
-  const reviewTitle = $("review-title");
-  const reviewTotal = $("review-total");
-  const reviewFiles = $("review-files");
-  const reviewClose = $("review-close");
   const runStrip = $("run-strip");
   const runStripText = $("run-strip-text");
   const runOpenButton = $("run-open");
@@ -427,10 +460,6 @@ function installMarkdownInput(editor, render) {
   let liveChanges = new Map();
   let liveChangesCard = null;
   let frame = 0;
-  /// The change card a review is open on and the file it is showing. The listing
-  /// is the card's own, so a review never disagrees with the rows behind it.
-  let reviewItem = null;
-  let reviewIndex = 0;
   let imageReturnFocus = null;
 
   // ---------- helpers ----------
@@ -466,6 +495,8 @@ function installMarkdownInput(editor, render) {
     if (transcript.followLatest !== false) {
       transcript.scrollTop = transcript.scrollHeight;
       transcript.followScrollTop = transcript.scrollTop;
+      transcript.followScrollHeight = transcript.scrollHeight;
+      transcript.followClientHeight = transcript.clientHeight;
     }
     paintJumpLatest();
   }
@@ -514,7 +545,7 @@ function installMarkdownInput(editor, render) {
     return output + text.slice(copied);
   }
 
-  function inline(text) {
+  function inline(text, references = false) {
     const stashed = [];
     const stash = (html) => {
       stashed.push(html);
@@ -525,6 +556,13 @@ function installMarkdownInput(editor, render) {
     // part of a URL.
     let s = String(text);
     s = s.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+    if (references) {
+      for (const [start, end] of referenceRanges(s).reverse()) {
+        const reference = s.slice(start, end);
+        if (reference.includes("\u0000")) continue;
+        s = s.slice(0, start) + stash(`<span class="file-reference">${escapeHtml(reference)}</span>`) + s.slice(end);
+      }
+    }
     s = inlineLinks(s, stash);
     s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
     s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
@@ -685,10 +723,10 @@ function installMarkdownInput(editor, render) {
     return /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(line) && line.includes("-");
   }
 
-  function tableHtml(header, rows) {
-    const head = header.map((cell) => `<th>${inline(cell)}</th>`).join("");
+  function tableHtml(header, rows, references = false) {
+    const head = header.map((cell) => `<th>${inline(cell, references)}</th>`).join("");
     const body = rows
-      .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join("")}</tr>`)
+      .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell, references)}</td>`).join("")}</tr>`)
       .join("");
     return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
   }
@@ -737,7 +775,7 @@ function installMarkdownInput(editor, render) {
       if (heading) {
         closeList();
         const level = heading[1].length;
-        out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+        out.push(`<h${level}>${inline(heading[2], softBreaks)}</h${level}>`);
         i += 1;
         continue;
       }
@@ -761,7 +799,7 @@ function installMarkdownInput(editor, render) {
           list = "ul";
         }
         const mark = task[1].toLowerCase() === "x" ? "☑" : "☐";
-        out.push(`<li class="task">${mark} ${inline(task[2])}</li>`);
+        out.push(`<li class="task">${mark} ${inline(task[2], softBreaks)}</li>`);
         i += 1;
         continue;
       }
@@ -773,7 +811,7 @@ function installMarkdownInput(editor, render) {
           out.push("<ul>");
           list = "ul";
         }
-        out.push(`<li>${inline(bullet[1])}</li>`);
+        out.push(`<li>${inline(bullet[1], softBreaks)}</li>`);
         i += 1;
         continue;
       }
@@ -785,7 +823,7 @@ function installMarkdownInput(editor, render) {
           out.push("<ol>");
           list = "ol";
         }
-        out.push(`<li>${inline(ordered[1])}</li>`);
+        out.push(`<li>${inline(ordered[1], softBreaks)}</li>`);
         i += 1;
         continue;
       }
@@ -799,7 +837,7 @@ function installMarkdownInput(editor, render) {
           rows.push(splitRow(lines[i]));
           i += 1;
         }
-        out.push(tableHtml(header, rows));
+        out.push(tableHtml(header, rows, softBreaks));
         continue;
       }
 
@@ -816,7 +854,7 @@ function installMarkdownInput(editor, render) {
         para.push(lines[i]);
         i += 1;
       }
-      out.push(`<p>${softBreaks ? para.map(inline).join("<br>") : inline(para.join(" "))}</p>`);
+      out.push(`<p>${softBreaks ? para.map((line) => inline(line, true)).join("<br>") : inline(para.join(" "))}</p>`);
     }
     closeList();
     return out.join("");
@@ -1557,9 +1595,7 @@ function installMarkdownInput(editor, render) {
   /// multi-file diff, so the panel carries no diff format of its own. What each
   /// row says, and how it is badged, is composed by the host.
   ///
-  /// **Review** opens the turn's files over the panel, one row at a time, so the
-  /// reader can walk a turn without leaving the chat: each row it lands on opens
-  /// that file in VS Code's diff editor, which is where the two sides are drawn.
+  /// Review opens VS Code's Changes editor; file rows open their own diff directly.
   function changesCard(item) {
     const wrap = document.createElement("div");
     wrap.className = "changes";
@@ -1597,9 +1633,9 @@ function installMarkdownInput(editor, render) {
       review.type = "button";
       review.className = "changes-review";
       review.textContent = t("ui.review", "Review");
-      review.title = t("ui.walkThisTurnSFilesEachInVSCodeSDiffEditor", "Walk this turn's files, each in VS Code's diff editor");
+      review.title = t("ui.openEveryFileInVSCodeSDiffEditor", "Open every file in VS Code's diff editor");
       review.setAttribute("aria-label", review.title);
-      review.addEventListener("click", () => openReview(item));
+      review.addEventListener("click", () => vscode.postMessage({ k: "openAllChanges", id: item.id }));
       const undo = document.createElement("button");
       undo.type = "button";
       undo.className = "changes-undo";
@@ -1838,9 +1874,6 @@ function installMarkdownInput(editor, render) {
         // may carry, and the state is the one message that repaints from
         // scratch.
         applyLanguage(message.language);
-        // The transcript is rebuilt from scratch, so the card a review was
-        // opened from may be gone with it.
-        closeReview();
         entries.clear();
         transcript.innerHTML = "";
         transcript.appendChild(empty);
@@ -2717,108 +2750,10 @@ function installMarkdownInput(editor, render) {
     imageViewClose.focus();
   });
 
-  // ---------- review ----------
-
-  /// A turn's changes over the panel: the card's own rows, walked with the arrow
-  /// keys. The diff itself is VS Code's — taking a row, which is what walking to
-  /// one does, opens that file in the editor's own diff view, and does it as a
-  /// preview without taking the keyboard, so walking on replaces the same tab
-  /// rather than leaving a turn's worth of them behind. The rows are the card's,
-  /// so the review and the card behind it cannot disagree about the turn.
-  function openReview(item) {
-    if (!item || !item.rows || !item.rows.length) return;
-    reviewItem = item;
-    reviewIndex = 0;
-    // Shown before it is painted: the row it opens on takes the focus, and one
-    // inside a hidden sheet cannot.
-    reviewBox.hidden = false;
-    paintReview();
-    openReviewFile(reviewIndex);
-  }
-
-  function closeReview() {
-    reviewItem = null;
-    reviewBox.hidden = true;
-  }
-
-  // The review covers the panel, so a press on the room around it leaves it the
-  // way its ✕ does. A press on a row is the row's own.
-  reviewBox.addEventListener("click", (event) => {
-    if (event.target === reviewBox) closeReview();
-  });
-
-  /// Takes the row at `index`, wrapping at either end: walking and clicking are
-  /// the same act, which is what shows the file the reader is on.
-  function selectReview(index) {
-    if (!reviewItem) return;
-    const count = reviewItem.rows.length;
-    reviewIndex = ((index % count) + count) % count;
-    paintReview();
-    openReviewFile(reviewIndex);
-  }
-
-  function openReviewFile(index) {
-    if (!reviewItem) return;
-    vscode.postMessage({ k: "openChangeDiff", id: reviewItem.id, index, review: true });
-  }
-
-  function paintReview() {
-    const item = reviewItem;
-    if (!item) return;
-    const count = item.rows.length;
-    reviewTitle.textContent = t(count === 1 ? "changes.editedFile" : "changes.editedFiles", item.title || t("ui.changes", "Changes"), { count });
-    reviewTotal.textContent = item.totals || "";
-    reviewTotal.hidden = !item.totals;
-    reviewFiles.innerHTML = "";
-    let on = null;
-    item.rows.forEach((row, index) => {
-      const active = index === reviewIndex;
-      const node = document.createElement("button");
-      node.type = "button";
-      node.className = active ? "change-row active" : "change-row";
-      node.setAttribute("role", "option");
-      node.setAttribute("aria-selected", active ? "true" : "false");
-      node.title = row.title || row.path;
-      const badge = document.createElement("span");
-      badge.className = `change-badge change-${row.status}`;
-      badge.textContent = row.letter || "M";
-      const name = document.createElement("span");
-      name.className = "change-path";
-      name.textContent = row.path;
-      const detail = document.createElement("span");
-      detail.className = "change-detail";
-      detail.textContent = row.detail || "";
-      node.append(badge, name, detail);
-      node.addEventListener("click", () => selectReview(index));
-      reviewFiles.appendChild(node);
-      if (active) on = node;
-    });
-    // The row the reader is on holds the focus, so Enter opens it again — and a
-    // long listing is scrolled to it rather than left where it was.
-    if (on) on.focus();
-  }
-
-  reviewClose.addEventListener("click", () => closeReview());
-
-  // The files are walked with the arrows, the way a changes view is. The diff
-  // opens beside the panel rather than in front of it, so the caret stays in the
-  // composer and the next arrow walks on.
-  document.addEventListener("keydown", (event) => {
-    if (reviewBox.hidden) return;
-    const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
-    if (!step) return;
-    event.preventDefault();
-    selectReview(reviewIndex + step);
-  });
-
-  // Escape closes what is on top — the review, then the image, then the dialog.
+  // Escape closes the image, then the dialog.
   // The composer's own Escape (stop the running turn) is handled on the textarea.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (!reviewBox.hidden) {
-      closeReview();
-      return;
-    }
     if (!imageView.hidden) {
       closeImage();
       return;
@@ -3318,7 +3253,7 @@ function installMarkdownInput(editor, render) {
 
   sendButton.addEventListener("click", () => submit());
   liveChangesPill.addEventListener("click", () => {
-    if (liveChangesCard) { openReview(liveChangesCard); return; }
+    if (liveChangesCard) { vscode.postMessage({ k: "openAllChanges", id: liveChangesCard.id }); return; }
     const latest = [...liveChanges.values()].at(-1)?.entry;
     if (!latest) return;
     latest.expanded = true;

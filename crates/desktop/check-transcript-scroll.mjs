@@ -34,6 +34,27 @@ async function exerciseScroll() {
     transcript.innerHTML = "<p>A line in the conversation</p>".repeat(40);
     scrollDown(true);
     await tick();
+    const tool = document.createElement("pre");
+    tool.textContent = "Running tool output\n".repeat(60);
+    transcript.appendChild(tool);
+    scrollDown();
+    await tick();
+    const runningTop = transcript.scrollTop;
+    tool.textContent = "Finished tool preview";
+    // Reading layout forces the browser to clamp the scroll position, before
+    // the next model/tool update has had a chance to scroll again.
+    check("finishing a tool shrinks the transcript", transcript.scrollTop < runningTop);
+    grow();
+    await tick();
+    check("tool completion keeps following", transcript.followLatest && $("jump-latest").hidden
+      && transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop <= 2);
+    transcript.style.height = "400px";
+    grow();
+    await tick();
+    check("a taller viewport keeps following", transcript.followLatest && $("jump-latest").hidden);
+    transcript.style.height = "200px";
+    scrollDown();
+    await tick();
     const bottom = transcript.scrollTop;
     transcript.dispatchEvent(new WheelEvent("wheel", { deltaY: -10, bubbles: true }));
     grow();
@@ -67,6 +88,16 @@ async function exerciseScroll() {
     grow();
     await tick();
     check("resize preserves reading position", transcript.scrollTop === beforeResize && !transcript.followLatest);
+    tool.textContent = "More live tool output\n".repeat(60);
+    scrollDown(true);
+    await tick();
+    transcript.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+    transcript.scrollTop -= 100;
+    await tick();
+    tool.textContent = "Finished tool preview";
+    grow();
+    await tick();
+    check("finishing a tool preserves a paused reader", transcript.followLatest === false && !$("jump-latest").hidden);
     results.textContent += "ALL PASSED";
   } catch (error) {
     results.textContent += `FAIL ${error.stack}`;

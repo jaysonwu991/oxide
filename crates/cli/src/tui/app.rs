@@ -760,7 +760,7 @@ pub struct App {
     /// so an attachment whose message the run has already taken is dropped with
     /// it instead of landing on a message that never carried it.
     pub queued_attachments: Vec<(String, Option<PathBuf>)>,
-    pub scroll: u16,
+    pub scroll: usize,
     pub auto_scroll: bool,
     pub view_height: u16,
     pub busy: bool,
@@ -1220,14 +1220,18 @@ impl App {
 
     /// Scrolls the conversation up by `lines` and stops following new output.
     pub fn scroll_up(&mut self, lines: u16) {
-        self.scroll = self.scroll.saturating_sub(lines);
+        self.scroll = self.scroll.saturating_sub(usize::from(lines));
         self.auto_scroll = false;
     }
 
-    /// Scrolls the conversation down by `lines` and stops following new output.
+    /// Scrolls down, resuming follow when the newest output is reached.
     pub fn scroll_down(&mut self, lines: u16) {
-        self.scroll = self.scroll.saturating_add(lines);
-        self.auto_scroll = false;
+        let end = self
+            .lines
+            .len()
+            .saturating_sub(usize::from(self.view_height));
+        self.scroll = self.scroll.saturating_add(usize::from(lines)).min(end);
+        self.auto_scroll = self.scroll == end;
     }
 
     /// Jumps to the oldest visible output and stops following new output.

@@ -5501,7 +5501,6 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             );
             app.items
                 .push(ChatItem::Info(format!("{line}\n  {detail}")));
-            app.auto_scroll = true;
             app.pending_approval = Some(PendingApproval { id, tool });
         }
         // The terminal is not given an asker, so the model is never offered the
@@ -5514,7 +5513,6 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
                 app.t("ui.aQuestionArrivedThatThisTerminalCannotAnswer")
                     .to_string(),
             ));
-            app.auto_scroll = true;
         }
         // Nothing was painted for it here, so a request nobody answered is not
         // announced either: the tool result already says so in the transcript.
@@ -5548,16 +5546,13 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
                 label
             };
             app.items.push(ChatItem::User(text));
-            app.auto_scroll = true;
         }
         AgentEvent::Text(delta) => {
-            app.auto_scroll = true;
             // Clear any `retrying...` notice now that output is flowing again.
             app.status = app.t("tui.status.Thinking").to_string();
             app.push_assistant_delta(delta);
         }
         AgentEvent::ThinkingDelta(delta) => {
-            app.auto_scroll = true;
             app.assistant_open = false;
             app.push_thinking_delta(delta);
             app.status = app.t("tui.status.Thinking").to_string();
@@ -5594,13 +5589,11 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
         }
         AgentEvent::ToolCall { name, args } => {
             app.assistant_open = false;
-            app.auto_scroll = true;
             app.running_tool = Some((name.clone(), std::time::Instant::now()));
             app.items.push(ChatItem::Tool { name, args });
             app.status = app.t("tui.status.RunningTool").to_string();
         }
         AgentEvent::ToolProgress { name, chunk } => {
-            app.auto_scroll = true;
             let append = matches!(
                 app.items.last(),
                 Some(ChatItem::ToolProgress { name: last, .. }) if last == &name
@@ -5626,7 +5619,6 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             diff,
             millis,
         } => {
-            app.auto_scroll = true;
             app.running_tool = None;
             app.subagent = None;
             // The tool this question was about has resolved (answered, or denied
@@ -5670,7 +5662,6 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             read_files,
             modified_files,
         } => {
-            app.auto_scroll = true;
             app.items.push(ChatItem::Compaction {
                 summary,
                 summarized,
@@ -5691,13 +5682,13 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.pending_approval = None;
             app.assistant_open = false;
             app.status = app.t("tui.status.Ready").to_string();
+            app.auto_scroll = true;
             app.reset_history(history);
             app.set_input(prompt);
             if let Some(summary) = summary {
                 app.items.push(ChatItem::Branch { summary });
             }
             app.items.push(ChatItem::Info(message));
-            app.auto_scroll = true;
         }
         AgentEvent::Error(message) => {
             // The turn produced nothing, so its partial reasoning goes with it.
@@ -5719,7 +5710,6 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.busy_since = None;
             app.pending_approval = None;
             app.assistant_open = false;
-            app.auto_scroll = true;
             app.status = app.t("tui.status.Ready").to_string();
         }
     }
@@ -7591,6 +7581,8 @@ mod tests {
     #[test]
     fn scroll_helpers_adjust_offset_and_follow_state() {
         let mut app = test_app();
+        app.lines = vec![ratatui::text::Line::from("line"); 100];
+        app.view_height = 10;
         app.scroll = 30;
 
         app.scroll_up(5);
@@ -7607,6 +7599,48 @@ mod tests {
 
         app.scroll_to_bottom();
         assert!(app.auto_scroll);
+    }
+
+    #[test]
+    fn scrolling_back_to_the_end_resumes_following() {
+        let mut app = test_app();
+        app.lines = vec![ratatui::text::Line::from("line"); 100];
+        app.view_height = 10;
+        app.scroll = 80;
+        app.auto_scroll = false;
+        app.scroll_down(10);
+        assert_eq!(app.scroll, 90);
+        assert!(app.auto_scroll);
+    }
+
+    #[test]
+    fn tool_events_preserve_the_readers_follow_choice() {
+        let mut app = test_app();
+        for following in [false, true] {
+            app.auto_scroll = following;
+            for event in [
+                AgentEvent::ToolCall {
+                    name: "bash".into(),
+                    args: r#"{"command":"cargo test"}"#.into(),
+                },
+                AgentEvent::ToolProgress {
+                    name: "bash".into(),
+                    chunk: "running\n".into(),
+                },
+                AgentEvent::ToolResult {
+                    name: "bash".into(),
+                    args: r#"{"command":"cargo test"}"#.into(),
+                    output: "done".into(),
+                    is_error: false,
+                    diff: None,
+                    millis: 1000,
+                },
+                AgentEvent::Text("Next step".into()),
+            ] {
+                handle_agent_event(event, &mut app);
+                assert_eq!(app.auto_scroll, following);
+            }
+        }
     }
 
     #[test]

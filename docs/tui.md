@@ -47,6 +47,11 @@ clipboard's own text — a copied file's path, a clipboard image's scratch path,
 plain text — and the model reads that path. The transcript line the message
 becomes names the attachments the same way.
 
+The composer highlights file references with an accent, bold underline and a
+background. A spaced filename such as `@Packages to Country - Reviewed.xlsx` is
+highlighted in full; quoted paths stay together too. The decoration keeps the
+original text and terminal cursor positions unchanged.
+
 An `@path` in the message attaches a file the same way, and a reference to one
 this app may not read is still an attachment: the refusal is reported with the
 grant to give rather than being sent to the model as the text it was typed as.
