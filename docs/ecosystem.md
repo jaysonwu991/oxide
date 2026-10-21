@@ -76,7 +76,9 @@ Each command has exactly one spelling: a name the catalog does not declare is a
 plain message rather than a second way to reach a command.
 Discovered commands and prompt templates can also be invoked by the agent
 through the `command` tool, and skills load on demand with `skill` or via
-`/skill:<name>`.
+`/skill:<name>`. A slash skill invocation starts its workflow immediately, including
+its questions and confirmation gates. Loaded instructions name the source file
+and directory used to resolve supporting scripts and resources.
 
 ## Plugin packages
 

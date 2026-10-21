@@ -82,28 +82,48 @@ pub fn referenced_files(input: &str, cwd: &Path) -> Vec<PathBuf> {
         // Bound filesystem probes even when a pasted document contains an @.
         let end = line.char_indices().nth(4096).map_or(line.len(), |(i, _)| i);
         let line = &line[..end];
-        let candidates: Vec<&str> =
-            if let Some(quote) = line.chars().next().filter(|c| matches!(c, '\'' | '"')) {
-                line[1..]
-                    .find(quote)
-                    .map(|end| vec![&line[1..end + 1]])
-                    .unwrap_or_default()
-            } else {
-                let mut ends: Vec<usize> = line
-                    .char_indices()
-                    .filter_map(|(i, c)| c.is_whitespace().then_some(i))
-                    .take(128)
-                    .collect();
-                ends.push(line.len());
-                ends.into_iter()
-                    .rev()
-                    .map(|end| line[..end].trim_end_matches([',', '.', ')', ']', '"', '\'']))
-                    .collect()
-            };
+        let quote = line.chars().next().filter(|c| matches!(c, '\'' | '"'));
+        let candidates: Vec<&str> = if let Some(quote) = quote {
+            line[1..]
+                .find(quote)
+                .map(|end| vec![&line[1..end + 1]])
+                .unwrap_or_default()
+        } else {
+            let mut ends: Vec<usize> = line
+                .char_indices()
+                .filter_map(|(i, c)| c.is_whitespace().then_some(i))
+                .take(128)
+                .collect();
+            ends.push(line.len());
+            ends.into_iter()
+                .rev()
+                .map(|end| {
+                    line[..end].trim_end_matches([',', '.', ';', '!', '?', ')', ']', '"', '\''])
+                })
+                .collect()
+        };
         for raw in candidates {
             if raw.is_empty() {
                 continue;
             }
+            let full = crate::media::expand_path(raw, cwd);
+            let raw = if quote.is_some() || full.is_file() {
+                raw
+            } else {
+                raw.rsplit_once('#').map_or(raw, |(path, range)| {
+                    let mut numbers = range.split('-');
+                    let start = numbers.next().and_then(|n| n.parse::<usize>().ok());
+                    let end = numbers.next().map(|n| n.parse::<usize>());
+                    if start.is_some_and(|n| n > 0)
+                        && end.is_none_or(|end| end.is_ok_and(|n| n >= start.unwrap()))
+                        && numbers.next().is_none()
+                    {
+                        path
+                    } else {
+                        raw
+                    }
+                })
+            };
             let path = crate::media::expand_path(raw, cwd);
             if path.is_file() {
                 if !found.contains(&path) {
@@ -155,22 +175,35 @@ pub enum AtKind {
 
 /// The `@path` token the cursor is in, or `None` when it is in none.
 ///
-/// A reference starts at a word boundary and runs to the next whitespace, which
+/// A reference starts at a word boundary and runs to the next whitespace (or
+/// the closing quote for a quoted path), which
 /// is how the CLI's own `@file` expansion reads one too: `mail me at a@b.com`
 /// names no file, and a cursor parked inside a half-typed `@src/ma|in.rs`
 /// completes the whole token rather than the part behind it.
 pub fn token(value: &str, cursor: usize) -> Option<AtToken> {
-    let before = value.get(..cursor)?;
-    let typed = before.rsplit(char::is_whitespace).next().unwrap_or("");
-    let query = typed.strip_prefix('@')?;
-    let start = cursor - typed.len();
-    let rest = value.get(cursor..)?.split(char::is_whitespace).next()?;
-    let end = cursor + rest.len();
-    Some(AtToken {
-        start,
-        end,
-        query: format!("{query}{rest}"),
-    })
+    value.get(..cursor)?;
+    for (start, _) in value.match_indices('@').rev() {
+        if start >= cursor || (start > 0 && !value[..start].ends_with(char::is_whitespace)) {
+            continue;
+        }
+        let rest = &value[start + 1..];
+        let (query, end) =
+            if let Some(quote) = rest.chars().next().filter(|ch| matches!(ch, '\'' | '"')) {
+                let body = &rest[1..];
+                let length = body
+                    .find(quote)
+                    .unwrap_or_else(|| body.find('\n').unwrap_or(body.len()));
+                let end = start + 2 + length + usize::from(body[length..].starts_with(quote));
+                (body[..length].to_string(), end)
+            } else {
+                let length = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                (rest[..length].to_string(), start + 1 + length)
+            };
+        if cursor <= end {
+            return Some(AtToken { start, end, query });
+        }
+    }
+    None
 }
 
 /// The rows to offer for a token, best first and cut to `limit`.
@@ -193,13 +226,18 @@ pub fn suggestions(paths: &[String], token: Option<&AtToken>, limit: usize) -> V
 
 fn row(path: &str) -> AtSuggestion {
     let folder = path.ends_with('/');
+    let reference = if path.contains(char::is_whitespace) {
+        format!("@\"{path}{}", if folder { "" } else { "\"" })
+    } else {
+        format!("@{path}")
+    };
     AtSuggestion {
         label: path.to_string(),
         kind: if folder { AtKind::Folder } else { AtKind::File },
         insert: if folder {
-            format!("@{path}")
+            reference
         } else {
-            format!("@{path} ")
+            format!("{reference} ")
         },
     }
 }
@@ -301,6 +339,92 @@ mod tests {
             vec![project.join("Packages")]
         );
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn completes_quoted_paths_with_spaces_and_walks_into_folders() {
+        let paths = vec![
+            "reviewed copy/".into(),
+            "reviewed copy/first entity.xlsx".into(),
+        ];
+        let folder = suggestions(&paths, token("@reviewed", 9).as_ref(), 200).remove(0);
+        assert_eq!(folder.insert, "@\"reviewed copy/");
+        let value = folder.insert;
+        let rows = suggestions(&paths, token(&value, value.len()).as_ref(), 200);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].insert, "@\"reviewed copy/first entity.xlsx\" ");
+        assert_eq!(
+            token("@\"reviewed copy/first entity.xlsx\" next", 20)
+                .unwrap()
+                .query,
+            "reviewed copy/first entity.xlsx"
+        );
+        assert!(token("@\"reviewed copy/first entity.xlsx\" next", 38).is_none());
+    }
+
+    #[test]
+    fn resolves_line_references_and_keeps_hashes_in_real_filenames() {
+        let dir = std::env::temp_dir().join(format!("oxide_at_ranges_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("source.rs");
+        let hash = dir.join("issue#draft.md");
+        std::fs::write(&file, "one\ntwo").unwrap();
+        std::fs::write(&hash, "draft").unwrap();
+        assert_eq!(
+            referenced_files("@source.rs#2-5 and @issue#draft.md", &dir),
+            vec![file, hash]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn numeric_hash_filenames_take_precedence_over_line_ranges() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_at_numeric_hash_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let literal = dir.join("plot.png#2");
+        let plain = dir.join("plot.png");
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR";
+        std::fs::write(&literal, png).unwrap();
+        for input in [
+            "@\"plot.png#2\"",
+            "@'plot.png#2'",
+            "@plot.png#2",
+            "@\"plot.png#2\"#3-4",
+        ] {
+            assert_eq!(
+                referenced_files(input, &dir),
+                vec![literal.clone()],
+                "{input}"
+            );
+            assert_eq!(
+                crate::media::referenced_attachments(input, &dir),
+                vec![literal.clone()],
+                "{input}"
+            );
+        }
+        std::fs::write(&plain, png).unwrap();
+        for input in ["@\"plot.png#2\"", "@plot.png#2", "@\"plot.png#2\"#3"] {
+            assert_eq!(
+                referenced_files(input, &dir),
+                vec![literal.clone()],
+                "{input}"
+            );
+            assert_eq!(
+                crate::media::referenced_attachments(input, &dir),
+                vec![literal.clone()],
+                "{input}"
+            );
+        }
+        assert_eq!(referenced_files("@plot.png#3-4", &dir), vec![plain.clone()]);
+        assert_eq!(
+            referenced_files("@\"plot.png\"#3-4", &dir),
+            vec![plain.clone()]
+        );
+        std::fs::remove_file(&literal).unwrap();
+        assert!(referenced_files("@\"plot.png#2\"", &dir).is_empty());
+        assert_eq!(referenced_files("@plot.png#2", &dir), vec![plain]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn paths() -> Vec<String> {

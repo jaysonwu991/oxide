@@ -191,6 +191,14 @@ describe("prompt assembly", () => {
     );
   });
 
+  it("keeps a skill invocation first even with automatic editor context", () => {
+    const prompt = buildPrompt("/audit inspect @reviewed.xlsx", [
+      { path: "SKILL.md", text: "Old skill text with /other-command inside" },
+    ]);
+    assert.equal(prompt, "/audit inspect @reviewed.xlsx\n\n--- SKILL.md ---\nOld skill text with /other-command inside");
+    assert.ok(buildPrompt("/skill:audit", [{ path: "a.rs", text: "x" }]).startsWith("/skill:audit\n"));
+  });
+
   it("sends context without a message when the user attached only context", () => {
     assert.equal(buildPrompt("", [{ path: "a.rs", text: "x" }]), "--- a.rs ---\nx");
     assert.equal(buildPrompt("  hello  ", []), "hello");
@@ -280,6 +288,19 @@ describe("@ references", () => {
     const result = expandAtReferences("look at @big.log", sources);
     assert.equal(result.message, "look at @big.log");
     assert.deepEqual(result.blocks, []);
+  });
+
+  it("keeps spreadsheet paths available for tools without sending binary bytes as media", () => {
+    const prompt = '/audit submit @"Reviewed copy.xlsx" please';
+    const result = expandAtReferences(prompt, {
+      resolve: reference => reference === "Reviewed copy.xlsx" ? "/w/Reviewed copy.xlsx" : null,
+      read: () => { throw new Error("binary must not be decoded as text"); },
+      label: absolute => absolute,
+      media: () => "binary",
+    });
+    assert.equal(result.inlined, prompt);
+    assert.equal(result.message, prompt);
+    assert.deepEqual(result.attachments, []);
   });
 
   it("attaches an image instead of inlining it", () => {

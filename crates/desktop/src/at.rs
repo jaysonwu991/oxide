@@ -143,6 +143,28 @@ mod tests {
     }
 
     #[test]
+    fn completes_a_spaced_filename_through_the_bridge() {
+        let dir = project("spaced");
+        std::fs::create_dir_all(dir.join("Reviewed copy")).unwrap();
+        let file = dir.join("Reviewed copy/first entity.xlsx");
+        std::fs::write(&file, b"PK\0sheet").unwrap();
+        let cache = PathCache::default();
+        let value = "😀 @\"Reviewed copy/first";
+        let answer = suggestions(&dir, &cache, value, value.encode_utf16().count());
+        assert_eq!(answer.start, 3);
+        assert_eq!(answer.rows.len(), 1);
+        assert_eq!(
+            answer.rows[0].insert,
+            "@\"Reviewed copy/first entity.xlsx\" "
+        );
+        assert_eq!(
+            oxide_core::at::referenced_files(&answer.rows[0].insert, &dir),
+            vec![file]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn counts_the_caret_the_way_the_webview_does() {
         let dir = project("caret");
         let cache = PathCache::default();

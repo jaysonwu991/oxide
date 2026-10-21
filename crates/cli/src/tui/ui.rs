@@ -6595,6 +6595,7 @@ mod tests {
         app.set_input("/".to_string());
         app.suggestions = (0..10)
             .map(|index| crate::tui::app::CommandHint {
+                insert: None,
                 name: format!("command-{index}"),
                 description: String::new(),
             })
@@ -6616,6 +6617,7 @@ mod tests {
         let mut app = App::new("gpt-4o".into(), "/tmp/project".into(), Reasoning::Auto);
         app.set_input("/add".to_string());
         app.suggestions = vec![crate::tui::app::CommandHint {
+            insert: None,
             name: "add-editorial-cross-links-page-type".to_string(),
             description: "Add a new page type to the editorial cross-links feature. Use when the \
                           user wants to add a new page type for a specific vertical."

@@ -455,7 +455,9 @@ The regions, top to bottom:
   rows, `Enter`/`Tab` takes one, `Escape` closes the list, a folder keeps the
   reference open so the query goes on narrowing inside it (and a folder the
   reference already spells is left out, so the row taken next walks into it)
-  while a file closes it with a space. The rules are the terminal's own —
+  while a file closes it with a space. Names containing spaces are completed
+  inside quotes; choosing a folder keeps its quote open for the next component.
+  The rules are the terminal's own —
   `oxide_core::at`, the module both composers complete from — and the walk of the
   project behind them is kept until the project changes. A reference to an image
   or a PDF is attached to the turn the way the terminal attaches one, with the

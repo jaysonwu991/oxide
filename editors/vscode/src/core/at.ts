@@ -32,20 +32,38 @@ export interface AtSuggestion {
 
 /// The `@path` token the caret is in, or `null` when it is in none.
 ///
-/// A reference starts at a word boundary and runs to the next whitespace, which
+/// A reference starts at a word boundary and runs to the next whitespace (or
+/// the closing quote for a quoted path), which
 /// is how the CLI's own `@file` expansion and the terminal's completion both
 /// read one: `mail me at a@b.com` names no file, and a caret parked inside a
 /// half-typed `@src/ma|in.rs` completes the whole token rather than the part
 /// behind it.
 export function atToken(value: string, caret: number): AtToken | null {
   const at = Math.max(0, Math.min(caret, value.length));
-  const before = value.slice(0, at);
-  const typed = /\S*$/.exec(before)?.[0] ?? "";
-  if (!typed.startsWith("@")) return null;
-  const start = before.length - typed.length;
-  const rest = /\S*/.exec(value.slice(at))?.[0] ?? "";
-  const end = at + rest.length;
-  return { start, end, query: value.slice(start + 1, end) };
+  for (let start = value.lastIndexOf("@", at - 1); start >= 0; start = value.lastIndexOf("@", start - 1)) {
+    if (start >= at || (start > 0 && !/\s/.test(value[start - 1]))) {
+      if (start === 0) break;
+      continue;
+    }
+    const rest = value.slice(start + 1);
+    const quote = rest[0];
+    let query: string;
+    let end: number;
+    if (quote === '"' || quote === "'") {
+      const body = rest.slice(1);
+      const closing = body.indexOf(quote);
+      const newline = body.indexOf("\n");
+      const length = closing >= 0 ? closing : newline >= 0 ? newline : body.length;
+      query = body.slice(0, length);
+      end = start + 2 + length + (closing >= 0 ? 1 : 0);
+    } else {
+      query = /^\S*/.exec(rest)![0];
+      end = start + 1 + query.length;
+    }
+    if (at <= end) return { start, end, query };
+    if (start === 0) break;
+  }
+  return null;
 }
 
 /// The rows to offer for a token, best first and capped at `limit` so a bare
@@ -65,10 +83,11 @@ export function atSuggestions(
   ranked.sort((a, b) => a.rank - b.rank || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return ranked.slice(0, limit).map(({ path }) => {
     const folder = path.endsWith("/");
+    const reference = /\s/.test(path) ? `@"${path}${folder ? "" : '"'}` : `@${path}`;
     return {
       label: path,
       kind: folder ? "folder" : "file",
-      insert: folder ? `@${path}` : `@${path} `,
+      insert: folder ? reference : `${reference} `,
     };
   });
 }

@@ -943,7 +943,9 @@ chip's control id travels.
 
 `core/prompt.ts` builds the prompt the same way the CLI's own `@file` expansion
 reads: each attached block is a `--- path[:range] ---` header plus its text,
-then the message. The tracked file's block is built here rather than painted
+then the message. A leading slash invocation stays before explicit context so
+the core can resolve its command or skill; automatic active-editor context is
+omitted for slash invocations. The tracked file's block is built here rather than painted
 into its chip, which is what carries an unsaved edit into the run. Images and PDFs (`png`, `jpg`/`jpeg`, `gif`, `webp`, `bmp`)
 are not inlined; they are attached as media, named in the `prompt` request the
 CLI reads (`images` in `core/rpc.ts`).
@@ -957,14 +959,17 @@ that line, so `@Packages to Country - Reviewed.xlsx please` keeps `please` as pr
 Because the prompt is sent on stdin, a message's own `@path` references are
 resolved by the extension instead of the CLI: `@src/main.rs` becomes a context
 block, media (an image — including one the CLI converts — or a PDF) becomes an
-attachment, and a reference that does not resolve stays in the message. Whether a
+attachment, and other binary files such as spreadsheets keep their `@path` in
+the message for tools to process from disk. A reference that does not resolve
+stays in the message. Whether a
 reference is media is read from the file's own head (`cli.ts::readFileHead` and
 `core/attachments.ts::sniffMediaMime`, the same bytes the CLI reads) rather than
 from its name, so a text file called `.tif` is inlined as its text and a
 screenshot saved without an extension attaches as an image; a file whose head
 cannot be read falls back to the extension. Duplicate references are collapsed, and trailing
 punctuation is not taken as part of the path. The composer's completion offers
-the paths that will resolve this way — a folder is only a step into one, and a
+the paths that will resolve this way, quoting names with spaces and keeping a
+quoted folder open until a file is chosen — a folder is only a step into one, and a
 reference that resolves to nothing is left for the model to read as text.
 
 A reference may also name a line range, which is what the editor's insert

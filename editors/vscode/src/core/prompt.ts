@@ -31,11 +31,13 @@ export function contextHeader(block: ContextBlock): string {
   return `--- ${block.path}${range} ---`;
 }
 
-/// The full prompt: context blocks, a blank line each, then the message.
+/// Context blocks accompany the message; slash invocations stay first so the
+/// core can resolve them before loading their context.
 export function buildPrompt(message: string, blocks: ContextBlock[] = []): string {
   const parts = blocks.map((block) => `${contextHeader(block)}\n${block.text}`);
   const body = message.trim();
-  if (body) parts.push(body);
+  if (body.startsWith("/")) parts.unshift(body);
+  else if (body) parts.push(body);
   return parts.join("\n\n");
 }
 
@@ -153,9 +155,10 @@ export interface AtReferenceSources {
   /// What the file's own bytes are, or `null` when they cannot be read:
   /// `media` hands the path to the CLI, which reads the same bytes and has
   /// nothing to attach to a file that is neither an image, a PDF nor text, and
-  /// `text` inlines it as context. Without it the name is the only hint there
+  /// `text` inlines it as context and `binary` keeps its path for tools to read.
+  /// Without it the name is the only hint there
   /// is, which is what a caller that has no filesystem answers with.
-  media?: (absolute: string) => "media" | "text" | null;
+  media?: (absolute: string) => "media" | "text" | "binary" | null;
 }
 
 export interface AtExpansion {
@@ -265,6 +268,11 @@ export function expandAtReferences(message: string, sources: AtReferenceSources)
         kept.push(part);
         inline.push(part);
       }
+      continue;
+    }
+    if (kind === "binary") {
+      kept.push(part);
+      inline.push(part);
       continue;
     }
     if (media) {

@@ -3346,6 +3346,7 @@ fn builtin_commands(lang: crate::i18n::Language) -> Vec<CommandHint> {
         .collect::<Vec<_>>()
         .into_iter()
         .map(|entry| CommandHint {
+            insert: None,
             name: entry.name,
             description: entry.description,
         })
@@ -3359,6 +3360,7 @@ fn builtin_commands(lang: crate::i18n::Language) -> Vec<CommandHint> {
 /// because no other front-end offers them.
 fn terminal_only_commands(lang: crate::i18n::Language) -> Vec<CommandHint> {
     let hint = |name: &str, description: &str| CommandHint {
+        insert: None,
         name: name.to_string(),
         description: {
             let text = crate::i18n::t(lang, &format!("terminal.command.{name}"));
@@ -3740,6 +3742,7 @@ fn argument_suggestions(
             .iter()
             .filter(|provider| provider.name.starts_with(&prefix))
             .map(|provider| CommandHint {
+                insert: None,
                 name: provider.name.to_string(),
                 description: provider.label.to_string(),
             })
@@ -3759,6 +3762,7 @@ fn argument_suggestions(
     node.iter()
         .filter(|spec| spec.value.starts_with(&prefix))
         .map(|spec| CommandHint {
+            insert: None,
             name: spec.value.to_string(),
             description: crate::i18n::t(lang, spec.description).to_string(),
         })
@@ -3803,6 +3807,7 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
             crate::at::suggestions(paths, Some(&token), crate::at::MAX_AT_SUGGESTIONS)
                 .into_iter()
                 .map(|row| CommandHint {
+                    insert: Some(row.insert),
                     name: row.label,
                     description: String::new(),
                 })
@@ -3823,6 +3828,7 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
     let mut hints = builtin_commands(app.lang);
     for command in &config.ecosystem.commands {
         hints.push(CommandHint {
+            insert: None,
             name: command.name.clone(),
             description: command.description.clone().unwrap_or_default(),
         });
@@ -3840,6 +3846,7 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
             }
         }
         hints.push(CommandHint {
+            insert: None,
             name: template.name.clone(),
             description,
         });
@@ -3855,6 +3862,7 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
             continue;
         }
         hints.push(CommandHint {
+            insert: None,
             name: skill.name.clone(),
             description: skill.description.clone().unwrap_or_default(),
         });
@@ -3873,13 +3881,24 @@ fn row_matches(name: &str, query: &str) -> bool {
 
 /// Applies the selected command or file suggestion to the input.
 fn complete_suggestion(app: &mut App) -> bool {
-    let Some(name) = app
-        .suggestions
-        .get(app.suggestion_index)
-        .map(|hint| hint.name.clone())
-    else {
+    let Some(hint) = app.suggestions.get(app.suggestion_index).cloned() else {
         return false;
     };
+    if let Some(completed) = hint.insert {
+        let Some(token) = crate::at::token(&app.input, app.input_cursor) else {
+            return false;
+        };
+        let replace_end = if app.input[token.end..].starts_with(' ') {
+            token.end + 1
+        } else {
+            token.end
+        };
+        app.input
+            .replace_range(token.start..replace_end, &completed);
+        app.input_cursor = token.start + completed.len();
+        return true;
+    }
+    let name = hint.name;
     if app.input.starts_with('/') {
         if app.input[..app.input_cursor].contains(char::is_whitespace) {
             let (start, end) = slash_arg_token_bounds(&app.input, app.input_cursor);
@@ -3906,23 +3925,6 @@ fn complete_suggestion(app: &mut App) -> bool {
         }
         app.input.replace_range(..end, &completed);
         app.input_cursor = completed.len();
-    } else if let Some(token) = crate::at::token(&app.input, app.input_cursor) {
-        // A folder keeps its token open so the query goes on narrowing inside
-        // it, the way the desktop app and the extension complete one; a file
-        // takes a space, so the next word can be typed after it.
-        let completed = if name.ends_with('/') {
-            format!("@{name}")
-        } else {
-            format!("@{name} ")
-        };
-        let replace_end = if app.input[token.end..].starts_with(' ') {
-            token.end + 1
-        } else {
-            token.end
-        };
-        app.input
-            .replace_range(token.start..replace_end, &completed);
-        app.input_cursor = token.start + completed.len();
     } else {
         return false;
     }
@@ -7484,6 +7486,37 @@ mod tests {
     }
 
     #[test]
+    fn terminal_completion_keeps_spaced_folder_and_file_insertions() {
+        let config = Config::default();
+        for prefix in ["review ", "/audit "] {
+            let mut app = test_app();
+            app.workspace_paths = Some(vec![
+                "reviewed copy/".into(),
+                "reviewed copy/first entity.xlsx".into(),
+            ]);
+            app.set_input(format!("{prefix}@reviewed"));
+            app.input_cursor = prefix.len() + "@reviewed".len();
+            refresh_suggestions(&mut app, &config);
+            assert_eq!(app.suggestions[0].name, "reviewed copy/");
+            assert_eq!(
+                app.suggestions[0].insert.as_deref(),
+                Some("@\"reviewed copy/")
+            );
+            assert!(complete_suggestion(&mut app));
+            assert_eq!(app.input, format!("{prefix}@\"reviewed copy/"));
+            refresh_suggestions(&mut app, &config);
+            assert_eq!(app.suggestions.len(), 1);
+            assert_eq!(app.suggestions[0].name, "reviewed copy/first entity.xlsx");
+            assert!(complete_suggestion(&mut app));
+            assert_eq!(
+                app.input,
+                format!("{prefix}@\"reviewed copy/first entity.xlsx\" ")
+            );
+            assert!(crate::at::token(&app.input, app.input_cursor).is_none());
+        }
+    }
+
+    #[test]
     fn suggestions_show_project_files_for_at_path() {
         let dir =
             std::env::temp_dir().join(format!("oxide_file_suggestions_{}", std::process::id()));
@@ -7806,10 +7839,12 @@ mod tests {
         app.set_input("/s".to_string());
         app.suggestions = vec![
             CommandHint {
+                insert: None,
                 name: "session".to_string(),
                 description: "show session info".to_string(),
             },
             CommandHint {
+                insert: None,
                 name: "share".to_string(),
                 description: "share this session".to_string(),
             },

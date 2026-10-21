@@ -1822,13 +1822,12 @@ export class ChatController {
       read: (absolute) => readTextFile(absolute),
       label: (absolute) => relativePath(cwd, absolute),
       // The bytes decide, the same way they do for the CLI that is handed the
-      // path: a file whose head holds a NUL is not text either, so it travels
-      // as an attachment and the CLI reports what it could not attach.
+      // path. Other binary files keep their references for tools to read.
       media: (absolute) => {
         const head = readFileHead(absolute);
         if (!head) return null;
         if (sniffMediaMime(head)) return "media";
-        return head.includes(0) ? "media" : "text";
+        return head.includes(0) ? "binary" : "text";
       },
     });
 
@@ -1843,7 +1842,7 @@ export class ChatController {
     // with `@path`, is not sent twice.
     const tracked = this.autoBlock();
     const carried = new Set([...blocks, ...expanded.blocks].map((block) => block.path));
-    const active = tracked && !carried.has(tracked.path) ? tracked : null;
+    const active = tracked && !message.trimStart().startsWith("/") && !carried.has(tracked.path) ? tracked : null;
     const carriedBlocks = active ? [active, ...blocks] : blocks;
     // A context chip is text by construction — a file the CLI would take as
     // media becomes an attachment chip instead — so every block goes into the
