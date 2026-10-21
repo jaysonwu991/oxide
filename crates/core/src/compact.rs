@@ -88,6 +88,8 @@ impl CompactionConfig {
 /// Token usage that produced a summary, stored so session totals include it.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct UsageRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::llm::ContextUsage>,
     pub input: u64,
     pub output: u64,
     #[serde(default)]
@@ -101,6 +103,7 @@ pub struct UsageRecord {
 impl From<Usage> for UsageRecord {
     fn from(usage: Usage) -> Self {
         Self {
+            context: Some(usage.into()),
             input: usage.input,
             output: usage.output,
             cache_read: usage.cache_read,

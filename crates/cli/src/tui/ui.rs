@@ -5540,6 +5540,18 @@ mod tests {
             &mut expanded,
         );
         assert!(panel_text(&expanded).contains("RequestsDependencyWarning"));
+        let logged_error = output.replace("  warnings.warn(", "ERROR:root:submission failed");
+        let mut failed = Vec::new();
+        render_item(
+            &ChatItem::ToolProgress {
+                name: "bash".into(),
+                output: logged_error,
+            },
+            100,
+            false,
+            &mut failed,
+        );
+        assert!(panel_text(&failed).contains("ERROR:root:submission failed"));
     }
 
     #[test]

@@ -270,6 +270,9 @@ const state = {
   supportsReasoning: null,
   reasoningIdentity: "",
   contextWindow: 0,
+  catalogWindow: 0,
+  currentProvider: "",
+  contextCorrection: null,
   // Whether the credential is a plan rather than a metered key, which the usage
   // line marks ` (sub)` the way the terminal footer does.
   subscription: false,
@@ -706,11 +709,12 @@ function addTotals(spent, event) {
   const cacheRead = Number(usage.cacheRead) || 0;
   const cacheWrite = Number(usage.cacheWrite) || 0;
   const cost = Number(usage.cost) || 0;
-  const prompt = input + cacheRead + cacheWrite;
+  const billedPrompt = input + cacheRead + cacheWrite;
+  const prompt = typeof usage.contextTokens === "number" ? usage.contextTokens : billedPrompt;
   const before = spent || {};
   const cacheHitRate =
-    cacheRead + cacheWrite > 0 && prompt > 0
-      ? (cacheRead / prompt) * 100
+    cacheRead + cacheWrite > 0 && billedPrompt > 0
+      ? (cacheRead / billedPrompt) * 100
       : before.cacheHitRate ?? null;
   return {
     input: (before.input || 0) + input,
@@ -799,7 +803,7 @@ function captureChatTab() {
     project: state.project, projectName: state.projectName, session: state.session, trust: state.trust,
     worktree: state.worktree, worktrees: state.worktrees, agent: state.agent,
     changes: state.changes, repositoryChanges: state.repositoryChanges,
-    usage: state.usage, contextWindow: state.contextWindow,
+    usage: state.usage, contextWindow: state.contextWindow, contextCorrection: state.contextCorrection,
     draft: el("prompt").value, attachments: [...state.attachments],
     selectionStart: el("prompt").selectionStart, selectionEnd: el("prompt").selectionEnd,
     inputScrollTop: el("prompt").scrollTop, undo: el("prompt").captureHistory?.(),
@@ -885,7 +889,7 @@ async function activateChatTab(id) {
     activeTabId = id;
     const saved = tab.snapshot;
     if (saved) {
-      for (const key of ["project", "projectName", "session", "trust", "worktree", "worktrees", "agent", "changes", "repositoryChanges", "contextWindow"]) state[key] = saved[key];
+      for (const key of ["project", "projectName", "session", "trust", "worktree", "worktrees", "agent", "changes", "repositoryChanges", "contextWindow", "contextCorrection"]) state[key] = saved[key];
       el("transcript").replaceChildren(...saved.nodes);
       const ownsParked = tab.session != null
         ? state.parked?.session === tab.session
@@ -1784,6 +1788,8 @@ async function selectProject(project) {
   // the one arriving is not known until its own facts do: left in place it would
   // label this folder's thread with another folder's window.
   state.contextWindow = 0;
+  state.catalogWindow = 0;
+  state.contextCorrection = null;
   if (wasOpen) clearAttachments();
   el("projects-modal").hidden = true;
   el("trust-modal").hidden = true;
@@ -1798,6 +1804,19 @@ async function selectProject(project) {
   // arrives.
   loadGit();
   await Promise.all([loadInfo(), loadSessions(), loadTheme(), loadWorktrees()]);
+}
+
+function correctionWindow(correction = state.contextCorrection) {
+  return correction && correction.project === state.project && correction.session === state.session &&
+    correction.provider === state.currentProvider && correction.model === state.currentModel
+    ? correction.tokens : null;
+}
+
+function applyContextInfo(info) {
+  state.currentProvider = info.provider || "";
+  state.currentModel = info.model || "";
+  state.catalogWindow = info.contextWindow || 0;
+  state.contextWindow = correctionWindow() ?? state.catalogWindow;
 }
 
 async function loadInfo() {
@@ -1821,7 +1840,7 @@ async function loadInfo() {
       : Array.isArray(info.reasoningLevels)
         ? ["auto", ...info.reasoningLevels]
         : null;
-    state.contextWindow = info.contextWindow || 0;
+    applyContextInfo(info);
     // A plan rather than a metered key: the spend is what the plan would have
     // billed, and the usage line says so.
     state.subscription = Boolean(info.subscription);
@@ -1858,7 +1877,7 @@ async function refreshContextWindow() {
   try {
     const info = await invoke("project_info", { project });
     if (project !== state.project || !info) return;
-    state.contextWindow = info.contextWindow || 0;
+    applyContextInfo(info);
     renderProjectMeta(info);
     paintUsage();
   } catch {
@@ -1872,6 +1891,7 @@ async function refreshContextWindow() {
 /// missing key, project resources left off — is written beside the title.
 function renderProjectMeta(info) {
   state.currentModel = info.model || "";
+  state.currentProvider = info.provider || "";
   const window = state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "";
   labelControl("model", t("ui.model", "model: {value0}{value1}", { value0: info.model, value1: window }), t("ui.switchModel", "Switch model"));
   el("model-value").textContent = info.model;
@@ -3297,6 +3317,8 @@ function parkRun() {
     // The footer describes the thread being read, so the run's totals wait here
     // while the reader is away.
     usage: state.usage,
+    contextWindow: state.contextWindow,
+    contextCorrection: state.contextCorrection,
     title: state.runTitle,
     // And the folder it belongs to travels with it: the turn may end while the
     // reader is in another project, and the strip still opens this thread's own
@@ -3319,6 +3341,8 @@ function restoreParked(session) {
   const transcript = el("transcript");
   transcript.replaceChildren(...parked.node.children);
   scrollDown(transcript, true);
+  state.contextCorrection = parked.contextCorrection || null;
+  state.contextWindow = correctionWindow() ?? state.catalogWindow;
   setUsage(parked.usage || {});
   return true;
 }
@@ -4966,11 +4990,15 @@ function handleEvent(event) {
       setStatus(t("ui.retrying", "Retrying ({value0}/{value1})…", { value0: event.attempt, value1: event.maxAttempts }));
       break;
     case "context_window": {
-      if (!(event.tokens > 0)) break;
+      if (!(event.tokens > 0) || !event.provider || !event.model) break;
+      const correction = { tokens: event.tokens, provider: event.provider, model: event.model,
+        project: viewingRun() ? runFolder() : state.parked?.project, session: state.runSession ?? state.session };
       if (viewingRun()) {
-        state.contextWindow = event.tokens;
+        state.contextCorrection = correction;
+        state.contextWindow = correctionWindow() ?? state.catalogWindow;
         paintComposerFacts();
       } else if (state.parked?.session === state.runSession) {
+        state.parked.contextCorrection = correction;
         state.parked.contextWindow = event.tokens;
       }
       break;

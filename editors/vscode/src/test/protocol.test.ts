@@ -402,15 +402,25 @@ describe("Transcript", () => {
     assert.equal(transcript.usage.contextTokens, 20);
   });
 
-  it("keeps the backend's corrected window with its own transcript", () => {
-    const transcript = new Transcript();
-    assert.equal(transcript.contextWindow, null);
-    const messages = transcript.apply({ type: "context_window", tokens: 200_000 });
-    assert.equal(transcript.contextWindow, 200_000);
-    assert.equal(messages[0].k, "usage");
-    transcript.apply({ type: "context_window", tokens: 0 });
-    assert.equal(transcript.contextWindow, 200_000);
-    assert.equal(transcript.usage.input, 0, "a window correction never bills usage");
+  it("validates parked transcript corrections against their original model", () => {
+    const parked = new Transcript();
+    parked.apply({ type: "context_window", tokens: 200_000, provider: "gateway", model: "A" });
+    assert.equal(parked.correctedContextWindow("gateway", "A"), 200_000);
+    const visible = new Transcript();
+    visible.apply({ type: "context_window", tokens: 128_000, provider: "gateway", model: "B" });
+    assert.equal(parked.correctedContextWindow("gateway", "B"), null);
+    assert.equal(parked.correctedContextWindow("other-gateway", "A"), null);
+    assert.equal(parked.correctedContextWindow("gateway", "A"), 200_000);
+    parked.apply({ type: "context_window", tokens: 0, provider: "gateway", model: "A" });
+    assert.equal(parked.correctedContextWindow("gateway", "A"), 200_000);
+    assert.equal(parked.usage.input, 0);
+  });
+
+  it("keeps merged billing out of the latest request's context reading", () => {
+    const transcript=new Transcript();
+    transcript.apply({type:"usage",usage:{input:221000,output:300,contextTokens:111000}});
+    assert.equal(transcript.usage.input,221000);
+    assert.equal(transcript.usage.contextTokens,111000);
   });
 
   it("reports retries as a status change", () => {

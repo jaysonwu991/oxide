@@ -1085,7 +1085,7 @@ vm.runInThisContext(
     " loadMcps, openSessions," +
     " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
-    " updateChips, openReasoning, loadInfo," +
+    " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkRun, restoreParked, captureChatTab," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
@@ -6011,25 +6011,75 @@ check(
 // The context reading: the arc is filled to the percent the totals are measured
 // from — the newest request's own prompt over the window in force — the percent
 // is spelled out beside it, and the tokens behind both are in its tooltip.
-const beforeWindowCorrection = { session: app.state.session, runSession: app.state.runSession, parked: app.state.parked };
+const beforeWindowCorrection = Object.fromEntries(["session", "runSession", "runProject", "parked", "contextWindow", "contextCorrection", "catalogWindow", "currentProvider", "currentModel", "changes"].map(key => [key, app.state[key]]));
+const beforeWindowInfo = projectInfo;
+projectInfo = { ...projectFacts(1050000), provider: "gateway", model: "A" };
 app.state.session = app.state.runSession = "backend-window-test";
-app.state.contextWindow = 1050000;
+app.state.runProject = app.state.project;
+app.state.parked = null;
+app.state.contextCorrection = null;
+app.applyContextInfo(projectInfo);
 app.setUsage({ input: 190000, output: 0, cost: 0, prompt: 190000 });
-app.handleEvent({ type: "context_window", tokens: 200000 });
+app.handleEvent({ type: "context_window", tokens: 200000, provider: "gateway", model: "A" });
 check(
   "applied the backend's smaller window to the active context gauge",
   app.state.contextWindow === 200000 && el("context-percent").textContent === "95%" && el("context-ring").dataset.level === "high",
   `${app.state.contextWindow} / ${el("context-percent").textContent}`,
 );
+app.parkRun();
+check("parked the thread's corrected context window with its transcript",
+  app.state.parked.contextWindow === 200000 && app.state.parked.contextCorrection.model === "A",
+  JSON.stringify(app.state.parked.contextCorrection));
 app.state.session = "another-thread";
-app.state.contextWindow = 128000;
-app.state.parked = { session: "backend-window-test", contextWindow: 1050000, node: el("transcript") };
-app.handleEvent({ type: "context_window", tokens: 200000 });
+app.state.contextCorrection = null;
+app.applyContextInfo({ ...projectInfo, contextWindow: 128000 });
+app.handleEvent({ type: "context_window", tokens: 200000, provider: "gateway", model: "A" });
 check(
   "kept a parked run's corrected window off the thread being read",
   app.state.contextWindow === 128000 && app.state.parked.contextWindow === 200000,
   `${app.state.contextWindow} / ${app.state.parked.contextWindow}`,
 );
+app.state.session = "backend-window-test";
+app.restoreParked(app.state.session);
+await app.loadInfo();
+await app.refreshContextWindow();
+check("preserved the restored correction through full and background info refreshes",
+  app.state.contextWindow === 200000 && el("context-percent").textContent === "95%",
+  `${app.state.contextWindow} / ${el("context-percent").textContent}`);
+const correctedTab = app.activeChatTab();
+const beforeCorrectedTab = { snapshot: correctedTab.snapshot, title: correctedTab.title, session: correctedTab.session };
+app.captureChatTab();
+await app.newChatTab();
+const otherWindowTab = app.activeChatTab();
+await app.activateChatTab(correctedTab.id);
+check("kept a corrected window through real tab navigation and its info reload",
+  app.state.contextWindow === 200000 && el("context-percent").textContent === "95%",
+  `${app.state.contextWindow} / ${el("context-percent").textContent}`);
+await app.closeChatTab(otherWindowTab.id);
+app.parkRun();
+app.state.session = "model-change-test";
+projectInfo = { ...projectInfo, model: "B", contextWindow: 128000 };
+await app.loadInfo();
+app.state.session = "backend-window-test";
+app.restoreParked(app.state.session);
+await app.loadInfo();
+check("ignored a parked correction after the selected model changed",
+  app.state.contextWindow === 128000, String(app.state.contextWindow));
+projectInfo = { ...projectInfo, model: "A", provider: "other-gateway", contextWindow: 256000 };
+await app.loadInfo();
+check("ignored a correction from another provider even with the same model name",
+  app.state.contextWindow === 256000, String(app.state.contextWindow));
+projectInfo = { ...projectInfo, provider: "gateway", contextWindow: 1050000 };
+await app.loadInfo();
+check("reused the thread's correction when its originating model returned",
+  app.state.contextWindow === 200000, String(app.state.contextWindow));
+const billedBefore = app.state.usage;
+app.handleEvent({ type: "usage", usage: { input: 221000, output: 300, contextTokens: 111000 } });
+check("kept cumulative billing distinct from the live request's context reading",
+  app.state.usage.prompt === 111000 && app.state.usage.input === (billedBefore?.input || 0) + 221000,
+  JSON.stringify(app.state.usage));
+Object.assign(correctedTab, beforeCorrectedTab);
+projectInfo = beforeWindowInfo;
 Object.assign(app.state, beforeWindowCorrection);
 app.state.contextWindow = 128000;
 const ringFill = () => {

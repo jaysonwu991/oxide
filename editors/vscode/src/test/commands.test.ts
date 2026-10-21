@@ -121,7 +121,7 @@ describe("command contributions", () => {
       "and on every path that says the shared configuration moved",
     );
     assert.ok(
-      chat.includes("contextWindow: this.transcript.contextWindow ?? this.contextWindow ?? project?.contextWindow ?? 0"),
+      chat.includes('contextWindow: this.transcript.correctedContextWindow(project?.provider ?? "", project?.model ?? "") ?? this.contextWindow ?? project?.contextWindow ?? 0'),
       "the footer paints the CLI's answer, with the shared files' window behind it",
     );
   });

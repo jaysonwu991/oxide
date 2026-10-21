@@ -550,6 +550,7 @@ impl LlmClient {
                         }
                         return Err(NoAnswer::empty().into());
                     }
+                    turn.context_usage = (turn.usage.total() > 0).then(|| turn.usage.into());
                     add_usage(&mut turn.usage, discarded_usage);
                     turn.usage.cost = self.config.usage_cost(&turn.usage);
                     return Ok(turn);

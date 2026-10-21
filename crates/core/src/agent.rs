@@ -366,10 +366,13 @@ pub enum AgentEvent {
         cache_read: u64,
         cache_write: u64,
         cost: f64,
+        context_tokens: Option<u64>,
     },
     /// The backend reported a smaller context window than the model catalog.
     ContextWindow {
         tokens: u64,
+        provider: String,
+        model: String,
     },
     /// Older turns were replaced with a summary to free context.
     Compaction {
@@ -550,6 +553,7 @@ pub fn run_subagent(
                     cache_read,
                     cache_write,
                     cost,
+                    context_tokens,
                 } => {
                     let _ = tx.send(AgentEvent::Usage {
                         input,
@@ -557,6 +561,7 @@ pub fn run_subagent(
                         cache_read,
                         cache_write,
                         cost,
+                        context_tokens,
                     });
                 }
                 AgentEvent::ContextWindow { .. } => {}
@@ -648,17 +653,18 @@ async fn run_loop(
     if learned_limit.is_some() && depth == 0 {
         let _ = tx.send(AgentEvent::ContextWindow {
             tokens: context_window,
+            provider: config.provider.clone(),
+            model: config.model.clone(),
         });
     }
     let compaction_budget = config.compaction.resolve(&config.provider, &config.model);
-    let mut context_tokens = runtime
+    let (mut context_tokens, mut measured_at) = runtime
         .session
         .as_ref()
-        .map_or(0, |log| log.context_tokens());
-    let mut measured_at = messages
-        .iter()
-        .rposition(|message| message.role == "assistant")
-        .unwrap_or(0);
+        .and_then(|log| log.context_measurement())
+        .map_or((0, 0), |(usage, boundary)| {
+            (usage.prompt + usage.output, boundary)
+        });
     let mut overflow_error: Option<String> = None;
     let mut recovered_overflow = false;
     auto_load_mcp_for_user_text(&runtime, messages.iter().filter(|m| m.role == "user")).await;
@@ -796,6 +802,11 @@ async fn run_loop(
                                     let _ = tx.send(AgentEvent::Error(format!(
                                         "saving compaction: {error:#}"
                                     )));
+                                    if let Some((held, held_usage)) = held_summary.take() {
+                                        record_usage(&runtime.session, depth, &held, held_usage);
+                                        send_usage(&tx, held_usage);
+                                    }
+                                    send_usage(&tx, pending_title_usage.take());
                                     finish(&runtime, &tx, messages, depth);
                                     return;
                                 }
@@ -814,6 +825,9 @@ async fn run_loop(
                                     cache_read: usage.cache_read,
                                     cache_write: usage.cache_write,
                                     cost: usage.cost,
+                                    context_tokens: Some(
+                                        crate::compact::estimate_tokens(&messages) as u64,
+                                    ),
                                 });
                             }
                             // The held summary is deliberately not in the log,
@@ -839,6 +853,11 @@ async fn run_loop(
         // Recovery must shorten the request. If there was nothing to compact,
         // or summarization failed, retain the original provider failure.
         if let Some(error) = overflow_error.take() {
+            if let Some((held, held_usage)) = held_summary.take() {
+                record_usage(&runtime.session, depth, &held, held_usage);
+                send_usage(&tx, held_usage);
+            }
+            send_usage(&tx, pending_title_usage.take());
             let _ = tx.send(AgentEvent::Error(error));
             finish(&runtime, &tx, messages, depth);
             return;
@@ -977,6 +996,8 @@ async fn run_loop(
                                 learned_limit = Some(context_window);
                                 let _ = tx.send(AgentEvent::ContextWindow {
                                     tokens: context_window,
+                                    provider: config.provider.clone(),
+                                    model: config.model.clone(),
                                 });
                             }
                             overflow_error = Some(format!("{err:#}"));
@@ -1033,8 +1054,11 @@ async fn run_loop(
             return;
         }
 
-        let response_usage =
-            (turn.usage.total() > 0).then(|| crate::compact::UsageRecord::from(turn.usage));
+        let mut response_usage = (turn.usage.total() > 0).then(|| {
+            let mut usage = crate::compact::UsageRecord::from(turn.usage);
+            usage.context = turn.context_usage;
+            usage
+        });
 
         // A title is metadata, not an agent step. Consume it from the first
         // response before constructing the assistant message: no tool result is
@@ -1060,10 +1084,6 @@ async fn run_loop(
             .cloned()
             .collect();
         let has_answer = !turn.content.trim().is_empty();
-        if let Some(usage) = &response_usage {
-            context_tokens = usage.input + usage.cache_read + usage.cache_write + usage.output;
-            measured_at = messages.len();
-        }
 
         // Some providers insist on returning a tool call without the answer we
         // explicitly requested beside it. The title attempt is consumed and
@@ -1071,6 +1091,14 @@ async fn run_loop(
         // providers take the zero-extra-request path above; this fallback pays
         // another request only to avoid ending the user's turn with no answer.
         if first_title_attempt && tool_calls.is_empty() && !has_answer {
+            if let Some(context) = response_usage
+                .as_mut()
+                .and_then(|usage| usage.context.as_mut())
+            {
+                context.output = 0; // The metadata-only response is never appended to history.
+                context_tokens = context.prompt;
+                measured_at = messages.len();
+            }
             pending_title_usage = combine_usage(pending_title_usage, response_usage);
             let _ = tx.send(AgentEvent::ThoughtDone {
                 millis: started.elapsed().as_millis() as u64,
@@ -1097,6 +1125,7 @@ async fn run_loop(
             return;
         }
 
+        let response_context = response_usage.and_then(|usage| usage.context);
         let usage = combine_usage(pending_title_usage.take(), response_usage);
         let assistant = Message::assistant(turn.content, tool_calls.clone())
             .with_thinking(turn.thinking.clone());
@@ -1133,10 +1162,13 @@ async fn run_loop(
                 });
                 if let Some(reminder) = reminder {
                     let (held, held_usage) = match held_summary.take() {
-                        Some((prior, prior_usage)) if held_is_tail => (
-                            merge_summaries(prior, assistant),
-                            combine_usage(prior_usage, usage),
-                        ),
+                        Some((prior, prior_usage)) if held_is_tail => {
+                            messages.pop();
+                            (
+                                merge_summaries(prior, assistant),
+                                combine_usage(prior_usage, usage),
+                            )
+                        }
                         Some((prior, prior_usage)) => {
                             record_usage(&runtime.session, depth, &prior, prior_usage);
                             (assistant, usage)
@@ -1144,6 +1176,10 @@ async fn run_loop(
                         None => (assistant, usage),
                     };
                     messages.push(held.clone());
+                    if let Some(context) = response_context {
+                        context_tokens = context.prompt + context.output;
+                        measured_at = messages.len();
+                    }
                     held_summary = Some((held, held_usage));
                     held_is_tail = true;
                     verification_reminder = Some(reminder);
@@ -1188,6 +1224,10 @@ async fn run_loop(
             held_is_tail = false;
             record_usage(&runtime.session, depth, &assistant, usage);
             messages.push(assistant);
+            if let Some(context) = response_context {
+                context_tokens = context.prompt + context.output;
+                measured_at = messages.len();
+            }
             send_usage(&tx, usage);
             let _ = tx.send(AgentEvent::ThoughtDone {
                 millis: started.elapsed().as_millis() as u64,
@@ -1234,6 +1274,10 @@ async fn run_loop(
         held_is_tail = false;
         record_usage(&runtime.session, depth, &assistant, usage);
         messages.push(assistant);
+        if let Some(context) = response_context {
+            context_tokens = context.prompt + context.output;
+            measured_at = messages.len();
+        }
         send_usage(&tx, usage);
         let _ = tx.send(AgentEvent::ThoughtDone {
             millis: started.elapsed().as_millis() as u64,
@@ -2461,6 +2505,7 @@ fn send_usage(tx: &UnboundedSender<AgentEvent>, usage: Option<crate::compact::Us
             cache_read: usage.cache_read,
             cache_write: usage.cache_write,
             cost: usage.cost,
+            context_tokens: usage.context.map(|context| context.prompt),
         });
     }
 }
@@ -2511,6 +2556,7 @@ fn combine_usage(
             cache_read: first.cache_read + second.cache_read,
             cache_write: first.cache_write + second.cache_write,
             cost: first.cost + second.cost,
+            context: second.context.or(first.context),
         }),
         (Some(usage), None) | (None, Some(usage)) => Some(usage),
         (None, None) => None,
@@ -4033,6 +4079,182 @@ mod tests {
     }
 
     #[test]
+    fn merged_billing_keeps_the_latest_request_context_when_reopened() {
+        let first = crate::compact::UsageRecord::from(crate::llm::Usage {
+            input: 110_000,
+            output: 100,
+            ..Default::default()
+        });
+        let second = crate::compact::UsageRecord::from(crate::llm::Usage {
+            input: 111_000,
+            output: 200,
+            ..Default::default()
+        });
+        let merged = combine_usage(Some(first), Some(second)).unwrap();
+        assert_eq!(merged.input, 221_000);
+        assert_eq!(merged.context.unwrap().prompt, 111_000);
+        let dir = std::env::temp_dir().join(format!("oxide_merged_context_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let log = SessionLog::create_in(&dir, &dir).unwrap();
+        log.append(&Message::user("request")).unwrap();
+        log.append_with_usage(
+            &Message::assistant("held answer and verification", vec![]),
+            Some(merged),
+        )
+        .unwrap();
+        log.append(&Message::user("follow-up")).unwrap();
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.usage_totals().input, 221_000);
+        assert_eq!(reopened.context_tokens(), 111_000);
+        assert_eq!(
+            reopened.context_measurement(),
+            Some((
+                crate::llm::ContextUsage {
+                    prompt: 111_000,
+                    output: 200
+                },
+                2
+            ))
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn response_output_is_measured_once_for_tools_held_answers_and_titles() {
+        for mode in ["tool", "held", "title"] {
+            let payload = if mode == "title" {
+                json!({"tool_calls": [{"index":0,"id":"title","function":{"name":"session_title","arguments":"{\"title\":\"Existing work\"}"}}]})
+            } else if mode == "tool" {
+                json!({"content":"response ".repeat(250),"tool_calls":[{"index":0,"id":"list","function":{"name":"ls","arguments":"{\"path\":\".\"}"}}]})
+            } else {
+                json!({"content":format!("{}\n\nLet me create a summary:", "response ".repeat(250))})
+            };
+            let first = openai_sse(&[
+                json!({"choices":[{"delta":payload,"finish_reason":null}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1400,"completion_tokens":if mode == "title" {600} else {400}}}),
+            ]);
+            let (addr, server) = sse_server(vec![first, answer_body("Completed")]).await;
+            let dir = std::env::temp_dir().join(format!(
+                "oxide_context_boundary_{}_{}",
+                std::process::id(),
+                mode
+            ));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(dir.join("project")).unwrap();
+            let log = Arc::new(SessionLog::create_in(&dir.join("logs"), &dir).unwrap());
+            if mode != "title" {
+                log.set_name("Existing work").unwrap();
+            }
+            for message in [
+                Message::user("old request"),
+                Message::assistant("old answer", vec![]),
+                Message::user("continue"),
+            ] {
+                log.append(&message).unwrap();
+            }
+            let mut runtime = test_runtime().await;
+            runtime.session = Some(Arc::clone(&log));
+            let config = Config {
+                provider: "deepseek".into(),
+                model: "deepseek-flash".into(),
+                api_key: "sk-test".into(),
+                base_url: format!("http://{addr}"),
+                max_tokens: 1000,
+                context_window: 2000,
+                compaction: crate::compact::CompactionConfig {
+                    reserve_tokens: 100,
+                    keep_recent_tokens: 1,
+                    ..Default::default()
+                },
+                ..Config::default()
+            };
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            run(
+                config,
+                dir.join("project"),
+                log.messages().unwrap(),
+                tx,
+                runtime,
+            )
+            .await;
+            assert_eq!(
+                server.await.unwrap().len(),
+                2,
+                "{mode} must not add a compaction request"
+            );
+            while let Ok(event) = rx.try_recv() {
+                assert!(
+                    !matches!(event, AgentEvent::Compaction { .. } | AgentEvent::Error(_)),
+                    "{mode}: {event:?}"
+                );
+            }
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_overflow_recovery_preserves_the_held_answer_and_usage() {
+        for summarizer_fails in [false, true] {
+            let first = openai_sse(&[
+                json!({"choices":[{"delta":{"content":"Let me create the summary:"},"finish_reason":"stop"}],"usage":{"prompt_tokens":110000,"completion_tokens":20}}),
+            ]);
+            let mut responses = vec![
+                (200, first, false),
+                (
+                    400,
+                    "prompt is too long: 204873 tokens > 200000 maximum".into(),
+                    false,
+                ),
+            ];
+            if summarizer_fails {
+                responses.push((400, "summarizer rejected".into(), false));
+            }
+            let (addr, server) = scripted_http_server(responses).await;
+            let dir = std::env::temp_dir().join(format!(
+                "oxide_failed_compaction_{}_{}",
+                std::process::id(),
+                summarizer_fails
+            ));
+            std::fs::remove_dir_all(&dir).ok();
+            let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+            log.set_name("Existing work").unwrap();
+            log.append(&Message::user("Summarize this work")).unwrap();
+            let mut runtime = test_runtime().await;
+            runtime.session = Some(Arc::clone(&log));
+            let config = Config {
+                provider: "deepseek".into(),
+                model: "deepseek-flash".into(),
+                base_url: format!("http://{addr}"),
+                api_key: "sk-test".into(),
+                context_window: 1050000,
+                compaction: crate::compact::CompactionConfig {
+                    keep_recent_tokens: if summarizer_fails { 1 } else { 20000 },
+                    ..Default::default()
+                },
+                ..Config::default()
+            };
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            run(config, dir.clone(), log.messages().unwrap(), tx, runtime).await;
+            assert_eq!(
+                server.await.unwrap().len(),
+                if summarizer_fails { 3 } else { 2 }
+            );
+            assert!(log.messages().unwrap().iter().any(|message| message
+                .display()
+                .is_some_and(|text| text.contains("Let me create the summary:"))));
+            assert_eq!(log.usage_totals().input, 110000);
+            let mut billed = 0;
+            while let Ok(event) = rx.try_recv() {
+                if let AgentEvent::Usage { input, .. } = event {
+                    billed += input;
+                }
+            }
+            assert_eq!(billed, 110000);
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
     fn unfinished_announcements_are_distinct_from_summaries_and_questions() {
         for text in [
             "Let me create a summary:",
@@ -4227,7 +4449,7 @@ mod tests {
             while let Ok(event) = rx.try_recv() {
                 match event {
                     AgentEvent::Compaction { .. } => compacted += 1,
-                    AgentEvent::ContextWindow { tokens } => {
+                    AgentEvent::ContextWindow { tokens, .. } => {
                         assert_eq!(tokens, 200_000);
                         corrected = true;
                     }

@@ -292,6 +292,8 @@ interface RunState {
   stderr: string[];
   context: Chip[];
   attachments: Attachment[];
+  provider?: string;
+  model?: string;
 }
 
 /// One message assembled from the composer, ready to run: the prompt text, the
@@ -713,7 +715,6 @@ export class ChatController {
     const identity = `${folder.uri.fsPath}\n${this.project.model}\n${this.project.provider}`;
     const moved = identity !== this.reasoningIdentity;
     if (moved) {
-      this.transcript.contextWindow = null;
       this.reasoningIdentity = identity;
       this.reasoningLevels = [];
       this.supportsReasoning = undefined;
@@ -751,7 +752,7 @@ export class ChatController {
       language: this.languageInfo,
       model: project?.model || "",
       provider: project?.provider ?? "",
-      contextWindow: this.transcript.contextWindow ?? this.contextWindow ?? project?.contextWindow ?? 0,
+      contextWindow: this.transcript.correctedContextWindow(project?.provider ?? "", project?.model ?? "") ?? this.contextWindow ?? project?.contextWindow ?? 0,
       reasoning: this.currentReasoning(),
       reasoningLevels: this.reasoningLevels.length ? this.reasoningLevels : undefined,
       supportsReasoning: this.supportsReasoning,
@@ -1911,6 +1912,8 @@ export class ChatController {
     target.status = "Thinking…";
     this.runTranscript = target;
     this.run = {
+      provider: this.project?.provider,
+      model: this.project?.model,
       cancelled: false,
       sawEvent: false,
       stderr: [],
@@ -2032,6 +2035,12 @@ export class ChatController {
       this.runTitle = title;
       if (run === this.transcript) this.sessionTitle = title;
       void this.syncSessions();
+    }
+    if (event.type === "context_window") {
+      event = { ...event,
+        provider: event.provider ?? this.run.provider,
+        model: event.model ?? this.run.model,
+      };
     }
     const messages = run.apply(event);
     if (run === this.transcript) this.broadcastItem(messages);

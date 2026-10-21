@@ -601,7 +601,12 @@ export function formatTokens(count: number): string {
 export class Transcript {
   readonly items: Item[] = [];
   usage: UsageTotals = emptyUsage();
-  contextWindow: number | null = null;
+  contextWindow: { tokens: number; provider: string; model: string } | null = null;
+
+  correctedContextWindow(provider: string, model: string): number | null {
+    const correction = this.contextWindow;
+    return correction?.provider === provider && correction.model === model ? correction.tokens : null;
+  }
   status = "Idle";
   busy = false;
   sessionId: string | null = null;
@@ -795,8 +800,10 @@ export class Transcript {
         return this.finishTool(str(event.toolName), str(event.result), event.isError === true);
       case "context_window": {
         const tokens = num(event.tokens);
-        if (tokens <= 0) return [];
-        this.contextWindow = tokens;
+        const provider = str(event.provider);
+        const model = str(event.model);
+        if (tokens <= 0 || !provider || !model) return [];
+        this.contextWindow = { tokens, provider, model };
         return [{ k: "usage", usage: this.usage }];
       }
       case "usage": {
@@ -821,7 +828,7 @@ export class Transcript {
           cacheRead: this.usage.cacheRead + cacheRead,
           cacheWrite: this.usage.cacheWrite + cacheWrite,
           cost: this.usage.cost + num(usage.cost),
-          contextTokens: prompt,
+          contextTokens: typeof usage.contextTokens === "number" ? usage.contextTokens : prompt,
           cacheHit,
         };
         return [{ k: "usage", usage: this.usage }];

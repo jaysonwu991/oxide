@@ -3835,10 +3835,9 @@ pub fn bash_warning_preview(output: &str, limit: usize) -> Option<(String, usize
     let errors = diagnostics.iter().any(|line| {
         line.split_whitespace().any(|word| {
             let word = word.to_ascii_lowercase();
-            word.ends_with("error:")
-                || word.ends_with("exception:")
-                || word == "fatal:"
-                || word == "traceback"
+            word.split(':').next().is_some_and(|level| {
+                level.ends_with("error") || level.ends_with("exception") || level == "fatal"
+            }) || word == "traceback"
         })
     });
     if !warnings || errors {
@@ -4390,6 +4389,11 @@ mod tests {
         assert!(bash_warning_preview(&output.replace("[exit: 0]", "[exit: 1]"), 3).is_none());
         assert!(bash_warning_preview(
             &output.replace("  warnings.warn(", "Traceback (most recent call last):"),
+            3
+        )
+        .is_none());
+        assert!(bash_warning_preview(
+            &output.replace("  warnings.warn(", "ERROR:root:submission failed"),
             3
         )
         .is_none());

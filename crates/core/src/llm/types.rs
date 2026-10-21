@@ -334,12 +334,29 @@ impl Usage {
     }
 }
 
+/// One request's context measurement, independent of cumulative billing.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextUsage {
+    pub prompt: u64,
+    pub output: u64,
+}
+
+impl From<Usage> for ContextUsage {
+    fn from(usage: Usage) -> Self {
+        Self {
+            prompt: usage.input + usage.cache_read + usage.cache_write,
+            output: usage.output,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct AssistantTurn {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
     pub thinking: Vec<Value>,
     pub usage: Usage,
+    pub context_usage: Option<ContextUsage>,
     /// Why the provider stopped the turn (`stop`, `length`, `tool_calls`, or
     /// Anthropic's `max_tokens`/`end_turn`). A reasoning model can consume the
     /// whole output budget on hidden reasoning and stop with `length` before
