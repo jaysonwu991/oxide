@@ -5746,6 +5746,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
                 }
             }
         }
+        AgentEvent::ContextWindow { tokens } => app.context_limit = tokens,
         AgentEvent::Compaction {
             summary,
             summarized,
@@ -6155,6 +6156,14 @@ mod tests {
 
         answered.abort();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_backend_context_window_updates_the_terminal_gauge() {
+        let mut app = test_app();
+        app.context_limit = 1_050_000;
+        handle_agent_event(AgentEvent::ContextWindow { tokens: 200_000 }, &mut app);
+        assert_eq!(app.context_limit, 200_000);
     }
 
     #[test]

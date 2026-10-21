@@ -2428,7 +2428,8 @@ button.dialog-row:focus-visible {
   line-height: 1.4;
 }
 
-.tool.expanded .tbody {
+.tool.expanded .tbody,
+.tool.error .tbody {
   max-height: 42vh;
 }
 

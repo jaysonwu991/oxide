@@ -402,7 +402,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div id="model-settings" class="model-settings" aria-label="Model and reasoning" data-i18n-aria="surface.modelAndReasoning"></div>
       <div class="context-status">
       <span id="usage" class="usage" hidden><span id="usage-text" role="note" tabindex="0"></span></span>
-      <span id="gauge" class="gauge" role="img" tabindex="0" hidden><svg viewBox="0 0 26 26" width="26" height="26" aria-hidden="true"><circle cx="13" cy="13" r="12.25" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"/><circle id="gauge-fill" cx="13" cy="13" r="12.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" transform="rotate(-90 13 13)" stroke-dasharray="0 76.97"/></svg></span>
+      <span id="gauge" class="gauge" role="img" tabindex="0" hidden><svg viewBox="0 0 26 26" width="26" height="26" aria-hidden="true"><circle cx="13" cy="13" r="12.25" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"/><circle id="gauge-fill" cx="13" cy="13" r="12.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" transform="rotate(-90 13 13)" stroke-dasharray="0 76.97"/></svg></span><span id="context-percent" hidden></span>
       </div>
       <button id="stop" class="icon danger run-control composer-action" hidden title="Stop the running turn (Esc)" aria-label="Stop" data-i18n-title="composer.stop" data-i18n-aria="composer.stop"><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
       <button id="send" class="icon primary composer-action" disabled title="Send (Enter)" aria-label="Send" data-i18n-title="composer.sendHint" data-i18n-aria="composer.send">${ICONS.send}</button>

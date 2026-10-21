@@ -1173,6 +1173,15 @@ function installMarkdownInput(editor, render) {
     }
     if (entry.diffEl) entry.diffEl.hidden = !entry.expanded;
     paintLiveChanges();
+    if (item.isError) {
+      entry.inline = false;
+      entry.folded = false;
+      entry.pre.hidden = false;
+      setOutput(entry.pre, item.output, false);
+      entry.hint.hidden = true;
+      setFold(entry, false);
+      return;
+    }
     if (quietSearch) {
       entry.inline = false;
       entry.folded = false;
@@ -2154,6 +2163,8 @@ function installMarkdownInput(editor, render) {
     usageText.setAttribute("aria-label", footer.usage ? t("surface.UsageValue", "Usage: {value}", { value: footer.usage }) : t("ui.noUsageReported", "No usage reported"));
     usageRow.title = footer.usage || "";
     usageRow.hidden = true;
+    $("context-percent").textContent = percent === null ? "" : `${percent}%`;
+    $("context-percent").hidden = percent === null;
     gauge.hidden = !footer.usage && percent === null;
     gauge.dataset.level = footer.level || "ok";
     gauge.title = footer.usage || (percent === null ? t("ui.noUsageReported", "No usage reported") : t("ui.ofTheContextWindowUsed", "{value0}% of the context window used", { value0: percent }));

@@ -402,6 +402,17 @@ describe("Transcript", () => {
     assert.equal(transcript.usage.contextTokens, 20);
   });
 
+  it("keeps the backend's corrected window with its own transcript", () => {
+    const transcript = new Transcript();
+    assert.equal(transcript.contextWindow, null);
+    const messages = transcript.apply({ type: "context_window", tokens: 200_000 });
+    assert.equal(transcript.contextWindow, 200_000);
+    assert.equal(messages[0].k, "usage");
+    transcript.apply({ type: "context_window", tokens: 0 });
+    assert.equal(transcript.contextWindow, 200_000);
+    assert.equal(transcript.usage.input, 0, "a window correction never bills usage");
+  });
+
   it("reports retries as a status change", () => {
     const transcript = new Transcript();
     assert.deepEqual(transcript.apply({ type: "auto_retry_start", attempt: 2, maxAttempts: 5 }), []);

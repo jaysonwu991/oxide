@@ -4315,6 +4315,15 @@ check(
 // competing with it.
 const errorCard = app.startTool("bash", JSON.stringify({ command: "false" }));
 app.finishTool(errorCard, "boom\n", { isError: true });
+const editFailure = app.startTool("edit", JSON.stringify({ path: "SKILL.md" }));
+const fullFailure = `No changes were written to ${"long/path/".repeat(20)}SKILL.md.\n\nedits[5].oldText did not match anything.\n\nRead the current file and resend the entire batch.`;
+app.finishTool(editFailure, fullFailure, { isError: true });
+check(
+  "kept the complete failed-edit diagnostic accessible despite wrapped paths",
+  editFailure.pre.textContent === fullFailure && !editFailure.pre.hidden && editFailure.hint.hidden &&
+    /\.tool\.error pre \{ max-height: 460px; overflow: auto; \}/.test(sheet),
+  editFailure.pre.textContent,
+);
 const runningCard = app.startTool("bash", JSON.stringify({ command: "sleep 1" }));
 check(
   "kept a surface for the card being written and the one that failed",
@@ -5994,6 +6003,26 @@ check(
 // The context reading: the arc is filled to the percent the totals are measured
 // from — the newest request's own prompt over the window in force — the percent
 // is spelled out beside it, and the tokens behind both are in its tooltip.
+const beforeWindowCorrection = { session: app.state.session, runSession: app.state.runSession, parked: app.state.parked };
+app.state.session = app.state.runSession = "backend-window-test";
+app.state.contextWindow = 1050000;
+app.setUsage({ input: 190000, output: 0, cost: 0, prompt: 190000 });
+app.handleEvent({ type: "context_window", tokens: 200000 });
+check(
+  "applied the backend's smaller window to the active context gauge",
+  app.state.contextWindow === 200000 && el("context-percent").textContent === "95%" && el("context-ring").dataset.level === "high",
+  `${app.state.contextWindow} / ${el("context-percent").textContent}`,
+);
+app.state.session = "another-thread";
+app.state.contextWindow = 128000;
+app.state.parked = { session: "backend-window-test", contextWindow: 1050000, node: el("transcript") };
+app.handleEvent({ type: "context_window", tokens: 200000 });
+check(
+  "kept a parked run's corrected window off the thread being read",
+  app.state.contextWindow === 128000 && app.state.parked.contextWindow === 200000,
+  `${app.state.contextWindow} / ${app.state.parked.contextWindow}`,
+);
+Object.assign(app.state, beforeWindowCorrection);
 app.state.contextWindow = 128000;
 const ringFill = () => {
   const [filled, whole] = String(el("context-ring-fill").getAttribute("stroke-dasharray"))

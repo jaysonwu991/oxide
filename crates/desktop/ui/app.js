@@ -4103,6 +4103,7 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
     tool.block.appendChild(tool.diffEl);
   }
   tool.inline = Boolean(diff);
+  tool.isError = isError;
   paintTool(tool);
 }
 
@@ -4115,6 +4116,13 @@ function paintTool(tool) {
     return;
   }
   if (tool.diffEl) tool.diffEl.hidden = !tool.expanded;
+  if (tool.isError) {
+    tool.pre.hidden = false;
+    tool.pre.textContent = tool.full;
+    tool.hint.hidden = true;
+    markToolToggle(tool, false);
+    return;
+  }
   if (tool.expanded) {
     tool.pre.hidden = false;
     tool.pre.textContent = tool.full;
@@ -4164,7 +4172,7 @@ function markToolToggle(tool, expandable) {
 }
 
 function toggleTool(tool) {
-  if (!tool.done || tool.quiet) return;
+  if (!tool.done || tool.quiet || tool.isError) return;
   tool.expanded = !tool.expanded;
   paintTool(tool);
 }
@@ -4941,6 +4949,16 @@ function handleEvent(event) {
       discardAttempt();
       setStatus(t("ui.retrying", "Retrying ({value0}/{value1})…", { value0: event.attempt, value1: event.maxAttempts }));
       break;
+    case "context_window": {
+      if (!(event.tokens > 0)) break;
+      if (viewingRun()) {
+        state.contextWindow = event.tokens;
+        paintComposerFacts();
+      } else if (state.parked?.session === state.runSession) {
+        state.parked.contextWindow = event.tokens;
+      }
+      break;
+    }
     case "usage": {
       addUsage(event);
       break;

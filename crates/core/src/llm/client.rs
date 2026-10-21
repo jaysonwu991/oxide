@@ -1496,7 +1496,48 @@ fn add_usage(total: &mut Usage, usage: Usage) {
     total.reasoning += usage.reasoning;
 }
 
-/// Adds an actionable hint to any failed request that carried native media.
+/// A context rejection is recoverable by compacting history, including when a
+/// gateway's model alias advertises a larger window than its actual backend.
+#[derive(Debug, Clone, Copy)]
+pub struct ContextOverflow {
+    pub limit: Option<u64>,
+}
+
+pub fn context_overflow(error: &anyhow::Error) -> Option<ContextOverflow> {
+    let text = format!("{error:#}").to_ascii_lowercase();
+    if ![
+        "prompt is too long",
+        "context_length_exceeded",
+        "maximum context length",
+        "context window exceeded",
+        "exceeds the context window",
+        "input is too long",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+    {
+        return None;
+    }
+    let limit = [
+        r"tokens\s*>\s*([0-9,]+)\s+maximum",
+        r"maximum context length (?:is|of)\s+([0-9,]+)",
+    ]
+    .iter()
+    .find_map(|pattern| {
+        regex::Regex::new(pattern)
+            .ok()?
+            .captures(&text)?
+            .get(1)?
+            .as_str()
+            .replace(',', "")
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+    });
+    Some(ContextOverflow { limit })
+}
+
+/// Adds an attachment hint only when the provider reports a media rejection.
 /// Capability is deliberately not inferred from a provider or endpoint name:
 /// the selected LLM is the source of truth, and its capabilities can change
 /// independently of Oxide.
@@ -1511,7 +1552,20 @@ fn media_request_error(error: anyhow::Error, messages: &[Message]) -> anyhow::Er
                 ))
         )
     });
-    if has_media {
+    let detail = format!("{error:#}").to_ascii_lowercase();
+    let media_rejection = ["image", "pdf", "media", "multimodal", "unsupported content"]
+        .iter()
+        .any(|marker| detail.contains(marker))
+        && [
+            "unsupported",
+            "not support",
+            "invalid",
+            "format",
+            "content type",
+        ]
+        .iter()
+        .any(|marker| detail.contains(marker));
+    if has_media && media_rejection && context_overflow(&error).is_none() {
         error.context(
             "the request included rich media attachments; confirm that the selected LLM supports them",
         )
@@ -1652,6 +1706,43 @@ mod tests {
             &[Message::user("hi")],
         );
         assert_eq!(plain.to_string(), "provider unavailable");
+    }
+
+    #[test]
+    fn context_rejections_are_not_misreported_as_media_failures() {
+        let messages = vec![Message::user_parts(
+            "old screenshot",
+            vec![crate::llm::ContentPart::ImageUrl {
+                image_url: crate::llm::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
+            }],
+        )];
+        for (detail, expected) in [
+            (
+                "bedrock error: prompt is too long: 204873 tokens > 200000 maximum",
+                Some(200_000),
+            ),
+            (
+                "maximum context length is 128,000 tokens. You requested 150000 tokens",
+                Some(128_000),
+            ),
+            ("context_length_exceeded", None),
+        ] {
+            let error = media_request_error(anyhow::anyhow!(detail), &messages);
+            assert_eq!(error.to_string(), detail);
+            assert_eq!(context_overflow(&error).unwrap().limit, expected);
+        }
+        for detail in [
+            "provider returned 401 Unauthorized",
+            "provider returned 429 Too Many Requests",
+            "provider returned 503 Service Unavailable",
+        ] {
+            let error = media_request_error(anyhow::anyhow!(detail), &messages);
+            assert_eq!(error.to_string(), detail);
+            assert!(context_overflow(&error).is_none());
+        }
     }
 
     #[test]

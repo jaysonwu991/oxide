@@ -833,6 +833,8 @@ describe("webview footer", () => {
     assert.equal(byId.get("gauge")!.getAttribute("aria-label"), `Usage: ${footer.usage}`);
     assert.equal(byId.get("gauge")!.hidden, false);
     assert.equal(byId.get("gauge")!.dataset.level, "ok");
+    assert.equal(byId.get("context-percent")!.textContent, "12%");
+    assert.equal(byId.get("context-percent")!.hidden, false);
     assert.equal(byId.get("gauge-fill")!.getAttribute("stroke-dasharray"), "9.24 76.97");
   });
 
@@ -896,6 +898,7 @@ describe("webview footer", () => {
     assert.match(style, /\.context-status \.gauge:not\(\[hidden\]\)\s*\{[^}]*display: flex;/);
     assert.doesNotMatch(style, /\.context-status \.gauge\s*\{[^}]*display:/);
     assert.equal(byId.get("usage")!.hidden, true);
+    assert.equal(byId.get("context-percent")!.hidden, true);
     assert.equal(byId.get("branch")!.textContent, "");
     // Nothing is left in the bar that is not a setting the host handed over: the
     // two app-level controls are the header's, so an empty footer empties it.
@@ -3842,6 +3845,18 @@ describe("webview tool card", () => {
     assert.equal(card.querySelector(".tbody")!.hidden, true);
     assert.equal(card.querySelector(".thint")!.hidden, true);
     assert.equal(card.querySelector(".thead")!.getAttribute("role"), null);
+  });
+
+  it("shows the entire failed edit diagnostic even when its first lines wrap", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const output = `No changes were written to ${"long/project/path/".repeat(12)}SKILL.md; the entire edit batch was rejected.\n\nedits[5].oldText did not match anything.\n\nRead the target again and resend the entire batch.`;
+    send({ k: "push", item: { id: 40, kind: "tool", name: "edit", args: '{"path":"SKILL.md"}', output, running: false, isError: true } });
+    const card = find(byId.get("transcript")!, "tool")!;
+    assert.equal(card.querySelector(".tbody")!.textContent, output);
+    assert.equal(card.querySelector(".tbody")!.hidden, false);
+    assert.equal(card.querySelector(".thint")!.hidden, true);
+    assert.match(style, /\.tool\.error \.tbody\s*\{[^}]*max-height: 42vh;/);
   });
 
   it("shows an edited file as one line with its counts", () => {

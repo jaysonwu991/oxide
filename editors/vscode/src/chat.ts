@@ -713,6 +713,7 @@ export class ChatController {
     const identity = `${folder.uri.fsPath}\n${this.project.model}\n${this.project.provider}`;
     const moved = identity !== this.reasoningIdentity;
     if (moved) {
+      this.transcript.contextWindow = null;
       this.reasoningIdentity = identity;
       this.reasoningLevels = [];
       this.supportsReasoning = undefined;
@@ -750,7 +751,7 @@ export class ChatController {
       language: this.languageInfo,
       model: project?.model || "",
       provider: project?.provider ?? "",
-      contextWindow: this.contextWindow ?? project?.contextWindow ?? 0,
+      contextWindow: this.transcript.contextWindow ?? this.contextWindow ?? project?.contextWindow ?? 0,
       reasoning: this.currentReasoning(),
       reasoningLevels: this.reasoningLevels.length ? this.reasoningLevels : undefined,
       supportsReasoning: this.supportsReasoning,

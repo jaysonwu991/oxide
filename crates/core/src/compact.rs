@@ -113,10 +113,19 @@ impl From<Usage> for UsageRecord {
 /// Cumulative file operations carried across repeated compactions.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit: Option<ModelContextLimit>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modified_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelContextLimit {
+    pub provider: String,
+    pub model: String,
+    pub window: u64,
 }
 
 /// One persisted compaction: a summary plus the raw-history boundary it keeps.
@@ -956,6 +965,7 @@ mod tests {
             details: CompactionDetails {
                 read_files: vec!["a".into()],
                 modified_files: vec![],
+                ..Default::default()
             },
         };
         let preparation = prepare(
@@ -993,6 +1003,7 @@ mod tests {
         let details = CompactionDetails {
             read_files: vec!["/a.rs".into()],
             modified_files: vec!["/b.rs".into()],
+            ..Default::default()
         };
         let messages = vec![
             Message::user("build the thing"),

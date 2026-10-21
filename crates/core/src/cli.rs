@@ -341,6 +341,9 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
                 "cost": cost,
             }
         }),
+        AgentEvent::ContextWindow { tokens } => {
+            json!({ "type": "context_window", "tokens": tokens })
+        }
         AgentEvent::Compaction {
             summary,
             summarized,
@@ -632,6 +635,9 @@ mod tests {
         .unwrap();
         assert_eq!(call["type"], "tool_call");
         assert_eq!(call["toolName"], "read");
+
+        let window = event_json(&AgentEvent::ContextWindow { tokens: 200_000 }).unwrap();
+        assert_eq!(window, json!({"type": "context_window", "tokens": 200_000}));
 
         let usage = event_json(&AgentEvent::Usage {
             input: 1,

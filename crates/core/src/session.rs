@@ -656,6 +656,20 @@ impl SessionLog {
         tokens
     }
 
+    /// A backend limit learned on this branch, scoped to the selected model.
+    pub fn context_window(&self, provider: &str, model: &str) -> Option<u64> {
+        self.context().iter().rev().find_map(|entry| {
+            let details = match entry {
+                Entry::Compaction(entry) => entry.details.as_ref(),
+                Entry::BranchSummary(entry) => entry.details.as_ref(),
+                _ => None,
+            }?;
+            let limit = details.context_limit.as_ref()?;
+            (limit.provider == provider && limit.model == model && limit.window > 0)
+                .then_some(limit.window)
+        })
+    }
+
     /// Appends a compaction entry and returns its id.
     #[allow(clippy::too_many_arguments)]
     pub fn append_compaction(

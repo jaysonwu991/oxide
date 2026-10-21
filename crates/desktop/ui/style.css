@@ -501,7 +501,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
-.tool.expanded pre { max-height: 460px; overflow: auto; }
+.tool.expanded pre, .tool.error pre { max-height: 460px; overflow: auto; }
 .tool.running pre { max-height: 120px; overflow: auto; }
 .tool .thint { color: var(--faint); font-size: 11px; margin-top: 5px; cursor: pointer; }
 

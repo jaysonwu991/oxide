@@ -601,6 +601,7 @@ export function formatTokens(count: number): string {
 export class Transcript {
   readonly items: Item[] = [];
   usage: UsageTotals = emptyUsage();
+  contextWindow: number | null = null;
   status = "Idle";
   busy = false;
   sessionId: string | null = null;
@@ -647,6 +648,7 @@ export class Transcript {
   reset(): void {
     this.items.length = 0;
     this.usage = emptyUsage();
+    this.contextWindow = null;
     this.status = "Idle";
     this.busy = false;
     this.sessionId = null;
@@ -791,6 +793,12 @@ export class Transcript {
         return this.appendToolOutput(str(event.toolName), str(event.partialResult));
       case "tool_execution_end":
         return this.finishTool(str(event.toolName), str(event.result), event.isError === true);
+      case "context_window": {
+        const tokens = num(event.tokens);
+        if (tokens <= 0) return [];
+        this.contextWindow = tokens;
+        return [{ k: "usage", usage: this.usage }];
+      }
       case "usage": {
         // Usage is emitted once a model step has completed, so it commits the
         // step's text and reasoning even when no tool call follows and the CLI
