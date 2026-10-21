@@ -331,7 +331,10 @@ impl Ecosystem {
             });
         }
         let skill = self.skill(name)?;
-        let mut prompt = skill.content.clone();
+        let mut prompt = format!(
+            "Execute the `{}` skill for this request. Follow its instructions below, including any user questions and confirmation gates. Begin the workflow now; do not merely summarize the skill or offer to implement it.\n\n<skill_instructions>\n{}\n</skill_instructions>",
+            skill.name, skill.content
+        );
         if !arguments.is_empty() {
             prompt.push_str("\n\nUser: ");
             prompt.push_str(arguments);
@@ -1078,7 +1081,12 @@ fn push_skill(ecosystem: &mut Ecosystem, path: &Path) -> bool {
     ecosystem.skills.push(Skill {
         name,
         description: front.get_str("description"),
-        content: front.body,
+        content: format!(
+            "Skill source: {}\nResolve relative scripts and resources from: {}\n\n{}",
+            path.display(),
+            path.parent().unwrap_or(path).display(),
+            front.body
+        ),
     });
     true
 }
@@ -1589,6 +1597,28 @@ mod tests {
     }
 
     #[test]
+    fn discovered_skills_keep_their_source_and_resource_directory() {
+        let dir = temp_dir("skill_source");
+        let source = dir.join("audit/SKILL.md");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "---\nname: audit\n---\nRun scripts/audit.py").unwrap();
+        let mut ecosystem = Ecosystem::default();
+        assert!(push_skill(&mut ecosystem, &source));
+        let prompt = ecosystem
+            .resolve_command("/audit inspect the first entity")
+            .unwrap()
+            .prompt;
+        assert!(prompt.contains(&format!("Skill source: {}", source.display())));
+        assert!(prompt.contains(&format!(
+            "Resolve relative scripts and resources from: {}",
+            source.parent().unwrap().display()
+        )));
+        assert!(prompt.ends_with("User: inspect the first entity"));
+        assert!(prompt.contains("confirmation gates"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn skill_commands_load_skill_content_with_arguments() {
         let mut ecosystem = Ecosystem::default();
         ecosystem.skills.push(Skill {
@@ -1601,14 +1631,19 @@ mod tests {
         // `/skill:<name>` is the terminal's: both load the same skill.
         for spelling in ["/audit the lockfile", "/skill:audit the lockfile"] {
             let resolved = ecosystem.resolve_command(spelling).unwrap();
-            assert_eq!(resolved.prompt, "Audit the deps.\n\nUser: the lockfile");
+            assert!(resolved.prompt.contains("Execute the `audit` skill"));
+            assert!(resolved
+                .prompt
+                .contains("<skill_instructions>\nAudit the deps.\n</skill_instructions>"));
+            assert!(resolved.prompt.ends_with("User: the lockfile"));
             assert!(resolved.agent.is_none());
             assert!(!resolved.subtask);
         }
-        assert_eq!(
-            ecosystem.resolve_command("/audit").unwrap().prompt,
-            "Audit the deps."
-        );
+        assert!(ecosystem
+            .resolve_command("/audit")
+            .unwrap()
+            .prompt
+            .contains("Audit the deps."));
         assert!(ecosystem.resolve_command("/skill:missing").is_none());
         assert!(ecosystem.resolve_command("/missing").is_none());
     }
@@ -1637,10 +1672,11 @@ mod tests {
             "Audit with the project's own command."
         );
         // The prefixed spelling still reaches the skill itself.
-        assert_eq!(
-            ecosystem.resolve_command("/skill:audit").unwrap().prompt,
-            "Audit the deps."
-        );
+        assert!(ecosystem
+            .resolve_command("/skill:audit")
+            .unwrap()
+            .prompt
+            .contains("Audit the deps."));
 
         // A prompt template of the name wins the same way.
         let mut templated = Ecosystem {

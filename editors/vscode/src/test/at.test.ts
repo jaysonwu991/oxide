@@ -152,3 +152,17 @@ describe("the rows offered for a token", () => {
     assert.deepEqual(rows("@docs/vscode.md,"), []);
   });
 });
+
+
+describe("filenames with spaces", () => {
+  it("keeps completion open inside a quoted folder and closes a file", () => {
+    const paths = ["reviewed copy/", "reviewed copy/first entity.xlsx"];
+    const folder = atSuggestions(paths, token("@reviewed"))[0];
+    assert.equal(folder.insert, '@"reviewed copy/');
+    const files = atSuggestions(paths, token(folder.insert));
+    assert.deepEqual(files.map(row => row.insert), ['@"reviewed copy/first entity.xlsx" ']);
+    assert.equal(token(files[0].insert), null);
+    assert.equal(token('@"reviewed copy/first entity.xlsx" next', 20)?.query,
+      "reviewed copy/first entity.xlsx");
+  });
+});
