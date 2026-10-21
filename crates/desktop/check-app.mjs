@@ -4180,6 +4180,14 @@ check(
 );
 // A card for a call that changed no file is not the one-line form: it keeps the
 // preview of what it printed, so the treatment above is only for a diff.
+const warningCard = app.startTool("bash", JSON.stringify({ command: "python submit.py" }));
+const warningOutput = "POST http://service/v1/copy\nCreated: 6\nFailed: 0\n[stderr]\nRequestsDependencyWarning: unsupported dependency\n  warnings.warn(\n[exit: 0]";
+app.finishTool(warningCard, warningOutput);
+check("preferred command results over dependency warnings in a successful shell preview",
+  warningCard.pre.textContent === "Created: 6\nFailed: 0\n[exit: 0]" && !warningCard.hint.hidden,
+  warningCard.pre.textContent);
+warningCard.hint.onclick?.();
+check("kept all stderr diagnostics when the shell card expanded", warningCard.pre.textContent === warningOutput, warningCard.pre.textContent);
 const plainCard = app.startTool("bash", JSON.stringify({ command: "cargo test" }));
 app.finishTool(plainCard, "ok\nline two\nline three\nline four\n", { elapsed: 30 });
 check(
@@ -4193,9 +4201,9 @@ check(
   }, state: ${plainCard.tstate.textContent}`,
 );
 check(
-  "cut the preview to the first lines with the rest behind the hint",
-  plainCard.pre.textContent === "ok\nline two\nline three" &&
-    plainCard.hint.textContent === "⋯ 1 more line · click to expand",
+  "kept the shell result at the tail with the rest behind the hint",
+  plainCard.pre.textContent === "line two\nline three\nline four" &&
+    plainCard.hint.textContent === "Show 1 earlier lines",
   JSON.stringify([plainCard.pre.textContent, plainCard.hint.textContent]),
 );
 // The hint reads "click to expand", so that click is the one a reader makes:
@@ -4214,7 +4222,7 @@ plainCard.hint.onclick?.();
 check(
   "folded it away again from the same hint",
   plainCard.hint.hidden === false &&
-    !plainCard.pre.textContent.includes("line four") &&
+    !plainCard.pre.textContent.includes("ok") &&
     !String(plainCard.block.className).includes("expanded"),
   `hint hidden: ${plainCard.hint.hidden}, body: ${JSON.stringify(plainCard.pre.textContent)}`,
 );

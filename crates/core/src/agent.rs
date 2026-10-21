@@ -669,6 +669,8 @@ async fn run_loop(
     // written outside the run's directory is not part of that delivery.
     let mut verification = VerificationState::new(&cwd);
     let mut verification_reminder: Option<String> = None;
+    let mut follow_through_nudged = false;
+    let mut follow_through_pending = false;
     // Verification commands already run this turn, so an exact repeat can be
     // flagged instead of silently re-run (a slow build or test suite).
     let mut seen_verifications: BTreeSet<String> = BTreeSet::new();
@@ -868,6 +870,7 @@ async fn run_loop(
         // A reminder makes this request the hidden nudge: it asks the model to
         // confirm work it already summarized, so a provider that answers it
         // with nothing must not fail the turn the user already saw complete.
+        let following_through = std::mem::take(&mut follow_through_pending);
         let nudging = match verification_reminder.take() {
             Some(reminder) => {
                 // A system-only tail is lifted into the leading system prompt
@@ -940,7 +943,7 @@ async fn run_loop(
             };
             match client.stream_chat(&request, &tool_specs, &mut hooks).await {
                 Ok(turn) => turn,
-                Err(err) if nudge_failed_quietly(nudging, &err) => {
+                Err(err) if nudge_failed_quietly(nudging && !following_through, &err) => {
                     // The reminder is advisory: the model already summarized its
                     // work and nothing more will arrive, so finish with the
                     // answer in hand instead of reporting `err`. The held
@@ -1114,7 +1117,21 @@ async fn run_loop(
             // answer is held back so its re-check extends the same assistant
             // turn instead of adding a second summary.
             if !queued && !runtime.cancel.is_cancelled() {
-                if let Some(reminder) = verification.reminder() {
+                let reminder = verification.reminder().or_else(|| {
+                    if !follow_through_nudged
+                        && announces_unfinished_work(assistant.display().as_deref().unwrap_or(""))
+                    {
+                        follow_through_nudged = true;
+                        follow_through_pending = true;
+                        Some("You ended by announcing work without doing it. Complete the announced \
+                              action or summary now, using tools when needed. If blocked, give the \
+                              specific evidence and the completed outcome rather than another promise. \
+                              Preserve the user's requested scope and stopping conditions.".to_string())
+                    } else {
+                        None
+                    }
+                });
+                if let Some(reminder) = reminder {
                     let (held, held_usage) = match held_summary.take() {
                         Some((prior, prior_usage)) if held_is_tail => (
                             merge_summaries(prior, assistant),
@@ -2407,6 +2424,22 @@ fn inspected_by_shell(command: &str, output: &str, path: &str) -> bool {
         }
         false
     })
+}
+
+/// A short final paragraph ending in an announced action is a handoff to
+/// another step, not an answer. One follow-through request is enough to avoid
+/// silently stopping there without turning ambiguous prose into a retry loop.
+fn announces_unfinished_work(text: &str) -> bool {
+    let tail = text.trim_end().rsplit("\n\n").next().unwrap_or("").trim();
+    if !tail.ends_with(':') || tail.len() > 600 || tail.starts_with(['>', '`', '"', '\'']) {
+        return false;
+    }
+    let tail = tail.to_ascii_lowercase();
+    let sentence = tail.rsplit(". ").next().unwrap_or(&tail);
+    !sentence.starts_with("let me know")
+        && ["let me ", "i'll ", "i will ", "i’ll ", "i am going to "]
+            .iter()
+            .any(|prefix| sentence.starts_with(prefix))
 }
 
 /// Whether a failed model call may end the run quietly. The Definition-of-Done
@@ -3997,6 +4030,79 @@ mod tests {
 
     fn empty_body() -> String {
         openai_sse(&[serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})])
+    }
+
+    #[test]
+    fn unfinished_announcements_are_distinct_from_summaries_and_questions() {
+        for text in [
+            "Let me create a summary:",
+            "The request failed. Let me check the documented endpoint:",
+            "I'll inspect the response:",
+        ] {
+            assert!(announces_unfinished_work(text), "{text}");
+        }
+        for text in [
+            "Summary:\n6 entries created.",
+            "Let me know which endpoint you prefer:",
+            "The request is blocked by a refused connection.",
+            "Would you like a summary?",
+            "> Let me create a summary:",
+            "`Let me create a summary:`",
+            "The fields are:",
+        ] {
+            assert!(!announces_unfinished_work(text), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unfinished_summary_gets_one_follow_through_step() {
+        for final_answer in [
+            "Prepared 6 entries. Submission remains blocked by the refused connection.",
+            "Let me create the summary:",
+        ] {
+            let (addr, server) = sse_server(vec![
+                answer_body("The API request failed. Let me create a comprehensive summary:"),
+                answer_body(final_answer),
+            ])
+            .await;
+            let config = Config {
+                provider: "deepseek".into(),
+                model: "deepseek-flash".into(),
+                base_url: format!("http://{addr}"),
+                api_key: "sk-test".into(),
+                ..Config::default()
+            };
+            let runtime = test_runtime().await;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            run(
+                config,
+                std::env::temp_dir(),
+                vec![Message::user("Submit the prepared entries")],
+                tx,
+                runtime,
+            )
+            .await;
+            let requests = server.await.unwrap();
+            assert_eq!(
+                requests.len(),
+                2,
+                "the follow-through is bounded to one step"
+            );
+            assert!(requests[1].contains("Complete the announced action or summary now"));
+            let mut finished = None;
+            while let Ok(event) = rx.try_recv() {
+                if let AgentEvent::Finished(history) = event {
+                    finished = Some(history);
+                }
+            }
+            let history = finished.expect("the turn must finish");
+            assert!(history
+                .last()
+                .unwrap()
+                .display()
+                .unwrap()
+                .contains(final_answer));
+        }
     }
 
     #[tokio::test]

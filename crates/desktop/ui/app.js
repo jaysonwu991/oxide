@@ -3941,6 +3941,20 @@ function toolSummary(name, argsJson) {
 
 /// The first `lines` of `text`, plus how many were dropped, for the collapsed
 /// card preview.
+function previewShell(text, limit) {
+  const all = String(text || "").trimEnd().split("\n");
+  const stderr = all.indexOf("[stderr]");
+  const diagnostics = stderr < 0 ? [] : all.slice(stderr + 1, -1);
+  const warningsOnly = diagnostics.some((line) => /Warning:|warnings\.warn\(/.test(line)) &&
+    !diagnostics.some((line) => /\b(?:\w*error|\w*exception|fatal):|traceback\b/i.test(line));
+  const preferred = all.at(-1) === "[exit: 0]" && stderr > 0 &&
+    all.slice(0, stderr).some((line) => line.trim()) && warningsOnly
+    ? [...all.slice(0, stderr), all.at(-1)] : all;
+  const shown = preferred.slice(-limit);
+  return { text: shown.join("\n"), more: all.length - shown.length, earlier: preferred === all };
+}
+
+
 function previewText(text, lines = 3) {
   const all = String(text || "").replace(/\s+$/, "");
   if (!all) return { text: "", more: 0 };
@@ -4145,10 +4159,12 @@ function paintTool(tool) {
     return;
   }
   tool.pre.hidden = false;
-  const { text, more } = previewText(tool.full, 3);
+  const { text, more, earlier } = tool.name === "bash" ? previewShell(tool.full, 3) : previewText(tool.full, 3);
   tool.pre.textContent = text;
   tool.hint.hidden = more === 0;
-  tool.hint.textContent = t(more === 1 ? "changes.moreLine" : "changes.moreLines", more === 1 ? "⋯ {count} more line · click to expand" : "⋯ {count} more lines · click to expand", { count: more });
+  tool.hint.textContent = tool.name === "bash"
+    ? t(earlier ? "surface.EarlierLines" : "surface.MoreLines", earlier ? "Show {count} earlier lines" : "Show {count} more lines", { count: more })
+    : t(more === 1 ? "changes.moreLine" : "changes.moreLines", more === 1 ? "⋯ {count} more line · click to expand" : "⋯ {count} more lines · click to expand", { count: more });
   markToolToggle(tool, more > 0);
 }
 

@@ -3892,6 +3892,16 @@ fn push_tool_body(
 ) {
     let readable = readable_output(&super::text::sanitize(text));
     let all: Vec<&str> = readable.lines().collect();
+    if !expand_tools {
+        if let Preview::Tail(limit) = preview {
+            if let Some((text, more)) = oxide_core::tools::bash_warning_preview(&readable, limit) {
+                let color = style.fg.unwrap_or(Color::Reset);
+                lines.push(collapsed_hint(more, color, width));
+                push_tool_output(lines, &text, width, style);
+                return;
+            }
+        }
+    }
     let limit = match preview {
         Preview::Head(limit) | Preview::Tail(limit) => limit,
     };
@@ -5501,6 +5511,35 @@ mod tests {
         let text = panel_text(&lines);
         assert!(text.starts_with("⚙ grep"));
         assert_eq!(text.matches('x').count(), 60);
+    }
+
+    #[test]
+    fn successful_shell_previews_keep_results_ahead_of_dependency_warnings() {
+        let output = "POST http://service/v1/copy\nCreated: 6\nFailed: 0\n[stderr]\nRequestsDependencyWarning: dependency mismatch\n  warnings.warn(\n[exit: 0]";
+        let mut rows = Vec::new();
+        render_item(
+            &ChatItem::ToolProgress {
+                name: "bash".into(),
+                output: output.into(),
+            },
+            100,
+            false,
+            &mut rows,
+        );
+        let text = panel_text(&rows);
+        assert!(text.contains("Created: 6"), "{text}");
+        assert!(!text.contains("RequestsDependencyWarning"), "{text}");
+        let mut expanded = Vec::new();
+        render_item(
+            &ChatItem::ToolProgress {
+                name: "bash".into(),
+                output: output.into(),
+            },
+            100,
+            true,
+            &mut expanded,
+        );
+        assert!(panel_text(&expanded).contains("RequestsDependencyWarning"));
     }
 
     #[test]

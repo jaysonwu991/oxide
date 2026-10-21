@@ -3847,6 +3847,18 @@ describe("webview tool card", () => {
     assert.equal(card.querySelector(".thead")!.getAttribute("role"), null);
   });
 
+  it("keeps dependency warnings behind the successful shell result without losing output", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const output = "POST http://service/v1/copy\nCreated: 6\nFailed: 0\n[stderr]\nRequestsDependencyWarning: unsupported dependency\n  warnings.warn(\n[exit: 0]";
+    send({ k: "push", item: { id: 41, kind: "tool", name: "bash", args: '{"command":"python submit.py"}', output, running: false, isError: false } });
+    const card = find(byId.get("transcript")!, "tool")!;
+    assert.equal(card.querySelector(".tbody")!.textContent, "Created: 6\nFailed: 0\n[exit: 0]");
+    assert.equal(card.querySelector(".thint")!.textContent, "Show 4 more lines");
+    byId.get("transcript")!.fire("click", { target: card.querySelector(".thint")! });
+    assert.equal(card.querySelector(".tbody")!.textContent, output);
+  });
+
   it("shows the entire failed edit diagnostic even when its first lines wrap", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
