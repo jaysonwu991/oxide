@@ -24,7 +24,7 @@ import { changesTitle, changesTotals, changeRows, changesMore, turnChanges, type
 import { argumentDiff } from "./preview";
 import type { DialogState } from "./dialogs";
 import type { FooterState } from "./footer";
-import type { LanguageInfo } from "./i18n";
+import { translate, type LanguageInfo } from "./i18n";
 import type { CommandRow } from "./palette";
 
 /// One JSONL line from the agent's stdout. Only `type` is guaranteed.
@@ -613,6 +613,8 @@ export class Transcript {
   /// so this module stays free of filesystem access (and testable).
   constructor(
     private readonly lookupDiff: (name: string, args: unknown) => string | null = () => null,
+    private readonly localize: (key: string, fallback: string, vars?: Record<string, unknown>) => string =
+      (key, fallback, vars) => translate(null, key, fallback, vars),
   ) {}
 
   state(extra: {
@@ -880,12 +882,11 @@ export class Transcript {
       }
       case "compaction":
         return this.notice(
-          `Compacted ${num(event.summarized)} earlier messages (~${formatTokens(
-            num(event.tokensBefore),
-          )} tokens)`,
+          this.localize("extension.compactionNotice", "Compacted {count} earlier messages (~{tokens} tokens)",
+            { count: num(event.summarized), tokens: formatTokens(num(event.tokensBefore)) }),
         );
       case "error":
-        return this.notice(`Error: ${str(event.message)}`, "error");
+        return this.notice(this.localize("common.errorDetail", "Error: {value0}", { value0: str(event.message) }), "error");
       case "agent_end":
         this.closeAssistant();
         this.closeThinking();

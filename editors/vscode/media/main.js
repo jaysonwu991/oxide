@@ -396,6 +396,14 @@ function installMarkdownInput(editor, render) {
     for (const node of document.querySelectorAll("[data-i18n]")) {
       node.textContent = t(node.dataset.i18n, remember(node, "text", node.textContent));
     }
+    for (const node of document.querySelectorAll("[data-i18n-code]")) {
+      const text = t(node.dataset.i18nCode, remember(node, "code", node.textContent));
+      // Catalog text is escaped before the only permitted markup: inline code.
+      node.innerHTML = escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
+    }
+    for (const node of document.querySelectorAll("[data-i18n-alt]")) {
+      node.alt = t(node.dataset.i18nAlt, remember(node, "alt", node.alt));
+    }
     for (const node of document.querySelectorAll("[data-i18n-title]")) {
       node.title = t(node.dataset.i18nTitle, remember(node, "title", node.title));
     }
@@ -406,10 +414,10 @@ function installMarkdownInput(editor, render) {
       );
     }
     for (const node of document.querySelectorAll("[data-i18n-placeholder]")) {
-      node.dataset.placeholder = t(
-        node.dataset.i18nPlaceholder,
-        remember(node, "placeholder", node.dataset.placeholder || ""),
-      );
+      const text = t(node.dataset.i18nPlaceholder,
+        remember(node, "placeholder", node.getAttribute("placeholder") || node.dataset.placeholder || ""));
+      if (node.hasAttribute("placeholder")) node.setAttribute("placeholder", text);
+      else node.dataset.placeholder = text;
     }
   }
   const dialogBox = $("dialog");
@@ -1195,9 +1203,7 @@ function installMarkdownInput(editor, render) {
       entry.hint.hidden = !entry.folded;
       // The line the card kept is counted where the reader would look for it,
       // rather than twice: as a marker in the body and again as this handle.
-      entry.hint.textContent = `Show ${preview.more} ${useTail ? "earlier" : "more"} line${
-        preview.more === 1 ? "" : "s"
-      }`;
+      entry.hint.textContent = t(useTail ? "surface.EarlierLines" : "surface.MoreLines", useTail ? "Show {count} earlier lines" : "Show {count} more lines", { count: preview.more });
     }
     // The header is the card's fold handle only while something is behind it:
     // anything else is plain text, with no caret, no tab stop and no button.
@@ -1252,7 +1258,13 @@ function installMarkdownInput(editor, render) {
     tool.textContent = String(item.tool || "tool");
     const sub = document.createElement("span");
     sub.className = "asub";
-    sub.textContent = String(item.title || "");
+    const keys = { bash: "approval.runCommand", write: "approval.writeFile", edit: "approval.editFile",
+      read: "approval.readFile", ls: "approval.listDirectory", find: "approval.findFiles",
+      grep: "approval.searchWorkspace", webfetch: "approval.fetchUrl", task: "approval.runSubagent" };
+    const [server, remote] = String(item.tool || "").split("__");
+    sub.textContent = keys[item.tool] ? t(keys[item.tool], item.title)
+      : remote ? t("approval.remoteTool", item.title, { tool: remote, server })
+      : t("approval.namedTool", item.title || "Run {tool}", { tool: item.tool || "tool" });
     what.append(tool, sub);
     const detail = document.createElement("pre");
     detail.className = "adetail";
@@ -1276,7 +1288,7 @@ function installMarkdownInput(editor, render) {
     if (!waiting) {
       const done = document.createElement("span");
       done.className = "adone";
-      done.textContent = item.label || t("ui.answered", "Answered");
+      done.textContent = t(`approval.result.${item.state}`, item.label || t("ui.answered", "Answered"));
       entry.actions.appendChild(done);
       return;
     }
@@ -1550,7 +1562,8 @@ function installMarkdownInput(editor, render) {
     if (!waiting) {
       const done = document.createElement("span");
       done.className = "qdone";
-      done.textContent = item.label || t("ui.answered", "Answered");
+      done.textContent = item.state === "answered" ? (item.label || t("ui.answered", "Answered"))
+        : t(`question.result.${item.state}`, item.label || t("ui.answered", "Answered"));
       entry.actions.appendChild(done);
       return;
     }
@@ -2037,7 +2050,22 @@ function installMarkdownInput(editor, render) {
     queued = queuedCount || 0;
     queuedMessages = Array.isArray(queue) ? queue : [];
     paintQueue();
-    const label = queued > 0 ? `${text} · ${queued} queued` : text;
+    const phases = {
+      "Idle": () => t("extension.Idle", "Idle"),
+      "Thinking\u2026": () => t("extension.Thinking", "Thinking…"),
+      "Writing\u2026": () => t("extension.Writing", "Writing…"),
+      "Waiting for approval\u2026": () => t("extension.WaitingForApproval", "Waiting for approval…"),
+      "Waiting for your answer\u2026": () => t("extension.WaitingForYourAnswer", "Waiting for your answer…"),
+      "Done": () => t("extension.Done", "Done"),
+    };
+    if (phases[text]) text = phases[text]();
+    const running = /^Running (.+)…$/.exec(text);
+    if (running) text = t("extension.RunningTool", "Running {tool}…", { tool: running[1] });
+    const retry = /^Retrying \((\d+)\/(\d+)\)(?: in (\d+)s)?…$/.exec(text);
+    if (retry) text = retry[3]
+      ? t("extension.RetryingAttemptMaxInSecondsS", "Retrying ({attempt}/{max}) in {seconds}s…", { attempt: retry[1], max: retry[2], seconds: retry[3] })
+      : t("extension.RetryingAttemptMax", "Retrying ({attempt}/{max})…", { attempt: retry[1], max: retry[2] });
+    const label = queued > 0 ? t("surface.QueuedCount", "{text} · {count} queued", { text, count: queued }) : text;
     // The phase is only worth a line while there is one: the TUI reserves its
     // status row for a running turn too, and an idle panel says nothing rather
     // than sitting on a dot that reads as a button.
@@ -2123,13 +2151,13 @@ function installMarkdownInput(editor, render) {
     usageText.textContent = percent === null ? "—" : `${percent}%`;
     usageText.title = footer.usage || "";
     usageText.setAttribute("tabindex", "0");
-    usageText.setAttribute("aria-label", footer.usage ? `Usage: ${footer.usage}` : t("ui.noUsageReported", "No usage reported"));
+    usageText.setAttribute("aria-label", footer.usage ? t("surface.UsageValue", "Usage: {value}", { value: footer.usage }) : t("ui.noUsageReported", "No usage reported"));
     usageRow.title = footer.usage || "";
     usageRow.hidden = true;
     gauge.hidden = !footer.usage && percent === null;
     gauge.dataset.level = footer.level || "ok";
     gauge.title = footer.usage || (percent === null ? t("ui.noUsageReported", "No usage reported") : t("ui.ofTheContextWindowUsed", "{value0}% of the context window used", { value0: percent }));
-    gauge.setAttribute("aria-label", `Usage: ${gauge.title}`);
+    gauge.setAttribute("aria-label", t("surface.UsageValue", "Usage: {value}", { value: gauge.title }));
     gauge.style.background = `conic-gradient(currentColor ${percent === null ? 0 : Math.min(percent, 100) * 3.6}deg, color-mix(in srgb, currentColor 25%, transparent) 0)`;
     gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
   }
@@ -2167,7 +2195,7 @@ function installMarkdownInput(editor, render) {
       el.appendChild(icon);
     }
     const name = control === "access" ? t("composer.trust", "Project access") : control === "agent" ? t("dialog.agents.title", "Agents") : label;
-    el.title = title ? `${name === label ? label : `${name}\n${label}`}\n${title}` : `${name} — click to change`;
+    el.title = title ? `${name === label ? label : `${name}\n${label}`}\n${title}` : t("surface.ClickToChange", "{name} — click to change", { name });
     return el;
   }
 
@@ -2298,8 +2326,8 @@ function installMarkdownInput(editor, render) {
     const what = chip.detail
       ? chip.detail
       : chip.auto
-        ? "the file you are editing, sent with the next message"
-        : "inlined into the next message";
+        ? t("surface.theFileYouAreEditingSentWithTheNextMessage", "the file you are editing, sent with the next message")
+        : t("surface.inlinedIntoTheNextMessage", "inlined into the next message");
     el.title = `${chip.label} — ${what}`;
     el.setAttribute("aria-label", el.title);
     return el;
@@ -2311,8 +2339,8 @@ function installMarkdownInput(editor, render) {
     remove.className = "chip-remove";
     remove.textContent = "✕";
     remove.title = chip.auto
-      ? "Take this file out of the next message"
-      : "Remove from the next message";
+      ? t("surface.takeThisFileOutOfTheNextMessage", "Take this file out of the next message")
+      : t("surface.removeFromTheNextMessage", "Remove from the next message");
     remove.addEventListener("click", () => vscode.postMessage({ k: "removeChip", id: chip.id }));
     return remove;
   }
@@ -2859,7 +2887,7 @@ function installMarkdownInput(editor, render) {
     el.title =
       row.kind === "folder"
         ? t("ui.aFolderInThisProject", "{value0} — a folder in this project", { value0: row.label })
-        : `${row.label} — inlined into the next message`;
+        : t("surface.InlineFile", "{name} — inlined into the next message", { name: row.label });
     const glyph = document.createElement("span");
     glyph.className = "at-glyph";
     glyph.textContent = row.kind === "folder" ? "\u25b8" : "\u00b7";
@@ -2899,7 +2927,7 @@ function installMarkdownInput(editor, render) {
     // than run as a command, and the CLI keeps the two apart.
     const source = document.createElement("span");
     source.className = "cmd-source";
-    source.textContent = row.kind === "skill" ? "skill" : row.source;
+    source.textContent = row.kind === "skill" ? t("surface.Skill", "skill") : row.source;
     el.appendChild(source);
     addRowHandlers(el, index);
     return el;
@@ -2918,7 +2946,7 @@ function installMarkdownInput(editor, render) {
     atBox.hidden = rows.length === 0;
     atBox.setAttribute(
       "aria-label",
-      rowKind === "command" ? "Commands and skills" : t("ui.filesAndFolders", "Files and folders"),
+      rowKind === "command" ? t("surface.commandsAndSkills", "Commands and skills") : t("ui.filesAndFolders", "Files and folders"),
     );
     rows.forEach((row, index) => atBox.appendChild(rowNode(row, index)));
   }
@@ -3169,14 +3197,14 @@ function installMarkdownInput(editor, render) {
     if (!ATTACHABLE.includes(mime)) {
       vscode.postMessage({
         k: "notice",
-        text: "Only images and PDFs can be attached from a paste or a drop.",
+        text: t("surface.onlyImagesAndPdfsCanBeAttachedFromAPasteOrADrop", "Only images and PDFs can be attached from a paste or a drop."),
       });
       return;
     }
     if (file.size > MAX_ATTACHMENT_BYTES) {
       vscode.postMessage({
         k: "notice",
-        text: `${file.name || "That file"} is past the ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB attachment limit.`,
+        text: t("surface.AttachmentLimit", "{name} is past the {size} MB attachment limit.", { name: file.name || t("composer.attachment", "Attachment"), size: MAX_ATTACHMENT_BYTES / (1024 * 1024) }),
       });
       return;
     }
@@ -3191,7 +3219,7 @@ function installMarkdownInput(editor, render) {
       }
       vscode.postMessage({
         k: "notice",
-        text: `Could not read ${file.name || "the attachment"}.`,
+        text: t("surface.ReadAttachment", "Could not read {name}.", { name: file.name || t("composer.attachment", "Attachment") }),
       });
     }
   }

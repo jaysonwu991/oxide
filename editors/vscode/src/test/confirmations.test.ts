@@ -58,3 +58,39 @@ for (const method of ["removeWorktree", "handoffSession"]) {
     });
   }
 }
+
+for (const accept of [true, false]) {
+  test(`localized update notification ${accept ? "restarts" : "dismisses"} after a language change`, async () => {
+    const node = declaration.members.find((member): member is ts.MethodDeclaration =>
+      ts.isMethodDeclaration(member) && member.name.getText(source) === "announceInstalled")!;
+    const javascript = ts.transpileModule(`class UpdateController { ${node.getText(source)} }\nUpdateController;`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    let answer!: (choice?: string) => void;
+    let offered: string[] = [];
+    let message = "";
+    let restarts = 0;
+    const UpdateController = runInNewContext(javascript, {
+      vscode: { window: { showInformationMessage: (text: string, ...choices: string[]) => {
+        message = text;
+        offered = choices;
+        return new Promise<string | undefined>((resolveAnswer) => { answer = resolveAnswer; });
+      } } },
+    });
+    const controller = {
+      languageInfo: { language: "zh-CN", languages: [], strings: {
+        "extension.restartWindow": "重启窗口", "extension.later": "稍后",
+        "extension.OxideValue0WasInstalledRestartTheWindowToRunIt": "已安装 Oxide {value0}，重启窗口即可使用。",
+      } } as LanguageInfo | null,
+      t(key: string, fallback: string, vars?: Record<string, unknown>) { return translate(this.languageInfo, key, fallback, vars); },
+      reloadWindow: () => { restarts += 1; },
+    };
+    UpdateController.prototype.announceInstalled.call(controller, { latest: "1.2.3" });
+    assert.equal(message, "已安装 Oxide 1.2.3，重启窗口即可使用。");
+    assert.deepEqual(offered, ["重启窗口", "稍后"]);
+    controller.languageInfo = null;
+    answer(accept ? offered[0] : undefined);
+    await Promise.resolve();
+    assert.equal(restarts, accept ? 1 : 0);
+  });
+}

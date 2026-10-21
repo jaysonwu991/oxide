@@ -1348,7 +1348,11 @@ fn draw_marketplace_remove(
         .count();
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("Remove marketplace `{}`?", marketplace.name),
+            crate::i18n::tf(
+                lang,
+                "terminal.removeMarketplace",
+                &[("name", &marketplace.name)],
+            ),
             Style::default()
                 .fg(theme.error)
                 .add_modifier(Modifier::BOLD),
@@ -1362,9 +1366,14 @@ fn draw_marketplace_remove(
     ];
     if installed > 0 {
         lines.push(Line::from(Span::styled(
-            format!(
-                "This also uninstalls {installed} installed plugin{}.",
-                if installed == 1 { "" } else { "s" }
+            crate::i18n::tf(
+                lang,
+                if installed == 1 {
+                    "terminal.removeMarketplacePlugin"
+                } else {
+                    "terminal.removeMarketplacePlugins"
+                },
+                &[("count", &installed.to_string())],
             ),
             Style::default().fg(theme.info),
         )));
@@ -2819,7 +2828,11 @@ fn render_item_themed(
             {
                 panel.push(Line::from(""));
                 panel.push(Line::from(Span::styled(
-                    format!("Took {}", format_duration(*millis)),
+                    crate::i18n::tf(
+                        lang,
+                        "terminal.tookDuration",
+                        &[("duration", &format_duration(*millis))],
+                    ),
                     Style::default().fg(theme.dim),
                 )));
             }
@@ -2840,9 +2853,13 @@ fn render_item_themed(
                 "[compaction]",
                 Style::default().fg(theme.accent).add_modifier(bold),
             )));
-            let header = format!(
-                "Compacted {summarized} messages (~{} tokens)",
-                compact_tokens(*tokens_before)
+            let header = crate::i18n::tf(
+                lang,
+                "terminal.compactedMessages",
+                &[
+                    ("count", &summarized.to_string()),
+                    ("tokens", &compact_tokens(*tokens_before)),
+                ],
             );
             if expand_tools {
                 push_wrapped(lines, &header, width, Style::default().fg(theme.dim));
@@ -2888,7 +2905,7 @@ fn render_item_themed(
             } else {
                 push_wrapped(
                     lines,
-                    "Branch summary · Ctrl+O to expand",
+                    crate::i18n::t(lang, "terminal.expandBranchSummary"),
                     width,
                     Style::default().fg(theme.dim),
                 );
@@ -3736,12 +3753,12 @@ fn render_listing(
     }
     let name_width = rows
         .iter()
-        .map(|row| row.name.chars().count())
+        .map(|row| text_width(&row.name))
         .max()
         .unwrap_or(0);
     let status_width = rows
         .iter()
-        .filter_map(|row| row.status.as_deref().map(|status| status.chars().count()))
+        .filter_map(|row| row.status.as_deref().map(text_width))
         .max()
         .unwrap_or(0);
     let name_style = Style::default()
@@ -3753,12 +3770,16 @@ fn render_listing(
         let mut header_width = 2 + if pad_name {
             name_width
         } else {
-            row.name.chars().count()
+            text_width(&row.name)
         };
         let mut spans = vec![Span::raw("  ")];
         spans.push(Span::styled(
             if pad_name {
-                format!("{:<name_width$}", row.name)
+                format!(
+                    "{}{}",
+                    row.name,
+                    " ".repeat(name_width.saturating_sub(text_width(&row.name)))
+                )
             } else {
                 row.name.clone()
             },
@@ -3768,15 +3789,21 @@ fn render_listing(
             spans.push(Span::raw("  "));
             header_width += 2;
             let (text, len) = if row.detail.is_some() {
-                (format!("{status:<status_width$}"), status_width)
+                (
+                    format!(
+                        "{status}{}",
+                        " ".repeat(status_width.saturating_sub(text_width(status)))
+                    ),
+                    status_width,
+                )
             } else {
-                (status.clone(), status.chars().count())
+                (status.clone(), text_width(status))
             };
             header_width += len;
             spans.push(Span::styled(text, tone_style(row.tone, theme)));
         }
         match &row.detail {
-            Some(detail) if header_width + 2 + detail.chars().count() <= width => {
+            Some(detail) if header_width + 2 + text_width(detail) <= width => {
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(detail.clone(), detail_style));
                 lines.push(Line::from(spans));
@@ -4901,6 +4928,52 @@ mod tests {
             }),
             "expected a hanging-indented note"
         );
+    }
+
+    #[test]
+    fn translated_listing_uses_display_cells_for_details_and_padding() {
+        let theme = crate::theme::Theme::dark();
+        let detail = "remote: https://mcp.context7.com/mcp/oauth";
+        let rows = [ListRow::new("context7")
+            .status("已连接", Tone::Success)
+            .detail(detail)];
+        let mut narrow = Rows::default();
+        render_listing("MCP 服务器（1）", &rows, 60, &theme, &mut narrow);
+        let text: Vec<_> = narrow.lines.iter().map(line_text).collect();
+        assert!(text.iter().all(|line| text_width(line) <= 60), "{text:?}");
+        assert!(
+            text.iter().any(|line| line == &format!("    {detail}")),
+            "detail should wrap intact: {text:?}"
+        );
+        assert!(!text
+            .iter()
+            .any(|line| line.contains("已连接") && line.contains("remote:")));
+
+        let rows = [
+            ListRow::new("中文服务器")
+                .status("已连接", Tone::Success)
+                .detail(detail),
+            ListRow::new("context7")
+                .status("Needs Auth", Tone::Warning)
+                .detail(detail),
+        ];
+        let mut wide = Rows::default();
+        render_listing("MCP 服务器（2）", &rows, 100, &theme, &mut wide);
+        let text: Vec<_> = wide.lines.iter().map(line_text).collect();
+        let first = text.iter().find(|line| line.contains("已连接")).unwrap();
+        let second = text
+            .iter()
+            .find(|line| line.contains("Needs Auth"))
+            .unwrap();
+        assert_eq!(
+            text_width(&first[..first.find("已连接").unwrap()]),
+            text_width(&second[..second.find("Needs Auth").unwrap()])
+        );
+        assert_eq!(
+            text_width(&first[..first.find("remote:").unwrap()]),
+            text_width(&second[..second.find("remote:").unwrap()])
+        );
+        assert!(text.iter().all(|line| text_width(line) <= 100));
     }
 
     #[test]

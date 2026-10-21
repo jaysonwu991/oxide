@@ -1,3 +1,4 @@
+mod help;
 mod install;
 mod theme;
 mod tui;
@@ -16,7 +17,7 @@ pub use oxide_core::{
 
 use agent::{AgentEvent, Approver, Cancel, Steering};
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use cli::RpcRequest;
 use config::{Config, Reasoning};
 use serde_json::json;
@@ -730,7 +731,10 @@ fn main() -> Result<()> {
 
 #[tokio::main]
 async fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let args: Vec<_> = std::env::args_os().collect();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let matches = help::command(Cli::command(), help::language(&args, &cwd)).get_matches_from(args);
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     // The language a run was asked for is the override every front-end already
     // reads (`OXIDE_LANG`), so a flag set here reaches the TUI, a print run and
     // anything else that resolves the language without each of them being told.

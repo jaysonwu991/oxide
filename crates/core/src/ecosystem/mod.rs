@@ -265,6 +265,33 @@ impl Ecosystem {
         .join(" · ")
     }
 
+    /// Resource counts in the interface language; configured names remain untouched.
+    pub fn localized_summary(&self, lang: crate::i18n::Language) -> String {
+        if lang == crate::i18n::Language::EnGb {
+            return self.summary();
+        }
+        crate::i18n::tf(
+            lang,
+            "ecosystem.resourceCounts",
+            &[
+                ("agents", &self.agents.len().to_string()),
+                ("commands", &self.commands.len().to_string()),
+                ("skills", &self.skills.len().to_string()),
+                ("servers", &self.mcp.len().to_string()),
+                ("hooks", &self.hooks.len().to_string()),
+                (
+                    "plugins",
+                    &self
+                        .plugins
+                        .iter()
+                        .filter(|plugin| plugin.enabled)
+                        .count()
+                        .to_string(),
+                ),
+            ],
+        )
+    }
+
     pub fn agent(&self, name: &str) -> Option<&AgentDef> {
         self.agents.iter().find(|agent| agent.name == name)
     }

@@ -250,6 +250,10 @@ class StubElement {
     this.selectionEnd = end;
   }
 
+  hasAttribute(name: string): boolean {
+    return name in this.attributes;
+  }
+
   getAttribute(name: string): string | null {
     return this.attributes[name] ?? null;
   }
@@ -438,6 +442,24 @@ function loadRenderer(options: { image?: StubImage; now?: () => number; width?: 
     element.hidden = hidden;
     byId.set(id, element);
   }
+  const localizedNodes: StubElement[] = [];
+  for (const match of shell.matchAll(/<([a-z]+)\b([^<>]*\bdata-i18n(?:-[a-z]+)?="[^<>]*)>/g)) {
+    const id = /\bid="([^"]+)"/.exec(match[2])?.[1];
+    const element = (id && byId.get(id)) || new StubElement(match[1]);
+    for (const [, name, value] of match[2].matchAll(/([\w-]+)="([^"]*)"/g)) {
+      element.setAttribute(name, value);
+      if (name.startsWith("data-")) {
+        const property = name.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+        element.dataset[property] = value;
+      }
+      if (name === "title") element.title = value;
+      if (name === "alt") element.alt = value;
+    }
+    const text = shell.slice(match.index! + match[0].length).split("<", 1)[0];
+    if (!text.includes("${")) element.textContent = text.replace(/\\`/g, "`");
+    if (element.dataset.i18nCode) byId.set("shared-runtime-hint", element);
+    localizedNodes.push(element);
+  }
   const posted: Record<string, unknown>[] = [];
   const documentListeners = new Map<string, ((event: unknown) => void)[]>();
   const image = options.image ?? new StubImage();
@@ -446,6 +468,7 @@ function loadRenderer(options: { image?: StubImage; now?: () => number; width?: 
   const body = new StubElement("body");
   const document = {
     getElementById: (id: string) => byId.get(id) ?? null,
+    querySelectorAll: (selector: string) => localizedNodes.filter((node) => node.hasAttribute(selector.slice(1, -1))),
     get activeElement(): StubElement | null {
       return activeElement;
     },
@@ -2808,6 +2831,18 @@ describe("webview approvals", () => {
     assert.equal(find(byId.get("transcript")!, "aactions")!.children[0].textContent, "Deny");
   });
 
+  it("localizes completed approval labels and the tool description after a language switch", () => {
+    const { byId, send } = loadRenderer();
+    const language = { language: "zh-CN", strings: {
+      "approval.runCommand": "运行 shell 命令", "approval.result.always": "已在此项目中始终允许",
+    } };
+    send(stateMessage({ items: [{ ...pending, state: "always", label: "Always allowed in this project" }] }));
+    send(stateMessage({ items: [{ ...pending, state: "always", label: "Always allowed in this project" }], language }));
+    assert.equal(find(byId.get("transcript")!, "asub")!.textContent, "运行 shell 命令");
+    assert.equal(find(byId.get("transcript")!, "adone")!.textContent, "已在此项目中始终允许");
+    assert.equal(find(byId.get("transcript")!, "adetail")!.textContent, "rm -rf build");
+  });
+
   it("offers the three answers for a waiting request", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
@@ -4203,5 +4238,42 @@ describe("webview welcome page", () => {
     send(stateMessage());
     send({ k: "push", item: { id: 2, kind: "user", text: "say hi", context: [] } });
     assert.equal(byId.get("empty")!.hidden, true);
+  });
+});
+
+
+describe("static shell localization", () => {
+  it("repaints the shared-runtime note and native placeholders when language arrives or changes", () => {
+    const { send, byId } = loadRenderer();
+    send(stateMessage({ language: { language: "zh-CN", strings: {
+      "panel.sharedRuntime": "共用配置：`oxide` 使用 `--mode rpc`，等待批准。",
+      "surface.searchSessionsPlaceholder": "搜索会话…",
+    } } }));
+    assert.equal(byId.get("shared-runtime-hint")!.innerHTML, "共用配置：<code>oxide</code> 使用 <code>--mode rpc</code>，等待批准。");
+    assert.equal(byId.get("dialog-search-input")!.getAttribute("placeholder"), "搜索会话…");
+    send(stateMessage({ language: null }));
+    assert.match(byId.get("shared-runtime-hint")!.innerHTML, /Runs use the same configuration/);
+    assert.match(byId.get("shared-runtime-hint")!.innerHTML, /<code>--mode rpc<\/code>/);
+    assert.equal(byId.get("dialog-search-input")!.getAttribute("placeholder"), "Search sessions…");
+  });
+
+  it("escapes catalog text before rendering inline code", () => {
+    const { send, byId } = loadRenderer();
+    send(stateMessage({ language: { language: "zh-CN", strings: {
+      "panel.sharedRuntime": '<img src=x> `<script>` & text',
+    } } }));
+    assert.equal(byId.get("shared-runtime-hint")!.innerHTML, "&lt;img src=x&gt; <code>&lt;script&gt;</code> &amp; text");
+  });
+
+  it("translates running and retry statuses while preserving tool identifiers", () => {
+    const { send, byId } = loadRenderer();
+    send(stateMessage({ language: { language: "zh-CN", strings: {
+      "extension.RunningTool": "正在运行 {tool}…",
+      "extension.RetryingAttemptMaxInSecondsS": "将在 {seconds} 秒后重试（{attempt}/{max}）…",
+    } } }));
+    send({ k: "status", status: "Running read_file…", busy: true, queued: 0, queue: [], footer });
+    assert.match(byId.get("stop")!.title, /正在运行 read_file…/);
+    send({ k: "status", status: "Retrying (2/3) in 5s…", busy: true, queued: 0, queue: [], footer });
+    assert.match(byId.get("stop")!.title, /将在 5 秒后重试（2\/3）…/);
   });
 });

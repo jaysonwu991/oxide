@@ -93,7 +93,7 @@ import { resolve } from "node:path";
 import { mcpDialog, providerDialog, reasoningDialog, sessionDialog, trustDialog, updateDialog } from "../core/dialogs";
 import type { McpServerView } from "../core/mcps";
 import { footerState } from "../core/footer";
-import { emptyUsage } from "../core/protocol";
+import { emptyUsage, Transcript } from "../core/protocol";
 
 const repository = resolve(__dirname, "../../../..");
 const shared = readFileSync(resolve(repository, "crates/core/src/i18n.rs"), "utf8");
@@ -169,4 +169,44 @@ test("localizes manifest commands and settings from the same shared catalog", ()
     assert.equal(translated[key], chinese.strings[key], key);
     assert.ok(/[\u3400-\u9fff]/.test(translated[key]), key);
   }
+});
+
+test("every static panel label and accessible description is marked for translation", () => {
+  const source = readFileSync(resolve(repository, "editors/vscode/src/chatView.ts"), "utf8");
+  const html = source.slice(source.indexOf('<html lang='), source.indexOf('</html>'));
+  const markers: Record<string, string> = {
+    title: "title", "aria-label": "aria", placeholder: "placeholder", alt: "alt",
+  };
+  for (const [tag] of html.matchAll(/<[\w-]+\b[^<>]*>/g)) {
+    for (const [attribute, marker] of Object.entries(markers)) {
+      const value = new RegExp(`\\b${attribute}="([^"]+)"`).exec(tag)?.[1];
+      if (!value || !/[a-z]/i.test(value) || value.includes("${")) continue;
+      const key = new RegExp(`data-i18n-${marker}="([^"]+)"`).exec(tag)?.[1];
+      assert.ok(key, `unmarked ${attribute}: ${tag}`);
+      assert.ok(chinese.strings[key], `missing catalog key: ${key}`);
+    }
+  }
+  for (const [, tag, attributes, text] of html.matchAll(/<([\w-]+)([^<>]*)>([^<>]+)<\/\1>/g)) {
+    if (!/[a-z]/i.test(text) || text.includes("${") || text === "Oxide") continue;
+    assert.match(attributes, /data-i18n(?:-code)?="/, `unmarked ${tag} text: ${text}`);
+  }
+  assert.match(chinese.strings["panel.sharedRuntime"], /共用配置、会话和项目信任设置/);
+  assert.ok(chinese.strings["panel.sharedRuntime"].includes("`--mode rpc`"));
+});
+
+test("localized transcript notices preserve provider diagnostics and user text", () => {
+  const transcript = new Transcript(undefined, (key, fallback, vars) => translate(chinese, key, fallback, vars));
+  const compact = transcript.apply({ type: "compaction", summarized: 12, tokensBefore: 1200 })[0];
+  assert.equal(compact.k, "push");
+  if (compact.k === "push" && compact.item.kind === "notice") {
+    assert.equal(compact.item.text, "已压缩前面的 12 条消息（约 1.2k 个 token）");
+  } else assert.fail("compaction notice");
+  const failure = transcript.apply({ type: "error", message: "Original provider diagnostic" })[0];
+  if (failure.k === "push" && failure.item.kind === "notice") {
+    assert.equal(failure.item.text, "错误：Original provider diagnostic");
+  } else assert.fail("error notice");
+  transcript.pushUser("Original English request", []);
+  assert.equal(transcript.items.at(-1)?.kind, "user");
+  const user = transcript.items.at(-1)!;
+  if (user.kind === "user") assert.equal(user.text, "Original English request");
 });
