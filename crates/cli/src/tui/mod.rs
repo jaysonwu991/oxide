@@ -184,20 +184,26 @@ async fn event_loop(
     }
 
     let mut banner = vec![
-        "Code, research, automate, and more.".to_string(),
-        config.ecosystem.summary(),
-        format!(
-            "mcp: {} configured · {} loaded · {} tools · hooks: {}{} · memory: {} entries",
-            mcp.configured_count(),
-            mcp.server_count(),
-            mcp.tool_count(),
-            plugins.hook_count(),
-            if plugins.is_active() {
-                ""
-            } else {
-                " (unavailable)"
-            },
-            config.memory.len(),
+        app.t("terminal.message.CodeResearchAutomateAndMore")
+            .to_string(),
+        config.ecosystem.localized_summary(app.lang),
+        app.tf(
+            "terminal.startupResources",
+            &[
+                ("configured", &mcp.configured_count().to_string()),
+                ("loaded", &mcp.server_count().to_string()),
+                ("tools", &mcp.tool_count().to_string()),
+                ("hooks", &plugins.hook_count().to_string()),
+                (
+                    "unavailable",
+                    if plugins.is_active() {
+                        ""
+                    } else {
+                        app.t("terminal.unavailableSuffix")
+                    },
+                ),
+                ("memory", &config.memory.len().to_string()),
+            ],
         ),
     ];
     if !config.ecosystem.context_files.is_empty() {
@@ -211,15 +217,19 @@ async fn event_loop(
                     .unwrap_or_else(|| path.display().to_string())
             })
             .collect();
-        banner.push(format!("context files: {}", files.join(", ")));
+        banner.push(app.tf(
+            "terminal.message.ContextFilesFiles",
+            &[("files", &files.join(", "))],
+        ));
     }
     app.items.push(ChatItem::Banner { info: banner });
     if config.api_key.trim().is_empty() {
         app.items.push(ChatItem::Info(
-            "Welcome! Connect a model provider to send your first message.".to_string(),
+            app.t("terminal.message.WelcomeConnectAModelProviderToSendYourFirstMessage")
+                .to_string(),
         ));
         app.connect = Some(ConnectState::new());
-        app.status = "setup required".to_string();
+        app.status = app.t("terminal.message.SetupRequired").to_string();
     }
 
     if let Some(log) = &session {
@@ -246,7 +256,10 @@ async fn event_loop(
             Ok(sessions) => {
                 let count = sessions.len();
                 app.sessions = Some(SessionsState::ready(sessions));
-                app.status = format!("{count} session(s) — pick one");
+                app.status = app.tf(
+                    "terminal.notice.CountSessionSPickOne",
+                    &[("count", &count.to_string())],
+                );
             }
             Err(err) => app.items.push(ChatItem::Error(format!("session: {err:#}"))),
         }
@@ -355,7 +368,7 @@ async fn event_loop(
             statuses = mcps_rx.recv() => {
                 if let Some(statuses) = statuses {
                     app.clear_progress();
-                    app.items.push(mcp_listing(&statuses));
+                    app.items.push(mcp_listing(&statuses, app.lang));
                     app.auto_scroll = true;
                     app.status = app.t("tui.status.Ready").to_string();
                 }
@@ -578,9 +591,13 @@ fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<Sess
         let _ = log.append_thinking_level(config.reasoning.label());
     }
     app.show_status(if app.reasoning == Reasoning::Auto {
-        "reasoning: auto (provider native)".to_string()
+        app.t("terminal.message.ReasoningAutoProviderNative")
+            .to_string()
     } else {
-        format!("reasoning: {}", app.reasoning.label())
+        app.tf(
+            "terminal.message.ReasoningLevel",
+            &[("level", app.reasoning.label())],
+        )
     });
 }
 
@@ -612,11 +629,11 @@ fn insert_pasted_paths(app: &mut App, paths: &[PathBuf]) {
 /// What a paste says when the clipboard held nothing it could attach: the types
 /// the pasteboard does hold, since that is the one thing that tells a copy this
 /// read could not take from a clipboard that was empty.
-fn nothing_to_attach(types: &str) -> String {
+fn nothing_to_attach(types: &str, lang: crate::i18n::Language) -> String {
     if types.is_empty() {
-        "nothing to attach from the clipboard".to_string()
+        crate::i18n::t(lang, "terminal.clipboardEmpty").to_string()
     } else {
-        format!("nothing to attach from the clipboard (it holds {types})")
+        crate::i18n::tf(lang, "terminal.clipboardUnsupported", &[("types", types)])
     }
 }
 
@@ -726,9 +743,9 @@ fn handle_key(
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_thinking_blocks();
             app.show_status(if app.show_thinking_blocks {
-                "thinking blocks: visible".to_string()
+                app.t("terminal.message.ThinkingBlocksVisible").to_string()
             } else {
-                "thinking blocks: hidden".to_string()
+                app.t("terminal.message.ThinkingBlocksHidden").to_string()
             });
         }
         KeyCode::Enter if is_newline_shortcut(&key) => {
@@ -792,7 +809,7 @@ fn handle_key(
                     }
                     None => {
                         app.items.push(ChatItem::Error(
-                            "snapshots unavailable (this directory is not snapshotted)".to_string(),
+                            app.t("terminal.message.SnapshotsUnavailableThisDirectoryIsNotSnapshotted").to_string(),
                         ));
                         return;
                     }
@@ -831,6 +848,7 @@ fn handle_key(
                 app.busy = true;
                 app.busy_since = Some(std::time::Instant::now());
                 app.status = app.t("tui.status.Compacting").to_string();
+                let lang = app.lang;
                 tokio::spawn(async move {
                     let Some(log) = log else {
                         let fallback = history.clone();
@@ -897,7 +915,8 @@ fn handle_key(
                         }
                         Ok(None) => {
                             let _ = tx.send(AgentEvent::Error(
-                                "compact: nothing to compact yet".to_string(),
+                                crate::i18n::t(lang, "terminal.message.CompactNothingToCompactYet")
+                                    .to_string(),
                             ));
                             let _ = tx.send(AgentEvent::Finished(history));
                         }
@@ -952,7 +971,8 @@ fn handle_key(
                 };
                 if provider.is_empty() {
                     app.items.push(ChatItem::Info(
-                        "no provider connected — run /connect to add one".to_string(),
+                        app.t("terminal.message.NoProviderConnectedRunConnectToAddOne")
+                            .to_string(),
                     ));
                     return;
                 }
@@ -1031,7 +1051,7 @@ fn handle_key(
                             return;
                         }
                         let (name, marketplace) = crate::plugin_registry::split_ref(rest);
-                        app.status = format!("installing plugin `{name}`...");
+                        app.status = app.tf("terminal.notice.InstallingPluginName", &[("name", &name)]);
                         let tx = plugins_tx.clone();
                         tokio::spawn(async move {
                             let result = crate::plugin_registry::install(
@@ -1088,7 +1108,7 @@ fn handle_key(
                                     ));
                                     return;
                                 }
-                                app.status = format!("adding marketplace `{sub_rest}`...");
+                                app.status = app.tf("terminal.notice.AddingMarketplaceSubRest", &[("sub_rest", sub_rest)]);
                                 let source = sub_rest.to_string();
                                 let tx = plugins_tx.clone();
                                 tokio::spawn(async move {
@@ -1108,7 +1128,7 @@ fn handle_key(
                                     ));
                                     return;
                                 }
-                                app.status = format!("updating marketplace `{sub_rest}`...");
+                                app.status = app.tf("terminal.notice.UpdatingMarketplaceSubRest", &[("sub_rest", sub_rest)]);
                                 let name = sub_rest.to_string();
                                 let tx = plugins_tx.clone();
                                 tokio::spawn(async move {
@@ -1206,7 +1226,8 @@ fn handle_key(
                 let providers = model_providers(config);
                 if providers.is_empty() {
                     app.items.push(ChatItem::Error(
-                        "no provider connected — run /connect to add an API key".to_string(),
+                        app.t("terminal.message.NoProviderConnectedRunConnectToAddAnApiKey")
+                            .to_string(),
                     ));
                     return;
                 }
@@ -1357,7 +1378,8 @@ fn handle_key(
                 *session = None;
                 app.session_name = None;
                 app.items.push(ChatItem::Info(
-                    "new session — the next message starts it".to_string(),
+                    app.t("terminal.message.NewSessionTheNextMessageStartsIt")
+                        .to_string(),
                 ));
                 return;
             }
@@ -1370,13 +1392,17 @@ fn handle_key(
                 match SessionLog::list(cwd) {
                     Ok(sessions) if sessions.is_empty() => {
                         app.items.push(ChatItem::Info(
-                            "no sessions for this project yet".to_string(),
+                            app.t("terminal.message.NoSessionsForThisProjectYet")
+                                .to_string(),
                         ));
                     }
                     Ok(sessions) => {
                         let count = sessions.len();
                         app.sessions = Some(SessionsState::ready(sessions));
-                        app.status = format!("{count} session(s) — pick one");
+                        app.status = app.tf(
+                            "terminal.notice.CountSessionSPickOne",
+                            &[("count", &count.to_string())],
+                        );
                     }
                     Err(err) => app.items.push(ChatItem::Error(format!("session: {err:#}"))),
                 }
@@ -1406,9 +1432,9 @@ fn handle_key(
                     }
                 };
                 match log.set_name(name) {
-                    Ok(()) => app
-                        .items
-                        .push(ChatItem::Info(format!("session named `{name}`"))),
+                    Ok(()) => app.items.push(ChatItem::Info(
+                        app.tf("terminal.notice.SessionNamedName", &[("name", name)]),
+                    )),
                     Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
                 }
                 return;
@@ -1436,8 +1462,10 @@ fn handle_key(
                     let _ = log.append_model_change(&config.provider, &config.model);
                     let _ = log.append_thinking_level(config.reasoning.label());
                 }
-                app.items
-                    .push(ChatItem::Info(format!("model set to {requested}")));
+                app.items.push(ChatItem::Info(app.tf(
+                    "terminal.notice.ModelSetToRequested",
+                    &[("requested", requested)],
+                )));
                 return;
             }
             if raw == "/reasoning" || raw.starts_with("/reasoning ") {
@@ -1463,7 +1491,8 @@ fn handle_key(
                 match crate::config::Reasoning::parse(requested) {
                     Some(level) if level != Reasoning::Auto && !config.supports_reasoning() => {
                         app.items.push(ChatItem::Error(
-                            "This model has no configurable reasoning effort.".into(),
+                            app.t("terminal.message.ThisModelHasNoConfigurableReasoningEffort")
+                                .into(),
                         ));
                     }
                     Some(level) => {
@@ -1510,14 +1539,18 @@ fn handle_key(
                 }
                 let theme = crate::theme::load(cwd, requested);
                 if !crate::theme::names(cwd).iter().any(|n| n == requested) {
-                    app.items
-                        .push(ChatItem::Error(format!("unknown theme `{requested}`")));
+                    app.items.push(ChatItem::Error(app.tf(
+                        "terminal.notice.UnknownThemeRequested",
+                        &[("requested", requested)],
+                    )));
                     return;
                 }
                 app.theme = theme;
                 app.invalidate_render_cache();
-                app.items
-                    .push(ChatItem::Info(format!("theme set to {requested}")));
+                app.items.push(ChatItem::Info(app.tf(
+                    "terminal.notice.ThemeSetToRequested",
+                    &[("requested", requested)],
+                )));
                 return;
             }
             if raw == "/language" || raw.starts_with("/language ") {
@@ -1539,7 +1572,7 @@ fn handle_key(
                         match decision {
                             Some(true) => "trusted".to_string(),
                             Some(false) => "declined".to_string(),
-                            None => "no saved decision".to_string(),
+                            None => app.t("terminal.message.NoSavedDecision").to_string(),
                         },
                         config.default_project_trust.label()
                     )));
@@ -1552,9 +1585,11 @@ fn handle_key(
                         config.trusted = trusted;
                         config.reload_ecosystem(cwd);
                         app.items.push(ChatItem::Info(if trusted {
-                            "saved trust decision: trusted".to_string()
+                            app.t("terminal.message.SavedTrustDecisionTrusted")
+                                .to_string()
                         } else {
-                            "saved trust decision: declined".to_string()
+                            app.t("terminal.message.SavedTrustDecisionDeclined")
+                                .to_string()
                         }));
                     }
                     Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
@@ -1577,7 +1612,8 @@ fn handle_key(
                         *config = reloaded;
                         refresh_suggestions(app, config);
                         app.items.push(ChatItem::Info(
-                            "reloaded config, commands and skills".into(),
+                            app.t("terminal.message.ReloadedConfigCommandsAndSkills")
+                                .into(),
                         ));
                     }
                     Err(err) => app.items.push(ChatItem::Error(format!("{err:#}"))),
@@ -1607,7 +1643,8 @@ fn handle_key(
             refresh_suggestions(app, config);
             if config.api_key.trim().is_empty() {
                 app.items.push(ChatItem::Error(
-                    "no provider connected — run /connect to add an API key".to_string(),
+                    app.t("terminal.message.NoProviderConnectedRunConnectToAddAnApiKey")
+                        .to_string(),
                 ));
                 return;
             }
@@ -1629,15 +1666,17 @@ fn handle_key(
 
             if subtask && command_agent.is_none() {
                 app.items.push(ChatItem::Error(
-                    "subtask command requires an `agent` in its frontmatter".to_string(),
+                    app.t("terminal.message.SubtaskCommandRequiresAnAgentInItsFrontmatter")
+                        .to_string(),
                 ));
                 return;
             }
             if let Some(name) = &command_agent {
                 match config.ecosystem.agent(name) {
                     None => {
-                        app.items
-                            .push(ChatItem::Error(format!("unknown agent `{name}`")));
+                        app.items.push(ChatItem::Error(
+                            app.tf("terminal.notice.UnknownAgentName", &[("name", name)]),
+                        ));
                         return;
                     }
                     Some(agent) if subtask && agent.mode == AgentMode::Primary => {
@@ -1871,7 +1910,7 @@ fn answer_approval(app: &mut App, approvals: &ApprovalBroker, decision: Decision
         Decision::Deny { message: None } => format!("denied `{}`", pending.tool),
     };
     app.status = match &decision {
-        Decision::Deny { .. } => "denied".to_string(),
+        Decision::Deny { .. } => app.t("terminal.message.Denied").to_string(),
         _ => app.t("tui.status.Thinking").to_string(),
     };
     if approvals.answer(pending.id, decision) {
@@ -2458,7 +2497,8 @@ fn handle_permissions_command(
         }
         "clear" => match approvals.clear(cwd) {
             Ok(()) => app.items.push(ChatItem::Info(
-                "cleared this project's approvals".to_string(),
+                app.t("terminal.message.ClearedThisProjectSApprovals")
+                    .to_string(),
             )),
             Err(err) => app
                 .items
@@ -2651,7 +2691,8 @@ fn handle_spend_command(
                 rest.to_string()
             };
             let note = if settings.api_key.is_empty() {
-                "portkey usage key cleared; using the provider credential".to_string()
+                app.t("terminal.message.PortkeyUsageKeyClearedUsingTheProviderCredential")
+                    .to_string()
             } else {
                 format!("portkey usage key set ({})", mask(&settings.api_key))
             };
@@ -2771,7 +2812,7 @@ fn handle_usage_key(
                 state.error = None;
             }
             KeyCode::Enter => {
-                if commit_usage_field(&mut state) {
+                if commit_usage_field(&mut state, app.lang) {
                     state.editing = false;
                     state.input.clear();
                     state.error = None;
@@ -2826,7 +2867,10 @@ fn handle_usage_key(
                 UsageField::Enabled => {
                     state.settings.enabled = !state.settings.enabled;
                     state.error = if state.settings.enabled && !state.settings.available(config) {
-                        Some("needs a Portkey login — run /connect portkey".to_string())
+                        Some(
+                            app.t("terminal.message.NeedsAPortkeyLoginRunConnectPortkey")
+                                .to_string(),
+                        )
                     } else {
                         None
                     };
@@ -2875,12 +2919,15 @@ fn usage_field_value(settings: &crate::portkey_usage::UsageSettings, field: Usag
 
 /// Applies the dialog's edited text to the selected field. Returns `false` and
 /// records an error when the value does not parse, so the editor stays open.
-fn commit_usage_field(state: &mut UsageState) -> bool {
+fn commit_usage_field(state: &mut UsageState, lang: crate::i18n::Language) -> bool {
     let raw = state.input.trim().to_string();
     match state.field() {
         UsageField::User => {
             if raw.contains(char::is_whitespace) {
-                state.error = Some("enter one word, e.g. firstname.lastname".to_string());
+                state.error = Some(
+                    crate::i18n::t(lang, "terminal.message.EnterOneWordEGFirstnameLastname")
+                        .to_string(),
+                );
                 return false;
             }
             state.settings.user = raw;
@@ -2907,7 +2954,10 @@ fn commit_usage_field(state: &mut UsageState) -> bool {
                         state.settings.budget = Some(value);
                     }
                     _ => {
-                        state.error = Some("budget must be a positive number".to_string());
+                        state.error = Some(
+                            crate::i18n::t(lang, "terminal.message.BudgetMustBeAPositiveNumber")
+                                .to_string(),
+                        );
                         return false;
                     }
                 }
@@ -3071,7 +3121,8 @@ fn branch_in_place(
 ) {
     let Some(log) = session.as_ref() else {
         app.items.push(ChatItem::Error(
-            "no session to branch — send a message first".to_string(),
+            app.t("terminal.message.NoSessionToBranchSendAMessageFirst")
+                .to_string(),
         ));
         return;
     };
@@ -3352,12 +3403,12 @@ struct ArgSpec {
 const ON_OFF_ARGS: &[ArgSpec] = &[
     ArgSpec {
         value: "on",
-        description: "enable",
+        description: "terminal.argument.Enable",
         children: &[],
     },
     ArgSpec {
         value: "off",
-        description: "disable",
+        description: "terminal.argument.Disable",
         children: &[],
     },
 ];
@@ -3365,12 +3416,12 @@ const ON_OFF_ARGS: &[ArgSpec] = &[
 const UPDATES_ARGS: &[ArgSpec] = &[
     ArgSpec {
         value: "on",
-        description: "look for a newer release at launch",
+        description: "terminal.argument.LookForANewerReleaseAtLaunch",
         children: &[],
     },
     ArgSpec {
         value: "off",
-        description: "stop looking at launch",
+        description: "terminal.argument.StopLookingAtLaunch",
         children: &[],
     },
 ];
@@ -3378,22 +3429,22 @@ const UPDATES_ARGS: &[ArgSpec] = &[
 const MARKETPLACE_ARGS: &[ArgSpec] = &[
     ArgSpec {
         value: "list",
-        description: "list marketplaces",
+        description: "terminal.argument.ListMarketplaces",
         children: &[],
     },
     ArgSpec {
         value: "add",
-        description: "add a marketplace",
+        description: "terminal.argument.AddAMarketplace",
         children: &[],
     },
     ArgSpec {
         value: "update",
-        description: "fetch a marketplace's latest manifest",
+        description: "terminal.argument.FetchAMarketplaceSLatestManifest",
         children: &[],
     },
     ArgSpec {
         value: "remove",
-        description: "remove a marketplace",
+        description: "terminal.argument.RemoveAMarketplace",
         children: &[],
     },
 ];
@@ -3401,32 +3452,32 @@ const MARKETPLACE_ARGS: &[ArgSpec] = &[
 const PLUGINS_ARGS: &[ArgSpec] = &[
     ArgSpec {
         value: "list",
-        description: "list installed plugins",
+        description: "terminal.argument.ListInstalledPlugins",
         children: &[],
     },
     ArgSpec {
         value: "install",
-        description: "install a plugin",
+        description: "terminal.argument.InstallAPlugin",
         children: &[],
     },
     ArgSpec {
         value: "uninstall",
-        description: "remove a plugin",
+        description: "terminal.argument.RemoveAPlugin",
         children: &[],
     },
     ArgSpec {
         value: "enable",
-        description: "enable a plugin",
+        description: "terminal.argument.EnableAPlugin",
         children: &[],
     },
     ArgSpec {
         value: "disable",
-        description: "disable a plugin",
+        description: "terminal.argument.DisableAPlugin",
         children: &[],
     },
     ArgSpec {
         value: "marketplace",
-        description: "manage marketplaces",
+        description: "terminal.argument.ManageMarketplaces",
         children: MARKETPLACE_ARGS,
     },
 ];
@@ -3439,17 +3490,17 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         &[
             ArgSpec {
                 value: "list",
-                description: "list pending attachments",
+                description: "terminal.argument.ListPendingAttachments",
                 children: &[],
             },
             ArgSpec {
                 value: "remove",
-                description: "remove one by id or number",
+                description: "terminal.argument.RemoveOneByIdOrNumber",
                 children: &[],
             },
             ArgSpec {
                 value: "clear",
-                description: "remove every attachment",
+                description: "terminal.argument.RemoveEveryAttachment",
                 children: &[],
             },
         ],
@@ -3458,7 +3509,7 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         "copy",
         &[ArgSpec {
             value: "all",
-            description: "copy the whole transcript",
+            description: "terminal.argument.CopyTheWholeTranscript",
             children: &[],
         }],
     ),
@@ -3467,22 +3518,22 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         &[
             ArgSpec {
                 value: "on",
-                description: "enable the completion toast",
+                description: "terminal.argument.EnableTheCompletionToast",
                 children: &[],
             },
             ArgSpec {
                 value: "off",
-                description: "disable the completion toast",
+                description: "terminal.argument.DisableTheCompletionToast",
                 children: &[],
             },
             ArgSpec {
                 value: "sound",
-                description: "toggle the alert sound",
+                description: "terminal.argument.ToggleTheAlertSound",
                 children: ON_OFF_ARGS,
             },
             ArgSpec {
                 value: "test",
-                description: "send a sample notification",
+                description: "terminal.argument.SendASampleNotification",
                 children: &[],
             },
         ],
@@ -3492,22 +3543,22 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         &[
             ArgSpec {
                 value: "on",
-                description: "ask before a gated tool runs",
+                description: "terminal.argument.AskBeforeAGatedToolRuns",
                 children: &[],
             },
             ArgSpec {
                 value: "off",
-                description: "run gated tools without asking",
+                description: "terminal.argument.RunGatedToolsWithoutAsking",
                 children: &[],
             },
             ArgSpec {
                 value: "list",
-                description: "show the state and this project's rules",
+                description: "terminal.argument.ShowTheStateAndThisProjectSRules",
                 children: &[],
             },
             ArgSpec {
                 value: "clear",
-                description: "forget this project's always-allow rules",
+                description: "terminal.argument.ForgetThisProjectSAlwaysAllowRules",
                 children: &[],
             },
         ],
@@ -3517,53 +3568,53 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         &[
             ArgSpec {
                 value: "status",
-                description: "show the status and syntax",
+                description: "terminal.argument.ShowTheStatusAndSyntax",
                 children: &[],
             },
             ArgSpec {
                 value: "on",
-                description: "show the bar",
+                description: "terminal.argument.ShowTheBar",
                 children: &[],
             },
             ArgSpec {
                 value: "off",
-                description: "hide the bar",
+                description: "terminal.argument.HideTheBar",
                 children: &[],
             },
             ArgSpec {
                 value: "user",
-                description: "user whose spend to show",
+                description: "terminal.argument.UserWhoseSpendToShow",
                 children: &[],
             },
             ArgSpec {
                 value: "key",
-                description: "usage API key",
+                description: "terminal.argument.UsageApiKey",
                 children: &[],
             },
             ArgSpec {
                 value: "budget",
-                description: "monthly budget",
+                description: "terminal.argument.MonthlyBudget",
                 children: &[],
             },
             ArgSpec {
                 value: "currency",
-                description: "budget currency",
+                description: "terminal.argument.BudgetCurrency",
                 children: &[
                     ArgSpec {
                         value: "usd",
-                        description: "US dollars",
+                        description: "terminal.argument.UsDollars",
                         children: &[],
                     },
                     ArgSpec {
                         value: "cny",
-                        description: "Chinese yuan",
+                        description: "terminal.argument.ChineseYuan",
                         children: &[],
                     },
                 ],
             },
             ArgSpec {
                 value: "metadata",
-                description: "metadata key holding the user",
+                description: "terminal.argument.MetadataKeyHoldingTheUser",
                 children: &[],
             },
         ],
@@ -3576,42 +3627,42 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         &[
             ArgSpec {
                 value: "auto",
-                description: "let the model decide",
+                description: "terminal.argument.LetTheModelDecide",
                 children: &[],
             },
             ArgSpec {
                 value: "off",
-                description: "disable reasoning",
+                description: "terminal.argument.DisableReasoning",
                 children: &[],
             },
             ArgSpec {
                 value: "minimal",
-                description: "minimal effort",
+                description: "terminal.argument.MinimalEffort",
                 children: &[],
             },
             ArgSpec {
                 value: "low",
-                description: "low effort",
+                description: "terminal.argument.LowEffort",
                 children: &[],
             },
             ArgSpec {
                 value: "medium",
-                description: "medium effort",
+                description: "terminal.argument.MediumEffort",
                 children: &[],
             },
             ArgSpec {
                 value: "high",
-                description: "high effort",
+                description: "terminal.argument.HighEffort",
                 children: &[],
             },
             ArgSpec {
                 value: "xhigh",
-                description: "extra-high effort",
+                description: "terminal.argument.ExtraHighEffort",
                 children: &[],
             },
             ArgSpec {
                 value: "max",
-                description: "maximum effort",
+                description: "terminal.argument.MaximumEffort",
                 children: &[],
             },
         ],
@@ -3621,17 +3672,17 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         &[
             ArgSpec {
                 value: "show",
-                description: "show the saved decision",
+                description: "terminal.argument.ShowTheSavedDecision",
                 children: &[],
             },
             ArgSpec {
                 value: "on",
-                description: "trust this project",
+                description: "terminal.argument.TrustThisProject",
                 children: &[],
             },
             ArgSpec {
                 value: "off",
-                description: "decline this project",
+                description: "terminal.argument.DeclineThisProject",
                 children: &[],
             },
         ],
@@ -3641,17 +3692,17 @@ const COMMAND_ARGS: &[(&str, &[ArgSpec])] = &[
         &[
             ArgSpec {
                 value: "show",
-                description: "report the language in use",
+                description: "terminal.argument.ReportTheLanguageInUse",
                 children: &[],
             },
             ArgSpec {
                 value: "en-GB",
-                description: "English (United Kingdom)",
+                description: "terminal.argument.EnglishUnitedKingdom",
                 children: &[],
             },
             ArgSpec {
                 value: "zh-CN",
-                description: "简体中文",
+                description: "terminal.argument.Chinese",
                 children: &[],
             },
         ],
@@ -3670,7 +3721,11 @@ fn command_args(name: &str) -> &'static [ArgSpec] {
 /// Candidates for the argument being typed after a slash command, walking the
 /// fixed grammar for builtins and offering provider names for the login
 /// commands. Empty when the command takes free text or has no completion.
-fn argument_suggestions(command: &str, rest: &str) -> Vec<CommandHint> {
+fn argument_suggestions(
+    command: &str,
+    rest: &str,
+    lang: crate::i18n::Language,
+) -> Vec<CommandHint> {
     let mut tokens: Vec<&str> = rest.split_whitespace().collect();
     let starts_new_token = rest.chars().last().map(char::is_whitespace).unwrap_or(true);
     let prefix = if starts_new_token {
@@ -3705,7 +3760,7 @@ fn argument_suggestions(command: &str, rest: &str) -> Vec<CommandHint> {
         .filter(|spec| spec.value.starts_with(&prefix))
         .map(|spec| CommandHint {
             name: spec.value.to_string(),
-            description: spec.description.to_string(),
+            description: crate::i18n::t(lang, spec.description).to_string(),
         })
         .collect()
 }
@@ -3758,7 +3813,7 @@ fn refresh_suggestions(app: &mut App, config: &Config) {
         return;
     };
     if let Some((command, rest)) = query.split_once(char::is_whitespace) {
-        app.suggestions = argument_suggestions(&command.to_ascii_lowercase(), rest);
+        app.suggestions = argument_suggestions(&command.to_ascii_lowercase(), rest, app.lang);
         return;
     }
     let query = query.to_ascii_lowercase();
@@ -4405,7 +4460,7 @@ fn switch_session(
             app.invalidate_render_cache();
             app.auto_scroll = true;
             *session = Some(log);
-            app.show_status(format!("resumed {id}"));
+            app.show_status(app.tf("terminal.notice.ResumedId", &[("id", &id)]));
         }
         Err(err) => {
             app.items.push(ChatItem::Error(format!("session: {err:#}")));
@@ -4468,27 +4523,46 @@ fn mcp_tone(status: &McpStatus) -> Tone {
     }
 }
 
-fn mcp_listing(statuses: &[(String, String, McpStatus)]) -> ChatItem {
+fn mcp_listing(statuses: &[(String, String, McpStatus)], lang: crate::i18n::Language) -> ChatItem {
     if statuses.is_empty() {
-        return ChatItem::Info("no MCP servers configured".to_string());
+        return ChatItem::Info(crate::i18n::t(lang, "terminal.noMcpServers").to_string());
     }
     let rows = statuses
         .iter()
         .map(|(name, source, status)| {
             let mut row = ListRow::new(name.clone())
-                .status(status.to_string(), mcp_tone(status))
+                .status(
+                    match status {
+                        McpStatus::Connected => crate::i18n::t(lang, "ui.connected").to_string(),
+                        McpStatus::NeedsAuth => crate::i18n::t(lang, "ui.needsAuth").to_string(),
+                        McpStatus::NeedsTrust => crate::i18n::t(lang, "ui.needsTrust").to_string(),
+                        McpStatus::Disabled => crate::i18n::t(lang, "ui.disabled").to_string(),
+                        McpStatus::Error(error) => {
+                            crate::i18n::tf(lang, "common.errorDetail", &[("value0", error)])
+                        }
+                    },
+                    mcp_tone(status),
+                )
                 .detail(source.clone());
             // Authorization opens a browser and waits for the callback, so it
             // cannot run inside a turn. The listing is where the user finds out
             // how to do it themselves.
             if matches!(status, McpStatus::NeedsAuth) {
-                row = row.note(format!("run `oxide mcp auth {name}` to authorize"));
+                row = row.note(crate::i18n::tf(
+                    lang,
+                    "terminal.authorizeMcp",
+                    &[("name", name)],
+                ));
             }
             row
         })
         .collect();
     ChatItem::Listing {
-        title: format!("MCP servers ({})", statuses.len()),
+        title: crate::i18n::tf(
+            lang,
+            "terminal.mcpServerCount",
+            &[("count", &statuses.len().to_string())],
+        ),
         rows,
     }
 }
@@ -4560,7 +4634,10 @@ fn handle_model_result(catalogs: ModelCatalogs, app: &mut App) {
         app.auto_scroll = true;
     }
     let count = catalogs.choices.len();
-    app.status = format!("{count} model(s) — pick one");
+    app.status = app.tf(
+        "terminal.notice.CountModelSPickOne",
+        &[("count", &count.to_string())],
+    );
     app.models = Some(ModelsState::ready(
         catalogs.choices,
         provider,
@@ -4596,8 +4673,11 @@ fn apply_clipboard_paste(app: &mut App, generation: u64, result: Result<media::P
             app.insert_input(&text);
             app.auto_scroll = true;
         }
-        Ok(media::Paste::Empty { types }) => app.show_status(nothing_to_attach(&types)),
-        Err(error) => app.show_status(format!("Failed to paste from clipboard: {error}")),
+        Ok(media::Paste::Empty { types }) => app.show_status(nothing_to_attach(&types, app.lang)),
+        Err(error) => app.show_status(app.tf(
+            "terminal.notice.FailedToPasteFromClipboardError",
+            &[("error", &error.to_string())],
+        )),
     }
 }
 
@@ -4741,8 +4821,11 @@ fn handle_mouse(mouse: MouseEvent, app: &mut App, terminal_area: Rect) {
 /// terminal, and says so in the transcript's tip line.
 fn open_url(app: &mut App, url: &str) {
     match oxide_core::mcp_oauth::open_browser(url) {
-        Ok(_) => app.show_status(format!("opening {url}")),
-        Err(err) => app.show_status(format!("could not open {url}: {err}")),
+        Ok(_) => app.show_status(app.tf("terminal.notice.OpeningUrl", &[("url", url)])),
+        Err(err) => app.show_status(app.tf(
+            "terminal.notice.CouldNotOpenUrlErr",
+            &[("url", url), ("err", &err.to_string())],
+        )),
     }
 }
 
@@ -4953,7 +5036,10 @@ fn copy_selection(app: &mut App) -> bool {
         return true;
     }
     match crate::clipboard::copy(&text) {
-        Ok(()) => app.show_status(format!("copied {} chars", text.chars().count())),
+        Ok(()) => app.show_status(app.tf(
+            "terminal.message.CopiedCountChars",
+            &[("count", &text.chars().count().to_string())],
+        )),
         Err(err) => app.items.push(ChatItem::Error(format!("copy: {err:#}"))),
     }
     true
@@ -4981,7 +5067,10 @@ fn copy_command(app: &mut App, all: bool) {
         return;
     }
     match crate::clipboard::copy(&text) {
-        Ok(()) => app.show_status(format!("copied {} chars", text.chars().count())),
+        Ok(()) => app.show_status(app.tf(
+            "terminal.message.CopiedCountChars",
+            &[("count", &text.chars().count().to_string())],
+        )),
         Err(err) => app.items.push(ChatItem::Error(format!("copy: {err:#}"))),
     }
 }
@@ -5315,7 +5404,7 @@ fn handle_connect_key(key: KeyEvent, app: &mut App, config: &mut Config) {
                 ConnectStep::Browser { .. } => {}
                 ConnectStep::Key { provider } => {
                     if value.is_empty() && !state.is_connected(&provider) {
-                        state.error = Some("enter an API key".to_string());
+                        state.error = Some(app.t("terminal.message.EnterAnApiKey").to_string());
                     } else {
                         let canonical = crate::auth::canonical_provider(&provider);
                         state.key = value;
@@ -5813,11 +5902,14 @@ mod tests {
     #[test]
     fn a_paste_that_found_nothing_says_what_the_clipboard_held() {
         assert_eq!(
-            nothing_to_attach(""),
+            nothing_to_attach("", crate::i18n::Language::EnGb),
             "nothing to attach from the clipboard"
         );
         assert_eq!(
-            nothing_to_attach("public.tiff, NSStringPboardType"),
+            nothing_to_attach(
+                "public.tiff, NSStringPboardType",
+                crate::i18n::Language::EnGb
+            ),
             "nothing to attach from the clipboard (it holds public.tiff, NSStringPboardType)"
         );
     }
@@ -6039,7 +6131,7 @@ mod tests {
             AgentEvent::ToolResult {
                 name: "bash".into(),
                 args: "{}".into(),
-                output: "denied".into(),
+                output: app.t("terminal.message.Denied").into(),
                 is_error: true,
                 diff: None,
                 millis: 1,
@@ -7532,19 +7624,55 @@ mod tests {
     }
 
     #[test]
-    fn formats_mcp_statuses() {
-        let ChatItem::Listing { title, rows } = mcp_listing(&[
-            (
-                "context7".to_string(),
-                "remote: https://mcp.context7.com/mcp/oauth".to_string(),
-                McpStatus::Connected,
-            ),
-            (
-                "newrelic".to_string(),
-                "remote: https://mcp.newrelic.com/mcp/".to_string(),
+    fn argument_descriptions_translate_without_changing_values() {
+        fn check(specs: &[ArgSpec]) {
+            for spec in specs {
+                assert!(
+                    !crate::i18n::t(crate::i18n::Language::ZhCn, spec.description).is_empty(),
+                    "{}",
+                    spec.description
+                );
+                check(spec.children);
+            }
+        }
+        for (_, specs) in COMMAND_ARGS {
+            check(specs);
+        }
+        let suggestions = argument_suggestions("permissions", "", crate::i18n::Language::ZhCn);
+        assert_eq!(suggestions[0].name, "on");
+        assert_eq!(suggestions[0].description, "运行受限工具前询问");
+        let ChatItem::Listing { title, rows } = mcp_listing(
+            &[(
+                "original-server".into(),
+                "project".into(),
                 McpStatus::NeedsAuth,
-            ),
-        ]) else {
+            )],
+            crate::i18n::Language::ZhCn,
+        ) else {
+            panic!("listing");
+        };
+        assert_eq!(title, "MCP 服务器（1）");
+        assert_eq!(rows[0].name, "original-server");
+        assert_eq!(rows[0].status.as_deref(), Some("需要授权"));
+    }
+
+    #[test]
+    fn formats_mcp_statuses() {
+        let ChatItem::Listing { title, rows } = mcp_listing(
+            &[
+                (
+                    "context7".to_string(),
+                    "remote: https://mcp.context7.com/mcp/oauth".to_string(),
+                    McpStatus::Connected,
+                ),
+                (
+                    "newrelic".to_string(),
+                    "remote: https://mcp.newrelic.com/mcp/".to_string(),
+                    McpStatus::NeedsAuth,
+                ),
+            ],
+            crate::i18n::Language::EnGb,
+        ) else {
             panic!("expected a listing");
         };
         assert_eq!(title, "MCP servers (2)");
@@ -7554,7 +7682,7 @@ mod tests {
         assert_eq!(rows[1].status.as_deref(), Some("Needs Auth"));
         assert_eq!(rows[1].tone, Tone::Warning);
         assert!(matches!(
-            mcp_listing(&[]),
+            mcp_listing(&[], crate::i18n::Language::EnGb),
             ChatItem::Info(ref text) if text == "no MCP servers configured"
         ));
     }

@@ -81,7 +81,7 @@ export function activate(context: vscode.ExtensionContext): void {
     tooltip.appendMarkdown(`Binary: \`${binaryPath()}\`\n\n`);
     tooltip.appendMarkdown(`Config: \`${file}\`\n\n`);
     tooltip.appendMarkdown(
-      "Click to open the chat. Choose a provider with the Connect Provider command, or `/connect` in the composer.",
+      controller.t("extension.ClickToOpenTheChatChooseAProviderWithTheConnectProviderCommandOrConnectInTheComposer", "Click to open the chat. Choose a provider with the Connect Provider command, or `/connect` in the composer."),
     );
     status.tooltip = tooltip;
     status.show();
@@ -164,13 +164,13 @@ export function activate(context: vscode.ExtensionContext): void {
       guard(async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.document.uri.scheme !== "file") {
-          void vscode.window.showInformationMessage("Oxide: open a file first.");
+          void vscode.window.showInformationMessage(controller.t("extension.OxideOpenAFileFirst", "Oxide: open a file first."));
           return;
         }
         const projectPath = controller.projectRelative(editor.document.uri.fsPath);
         if (projectPath === null) {
           void vscode.window.showInformationMessage(
-            "Oxide: open the file's folder as the active workspace before referencing it.",
+            controller.t("extension.OxideOpenTheFileSFolderAsTheActiveWorkspaceBeforeReferencingIt", "Oxide: open the file's folder as the active workspace before referencing it."),
           );
           return;
         }
@@ -194,9 +194,9 @@ export function activate(context: vscode.ExtensionContext): void {
       guard(async () => {
         const chip = await addSelection(controller);
         const question = await vscode.window.showInputBox({
-          title: "Oxide: ask about the selection",
-          prompt: "What do you want to know?",
-          placeHolder: "e.g. why does this retry loop spin?",
+          title: controller.t("extension.OxideAskAboutTheSelection", "Oxide: ask about the selection"),
+          prompt: controller.t("extension.WhatDoYouWantToKnow", "What do you want to know?"),
+          placeHolder: controller.t("extension.selectionExample", "e.g. why does this retry loop spin?"),
         });
         if (!question?.trim()) {
           if (chip) controller.removeChip(chip.id);
@@ -367,18 +367,18 @@ function updateMemory(context: vscode.ExtensionContext): UpdateStore {
 async function addSelection(controller: ChatController): Promise<{ id: number } | null> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
-    void vscode.window.showInformationMessage("Oxide: open a file first.");
+    void vscode.window.showInformationMessage(controller.t("extension.OxideOpenAFileFirst", "Oxide: open a file first."));
     return null;
   }
   const document = editor.document;
   if (document.uri.scheme !== "file") {
-    void vscode.window.showInformationMessage("Oxide: only files on disk can be attached.");
+    void vscode.window.showInformationMessage(controller.t("extension.OxideOnlyFilesOnDiskCanBeAttached", "Oxide: only files on disk can be attached."));
     return null;
   }
   const projectPath = controller.projectRelative(document.uri.fsPath);
   if (projectPath === null) {
     void vscode.window.showInformationMessage(
-      "Oxide: open the file's folder as the active workspace before attaching it.",
+      controller.t("extension.OxideOpenTheFileSFolderAsTheActiveWorkspaceBeforeAttachingIt", "Oxide: open the file's folder as the active workspace before attaching it."),
     );
     return null;
   }

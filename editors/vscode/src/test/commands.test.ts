@@ -229,7 +229,7 @@ describe("command contributions", () => {
     assert.ok(
       install.includes("const probe = ++this.updateProbe;") &&
         install.includes("this.installedUpdate = check;") &&
-        install.includes("this.showNotice(`Installed Oxide ${check.latest}.`)") &&
+        install.includes('this.showNotice(this.t("surface.installedOxideValue", "Installed Oxide {value}.", { value: check.latest }))') &&
         install.includes('updateDialog({ k: "installed", check }, this.languageInfo)'),
       "the install reports itself whether or not a check is in flight behind it",
     );
@@ -340,8 +340,8 @@ describe("command contributions", () => {
     // restart once VS Code holds the release.
     assert.ok(
       background.includes("vscode.window.showInformationMessage(") &&
-        background.includes("UPDATE_INSTALL_NOW,") &&
-        background.includes("if (choice !== UPDATE_INSTALL_NOW) return;") &&
+        background.includes("installChoice,") &&
+        background.includes("if (choice !== installChoice) return;") &&
         background.includes("if (this.installing) return;"),
       "the install is the notification's own row, and a second one is never run over the first",
     );
@@ -374,13 +374,13 @@ describe("command contributions", () => {
       install
         .replace(/\s+/g, " ")
         .includes(
-          'if (report) { this.showNotice(`Installed Oxide ${check.latest}.`); this.showDialog(updateDialog({ k: "installed", check }, this.languageInfo)); }',
+          'if (report) { this.showNotice(this.t("surface.installedOxideValue", "Installed Oxide {value}.", { value: check.latest })); this.showDialog(updateDialog({ k: "installed", check }, this.languageInfo)); }',
         ),
       "so the launch's own install reports itself to the panel nowhere at all",
     );
     assert.ok(
       background.includes("this.openRelease(check.releaseUrl)") &&
-        chat.includes('const UPDATE_RELEASE_NOTES = "Release notes";'),
+        chat.includes('const notesChoice = this.t("dialog.update.notes", "Release notes");'),
       "a release with no file to install is pointed at, not offered an install nothing could run",
     );
 
@@ -389,25 +389,25 @@ describe("command contributions", () => {
     // is the one it replaced until the window is reloaded.
     const announce = chat.slice(chat.indexOf("private announceInstalled("));
     assert.ok(
-      announce.includes("`Oxide ${check.latest} was installed. Restart the window to run it.`"),
+      announce.includes('"Oxide {value0} was installed. Restart the window to run it."'),
       "the installed release is named with what is left to do",
     );
     assert.ok(
-      chat.includes('const UPDATE_RESTART = "Restart Window";') &&
+      chat.includes('const restartChoice = this.t("extension.restartWindow", "Restart Window");') &&
         dialogs.includes('row("", t("ui.restartWindow", "Restart Window")'),
       "the restart is the same control the panel's dialog offers, named the same way",
     );
     assert.ok(
-      announce.includes("if (choice === UPDATE_RESTART) this.reloadWindow();"),
+      announce.includes("if (choice === restartChoice) this.reloadWindow();"),
       "and its click goes through the reload that puts the new version in charge",
     );
     assert.ok(
-      chat.includes('const UPDATE_LATER = "Later";') &&
-        chat.includes('const UPDATE_INSTALL_NOW = "Install";'),
+      chat.includes('this.t("extension.later", "Later")') &&
+        chat.includes('const installChoice = this.t("ui.install", "Install {value0}", { value0: check.latest });'),
       "with the way out of the notification, and the row that starts the install",
     );
     assert.ok(
-      background.includes("`Oxide ${check.latest} is available (installed: ${check.current}).`"),
+      background.includes('"Oxide {value0} is available (installed: {value1})."'),
       "a release the panel cannot install is offered, naming what is running now",
     );
   });
@@ -806,7 +806,7 @@ describe("command contributions", () => {
     const actions = chat.slice(chat.indexOf("private async changeSession("), chat.indexOf("// ---------- dialogs ----------"));
     assert.ok(actions.includes('action === "archive" && running'));
     assert.ok(actions.includes('sessionActionArgs(id, operation)'));
-    assert.ok(actions.includes("oxide sessions delete ${id}"));
+    assert.ok(actions.includes("oxide sessions delete {value0}"));
     assert.ok(!chat.includes("sessionDeleteArgs") && !chat.includes("confirmDeleteSession"));
   });
 
@@ -1091,7 +1091,7 @@ describe("command contributions", () => {
     assert.ok(send.includes("this.startTurn(prepared, true)"), "an idle send starts its own turn");
     assert.ok(
       send.includes('this.t("ui.queued", "Queued: {value0}"') &&
-        send.includes('`Steering: ${firstLine(prepared.message)'),
+        send.includes('"Steering: {value0}"'),
       "the selected busy behavior is announced",
     );
     assert.ok(
@@ -1151,8 +1151,8 @@ describe("command contributions", () => {
       "only while the run is in another thread, and only for those two events",
     );
     assert.ok(
-      events.includes('`“${this.runLabel()}” is waiting for approval — open it in the strip above to answer.`') &&
-        events.includes('`“${this.runLabel()}” is waiting for your answer — open it in the strip above to answer.`'),
+      events.includes('"“{value0}” is waiting for approval — open it in the strip above to answer."') &&
+        events.includes('"“{value0}” is waiting for your answer — open it in the strip above to answer."'),
       "a held turn says so where the reader is",
     );
     for (const [method, call] of [
@@ -1295,7 +1295,7 @@ describe("command contributions", () => {
     // session the run is appending to.
     assert.ok(
       opening.includes('this.showSessions("A turn is running; stop it before starting a new chat.")') &&
-        opening.includes('this.showSessions("A turn is running; stop it before switching sessions.")'),
+        opening.includes('this.showSessions(this.t("surface.aTurnIsRunningStopItBeforeSwitchingSessions", "A turn is running; stop it before switching sessions."))'),
       "the rows that start a thread wait for the run",
     );
 

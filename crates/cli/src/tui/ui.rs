@@ -1348,7 +1348,11 @@ fn draw_marketplace_remove(
         .count();
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("Remove marketplace `{}`?", marketplace.name),
+            crate::i18n::tf(
+                lang,
+                "terminal.removeMarketplace",
+                &[("name", &marketplace.name)],
+            ),
             Style::default()
                 .fg(theme.error)
                 .add_modifier(Modifier::BOLD),
@@ -1362,9 +1366,14 @@ fn draw_marketplace_remove(
     ];
     if installed > 0 {
         lines.push(Line::from(Span::styled(
-            format!(
-                "This also uninstalls {installed} installed plugin{}.",
-                if installed == 1 { "" } else { "s" }
+            crate::i18n::tf(
+                lang,
+                if installed == 1 {
+                    "terminal.removeMarketplacePlugin"
+                } else {
+                    "terminal.removeMarketplacePlugins"
+                },
+                &[("count", &installed.to_string())],
             ),
             Style::default().fg(theme.info),
         )));
@@ -2819,7 +2828,11 @@ fn render_item_themed(
             {
                 panel.push(Line::from(""));
                 panel.push(Line::from(Span::styled(
-                    format!("Took {}", format_duration(*millis)),
+                    crate::i18n::tf(
+                        lang,
+                        "terminal.tookDuration",
+                        &[("duration", &format_duration(*millis))],
+                    ),
                     Style::default().fg(theme.dim),
                 )));
             }
@@ -2840,9 +2853,13 @@ fn render_item_themed(
                 "[compaction]",
                 Style::default().fg(theme.accent).add_modifier(bold),
             )));
-            let header = format!(
-                "Compacted {summarized} messages (~{} tokens)",
-                compact_tokens(*tokens_before)
+            let header = crate::i18n::tf(
+                lang,
+                "terminal.compactedMessages",
+                &[
+                    ("count", &summarized.to_string()),
+                    ("tokens", &compact_tokens(*tokens_before)),
+                ],
             );
             if expand_tools {
                 push_wrapped(lines, &header, width, Style::default().fg(theme.dim));
@@ -2888,7 +2905,7 @@ fn render_item_themed(
             } else {
                 push_wrapped(
                     lines,
-                    "Branch summary · Ctrl+O to expand",
+                    crate::i18n::t(lang, "terminal.expandBranchSummary"),
                     width,
                     Style::default().fg(theme.dim),
                 );

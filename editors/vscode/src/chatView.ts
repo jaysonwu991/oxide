@@ -335,7 +335,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
 <header id="header">
-  <span id="title">New chat</span>
+  <span id="title" data-i18n="surface.newChat">New chat</span>
   <div id="actions">
     <button id="new-session" class="icon" title="New chat" aria-label="New chat" data-i18n-title="panel.newChat" data-i18n-aria="panel.newChat">${ICONS.new}</button>
     <button id="resume-session" class="icon" title="Session history" aria-label="Session history" aria-expanded="false" aria-controls="dialog" data-i18n-title="panel.sessionHistory" data-i18n-aria="panel.sessionHistory">${ICONS.resume}</button>
@@ -346,7 +346,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </header>
 <section id="run-strip" hidden>
   <span id="run-strip-text"></span>
-  <button id="run-open" class="run-open" type="button">Open</button>
+  <button id="run-open" class="run-open" type="button" data-i18n="surface.open">Open</button>
 </section>
 <div id="run-time" class="run-time" role="timer" hidden><span id="run-time-text"></span></div>
 <section id="dialog" class="popover" hidden aria-labelledby="dialog-title">
@@ -354,13 +354,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <h2 id="dialog-title"></h2>
     <span id="dialog-count" class="popover-count" hidden></span>
     <div class="popover-actions">
-      <button id="dialog-refresh" class="icon" hidden title="Recheck" aria-label="Recheck">${ICONS.refresh}</button>
-      <button id="dialog-close" class="icon" title="Close" aria-label="Close">${ICONS.close}</button>
+      <button id="dialog-refresh" class="icon" hidden title="Recheck" aria-label="Recheck" data-i18n-title="surface.recheck" data-i18n-aria="surface.recheck">${ICONS.refresh}</button>
+      <button id="dialog-close" class="icon" title="Close" aria-label="Close" data-i18n-title="surface.close" data-i18n-aria="surface.close">${ICONS.close}</button>
     </div>
   </div>
   <div id="dialog-search" class="popover-search" hidden>
-    <input id="dialog-search-input" type="search" spellcheck="false" autocomplete="off" placeholder="Search sessions…" aria-label="Search sessions">
-    <button id="dialog-search-clear" class="icon" hidden title="Clear the search" aria-label="Clear the search">${ICONS.close}</button>
+    <input id="dialog-search-input" type="search" spellcheck="false" autocomplete="off" placeholder="Search sessions…" aria-label="Search sessions" data-i18n-placeholder="surface.searchSessionsPlaceholder" data-i18n-aria="surface.searchSessionsLabel">
+    <button id="dialog-search-clear" class="icon" hidden title="Clear the search" aria-label="Clear the search" data-i18n-title="surface.clearTheSearch" data-i18n-aria="surface.clearTheSearch">${ICONS.close}</button>
   </div>
   <p id="dialog-sub" class="popover-sub"></p>
   <p id="dialog-note" class="popover-note" hidden></p>
@@ -368,9 +368,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </section>
 <main id="transcript" tabindex="0">
   <div id="empty" class="empty">
-    <p id="empty-lead">Ask Oxide to make a change, explain code, or run something.</p>
+    <p id="empty-lead" data-i18n="surface.askOxideToMakeAChangeExplainCodeOrRunSomething">Ask Oxide to make a change, explain code, or run something.</p>
     <div id="empty-suggestions" class="suggestions" hidden></div>
-    <p class="hint">Runs use the same configuration, sessions and project trust as the terminal: <code>oxide</code> starts a turn with <code>--mode rpc</code>, so a tool that needs your approval waits for an answer here.</p>
+    <p class="hint" data-i18n-code="panel.sharedRuntime">Runs use the same configuration, sessions and project trust as the terminal: \`oxide\` starts a turn with \`--mode rpc\`, so a tool that needs your approval waits for an answer here.</p>
   </div>
 </main>
 <button id="jump-latest" class="jump-latest" type="button" title="Jump to latest message" aria-label="Jump to latest message" data-i18n-title="topbar.jumpLatest" data-i18n-aria="topbar.jumpLatest" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
@@ -385,20 +385,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
   <div id="composer">
-    <div id="queue" class="queued-messages" aria-label="Queued messages" hidden></div>
+    <div id="queue" class="queued-messages" aria-label="Queued messages" hidden data-i18n-aria="surface.queuedMessages"></div>
     <div id="queue-menu" class="queued-message-menu" role="menu"
-      aria-label="Queued message actions" hidden></div>
-    <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden></div>
+      aria-label="Queued message actions" hidden data-i18n-aria="surface.queuedMessageActions"></div>
+    <div id="at" class="at-list" role="listbox" aria-label="Files and folders" hidden data-i18n-aria="surface.filesAndFolders"></div>
     <div id="chips" class="chips" hidden></div>
     <div id="input" class="markdown-input body" contenteditable="true" spellcheck="false"
       role="textbox" aria-multiline="true" aria-label="Message" data-i18n-aria="composer.message"
       data-placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image" data-i18n-placeholder="panel.placeholder"></div>
     <div id="bar">
       <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach" data-i18n-title="panel.attachHint" data-i18n-aria="composer.attach">${ICONS.attach}</button>
-      <div id="meta" class="meta" aria-label="Turn settings"></div>
+      <div id="meta" class="meta" aria-label="Turn settings" data-i18n-aria="surface.turnSettings"></div>
       <span id="status" hidden></span>
       <span class="spacer"></span>
-      <div id="model-settings" class="model-settings" aria-label="Model and reasoning"></div>
+      <div id="model-settings" class="model-settings" aria-label="Model and reasoning" data-i18n-aria="surface.modelAndReasoning"></div>
       <div class="context-status">
       <span id="usage" class="usage" hidden><span id="usage-text" role="note" tabindex="0"></span></span>
       <span id="gauge" class="gauge" role="img" tabindex="0" hidden><span id="gauge-fill"></span></span>
@@ -406,16 +406,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <button id="stop" class="icon danger run-control composer-action" hidden title="Stop the running turn (Esc)" aria-label="Stop" data-i18n-title="composer.stop" data-i18n-aria="composer.stop"><span class="stop-icon" aria-hidden="true">${ICONS.stop}</span></button>
       <button id="send" class="icon primary composer-action" disabled title="Send (Enter)" aria-label="Send" data-i18n-title="composer.sendHint" data-i18n-aria="composer.send">${ICONS.send}</button>
     </div>
-    <div id="dropzone" hidden><span>Drop files to attach</span></div>
+    <div id="dropzone" hidden><span data-i18n="surface.dropFilesToAttach">Drop files to attach</span></div>
   </div>
 </footer>
-<div id="image-view" class="overlay image-overlay" role="dialog" aria-modal="true" aria-label="Image preview" hidden>
+<div id="image-view" class="overlay image-overlay" role="dialog" aria-modal="true" aria-label="Image preview" hidden data-i18n-aria="surface.imagePreview">
   <div class="image-frame">
     <div class="image-head">
       <span id="image-view-name" class="image-name"></span>
-      <button id="image-view-close" class="icon danger" title="Close (Esc)" aria-label="Close">✕</button>
+      <button id="image-view-close" class="icon danger" title="Close (Esc)" aria-label="Close" data-i18n-aria="surface.close" data-i18n-title="surface.closeEsc">✕</button>
     </div>
-    <img id="image-view-img" alt="Attachment preview">
+    <img id="image-view-img" alt="Attachment preview" data-i18n-alt="surface.attachmentPreview">
   </div>
 </div>
 <script nonce="${nonce}" src="${script}"></script>

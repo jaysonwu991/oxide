@@ -77,19 +77,21 @@ pub fn list(
             .unwrap_or_else(|| summary.preview.clone());
         if all {
             println!(
-                "{}  {:<10}  {:>4} msg  {}  {}",
+                "{}  {:<10}  {:>4} {}  {}  {}",
                 summary.id,
                 crate::i18n::relative_time(language, now, summary.modified_at),
                 summary.message_count,
+                crate::i18n::t(language, "session.messageUnit"),
                 summary.cwd,
                 label
             );
         } else {
             println!(
-                "{}  {:<10}  {:>4} msg  {}",
+                "{}  {:<10}  {:>4} {}  {}",
                 summary.id,
                 crate::i18n::relative_time(language, now, summary.modified_at),
                 summary.message_count,
+                crate::i18n::t(language, "session.messageUnit"),
                 label
             );
         }
@@ -110,7 +112,14 @@ pub fn set_state(cwd: &Path, id: &str, action: &str) -> Result<()> {
         Ok(())
     })?;
     if action == "archive" {
-        println!("Session archived. Its log is kept. To delete it permanently, run `oxide sessions delete {}` from this project. To restore it, run `oxide sessions unarchive {}`.", session.id, session.id);
+        println!(
+            "{}",
+            crate::i18n::tf(
+                crate::i18n::resolve(cwd),
+                "session.archivedNotice",
+                &[("id", &session.id)]
+            )
+        );
     }
     Ok(())
 }
@@ -161,17 +170,20 @@ pub fn delete(
         }
     }
 
-    remove_targets(&targets)
+    remove_targets(&targets, language)
 }
 
 /// Removes the files a delete settled on. Each is removed by the path it was
 /// resolved to: resolving the id again here is free to land on a different file
 /// — a copy of the thread, or a file that was renamed — which is how a delete
 /// could take a session the user never named.
-fn remove_targets(targets: &[SessionSummary]) -> Result<()> {
+fn remove_targets(targets: &[SessionSummary], language: crate::i18n::Language) -> Result<()> {
     for summary in targets {
         SessionLog::delete_path(&summary.path)?;
-        println!("deleted {}", summary.id);
+        println!(
+            "{}",
+            crate::i18n::tf(language, "session.deleted", &[("id", &summary.id)])
+        );
     }
     Ok(())
 }
@@ -357,6 +369,7 @@ pub async fn compact_sessions(
     id: Option<String>,
     all: bool,
 ) -> Result<()> {
+    let language = crate::i18n::resolve(cwd);
     let ids = if all {
         SessionLog::list(cwd)?
             .into_iter()
@@ -368,7 +381,7 @@ pub async fn compact_sessions(
         anyhow::bail!("specify a session id or --all");
     };
     if ids.is_empty() {
-        println!("no sessions for this project");
+        println!("{}", crate::i18n::t(language, "session.noProjectSessions"));
         return Ok(());
     }
 
@@ -376,15 +389,28 @@ pub async fn compact_sessions(
     for id in &ids {
         match compact_one(cwd, config, id).await {
             Ok(true) => {
-                println!("compacted {id}");
+                println!(
+                    "{}",
+                    crate::i18n::tf(language, "session.compacted", &[("id", id)])
+                );
                 compacted += 1;
             }
-            Ok(false) => println!("skipped {id} (already compact)"),
-            Err(err) => println!("error compacting {id}: {err:#}"),
+            Ok(false) => println!(
+                "{}",
+                crate::i18n::tf(language, "session.skippedCompaction", &[("id", id)])
+            ),
+            Err(err) => println!(
+                "{}",
+                crate::i18n::tf(
+                    language,
+                    "session.compactionError",
+                    &[("id", id), ("error", &format!("{err:#}"))]
+                )
+            ),
         }
     }
     if compacted == 0 {
-        println!("no sessions needed compaction");
+        println!("{}", crate::i18n::t(language, "session.noCompactionNeeded"));
     }
     Ok(())
 }
@@ -410,7 +436,14 @@ pub async fn merge(
     merged.extend(a_messages);
 
     let log = SessionLog::fork(cwd, &merged)?;
-    println!("merged {a} + {b} into {}", log.id());
+    println!(
+        "{}",
+        crate::i18n::tf(
+            crate::i18n::resolve(cwd),
+            "session.merged",
+            &[("a", a), ("b", b), ("id", log.id())]
+        )
+    );
     Ok(())
 }
 
@@ -532,7 +565,7 @@ mod tests {
             "its header still names the original"
         );
 
-        remove_targets(&targets).unwrap();
+        remove_targets(&targets, crate::i18n::Language::EnGb).unwrap();
         assert!(original.path().exists(), "the original was left alone");
         assert!(!copy.exists());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
