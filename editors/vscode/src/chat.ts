@@ -1255,7 +1255,9 @@ export class ChatController {
   /// terminal and the desktop app match them. Returned rather than broadcast,
   /// for the same reason as the `@path` rows — a palette row replaces the value
   /// in the box that asked.
-  async completePalette(value: string, seq: number): Promise<ViewMessage> {
+  async completePalette(value: string, seq: number, caret = value.length): Promise<ViewMessage> {
+    // A skill's arguments can contain a reference even though the message starts with `/`.
+    if (atToken(value, caret)) return this.completeAt(value, caret, seq);
     const answer = commandRows(await this.commands(), value);
     return {
       k: "paletteRows",

@@ -2056,7 +2056,7 @@ function paintComposerFacts() {
   // The ring's own circumference, read off the circle the sheet draws rather
   // than kept beside it: a dash as long as the circle is the ring at 100%, so
   // the filled part is what the thread's last request took of the window.
-  const length = 2 * Math.PI * (Number(fill.getAttribute("r")) || 6.2);
+  const length = 2 * Math.PI * (Number(fill.getAttribute("r")) || 12.25);
   const percent = usagePercent(state.usage);
   const spent = percent == null ? 0 : Math.max(0, Math.min(percent, 100));
   fill.setAttribute(

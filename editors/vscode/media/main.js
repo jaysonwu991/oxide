@@ -2158,8 +2158,9 @@ function installMarkdownInput(editor, render) {
     gauge.dataset.level = footer.level || "ok";
     gauge.title = footer.usage || (percent === null ? t("ui.noUsageReported", "No usage reported") : t("ui.ofTheContextWindowUsed", "{value0}% of the context window used", { value0: percent }));
     gauge.setAttribute("aria-label", t("surface.UsageValue", "Usage: {value}", { value: gauge.title }));
-    gauge.style.background = `conic-gradient(currentColor ${percent === null ? 0 : Math.min(percent, 100) * 3.6}deg, color-mix(in srgb, currentColor 25%, transparent) 0)`;
-    gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
+    const length = 2 * Math.PI * (Number(gaugeFill.getAttribute("r")) || 12.25);
+    const spent = percent === null ? 0 : Math.max(0, Math.min(percent, 100));
+    gaugeFill.setAttribute("stroke-dasharray", `${(length * spent / 100).toFixed(2)} ${length.toFixed(2)}`);
   }
 
   /// Model and reasoning keep visible values beside the action button.
@@ -2858,7 +2859,7 @@ function installMarkdownInput(editor, render) {
   function requestCompletion() {
     if (input.value.startsWith("/")) {
       rowSeq += 1;
-      vscode.postMessage({ k: "completePalette", text: input.value, seq: rowSeq });
+      vscode.postMessage({ k: "completePalette", text: input.value, caret: input.selectionStart || 0, seq: rowSeq });
       return;
     }
     if (input.value.indexOf("@") === -1) {

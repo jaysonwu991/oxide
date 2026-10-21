@@ -833,7 +833,7 @@ describe("webview footer", () => {
     assert.equal(byId.get("gauge")!.getAttribute("aria-label"), `Usage: ${footer.usage}`);
     assert.equal(byId.get("gauge")!.hidden, false);
     assert.equal(byId.get("gauge")!.dataset.level, "ok");
-    assert.equal(byId.get("gauge-fill")!.style.width, "12%");
+    assert.equal(byId.get("gauge-fill")!.getAttribute("stroke-dasharray"), "9.24 76.97");
   });
 
   /// The checkout is the one fact on the bar above the box that is a control: it
@@ -905,10 +905,35 @@ describe("webview footer", () => {
     assert.equal(byId.get("gauge")!.dataset.level, "high");
   });
 
+  it("uses the desktop's circle geometry and the busy indicator's diameter", () => {
+    const desktop = fs.readFileSync(path.join(root, "../../crates/desktop/ui/index.html"), "utf8");
+    const desktopStyle = fs.readFileSync(path.join(root, "../../crates/desktop/ui/style.css"), "utf8");
+    const panelStyle = fs.readFileSync(path.join(root, "media/style.css"), "utf8");
+    const panelSvg = shell.match(/id="gauge"[^>]*>(<svg[\s\S]*?<\/svg>)/)![1];
+    const desktopSvg = desktop.match(/id="context-ring"[\s\S]*?>(<svg[\s\S]*?<\/svg>)/)![1];
+    assert.equal(panelSvg.replace('id="gauge-fill"', 'id="context-ring-fill"').replace(/\s+\/>/g, "/>"), desktopSvg.replace(/\s+\/>/g, "/>"));
+    const radius = Number(panelSvg.match(/r="([\d.]+)"/)![1]);
+    const stroke = Number(panelSvg.match(/stroke-width="([\d.]+)"/)![1]);
+    assert.equal(2 * radius + stroke, 26, "the SVG's painted diameter matches the progress border box");
+    assert.equal(stroke, 1.5, "both outlines have the same painted thickness");
+    for (const css of [panelStyle, desktopStyle]) {
+      assert.match(css, /--composer-ring-size: 26px;/);
+      assert.match(css, /--composer-ring-stroke: 1.5px;/);
+      assert.match(css, /width: var\(--composer-ring-size\); height: var\(--composer-ring-size\)/);
+      const busy = css.match(/\.composer-action\[data-level="busy"\]::after \{([^}]*)\}/)![1];
+      assert.match(busy, /inset: 0;/);
+      assert.match(busy, /margin: auto;/);
+      assert.match(busy, /box-sizing: border-box;/);
+      assert.match(busy, /width: var\(--composer-ring-size\);/);
+      assert.match(busy, /height: var\(--composer-ring-size\);/);
+      assert.match(busy, /border: var\(--composer-ring-stroke\) solid transparent;/);
+    }
+  });
+
   it("never paints a gauge past its track", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ footer: { ...footer, percent: 140 } }));
-    assert.equal(byId.get("gauge-fill")!.style.width, "100%");
+    assert.equal(byId.get("gauge-fill")!.getAttribute("stroke-dasharray"), "76.97 76.97");
   });
 });
 
@@ -1745,6 +1770,29 @@ describe("webview composer", () => {
     assert.match(style, /\.at-list\[hidden\]/);
   });
 
+  it("completes paths inside a skill's arguments and keeps walking folders", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage());
+    const input = byId.get("input")!;
+    const prefix = "/submit-copy Submit strings from ";
+    input.value = prefix + "@Pack";
+    input.fire("input");
+    assert.equal(last(posted).caret, input.value.length);
+    send({ k: "atSuggestions", kind: "path", seq: paletteAsked(posted), start: prefix.length, end: input.value.length, rows: [
+      { label: "Package/", kind: "folder", insert: "@Package/" },
+    ] });
+    byId.get("at")!.children[0].fire("click");
+    assert.equal(input.value, prefix + "@Package/");
+    assert.equal(last(posted).caret, input.value.length);
+    send({ k: "atSuggestions", kind: "path", seq: paletteAsked(posted), start: prefix.length, end: input.value.length, rows: [
+      { label: "Package/copy.json", kind: "file", insert: "@Package/copy.json " },
+    ] });
+    input.fire("keydown", { key: "Tab", preventDefault() {} });
+    assert.equal(input.value, prefix + "@Package/copy.json ");
+    assert.equal(byId.get("at")!.hidden, true);
+    assert.equal(posted.some((message) => message.k === "send"), false);
+  });
+
   it("offers the project's commands and skills for a slash command being typed", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage());
@@ -1757,6 +1805,7 @@ describe("webview composer", () => {
     assert.deepEqual(last(posted), {
       k: "completePalette",
       text: "/ox",
+      caret: 3,
       seq: paletteAsked(posted),
     });
 

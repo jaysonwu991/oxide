@@ -23,6 +23,8 @@ body {
      blocks below what the prose around them uses. Declared here rather than on
      `:root` because VS Code's own variables are not always set that high. */
   --control-size: 30px;
+  --composer-ring-size: 26px;
+  --composer-ring-stroke: 1.5px;
   --control-icon-size: 18px;
   --ui-line-height: 1.4;
   --surface-radius: 12px;
@@ -1579,8 +1581,12 @@ footer {
 .composer-action[data-level="busy"]::after {
   content: "";
   position: absolute;
-  inset: 2px;
-  border: 1.5px solid transparent;
+  inset: 0;
+  margin: auto;
+  box-sizing: border-box;
+  width: var(--composer-ring-size);
+  height: var(--composer-ring-size);
+  border: var(--composer-ring-stroke) solid transparent;
   border-top-color: currentColor;
   border-right-color: currentColor;
   border-radius: 50%;
@@ -2561,8 +2567,8 @@ footer {
    thread has used, with the percent spelled out beside it. */
 .context-status { display: flex; align-items: center; min-height: var(--control-size); gap: 6px; flex: none; margin-left: 1px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
 .context-status:has(.gauge:focus-visible) { outline: 1px solid var(--vscode-focusBorder); outline-offset: 3px; border-radius: 50%; }
-.context-status .gauge { order: -1; flex: none; width: var(--control-size); height: var(--control-size); border-radius: 50%; background: conic-gradient(currentColor var(--context-angle, 0deg), color-mix(in srgb, currentColor 25%, transparent) 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); }
-.context-status .gauge > #gauge-fill { display: none; }
+.context-status .gauge { display: flex; align-items: center; justify-content: center; order: -1; flex: none; width: var(--control-size); height: var(--control-size); }
+.context-status .gauge svg { display: block; width: var(--composer-ring-size); height: var(--composer-ring-size); flex: none; }
 .context-status:has(.gauge[data-level="warn"]) { color: var(--vscode-editorWarning-foreground); }
 .context-status:has(.gauge[data-level="high"]) { color: var(--vscode-errorForeground); }
 

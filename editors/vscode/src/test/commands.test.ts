@@ -960,6 +960,11 @@ describe("command contributions", () => {
       chat.indexOf("async completePalette("),
       chat.indexOf("private async readCommands("),
     );
+    assert.ok(
+      complete.includes("if (atToken(value, caret)) return this.completeAt(value, caret, seq);") &&
+      complete.indexOf("atToken(value, caret)") < complete.indexOf("await this.commands()"),
+      "an @path under the caret in skill arguments takes priority over the slash palette",
+    );
     assert.ok(complete.includes("this.commands()"), "the rows come from the catalog");
     assert.ok(complete.includes("commandRows("), "and are ranked in the shared module");
     assert.ok(complete.includes('k: "paletteRows"'), "labelled with the question it answers");
