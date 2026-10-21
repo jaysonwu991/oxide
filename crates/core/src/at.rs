@@ -82,43 +82,48 @@ pub fn referenced_files(input: &str, cwd: &Path) -> Vec<PathBuf> {
         // Bound filesystem probes even when a pasted document contains an @.
         let end = line.char_indices().nth(4096).map_or(line.len(), |(i, _)| i);
         let line = &line[..end];
-        let candidates: Vec<&str> =
-            if let Some(quote) = line.chars().next().filter(|c| matches!(c, '\'' | '"')) {
-                line[1..]
-                    .find(quote)
-                    .map(|end| vec![&line[1..end + 1]])
-                    .unwrap_or_default()
-            } else {
-                let mut ends: Vec<usize> = line
-                    .char_indices()
-                    .filter_map(|(i, c)| c.is_whitespace().then_some(i))
-                    .take(128)
-                    .collect();
-                ends.push(line.len());
-                ends.into_iter()
-                    .rev()
-                    .map(|end| {
-                        line[..end].trim_end_matches([',', '.', ';', '!', '?', ')', ']', '"', '\''])
-                    })
-                    .collect()
-            };
+        let quote = line.chars().next().filter(|c| matches!(c, '\'' | '"'));
+        let candidates: Vec<&str> = if let Some(quote) = quote {
+            line[1..]
+                .find(quote)
+                .map(|end| vec![&line[1..end + 1]])
+                .unwrap_or_default()
+        } else {
+            let mut ends: Vec<usize> = line
+                .char_indices()
+                .filter_map(|(i, c)| c.is_whitespace().then_some(i))
+                .take(128)
+                .collect();
+            ends.push(line.len());
+            ends.into_iter()
+                .rev()
+                .map(|end| {
+                    line[..end].trim_end_matches([',', '.', ';', '!', '?', ')', ']', '"', '\''])
+                })
+                .collect()
+        };
         for raw in candidates {
             if raw.is_empty() {
                 continue;
             }
-            let raw = raw.rsplit_once('#').map_or(raw, |(path, range)| {
-                let mut numbers = range.split('-');
-                let start = numbers.next().and_then(|n| n.parse::<usize>().ok());
-                let end = numbers.next().map(|n| n.parse::<usize>());
-                if start.is_some_and(|n| n > 0)
-                    && end.is_none_or(|end| end.is_ok_and(|n| n >= start.unwrap()))
-                    && numbers.next().is_none()
-                {
-                    path
-                } else {
-                    raw
-                }
-            });
+            let full = crate::media::expand_path(raw, cwd);
+            let raw = if quote.is_some() || full.is_file() {
+                raw
+            } else {
+                raw.rsplit_once('#').map_or(raw, |(path, range)| {
+                    let mut numbers = range.split('-');
+                    let start = numbers.next().and_then(|n| n.parse::<usize>().ok());
+                    let end = numbers.next().map(|n| n.parse::<usize>());
+                    if start.is_some_and(|n| n > 0)
+                        && end.is_none_or(|end| end.is_ok_and(|n| n >= start.unwrap()))
+                        && numbers.next().is_none()
+                    {
+                        path
+                    } else {
+                        raw
+                    }
+                })
+            };
             let path = crate::media::expand_path(raw, cwd);
             if path.is_file() {
                 if !found.contains(&path) {
@@ -369,6 +374,56 @@ mod tests {
             referenced_files("@source.rs#2-5 and @issue#draft.md", &dir),
             vec![file, hash]
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn numeric_hash_filenames_take_precedence_over_line_ranges() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_at_numeric_hash_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let literal = dir.join("plot.png#2");
+        let plain = dir.join("plot.png");
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR";
+        std::fs::write(&literal, png).unwrap();
+        for input in [
+            "@\"plot.png#2\"",
+            "@'plot.png#2'",
+            "@plot.png#2",
+            "@\"plot.png#2\"#3-4",
+        ] {
+            assert_eq!(
+                referenced_files(input, &dir),
+                vec![literal.clone()],
+                "{input}"
+            );
+            assert_eq!(
+                crate::media::referenced_attachments(input, &dir),
+                vec![literal.clone()],
+                "{input}"
+            );
+        }
+        std::fs::write(&plain, png).unwrap();
+        for input in ["@\"plot.png#2\"", "@plot.png#2", "@\"plot.png#2\"#3"] {
+            assert_eq!(
+                referenced_files(input, &dir),
+                vec![literal.clone()],
+                "{input}"
+            );
+            assert_eq!(
+                crate::media::referenced_attachments(input, &dir),
+                vec![literal.clone()],
+                "{input}"
+            );
+        }
+        assert_eq!(referenced_files("@plot.png#3-4", &dir), vec![plain.clone()]);
+        assert_eq!(
+            referenced_files("@\"plot.png\"#3-4", &dir),
+            vec![plain.clone()]
+        );
+        std::fs::remove_file(&literal).unwrap();
+        assert!(referenced_files("@\"plot.png#2\"", &dir).is_empty());
+        assert_eq!(referenced_files("@plot.png#2", &dir), vec![plain]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

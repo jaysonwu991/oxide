@@ -509,9 +509,10 @@ impl ModelsState {
     }
 }
 
-/// A slash-command entry shown in the input autocomplete.
+/// A command or path entry shown in the input autocomplete.
 #[derive(Debug, Clone)]
 pub struct CommandHint {
+    pub insert: Option<String>,
     pub name: String,
     pub description: String,
 }
