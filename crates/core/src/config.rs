@@ -2908,6 +2908,28 @@ impl Config {
         );
 
         sections.push(
+            "# API execution\nUse endpoints from the user's request, the loaded skill, or the \
+             service's current implementation verbatim, including the HTTP/HTTPS scheme and path; \
+             do not guess or silently upgrade them. Reuse a working project client or prior \
+             verified request instead of inventing a new integration. Before declaring a service unreachable, compare \
+             the attempted URL with that source and diagnose the actual connection or response. \
+             A failed connection to one URL does not establish that the whole service is unavailable. \
+             Generated scripts must exit nonzero on transport, HTTP, or application-level failures \
+             and print success only after checking the response, including per-item failures in \
+             HTTP 200 results. A shell exit code of zero or a printed success banner alone does not \
+             prove the remote operation succeeded. Use column names rather than guessed numeric \
+             offsets for tabular inputs; inspect headers, group counts and small samples instead \
+             of dumping full rows or payloads. Validate required payload fields before sending. \
+             For a continuation or batch, reuse recorded outcomes, exclude already successful items, \
+             and retry only failed or unprocessed items. Diagnose with read-only lookups or saved \
+             responses; never send a dummy create/update request to test whether an existing item \
+             exists. Reconcile requested, attempted, created, already-existing, and failed counts \
+             from actual responses before reporting totals. If asked to process the rest, preserve \
+             the original input order and scope instead of re-sorting or resending completed items."
+                .to_string(),
+        );
+
+        sections.push(
             "# Definition of Done\nAn explicit instruction from the user outranks every check below: when \
              they say a check is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't \
              wait for the build\"), do what they asked and say plainly what you did not verify. Never \
@@ -2930,7 +2952,9 @@ impl Config {
              force an unnecessary rerun. \
              Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the \
              annotation\") from what you assume, and say plainly when you could not confirm \
-             something. Do not claim a change is applied, a fix works, a PR is ready, a reply is \
+             something. Do not end a turn by announcing work you have not done (for example, \
+             \"Let me create a summary:\"). Do the announced work in this turn, or state the concrete \
+             blocker and the outcome reached. Do not claim a change is applied, a fix works, a PR is ready, a reply is \
              posted, or a release is out without the output that shows it. A code change made in \
              response to a pull request or review is delivered only once it is committed and \
              pushed to the branch under review — fix and push the code before you reply in the \
@@ -3126,6 +3150,25 @@ mod tests {
             let prompt = config.compose_system_prompt();
             assert!(prompt.contains("all filesystem paths"));
             assert!(!prompt.contains("Work only in the current project"));
+        }
+    }
+
+    #[test]
+    fn system_prompt_requires_evidence_for_api_submissions_and_batch_continuations() {
+        let prompt = Config::default().compose_system_prompt();
+        for requirement in [
+            "including the HTTP/HTTPS scheme and path",
+            "per-item failures in HTTP 200 results",
+            "exit nonzero",
+            "exclude already successful items",
+            "never send a dummy create/update request",
+            "preserve the original input order and scope",
+            "Do not end a turn by announcing work",
+        ] {
+            assert!(
+                prompt.contains(requirement),
+                "missing API execution requirement: {requirement}"
+            );
         }
     }
 

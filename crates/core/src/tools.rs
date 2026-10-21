@@ -3817,6 +3817,38 @@ pub fn sanitize_terminal_output(text: &str) -> String {
     out
 }
 
+/// Keep a successful command's result visible when dependency warnings were
+/// appended on stderr. Expanded output still contains every diagnostic.
+pub fn bash_warning_preview(output: &str, limit: usize) -> Option<(String, usize)> {
+    let all: Vec<&str> = output.trim_end().lines().collect();
+    if all.last().copied() != Some("[exit: 0]") || limit == 0 {
+        return None;
+    }
+    let stderr = all.iter().position(|line| *line == "[stderr]")?;
+    if !all[..stderr].iter().any(|line| !line.trim().is_empty()) {
+        return None;
+    }
+    let diagnostics = &all[stderr + 1..all.len() - 1];
+    let warnings = diagnostics
+        .iter()
+        .any(|line| line.contains("Warning:") || line.contains("warnings.warn("));
+    let errors = diagnostics.iter().any(|line| {
+        line.split_whitespace().any(|word| {
+            let word = word.to_ascii_lowercase();
+            word.split(':').next().is_some_and(|level| {
+                level.ends_with("error") || level.ends_with("exception") || level == "fatal"
+            }) || word == "traceback"
+        })
+    });
+    if !warnings || errors {
+        return None;
+    }
+    let mut preferred = all[..stderr].to_vec();
+    preferred.push("[exit: 0]");
+    let shown = &preferred[preferred.len().saturating_sub(limit)..];
+    Some((shown.join("\n"), all.len() - shown.len()))
+}
+
 fn finish_bash_output(stdout: StreamCapture, stderr: StreamCapture, exit: i32) -> Result<String> {
     let suffix = format!("[exit: {exit}]");
     let marker_bytes = usize::from(stderr.lines > 0) * "[stderr]\n".len();
@@ -4346,6 +4378,31 @@ mod tests {
                 arguments: args.to_string(),
             },
         }
+    }
+
+    #[test]
+    fn bash_previews_prioritize_results_over_successful_command_warnings() {
+        let output = "POST http://service/v1/copy\nCreated: 6\nFailed: 0\n[stderr]\nrequests/__init__.py:113: RequestsDependencyWarning: unsupported dependency\n  warnings.warn(\n[exit: 0]";
+        let (preview, more) = bash_warning_preview(output, 3).unwrap();
+        assert_eq!(preview, "Created: 6\nFailed: 0\n[exit: 0]");
+        assert_eq!(more, 4);
+        assert!(bash_warning_preview(&output.replace("[exit: 0]", "[exit: 1]"), 3).is_none());
+        assert!(bash_warning_preview(
+            &output.replace("  warnings.warn(", "Traceback (most recent call last):"),
+            3
+        )
+        .is_none());
+        assert!(bash_warning_preview(
+            &output.replace("  warnings.warn(", "ERROR:root:submission failed"),
+            3
+        )
+        .is_none());
+        assert!(bash_warning_preview("[stderr]\nRuntimeWarning: warning\n[exit: 0]", 3).is_none());
+        assert!(bash_warning_preview(
+            &output.replace("  warnings.warn(", "ValueError: bad payload"),
+            3
+        )
+        .is_none());
     }
 
     #[test]

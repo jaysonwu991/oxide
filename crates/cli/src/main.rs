@@ -2049,7 +2049,7 @@ async fn run_print_text(
                     );
                 }
             }
-            AgentEvent::Usage { .. } => {}
+            AgentEvent::Usage { .. } | AgentEvent::ContextWindow { .. } => {}
             // Print mode has no way to ask: it always runs a non-interactive
             // approver, so a request here can only be a no-op.
             AgentEvent::ApprovalRequest { .. } => {}

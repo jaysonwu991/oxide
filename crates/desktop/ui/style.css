@@ -18,6 +18,8 @@
   --assistant: #ededed;
   --radius: 12px;
   --control-size: 30px;
+  --composer-ring-size: 26px;
+  --composer-ring-stroke: 1.5px;
   --control-icon-size: 18px;
   --ui-line-height: 1.4;
 }
@@ -499,7 +501,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
-.tool.expanded pre { max-height: 460px; overflow: auto; }
+.tool.expanded pre, .tool.error pre { max-height: 460px; overflow: auto; }
 .tool.running pre { max-height: 120px; overflow: auto; }
 .tool .thint { color: var(--faint); font-size: 11px; margin-top: 5px; cursor: pointer; }
 
@@ -926,7 +928,7 @@ body.running .composer { border-radius: var(--radius); }
   line-height: var(--ui-line-height);
   color: var(--dim);
 }
-.context-ring svg { display: block; width: var(--control-size); height: var(--control-size); flex: none; }
+.context-ring svg { display: block; width: var(--composer-ring-size); height: var(--composer-ring-size); flex: none; }
 .context-ring[data-level="warn"] { color: var(--tool); }
 .context-ring[data-level="high"] { color: var(--error); }
 /* The percent the arc is filled to, beside it: the arc and the number are one
@@ -1088,8 +1090,12 @@ body.running .composer { border-radius: var(--radius); }
 .composer-action[data-level="busy"]::after {
   content: "";
   position: absolute;
-  inset: 2px;
-  border: 1.5px solid transparent;
+  inset: 0;
+  margin: auto;
+  box-sizing: border-box;
+  width: var(--composer-ring-size);
+  height: var(--composer-ring-size);
+  border: var(--composer-ring-stroke) solid transparent;
   border-top-color: currentColor;
   border-right-color: currentColor;
   border-radius: 50%;

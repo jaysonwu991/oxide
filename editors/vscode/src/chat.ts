@@ -292,6 +292,8 @@ interface RunState {
   stderr: string[];
   context: Chip[];
   attachments: Attachment[];
+  provider?: string;
+  model?: string;
 }
 
 /// One message assembled from the composer, ready to run: the prompt text, the
@@ -750,7 +752,7 @@ export class ChatController {
       language: this.languageInfo,
       model: project?.model || "",
       provider: project?.provider ?? "",
-      contextWindow: this.contextWindow ?? project?.contextWindow ?? 0,
+      contextWindow: this.transcript.correctedContextWindow(project?.provider ?? "", project?.model ?? "") ?? this.contextWindow ?? project?.contextWindow ?? 0,
       reasoning: this.currentReasoning(),
       reasoningLevels: this.reasoningLevels.length ? this.reasoningLevels : undefined,
       supportsReasoning: this.supportsReasoning,
@@ -1255,7 +1257,9 @@ export class ChatController {
   /// terminal and the desktop app match them. Returned rather than broadcast,
   /// for the same reason as the `@path` rows — a palette row replaces the value
   /// in the box that asked.
-  async completePalette(value: string, seq: number): Promise<ViewMessage> {
+  async completePalette(value: string, seq: number, caret = value.length): Promise<ViewMessage> {
+    // A skill's arguments can contain a reference even though the message starts with `/`.
+    if (atToken(value, caret)) return this.completeAt(value, caret, seq);
     const answer = commandRows(await this.commands(), value);
     return {
       k: "paletteRows",
@@ -1908,6 +1912,8 @@ export class ChatController {
     target.status = "Thinking…";
     this.runTranscript = target;
     this.run = {
+      provider: this.project?.provider,
+      model: this.project?.model,
       cancelled: false,
       sawEvent: false,
       stderr: [],
@@ -2029,6 +2035,12 @@ export class ChatController {
       this.runTitle = title;
       if (run === this.transcript) this.sessionTitle = title;
       void this.syncSessions();
+    }
+    if (event.type === "context_window") {
+      event = { ...event,
+        provider: event.provider ?? this.run.provider,
+        model: event.model ?? this.run.model,
+      };
     }
     const messages = run.apply(event);
     if (run === this.transcript) this.broadcastItem(messages);

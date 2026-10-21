@@ -1085,7 +1085,7 @@ vm.runInThisContext(
     " loadMcps, openSessions," +
     " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
-    " updateChips, openReasoning, loadInfo," +
+    " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkRun, restoreParked, captureChatTab," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
@@ -4180,6 +4180,14 @@ check(
 );
 // A card for a call that changed no file is not the one-line form: it keeps the
 // preview of what it printed, so the treatment above is only for a diff.
+const warningCard = app.startTool("bash", JSON.stringify({ command: "python submit.py" }));
+const warningOutput = "POST http://service/v1/copy\nCreated: 6\nFailed: 0\n[stderr]\nRequestsDependencyWarning: unsupported dependency\n  warnings.warn(\n[exit: 0]";
+app.finishTool(warningCard, warningOutput);
+check("preferred command results over dependency warnings in a successful shell preview",
+  warningCard.pre.textContent === "Created: 6\nFailed: 0\n[exit: 0]" && !warningCard.hint.hidden,
+  warningCard.pre.textContent);
+warningCard.hint.onclick?.();
+check("kept all stderr diagnostics when the shell card expanded", warningCard.pre.textContent === warningOutput, warningCard.pre.textContent);
 const plainCard = app.startTool("bash", JSON.stringify({ command: "cargo test" }));
 app.finishTool(plainCard, "ok\nline two\nline three\nline four\n", { elapsed: 30 });
 check(
@@ -4193,9 +4201,9 @@ check(
   }, state: ${plainCard.tstate.textContent}`,
 );
 check(
-  "cut the preview to the first lines with the rest behind the hint",
-  plainCard.pre.textContent === "ok\nline two\nline three" &&
-    plainCard.hint.textContent === "⋯ 1 more line · click to expand",
+  "kept the shell result at the tail with the rest behind the hint",
+  plainCard.pre.textContent === "line two\nline three\nline four" &&
+    plainCard.hint.textContent === "Show 1 earlier lines",
   JSON.stringify([plainCard.pre.textContent, plainCard.hint.textContent]),
 );
 // The hint reads "click to expand", so that click is the one a reader makes:
@@ -4214,7 +4222,7 @@ plainCard.hint.onclick?.();
 check(
   "folded it away again from the same hint",
   plainCard.hint.hidden === false &&
-    !plainCard.pre.textContent.includes("line four") &&
+    !plainCard.pre.textContent.includes("ok") &&
     !String(plainCard.block.className).includes("expanded"),
   `hint hidden: ${plainCard.hint.hidden}, body: ${JSON.stringify(plainCard.pre.textContent)}`,
 );
@@ -4315,6 +4323,15 @@ check(
 // competing with it.
 const errorCard = app.startTool("bash", JSON.stringify({ command: "false" }));
 app.finishTool(errorCard, "boom\n", { isError: true });
+const editFailure = app.startTool("edit", JSON.stringify({ path: "SKILL.md" }));
+const fullFailure = `No changes were written to ${"long/path/".repeat(20)}SKILL.md.\n\nedits[5].oldText did not match anything.\n\nRead the current file and resend the entire batch.`;
+app.finishTool(editFailure, fullFailure, { isError: true });
+check(
+  "kept the complete failed-edit diagnostic accessible despite wrapped paths",
+  editFailure.pre.textContent === fullFailure && !editFailure.pre.hidden && editFailure.hint.hidden &&
+    /\.tool\.error pre \{ max-height: 460px; overflow: auto; \}/.test(sheet),
+  editFailure.pre.textContent,
+);
 const runningCard = app.startTool("bash", JSON.stringify({ command: "sleep 1" }));
 check(
   "kept a surface for the card being written and the one that failed",
@@ -5994,6 +6011,76 @@ check(
 // The context reading: the arc is filled to the percent the totals are measured
 // from — the newest request's own prompt over the window in force — the percent
 // is spelled out beside it, and the tokens behind both are in its tooltip.
+const beforeWindowCorrection = Object.fromEntries(["session", "runSession", "runProject", "parked", "contextWindow", "contextCorrection", "catalogWindow", "currentProvider", "currentModel", "changes"].map(key => [key, app.state[key]]));
+const beforeWindowInfo = projectInfo;
+projectInfo = { ...projectFacts(1050000), provider: "gateway", model: "A" };
+app.state.session = app.state.runSession = "backend-window-test";
+app.state.runProject = app.state.project;
+app.state.parked = null;
+app.state.contextCorrection = null;
+app.applyContextInfo(projectInfo);
+app.setUsage({ input: 190000, output: 0, cost: 0, prompt: 190000 });
+app.handleEvent({ type: "context_window", tokens: 200000, provider: "gateway", model: "A" });
+check(
+  "applied the backend's smaller window to the active context gauge",
+  app.state.contextWindow === 200000 && el("context-percent").textContent === "95%" && el("context-ring").dataset.level === "high",
+  `${app.state.contextWindow} / ${el("context-percent").textContent}`,
+);
+app.parkRun();
+check("parked the thread's corrected context window with its transcript",
+  app.state.parked.contextWindow === 200000 && app.state.parked.contextCorrection.model === "A",
+  JSON.stringify(app.state.parked.contextCorrection));
+app.state.session = "another-thread";
+app.state.contextCorrection = null;
+app.applyContextInfo({ ...projectInfo, contextWindow: 128000 });
+app.handleEvent({ type: "context_window", tokens: 200000, provider: "gateway", model: "A" });
+check(
+  "kept a parked run's corrected window off the thread being read",
+  app.state.contextWindow === 128000 && app.state.parked.contextWindow === 200000,
+  `${app.state.contextWindow} / ${app.state.parked.contextWindow}`,
+);
+app.state.session = "backend-window-test";
+app.restoreParked(app.state.session);
+await app.loadInfo();
+await app.refreshContextWindow();
+check("preserved the restored correction through full and background info refreshes",
+  app.state.contextWindow === 200000 && el("context-percent").textContent === "95%",
+  `${app.state.contextWindow} / ${el("context-percent").textContent}`);
+const correctedTab = app.activeChatTab();
+const beforeCorrectedTab = { snapshot: correctedTab.snapshot, title: correctedTab.title, session: correctedTab.session };
+app.captureChatTab();
+await app.newChatTab();
+const otherWindowTab = app.activeChatTab();
+await app.activateChatTab(correctedTab.id);
+check("kept a corrected window through real tab navigation and its info reload",
+  app.state.contextWindow === 200000 && el("context-percent").textContent === "95%",
+  `${app.state.contextWindow} / ${el("context-percent").textContent}`);
+await app.closeChatTab(otherWindowTab.id);
+app.parkRun();
+app.state.session = "model-change-test";
+projectInfo = { ...projectInfo, model: "B", contextWindow: 128000 };
+await app.loadInfo();
+app.state.session = "backend-window-test";
+app.restoreParked(app.state.session);
+await app.loadInfo();
+check("ignored a parked correction after the selected model changed",
+  app.state.contextWindow === 128000, String(app.state.contextWindow));
+projectInfo = { ...projectInfo, model: "A", provider: "other-gateway", contextWindow: 256000 };
+await app.loadInfo();
+check("ignored a correction from another provider even with the same model name",
+  app.state.contextWindow === 256000, String(app.state.contextWindow));
+projectInfo = { ...projectInfo, provider: "gateway", contextWindow: 1050000 };
+await app.loadInfo();
+check("reused the thread's correction when its originating model returned",
+  app.state.contextWindow === 200000, String(app.state.contextWindow));
+const billedBefore = app.state.usage;
+app.handleEvent({ type: "usage", usage: { input: 221000, output: 300, contextTokens: 111000 } });
+check("kept cumulative billing distinct from the live request's context reading",
+  app.state.usage.prompt === 111000 && app.state.usage.input === (billedBefore?.input || 0) + 221000,
+  JSON.stringify(app.state.usage));
+Object.assign(correctedTab, beforeCorrectedTab);
+projectInfo = beforeWindowInfo;
+Object.assign(app.state, beforeWindowCorrection);
 app.state.contextWindow = 128000;
 const ringFill = () => {
   const [filled, whole] = String(el("context-ring-fill").getAttribute("stroke-dasharray"))

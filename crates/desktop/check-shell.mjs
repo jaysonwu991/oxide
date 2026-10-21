@@ -328,8 +328,9 @@ check(
     /state\.events\.emit\("model-catalog", json!\(\{\}\)\)/.test(commands) &&
     /listen\("model-catalog", \(\) => refreshContextWindow\(\)\)/.test(app) &&
     !/listen\("model-catalog", \(\) => loadInfo\(\)\)/.test(app) &&
-    /async function refreshContextWindow\(\)/.test(app) &&
-    /state\.contextWindow = info\.contextWindow \|\| 0/.test(app),
+    /applyContextInfo\(info\)/.test(between(app, "async function refreshContextWindow()", "/// The model")) &&
+    /state\.catalogWindow = info\.contextWindow \|\| 0/.test(between(app, "function applyContextInfo(info)", "async function loadInfo()")) &&
+    /state\.contextWindow = correctionWindow\(\) \?\? state\.catalogWindow/.test(between(app, "function applyContextInfo(info)", "async function loadInfo()")),
 );
 // The provider the launch's own lookup covers is the one the turn runs on, so
 // it is read the way the run reads it rather than from `config.json` alone.

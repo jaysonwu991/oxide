@@ -331,6 +331,7 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             cache_read,
             cache_write,
             cost,
+            context_tokens,
         } => json!({
             "type": "usage",
             "usage": {
@@ -339,8 +340,16 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
                 "cacheRead": cache_read,
                 "cacheWrite": cache_write,
                 "cost": cost,
+                "contextTokens": context_tokens,
             }
         }),
+        AgentEvent::ContextWindow {
+            tokens,
+            provider,
+            model,
+        } => {
+            json!({ "type": "context_window", "tokens": tokens, "provider": provider, "model": model })
+        }
         AgentEvent::Compaction {
             summary,
             summarized,
@@ -633,12 +642,24 @@ mod tests {
         assert_eq!(call["type"], "tool_call");
         assert_eq!(call["toolName"], "read");
 
+        let window = event_json(&AgentEvent::ContextWindow {
+            tokens: 200_000,
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            window,
+            json!({"type": "context_window", "tokens": 200_000, "provider": "deepseek", "model": "deepseek-flash"})
+        );
+
         let usage = event_json(&AgentEvent::Usage {
             input: 1,
             output: 2,
             cache_read: 3,
             cache_write: 4,
             cost: 0.5,
+            context_tokens: None,
         })
         .unwrap();
         assert_eq!(usage["usage"]["cacheRead"], 3);

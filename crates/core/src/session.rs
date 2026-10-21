@@ -640,20 +640,58 @@ impl SessionLog {
     /// was last run with. A client that reopens a stored thread shows it in its
     /// context gauge, which would otherwise read zero until the next turn.
     pub fn context_tokens(&self) -> u64 {
+        self.context_measurement()
+            .map_or(0, |(usage, _)| usage.prompt)
+    }
+
+    /// Latest active request and the message boundary its usage already covers.
+    /// A compaction's summarizer usage is billing, not the new conversation size.
+    pub fn context_measurement(&self) -> Option<(crate::llm::ContextUsage, usize)> {
         let state = self.state();
-        let mut tokens = 0;
-        for entry in &state.entries {
-            let usage = match entry {
-                Entry::Message(entry) => entry.usage,
-                Entry::Compaction(entry) => entry.usage,
-                Entry::BranchSummary(entry) => entry.usage,
+        let path = leaf_path_with(&state.entries, state.leaf_id.as_deref(), &state.by_id);
+        let latest = path
+            .iter()
+            .rev()
+            .take_while(|entry| !matches!(entry, Entry::Compaction(_) | Entry::BranchSummary(_)))
+            .find_map(|entry| match entry {
+                Entry::Message(entry) if entry.message.role == "assistant" => {
+                    entry.usage.map(|usage| {
+                        let context = usage.context.unwrap_or(crate::llm::ContextUsage {
+                            prompt: usage.input + usage.cache_read + usage.cache_write,
+                            output: usage.output,
+                        });
+                        (entry.id.as_str(), context)
+                    })
+                }
                 _ => None,
-            };
-            if let Some(usage) = usage {
-                tokens = usage.input + usage.cache_read + usage.cache_write;
+            })?;
+        let mut count = 0;
+        for entry in context_entries(&state.entries, state.leaf_id.as_deref(), &state.by_id) {
+            count += usize::from(matches!(
+                entry,
+                Entry::Message(_) | Entry::Compaction(_) | Entry::BranchSummary(_)
+            ));
+            if entry.id() == latest.0 {
+                return Some((latest.1, count));
             }
         }
-        tokens
+        None
+    }
+
+    /// A backend limit learned on this branch, scoped to the selected model.
+    pub fn context_window(&self, provider: &str, model: &str) -> Option<u64> {
+        let state = self.state();
+        let path = leaf_path_with(&state.entries, state.leaf_id.as_deref(), &state.by_id);
+        path.iter().rev().find_map(|entry| {
+            let details = match entry {
+                Entry::Compaction(entry) => entry.details.as_ref(),
+                Entry::BranchSummary(entry) => entry.details.as_ref(),
+                _ => None,
+            }?;
+            let limit = details.context_limit.as_ref()?;
+            (limit.provider == provider && limit.model == model && limit.window > 0)
+                .then_some(limit.window)
+        })
     }
 
     /// Appends a compaction entry and returns its id.
@@ -1534,6 +1572,45 @@ mod tests {
     }
 
     #[test]
+    fn learned_windows_survive_other_models_compacting_the_active_branch() {
+        let dir = temp_dir("model_limits");
+        let log = SessionLog::create_in(&dir, &dir).unwrap();
+        let root = log.append(&Message::user("first request")).unwrap();
+        let details = |model: &str, window| {
+            Some(CompactionDetails {
+                context_limit: Some(crate::compact::ModelContextLimit {
+                    provider: "gateway".into(),
+                    model: model.into(),
+                    window,
+                }),
+                ..Default::default()
+            })
+        };
+        log.append_compaction(
+            "model A summary",
+            root.clone(),
+            100,
+            details("A", 200000),
+            None,
+        )
+        .unwrap();
+        let kept = log.append(&Message::user("model B request")).unwrap();
+        log.append_compaction("model B summary", kept, 100, details("B", 128000), None)
+            .unwrap();
+        assert_eq!(log.context_window("gateway", "A"), Some(200000));
+        assert_eq!(log.context_window("gateway", "B"), Some(128000));
+        assert_eq!(log.context_window("other-gateway", "A"), None);
+        log.branch_with_summary(Some(&root), "another branch", None, None)
+            .unwrap();
+        assert_eq!(
+            log.context_window("gateway", "A"),
+            None,
+            "an unrelated branch must not inherit the limit"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn usage_totals_sum_assistant_and_summary_usage() {
         let dir = temp_dir("usage");
         let cwd = temp_dir("usage_proj");
@@ -1546,6 +1623,7 @@ mod tests {
                 cache_read: 40,
                 cache_write: 10,
                 cost: 0.5,
+                context: None,
             }),
         )
         .unwrap();

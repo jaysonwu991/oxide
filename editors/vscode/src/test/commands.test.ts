@@ -121,7 +121,7 @@ describe("command contributions", () => {
       "and on every path that says the shared configuration moved",
     );
     assert.ok(
-      chat.includes("contextWindow: this.contextWindow ?? project?.contextWindow ?? 0"),
+      chat.includes('contextWindow: this.transcript.correctedContextWindow(project?.provider ?? "", project?.model ?? "") ?? this.contextWindow ?? project?.contextWindow ?? 0'),
       "the footer paints the CLI's answer, with the shared files' window behind it",
     );
   });
@@ -959,6 +959,11 @@ describe("command contributions", () => {
     const complete = chat.slice(
       chat.indexOf("async completePalette("),
       chat.indexOf("private async readCommands("),
+    );
+    assert.ok(
+      complete.includes("if (atToken(value, caret)) return this.completeAt(value, caret, seq);") &&
+      complete.indexOf("atToken(value, caret)") < complete.indexOf("await this.commands()"),
+      "an @path under the caret in skill arguments takes priority over the slash palette",
     );
     assert.ok(complete.includes("this.commands()"), "the rows come from the catalog");
     assert.ok(complete.includes("commandRows("), "and are ranked in the shared module");

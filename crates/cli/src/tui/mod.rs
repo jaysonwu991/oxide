@@ -902,6 +902,7 @@ fn handle_key(
                                     cache_read: usage.cache_read,
                                     cache_write: usage.cache_write,
                                     cost: usage.cost,
+                                    context_tokens: None,
                                 });
                             }
                             let _ = tx.send(AgentEvent::Compaction {
@@ -3095,6 +3096,7 @@ fn fork_session(
                             cache_read: usage.cache_read,
                             cache_write: usage.cache_write,
                             cost: usage.cost,
+                            context_tokens: None,
                         });
                         let _ = tx.send(AgentEvent::Finished(history));
                     }
@@ -3177,6 +3179,7 @@ fn branch_in_place(
                     cache_read: usage.cache_read,
                     cache_write: usage.cache_write,
                     cost: usage.cost,
+                    context_tokens: None,
                 });
                 let _ = tx.send(AgentEvent::Branch {
                     history,
@@ -5730,6 +5733,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             cache_read,
             cache_write,
             cost,
+            context_tokens,
         } => {
             app.tokens_in = app.tokens_in.saturating_add(input);
             app.tokens_out = app.tokens_out.saturating_add(output);
@@ -5738,7 +5742,8 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.cost += cost;
             // `input` is the uncached prompt only; the cached prefix is still
             // part of the context that occupies the window.
-            app.context_used = input.saturating_add(cache_read).saturating_add(cache_write);
+            app.context_used = context_tokens
+                .unwrap_or_else(|| input.saturating_add(cache_read).saturating_add(cache_write));
             if cache_read + cache_write > 0 {
                 let prompt = input + cache_read + cache_write;
                 if prompt > 0 {
@@ -5746,6 +5751,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
                 }
             }
         }
+        AgentEvent::ContextWindow { tokens, .. } => app.context_limit = tokens,
         AgentEvent::Compaction {
             summary,
             summarized,
@@ -6155,6 +6161,39 @@ mod tests {
 
         answered.abort();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn merged_billing_does_not_inflate_the_terminal_context_reading() {
+        let mut app = test_app();
+        handle_agent_event(
+            AgentEvent::Usage {
+                input: 221000,
+                output: 300,
+                cache_read: 0,
+                cache_write: 0,
+                cost: 0.0,
+                context_tokens: Some(111000),
+            },
+            &mut app,
+        );
+        assert_eq!(app.tokens_in, 221000);
+        assert_eq!(app.context_used, 111000);
+    }
+
+    #[test]
+    fn a_backend_context_window_updates_the_terminal_gauge() {
+        let mut app = test_app();
+        app.context_limit = 1_050_000;
+        handle_agent_event(
+            AgentEvent::ContextWindow {
+                tokens: 200_000,
+                provider: "deepseek".into(),
+                model: "deepseek-flash".into(),
+            },
+            &mut app,
+        );
+        assert_eq!(app.context_limit, 200_000);
     }
 
     #[test]

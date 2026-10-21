@@ -941,18 +941,21 @@ function installMarkdownInput(editor, render) {
     if (!all) return { text: "", more: 0 };
     const split = all.split("\n");
     if (split.length <= lines) return { text: all, more: 0 };
-    // bash reports its exit code last, so its preview keeps the tail.
     return { text: split.slice(0, lines).join("\n"), more: split.length - lines };
   }
 
-  function previewTail(text, lines) {
-    const all = String(text || "").replace(/\s+$/, "");
-    if (!all) return { text: "", more: 0 };
-    const split = all.split("\n");
-    if (split.length <= lines) return { text: all, more: 0 };
-    return { text: split.slice(split.length - lines).join("\n"), more: split.length - lines };
+  function previewShell(text, limit) {
+    const all = String(text || "").trimEnd().split("\n");
+    const stderr = all.indexOf("[stderr]");
+    const diagnostics = stderr < 0 ? [] : all.slice(stderr + 1, -1);
+    const warningsOnly = diagnostics.some((line) => /Warning:|warnings\.warn\(/.test(line)) &&
+      !diagnostics.some((line) => /\b(?:\w*error|\w*exception|fatal):|traceback\b/i.test(line));
+    const preferred = all.at(-1) === "[exit: 0]" && stderr > 0 &&
+      all.slice(0, stderr).some((line) => line.trim()) && warningsOnly
+      ? [...all.slice(0, stderr), all.at(-1)] : all;
+    const shown = preferred.slice(-limit);
+    return { text: shown.join("\n"), more: all.length - shown.length, earlier: preferred === all };
   }
-
   /// What a preview line's own marker means: an addition, a removal, a hunk
   /// header, or context. The CLI renders one file's preview as
   /// `+/-/  <old> <new>  <text>`, so the marker is the first character.
@@ -1173,6 +1176,15 @@ function installMarkdownInput(editor, render) {
     }
     if (entry.diffEl) entry.diffEl.hidden = !entry.expanded;
     paintLiveChanges();
+    if (item.isError) {
+      entry.inline = false;
+      entry.folded = false;
+      entry.pre.hidden = false;
+      setOutput(entry.pre, item.output, false);
+      entry.hint.hidden = true;
+      setFold(entry, false);
+      return;
+    }
     if (quietSearch) {
       entry.inline = false;
       entry.folded = false;
@@ -1196,14 +1208,15 @@ function installMarkdownInput(editor, render) {
       const budget = previewLines(item.name);
       const useTail = item.name === "bash";
       const preview = useTail
-        ? previewTail(item.output, budget)
+        ? previewShell(item.output, budget)
         : previewText(item.output, budget);
       setOutput(entry.pre, preview.text, false);
       entry.folded = preview.more > 0;
       entry.hint.hidden = !entry.folded;
       // The line the card kept is counted where the reader would look for it,
       // rather than twice: as a marker in the body and again as this handle.
-      entry.hint.textContent = t(useTail ? "surface.EarlierLines" : "surface.MoreLines", useTail ? "Show {count} earlier lines" : "Show {count} more lines", { count: preview.more });
+      const earlier = useTail && preview.earlier !== false;
+      entry.hint.textContent = t(earlier ? "surface.EarlierLines" : "surface.MoreLines", earlier ? "Show {count} earlier lines" : "Show {count} more lines", { count: preview.more });
     }
     // The header is the card's fold handle only while something is behind it:
     // anything else is plain text, with no caret, no tab stop and no button.
@@ -2154,12 +2167,15 @@ function installMarkdownInput(editor, render) {
     usageText.setAttribute("aria-label", footer.usage ? t("surface.UsageValue", "Usage: {value}", { value: footer.usage }) : t("ui.noUsageReported", "No usage reported"));
     usageRow.title = footer.usage || "";
     usageRow.hidden = true;
+    $("context-percent").textContent = percent === null ? "" : `${percent}%`;
+    $("context-percent").hidden = percent === null;
     gauge.hidden = !footer.usage && percent === null;
     gauge.dataset.level = footer.level || "ok";
     gauge.title = footer.usage || (percent === null ? t("ui.noUsageReported", "No usage reported") : t("ui.ofTheContextWindowUsed", "{value0}% of the context window used", { value0: percent }));
     gauge.setAttribute("aria-label", t("surface.UsageValue", "Usage: {value}", { value: gauge.title }));
-    gauge.style.background = `conic-gradient(currentColor ${percent === null ? 0 : Math.min(percent, 100) * 3.6}deg, color-mix(in srgb, currentColor 25%, transparent) 0)`;
-    gaugeFill.style.width = percent === null ? "0%" : `${Math.min(percent, 100)}%`;
+    const length = 2 * Math.PI * (Number(gaugeFill.getAttribute("r")) || 12.25);
+    const spent = percent === null ? 0 : Math.max(0, Math.min(percent, 100));
+    gaugeFill.setAttribute("stroke-dasharray", `${(length * spent / 100).toFixed(2)} ${length.toFixed(2)}`);
   }
 
   /// Model and reasoning keep visible values beside the action button.
@@ -2858,7 +2874,7 @@ function installMarkdownInput(editor, render) {
   function requestCompletion() {
     if (input.value.startsWith("/")) {
       rowSeq += 1;
-      vscode.postMessage({ k: "completePalette", text: input.value, seq: rowSeq });
+      vscode.postMessage({ k: "completePalette", text: input.value, caret: input.selectionStart || 0, seq: rowSeq });
       return;
     }
     if (input.value.indexOf("@") === -1) {

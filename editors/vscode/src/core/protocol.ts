@@ -601,6 +601,12 @@ export function formatTokens(count: number): string {
 export class Transcript {
   readonly items: Item[] = [];
   usage: UsageTotals = emptyUsage();
+  contextWindow: { tokens: number; provider: string; model: string } | null = null;
+
+  correctedContextWindow(provider: string, model: string): number | null {
+    const correction = this.contextWindow;
+    return correction?.provider === provider && correction.model === model ? correction.tokens : null;
+  }
   status = "Idle";
   busy = false;
   sessionId: string | null = null;
@@ -647,6 +653,7 @@ export class Transcript {
   reset(): void {
     this.items.length = 0;
     this.usage = emptyUsage();
+    this.contextWindow = null;
     this.status = "Idle";
     this.busy = false;
     this.sessionId = null;
@@ -791,6 +798,14 @@ export class Transcript {
         return this.appendToolOutput(str(event.toolName), str(event.partialResult));
       case "tool_execution_end":
         return this.finishTool(str(event.toolName), str(event.result), event.isError === true);
+      case "context_window": {
+        const tokens = num(event.tokens);
+        const provider = str(event.provider);
+        const model = str(event.model);
+        if (tokens <= 0 || !provider || !model) return [];
+        this.contextWindow = { tokens, provider, model };
+        return [{ k: "usage", usage: this.usage }];
+      }
       case "usage": {
         // Usage is emitted once a model step has completed, so it commits the
         // step's text and reasoning even when no tool call follows and the CLI
@@ -813,7 +828,7 @@ export class Transcript {
           cacheRead: this.usage.cacheRead + cacheRead,
           cacheWrite: this.usage.cacheWrite + cacheWrite,
           cost: this.usage.cost + num(usage.cost),
-          contextTokens: prompt,
+          contextTokens: typeof usage.contextTokens === "number" ? usage.contextTokens : prompt,
           cacheHit,
         };
         return [{ k: "usage", usage: this.usage }];
