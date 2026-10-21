@@ -1,6 +1,6 @@
 //! Localize Clap's display metadata without changing argument or command IDs.
 use crate::i18n::{t, Language, CATALOG};
-use clap::Command;
+use clap::{Arg, ArgAction, Command, CommandFactory};
 use std::ffi::OsString;
 
 fn normalized(text: &str) -> String {
@@ -19,20 +19,40 @@ fn translated(lang: Language, source: &str) -> Option<&'static str> {
         .map(|(_, en, zh)| if lang == Language::ZhCn { *zh } else { *en })
 }
 
+// Probe with the real argument grammar so flag-looking option values and prompt
+// text cannot become language/cwd overrides. Help must not exit this first pass.
+fn help_probe(command: Command) -> Command {
+    command
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .disable_help_subcommand(true)
+        .arg(
+            Arg::new("help")
+                .long("help")
+                .short('h')
+                .action(ArgAction::SetTrue),
+        )
+        .ignore_errors(true)
+        .mut_subcommands(help_probe)
+}
+
 pub fn language(args: &[OsString], cwd: &std::path::Path) -> Language {
-    let mut flags = args.iter().skip(1).take_while(|arg| *arg != "--");
-    while let Some(arg) = flags.next() {
-        let tag = if arg == "--language" {
-            flags.next().and_then(|value| value.to_str())
-        } else {
-            arg.to_str()
-                .and_then(|value| value.strip_prefix("--language="))
-        };
-        if let Some(language) = tag.and_then(Language::parse) {
-            return language;
-        }
+    let matches = help_probe(crate::Cli::command())
+        .try_get_matches_from(args)
+        .ok();
+    if let Some(language) = matches
+        .as_ref()
+        .and_then(|matches| matches.get_one::<String>("language"))
+        .and_then(|tag| Language::parse(tag))
+    {
+        return language;
     }
-    crate::i18n::resolve(cwd)
+    let effective_cwd = matches
+        .as_ref()
+        .and_then(|matches| matches.get_one::<std::path::PathBuf>("cwd"))
+        .map(|path| cwd.join(path))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    crate::i18n::resolve(&effective_cwd)
 }
 
 pub fn command(mut command: Command, lang: Language) -> Command {

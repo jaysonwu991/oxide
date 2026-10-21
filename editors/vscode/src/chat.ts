@@ -2751,8 +2751,9 @@ export class ChatController {
     // now selects, and the next turn reads that file: the footer's chips are
     // repainted from it so the panel says what the next message will run on.
     // A login also changes which catalog the window is resolved against.
+    const notice = this.t("surface.connectedValue", "Connected {value}.", { value: label });
     this.refreshProject(true);
-    this.showNotice(this.t("surface.connectedValue", "Connected {value}.", { value: label }));
+    this.showNotice(notice);
     this.onDidChange.fire();
     this.broadcast(this.stateMessage());
   }
@@ -3621,8 +3622,9 @@ export class ChatController {
       this.showNotice(this.t("surface.couldNotSelectModelValue", "Could not select model: {value}", { value: detail }), "error");
       return;
     }
+    const notice = this.t("surface.modelSetToValue", "Model set to {value}.", { value: picked });
     this.refreshProject(true);
-    this.showNotice(this.t("surface.modelSetToValue", "Model set to {value}.", { value: picked }));
+    this.showNotice(notice);
     this.onDidChange.fire();
     this.broadcast(this.stateMessage());
   }
