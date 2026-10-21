@@ -888,8 +888,13 @@ describe("webview footer", () => {
 
   it("hides the gauge and the usage line when there is nothing to show", () => {
     const { byId, send } = loadRenderer();
+    send(stateMessage({ footer }));
+    assert.equal(byId.get("gauge")!.hidden, false);
     send(stateMessage({ footer: { chips: [], info: "", percent: null } }));
     assert.equal(byId.get("gauge")!.hidden, true);
+    // The DOM stub cannot apply CSS; the layout rule must exclude hidden gauges.
+    assert.match(style, /\.context-status \.gauge:not\(\[hidden\]\)\s*\{[^}]*display: flex;/);
+    assert.doesNotMatch(style, /\.context-status \.gauge\s*\{[^}]*display:/);
     assert.equal(byId.get("usage")!.hidden, true);
     assert.equal(byId.get("branch")!.textContent, "");
     // Nothing is left in the bar that is not a setting the host handed over: the
