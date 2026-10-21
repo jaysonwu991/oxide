@@ -559,6 +559,7 @@ function installMarkdownInput(editor, render) {
     if (references) {
       for (const [start, end] of referenceRanges(s).reverse()) {
         const reference = s.slice(start, end);
+        if (reference.includes("\u0000")) continue;
         s = s.slice(0, start) + stash(`<span class="file-reference">${escapeHtml(reference)}</span>`) + s.slice(end);
       }
     }

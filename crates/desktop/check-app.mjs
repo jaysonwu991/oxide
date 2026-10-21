@@ -8591,6 +8591,14 @@ const referenceCode = (code) => {
   return code.slice(start, code.indexOf("\n}\n", start) + 3);
 };
 check("kept file reference decoration identical in Desktop and Extension", referenceCode(source) === referenceCode(extensionIcons));
+for (const prompt of [
+  "Update @README using `cargo fmt` and Cargo.toml",
+  'Update @"README" using `cargo fmt` and Cargo.toml',
+  "Update @README using `cargo fmt` then `cargo test` and Cargo.toml",
+]) {
+  const html = app.renderMarkdown(prompt, true);
+  check("preserved inline code beside references and later filenames", html.includes("<code>cargo fmt</code>") && !html.includes("\u0000") && (!prompt.includes("cargo test") || html.includes("<code>cargo test</code>")));
+}
 const spacedReference = "Use @Packages to Country - Things to do component - Reviewed.xlsx please";
 check("decorated the whole spaced filename as one reference", app.renderMarkdown(spacedReference, true).includes('<span class="file-reference">@Packages to Country - Things to do component - Reviewed.xlsx</span>'));
 check("left ordinary transcript references and email as prose", !app.renderMarkdown(spacedReference).includes('file-reference') && !app.renderMarkdown("mail@example.com", true).includes('file-reference'));

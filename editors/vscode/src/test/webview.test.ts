@@ -1359,6 +1359,22 @@ describe("webview composer", () => {
     assert.equal(sent?.text, prompt);
   });
 
+  it("preserves inline code mixed with references and a later filename", () => {
+    const { byId } = loadRenderer();
+    const input = byId.get("input")!;
+    for (const prompt of [
+      "Update @README using `cargo fmt` and Cargo.toml",
+      'Update @"README" using `cargo fmt` and Cargo.toml',
+      "Update @README using `cargo fmt` then `cargo test` and Cargo.toml",
+    ]) {
+      input.value = prompt;
+      assert.match(input.innerHTML, /<code>cargo fmt<\/code>/);
+      if (prompt.includes("cargo test")) assert.match(input.innerHTML, /<code>cargo test<\/code>/);
+      assert.doesNotMatch(input.innerHTML, /\u0000/);
+      assert.equal(input.value, prompt);
+    }
+  });
+
   it("edits rendered Markdown in one input, sends its source, and recalls it with Up", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage());
