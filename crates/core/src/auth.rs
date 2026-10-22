@@ -148,6 +148,11 @@ pub async fn login_provider(
     if config.adopt_provider_catalog().await {
         config.persist_selection_at(&crate::config::Config::config_path())?;
     }
+    // A login about this provider is also where its pi.dev catalog is warmed,
+    // so a model whose listing carries no effort metadata still offers the
+    // levels the terminal, the app and the panel draw, without waiting for the
+    // next launch.
+    let _ = crate::catalog::refresh_if_stale(&name, Some(cwd)).await;
     Ok(LoginOutcome {
         label: provider_label(&name).to_string(),
         local: is_local(&name),

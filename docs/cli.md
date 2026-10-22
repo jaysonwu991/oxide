@@ -787,11 +787,22 @@ backend that supports the selected effort.
 When a provider's model listing advertises the effort levels a model accepts
 (DeepSeek returns `effort.supported_levels` and `effort.default_level` beside
 each id), Oxide reads them into the model cache and uses them: the TUI's cycle
-and the desktop picker offer exactly those levels, and a level the model does not
-accept is clamped onto the nearest one it does — walking up first, so `medium`
-on a model with only `low`/`high`/`max` becomes `high`, matching Pi. The level
-is re-read from the cache when a model or provider is selected and before a turn,
-and on every process start, so a listing fetched once keeps working offline.
+and the desktop and extension pickers offer exactly those levels, and a level
+the model does not accept is clamped onto the nearest one it does — walking up
+first, so `medium` on a model with only `low`/`high`/`max` becomes `high`,
+matching Pi. The level is re-read from the cache when a model or provider is
+selected and before a turn, and on every process start, so a listing fetched
+once keeps working offline.
+
+Most providers do not advertise effort metadata in `/models` (Anthropic,
+OpenAI and Google among them). For those, Oxide uses the pi.dev catalog it
+already remembers for context windows, which publishes `reasoning` and
+`thinkingLevelMap` beside every model. Pi's rules decide the set: a model that
+does not reason offers no effort selector, `off`/`minimal`/`low`/`medium`/`high`
+are offered unless the map names them `null`, and `xhigh`/`max` only when the
+map names them. The provider's own `effort` metadata wins when the two
+disagree. Refreshing the picker (`oxide reasoning --refresh`, the desktop's
+`reasoning_levels`, or the extension's chip) warms both sources.
 
 GLM is the exception: Z.AI selects thinking with `thinking.type` and accepts only
 its own `reasoning_effort` levels (`low`, `high`, and `max` on the GLM-5.3
@@ -807,10 +818,11 @@ the model thinking at its own default; `minimal` and `low` send `low`, `medium`
 and `high` send `high`, and `xhigh` and `max` send `max`, each with
 `thinking.type = "enabled"`.
 
-The effort selector is shown only when the provider advertises a nonempty list
-of supported levels. CLI, Desktop, and Extension hide it when metadata is
-missing, empty, or has only a default. Model names never supply fallback choices.
-Thinking text returned by the provider still appears in the transcript.
+The effort selector is shown only when the provider's listing or the pi.dev
+catalog gives the model a nonempty set of levels. CLI, Desktop, and Extension
+hide it when neither source says the model reasons. Model names never supply
+fallback choices. Thinking text returned by the provider still appears in the
+transcript.
 
 Set the starting level with `--reasoning auto|off|minimal|low|medium|high|xhigh|max`,
 the `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in

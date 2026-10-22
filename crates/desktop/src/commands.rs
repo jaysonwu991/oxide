@@ -316,7 +316,8 @@ pub async fn set_project_trust(
     Ok(project_info_value(&config, &path))
 }
 
-/// Selectable levels come only from the provider's effort metadata.
+/// Selectable levels: the provider's own effort metadata, else the levels the
+/// remembered pi.dev catalog publishes for the model.
 fn advertised_reasoning_levels(config: &Config) -> Value {
     json!(config
         .reasoning_levels()
@@ -361,16 +362,19 @@ pub fn git_info(project: String) -> CmdResult<oxide_desktop::GitView> {
 /// picker narrows the first time it is opened rather than only after a model
 /// catalog was fetched.
 pub async fn reasoning_levels(project: String, state: &DesktopState) -> CmdResult<Value> {
+    let path = PathBuf::from(&project);
     let mut config = {
         let manager = state.manager.lock().await;
-        manager.config_for(&PathBuf::from(&project)).map_err(err)?
+        manager.config_for(&path).map_err(err)?
     };
     if !config.supports_reasoning() {
         // Bypasses the TTL cache: a fresh entry the provider answered without
         // effort metadata must not keep the model's own levels hidden.
         let _ = LlmClient::new(config.clone()).refresh_models().await;
-        config.reasoning_supported =
-            oxide_core::llm::cached_model_reasoning(&config, &config.model);
+        // Most providers publish no effort metadata; pi.dev's catalog does,
+        // and a stale one is looked up again before the picker gives up.
+        let _ = oxide_core::catalog::refresh_if_stale(&config.provider, Some(&path)).await;
+        config.refresh_reasoning_supported();
     }
     Ok(json!({
         "reasoning": config.reasoning.label(),

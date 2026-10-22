@@ -1763,8 +1763,9 @@ async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -
 
 /// Prints the active model's reasoning levels and current choice, so a front-end
 /// that cannot link oxide-core (the VS Code panel) narrows its picker the way
-/// the terminal and desktop do. The levels come from the model cache; with
-/// `--refresh` the provider's listing is fetched again before reporting levels.
+/// the terminal and desktop do. The levels come from the model cache or the
+/// remembered pi.dev catalog; with `--refresh` both are warmed before reporting
+/// levels.
 async fn list_reasoning(
     current_dir: &Path,
     json_output: bool,
@@ -1776,7 +1777,10 @@ async fn list_reasoning(
         // Bypasses the TTL cache: a fresh entry the provider answered without
         // effort metadata must not keep the model's own levels hidden.
         let _ = llm::LlmClient::new(config.clone()).refresh_models().await;
-        config.reasoning_supported = llm::cached_model_reasoning(&config, &config.model);
+        // And the pi.dev catalog is the fallback a provider that publishes no
+        // effort metadata needs, so the picker also warms it when it is old.
+        let _ = catalog::refresh_if_stale(&config.provider, Some(current_dir)).await;
+        config.refresh_reasoning_supported();
     }
     let levels: Vec<&str> = config
         .reasoning_levels()
