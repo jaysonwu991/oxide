@@ -11,7 +11,7 @@ import {
   approvalTitle,
   isApprovalDecision,
 } from "../core/approvals";
-import { approvalFrame, promptFrame, quitFrame, steerFrame } from "../core/rpc";
+import { abortFrame, approvalFrame, promptFrame, quitFrame, steerFrame } from "../core/rpc";
 
 describe("approvalRequest", () => {
   it("reads the id, tool and detail the CLI emits", () => {
@@ -122,6 +122,7 @@ describe("rpc frames", () => {
   });
 
   it("ends the session with a quit", () => {
+    assert.deepEqual(parsed(abortFrame()), { type: "abort" });
     assert.deepEqual(parsed(quitFrame()), { type: "quit" });
   });
 });

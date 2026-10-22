@@ -24,8 +24,12 @@ end of the turn — so a stream the client retries never prints a partial answer
 twice; `--mode json` still emits each delta as it arrives.
 
 `--mode rpc` reads one JSON request per line (`{"type":"prompt","message":…}`,
-`{"type":"approval","id":…,"decision":"once"|"always"|"deny"}`, and
-`{"type":"quit"}`) and writes its events to stdout. A tool a permission rule gates
+`{"type":"approval","id":…,"decision":"once"|"always"|"deny"}`,
+`{"type":"abort"}`, and `{"type":"quit"}`) and writes its events to stdout. The
+process serves any number of prompts, so a client can keep one per thread: the
+MCP servers, plugin host and language servers are started once and reused, and
+`abort` stops the running turn without ending the process (the next prompt
+continues the same session). A tool a permission rule gates
 runs unless the client passed `--ask-approvals`, which instead holds it and emits
 an `approval_request` event for the client to answer; `always` is remembered per
 project in the shared `approvals.json`, so the terminal and the desktop app stop

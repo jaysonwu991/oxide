@@ -433,7 +433,7 @@ impl LlmClient {
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
         let mut attempt = 0u32;
-        let mut max_tokens = self.config.max_tokens;
+        let mut max_tokens = self.config.max_output_tokens();
         let mut escalated_from: Option<u32> = None;
         let mut discarded_usage = Usage::default();
         loop {

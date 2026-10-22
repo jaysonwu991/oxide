@@ -10,11 +10,11 @@ demand; its tools then appear as `<server>__<tool>`.
 
 | Tool | Parameters |
 | --- | --- |
-| `read` | `path`, `offset?` (1-based), `limit?` (default 400 lines) |
+| `read` | `path`, `offset?` (1-based), `limit?` (default 2000 lines) |
 | `write` | `path`, `content` |
 | `edit` | `path`, `edits: [{ oldText, newText }]` |
 | `bash` | `command`, `timeout?` in milliseconds (default 120000) |
-| `grep` | `pattern`, `path?`, `glob?`, `ignoreCase?`, `regex?`, `context?`, `limit?` |
+| `grep` | `pattern` (regex), `path?`, `glob?`, `ignoreCase?`, `literal?`, `context?`, `limit?` |
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
@@ -30,7 +30,9 @@ the target and replacement. When text has genuinely changed, a closest-region hi
 is offered only when it shares meaningful content; blank lines and punctuation
 alone do not identify a region. Read the current target before retrying. Line
 endings and a leading BOM are preserved. `write` and `edit` append LSP diagnostics
-for the edited file.
+for the edited file when its language server is already running; the first edit
+starts the server in the background rather than waiting for it to index the
+project, so the edit is never blocked on a cold `rust-analyzer`.
 
 Each `edit` call changes one file. Send separate calls for different files, omit
 replacements whose `oldText` equals `newText`, and merge overlapping changes. A
@@ -42,8 +44,9 @@ file and resend the corrected batch. CLI, Extension and Desktop share these rule
 `read`, `ls`, `find`, and `grep` accept absolute paths, so they can inspect files
 outside the project without a shell; `ls` marks directories with a trailing `/`
 and renders symlink targets as `name -> target`. `find` and `grep` respect
-`.gitignore`, and `grep` matches a literal substring by default (set
-`regex: true` to treat `pattern` as a regular expression) and prefers `ripgrep`
+`.gitignore`, and `grep` treats `pattern` as a regular expression by default (set
+`literal: true` to search for plain text, and a pattern that is not valid regex
+syntax is searched literally with a note instead of failing the call) and prefers `ripgrep`
 (`rg`) when it is on `PATH`, falling back to a dependency-free parallel walker
 that skips binary files. A `read` the platform refuses — macOS keeps the
 Desktop, Documents and Downloads folders behind a per-app grant — is reported
@@ -84,14 +87,14 @@ have changed the inputs since the previous check.
 
 ## Output limits
 
-Tool results are capped before they enter the model's context. The default cap is
-250 lines and 6 KB, but `read` gets a larger budget (400 lines / 16 KB) so an
-ordinary source file is returned whole instead of paged in slices; other per-tool
-overrides are `bash` 160 lines / 5 KB, `grep`, `find`, and `ls` 160 / 4 KB,
-`webfetch` 200 / 6 KB, and `write` and `edit` 120 / 3 KB. A connected
-MCP tool (`<server>__<tool>`) gets the largest budget of all, 500 lines / 20 KB:
-its result is structured data whose shape the server chose, so unlike a file read
-it cannot be narrowed with `offset`/`limit` and unlike a search it cannot be
+Tool results are capped before they enter the model's context, at Pi's own
+budget: 2000 lines or 50 KB, whichever is hit first. `read`, `bash`, `grep`,
+`find`, `ls` and `webfetch` all use it, so a whole source file, a failing build's
+tail or a large match set arrives in one call instead of several paged round
+trips. `write` and `edit` keep a smaller confirmation budget (120 lines / 3 KB),
+and a connected MCP tool (`<server>__<tool>`) uses the same 2000 / 50 KB: its
+result is structured data whose shape the server chose, so unlike a file read it
+cannot be narrowed with `offset`/`limit` and unlike a search it cannot be
 re-asked for less.
 
 `read` splits a line longer than 1 000 characters into continuation chunks

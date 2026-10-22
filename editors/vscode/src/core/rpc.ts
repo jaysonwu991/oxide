@@ -55,6 +55,13 @@ export function questionFrame(id: number, answers: readonly QuestionAnswer[]): s
   })}\n`;
 }
 
+/// `{"type":"abort"}` stops the turn that is running without ending the
+/// session, so a panel that keeps one process per thread can offer Stop and
+/// then send the next message to the same thread.
+export function abortFrame(): string {
+  return '{"type":"abort"}\n';
+}
+
 /// `{"type":"quit"}` ends the session. The CLI closes its event stream and
 /// exits, which is what a one-shot turn does after the prompt.
 export function quitFrame(): string {

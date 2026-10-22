@@ -58,14 +58,32 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// threads within one of them.
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 
-/// One model as the catalog publishes it. Only the window is kept: it is what
-/// the resolution needs, and the rest of the entry changes shape with Pi's
-/// catalog rather than with anything Oxide reads.
+/// One model as the catalog publishes it. The window is what the resolution
+/// needs, the output limit is what a request's `max_tokens` defaults to, and
+/// the prompt-cache lifetime is what keeps a cached prefix warm between turns.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogModel {
     #[serde(default)]
     pub context_window: u64,
+    /// The most tokens the model can produce in one response (`maxTokens` in
+    /// the catalog Pi publishes), or `0` when it does not say.
+    #[serde(default)]
+    pub max_tokens: u64,
+    /// How long the provider keeps a prompt-cache entry, when it publishes
+    /// that (`promptCache`). A model with none is never warmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<PromptCache>,
+}
+
+/// The prompt-cache lifetimes a provider publishes, in seconds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCache {
+    #[serde(default)]
+    pub short: u64,
+    #[serde(default)]
+    pub long: u64,
 }
 
 /// One provider's catalog: the models, the validator the next lookup
@@ -94,6 +112,29 @@ impl CatalogEntry {
             .iter()
             .filter(|(_, model)| model.context_window > 0)
             .map(|(id, model)| (id.clone(), model.context_window))
+            .collect()
+    }
+
+    /// The output limits alone, in the same shape as [`windows`](Self::windows)
+    /// so the model-name resolution is shared.
+    pub fn output_limits(&self) -> Models {
+        self.models
+            .iter()
+            .filter(|(_, model)| model.max_tokens > 0)
+            .map(|(id, model)| (id.clone(), model.max_tokens))
+            .collect()
+    }
+
+    /// The short prompt-cache lifetime alone, in the same shape as
+    /// [`windows`](Self::windows). A model whose catalog carries no
+    /// `promptCache` is left out, so it is never warmed.
+    pub fn prompt_cache(&self) -> Models {
+        self.models
+            .iter()
+            .filter_map(|(id, model)| {
+                let seconds = model.prompt_cache.as_ref()?.short;
+                (seconds > 0).then(|| (id.clone(), seconds))
+            })
             .collect()
     }
 }
@@ -164,6 +205,32 @@ pub fn windows() -> ModelsByProvider {
         .providers
         .into_iter()
         .map(|(provider, entry)| (provider, entry.windows()))
+        .filter(|(_, models)| !models.is_empty())
+        .collect()
+}
+
+/// The same, for the output limit each model accepts in one response.
+pub fn output_limits() -> ModelsByProvider {
+    let Some(path) = path() else {
+        return BTreeMap::new();
+    };
+    load(&path)
+        .providers
+        .into_iter()
+        .map(|(provider, entry)| (provider, entry.output_limits()))
+        .filter(|(_, models)| !models.is_empty())
+        .collect()
+}
+
+/// The same, for the short prompt-cache lifetime each model publishes.
+pub fn prompt_cache() -> ModelsByProvider {
+    let Some(path) = path() else {
+        return BTreeMap::new();
+    };
+    load(&path)
+        .providers
+        .into_iter()
+        .map(|(provider, entry)| (provider, entry.prompt_cache()))
         .filter(|(_, models)| !models.is_empty())
         .collect()
 }
@@ -429,10 +496,19 @@ fn parse_catalog(value: &serde_json::Value) -> BTreeMap<String, CatalogModel> {
             .get("contextWindow")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
+        let max_tokens = object
+            .get("maxTokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let prompt_cache = object
+            .get("promptCache")
+            .and_then(|value| serde_json::from_value::<PromptCache>(value.clone()).ok());
         models.insert(
             id.to_string(),
             CatalogModel {
                 context_window: window,
+                max_tokens,
+                prompt_cache,
             },
         );
     }
@@ -550,13 +626,24 @@ mod tests {
     }
 
     fn entry_models(entries: &[(&str, u64)]) -> BTreeMap<String, CatalogModel> {
+        entry_models_with_limits(
+            &entries
+                .iter()
+                .map(|(id, window)| (*id, *window, 0))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn entry_models_with_limits(entries: &[(&str, u64, u64)]) -> BTreeMap<String, CatalogModel> {
         entries
             .iter()
-            .map(|(id, window)| {
+            .map(|(id, window, max_tokens)| {
                 (
                     id.to_string(),
                     CatalogModel {
                         context_window: *window,
+                        max_tokens: *max_tokens,
+                        prompt_cache: None,
                     },
                 )
             })
@@ -592,9 +679,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             parse_catalog(&under_ids),
-            entry_models(&[
-                ("deepseek-flash", 1_000_000),
-                ("deepseek-v4-pro", 1_000_000)
+            entry_models_with_limits(&[
+                ("deepseek-flash", 1_000_000, 384_000),
+                ("deepseek-v4-pro", 1_000_000, 0)
             ])
         );
 
@@ -632,6 +719,29 @@ mod tests {
             .len(),
             0
         );
+    }
+
+    #[test]
+    fn a_catalog_answer_carries_each_models_output_limit() {
+        let answer: serde_json::Value = serde_json::from_str(
+            r#"{
+                "deepseek-flash": {"id": "deepseek-flash", "contextWindow": 1000000, "maxTokens": 384000},
+                "deepseek-v4-pro": {"id": "deepseek-v4-pro", "contextWindow": 1000000}
+            }"#,
+        )
+        .unwrap();
+        let entry = CatalogEntry {
+            models: parse_catalog(&answer),
+            ..CatalogEntry::default()
+        };
+        let limits = entry.output_limits();
+        assert_eq!(window_for(&limits, "deepseek-flash"), Some(384_000));
+        // A model the catalog gave no limit is left out of the map rather than
+        // answered with a zero that a request would then ask for.
+        assert_eq!(window_for(&limits, "deepseek-v4-pro"), None);
+        // The window and the output limit share one entry without crowding
+        // each other out.
+        assert_eq!(entry.windows().len(), 2);
     }
 
     #[test]

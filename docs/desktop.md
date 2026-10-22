@@ -735,11 +735,20 @@ from the terminal is told the same thing.
 
 ## Agent turns
 
-`turn::start_turn(project, prompt, session, approve, ask, reasoning, inline)` loads the
-project's config, resolves the session (`new` / `latest` / an id), appends the
-user message through `oxide_core::runner::begin_session`, and spawns the shared
-agent loop with `runner::spawn_agent`, returning a stream of `AgentEvent`s plus
-the run's `Steering` handles and its cooperative `Cancel` flag. The engine's
+`turn::start_turn(project, prompt, session, approve, ask, reasoning, inline,
+environment)` loads the project's config, resolves the session (`new` / `latest`
+/ an id), appends the user message through
+`oxide_core::runner::begin_session`, and spawns the shared agent loop with
+`runner::spawn_agent_in`, returning a stream of `AgentEvent`s plus the run's
+`Steering` handles and its cooperative `Cancel` flag. The engine keeps a
+`runner::TurnEnvironment` per project — the MCP servers, plugin host and
+language servers — and hands it to the next turn, so those are started once for
+the harness rather than once per prompt; an environment whose project, MCP
+servers, hook plugins or installed packages changed is rebuilt. That is also
+what lets an edit's language-server diagnostics reach a later edit (the first
+edit starts the server in the background instead of blocking), and what keeps
+the prompt-cache warmer — armed by `runner` when the turn ends — replaying
+against the same project. The engine's
 event channel serializes events with
 `oxide_core::cli::event_json` (the same Pi-shaped JSON the CLI emits in
 `--mode json`), attaches any `DiffPreview`, and forwards them over

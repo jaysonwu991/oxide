@@ -33,6 +33,7 @@ const manifestStrings = JSON.parse(fs.readFileSync(path.join(root, "package.nls.
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"), (_key, value: unknown) => typeof value === "string" && /^%.*%$/.test(value) ? manifestStrings[value.slice(1, -1)] : value) as Manifest;
 const extension = readSource(path.join(root, "src", "extension.ts"));
 const chat = readSource(path.join(root, "src", "chat.ts"));
+const cli = readSource(path.join(root, "src", "cli.ts"));
 const chatView = readSource(path.join(root, "src", "chatView.ts"));
 const renderer = readSource(path.join(root, "media", "main.js"));
 const dialogs = readSource(path.join(root, "src", "core", "dialogs.ts"));
@@ -1482,5 +1483,35 @@ describe("command contributions", () => {
         cleared.indexOf("this.runTranscript = null;") < cleared.indexOf("this.broadcast(this.stateMessage());"),
       "and a parked thread goes with the folder it belongs to",
     );
+  });
+
+  it("reuses a thread's rpc process and stops it with abort", () => {
+    assert.ok(cli.includes("export function openSession"), "the process is a session, not a turn");
+    assert.ok(
+      cli.includes('event.type === "agent_end"') && cli.includes("callbacks.onTurnEnd()"),
+      "a turn ends while the process stays open",
+    );
+    assert.ok(
+      cli.includes("child.stdin.write(abortFrame())"),
+      "Stop asks the CLI to abort the turn instead of killing the process",
+    );
+    assert.ok(!cli.includes("function startTurn("), "the per-turn spawn is gone");
+
+    assert.ok(
+      chat.includes("private cliSessions = new Map<string, CliSession>()"),
+      "the controller keeps the process a thread can continue",
+    );
+    assert.ok(
+      chat.includes("this.cliSessions.get(key)") &&
+        chat.includes("this.cliSessions.set(key, session)"),
+      "a message in the same thread reuses it",
+    );
+    assert.ok(
+      chat.includes("onTurnEnd: () => this.handleTurnEnd()"),
+      "and a finished turn settles without a process exit",
+    );
+    // The flags are part of the process identity, so changing model or agent
+    // starts a fresh one rather than running the turn on the old configuration.
+    assert.ok(chat.includes("const signature = buildTurnArgs("), "the started flags key the session");
   });
 });

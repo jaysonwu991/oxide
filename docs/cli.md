@@ -43,9 +43,9 @@ speaks the OpenAI wire), never by the provider a reader happened to switch to.
 variable, which overrides the file. Behavior settings live in `config.json`
 (global); `defaultProjectTrust` and `hideThinkingBlock` come from the global
 `settings.json`, while `compaction`, `modelPrices`, `modelContextWindows`,
-`modelCatalog`, `steeringMode`, `followUpMode`, `notifyOnComplete`, `notifySound`
-and `checkForUpdates` are read from it with the project `.oxide/settings.json`
-winning per key.
+`modelCatalog`, `steeringMode`, `followUpMode`, `notifyOnComplete`, `notifySound`,
+`cacheWarming` and `checkForUpdates` are read from it with the project
+`.oxide/settings.json` winning per key.
 
 Installed plugin packages (see [Plugins and hooks](#plugins-and-hooks)) load
 after global resources and before project resources, so project entries still
@@ -1665,7 +1665,7 @@ Runtime state lives under the platform Oxide config directory:
   or a directory that is neither a git work tree nor project-sized
 - `memory/` — persistent memory entries
 - `trust.json` — saved project trust decisions
-- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`, `notifyOnComplete`, `notifySound`, and `checkForUpdates`
+- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`, `notifyOnComplete`, `notifySound`, `cacheWarming`, and `checkForUpdates`
 - `updates.json` — the newest release of each component the last launch found, so the "update available" notice needs no network wait (override with `OXIDE_UPDATES_FILE`)
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state

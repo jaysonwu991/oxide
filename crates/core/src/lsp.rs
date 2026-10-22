@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -10,6 +11,9 @@ use tokio::sync::Mutex;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_millis(1500);
+/// The automatic check after a write or edit gets a shorter wait: it is a
+/// courtesy appended to the tool result, not the reason the edit was made.
+const EDIT_DIAGNOSTIC_TIMEOUT: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, Copy)]
 struct ServerConfig {
@@ -70,18 +74,61 @@ impl LspManager {
     }
 
     pub async fn diagnostics(&self, cwd: &Path, path: &Path) -> Option<String> {
-        match self.diagnostics_inner(cwd, path).await {
+        match self
+            .diagnostics_inner(cwd, path, true, DIAGNOSTIC_TIMEOUT)
+            .await
+        {
             Ok(result) => result,
             Err(err) => Some(format!("[lsp] {err:#}")),
         }
     }
 
-    async fn diagnostics_inner(&self, cwd: &Path, path: &Path) -> Result<Option<String>> {
+    /// Diagnostics from a language server that is already running, which is
+    /// what `write`/`edit` append to their result. It never starts one: an
+    /// edit must not wait on a cold `rust-analyzer` (which can take seconds to
+    /// index a project before it publishes anything), and the `diagnostics`
+    /// tool is the caller that asks for a server on purpose.
+    pub async fn diagnostics_if_running(
+        self: &Arc<Self>,
+        cwd: &Path,
+        path: &Path,
+    ) -> Option<String> {
+        let config = server_for(path)?;
+        if !self.servers.lock().await.contains_key(config.language_id) {
+            // Start the server for the next edit instead of blocking this one:
+            // a cold rust-analyzer can take seconds to index a project, and the
+            // edit that triggered it has already been written.
+            let manager = Arc::clone(self);
+            let cwd = cwd.to_path_buf();
+            let path = path.to_path_buf();
+            tokio::spawn(async move {
+                let _ = manager
+                    .diagnostics_inner(&cwd, &path, true, EDIT_DIAGNOSTIC_TIMEOUT)
+                    .await;
+            });
+            return None;
+        }
+        match self
+            .diagnostics_inner(cwd, path, false, EDIT_DIAGNOSTIC_TIMEOUT)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => Some(format!("[lsp] {err:#}")),
+        }
+    }
+
+    async fn diagnostics_inner(
+        &self,
+        cwd: &Path,
+        path: &Path,
+        connect: bool,
+        wait: Duration,
+    ) -> Result<Option<String>> {
         let config = match server_for(path) {
             Some(config) => config,
             None => return Ok(None),
         };
-        self.diagnostics_for(config, cwd, path).await
+        self.diagnostics_for(config, cwd, path, connect, wait).await
     }
 
     async fn diagnostics_for(
@@ -89,6 +136,8 @@ impl LspManager {
         config: ServerConfig,
         cwd: &Path,
         path: &Path,
+        connect: bool,
+        wait: Duration,
     ) -> Result<Option<String>> {
         if !command_exists(config.command) {
             return Ok(None);
@@ -106,6 +155,9 @@ impl LspManager {
         if self.unavailable.lock().await.contains(config.language_id) {
             return Ok(None);
         }
+        if !connect && !servers.contains_key(config.language_id) {
+            return Ok(None);
+        }
         for _ in 0..2 {
             if !servers.contains_key(config.language_id) {
                 match Server::connect(config, cwd).await {
@@ -119,7 +171,7 @@ impl LspManager {
                 .get_mut(config.language_id)
                 .expect("server was just inserted");
             match server
-                .diagnose(config.language_id, &full, &uri, &text)
+                .diagnose(config.language_id, &full, &uri, &text, wait)
                 .await
             {
                 Ok(report) => return Ok(Some(report)),
@@ -214,6 +266,7 @@ impl Server {
         full: &Path,
         uri: &str,
         text: &str,
+        wait: Duration,
     ) -> Result<String> {
         self.ensure_initialized().await?;
         if self.opened.insert(full.to_path_buf()) {
@@ -239,12 +292,12 @@ impl Server {
             )
             .await?;
         }
-        let diagnostics = self.collect_diagnostics(uri).await?;
+        let diagnostics = self.collect_diagnostics(uri, wait).await?;
         Ok(format_diagnostics(full, &diagnostics))
     }
 
-    async fn collect_diagnostics(&mut self, uri: &str) -> Result<Vec<Value>> {
-        let deadline = tokio::time::Instant::now() + DIAGNOSTIC_TIMEOUT;
+    async fn collect_diagnostics(&mut self, uri: &str, wait: Duration) -> Result<Vec<Value>> {
+        let deadline = tokio::time::Instant::now() + wait;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -490,7 +543,7 @@ while True:
 
         let manager = LspManager::new();
         let report = manager
-            .diagnostics_for(config, &dir, &source)
+            .diagnostics_for(config, &dir, &source, true, DIAGNOSTIC_TIMEOUT)
             .await
             .expect("diagnostics should recover from a dead server")
             .expect("a report");
@@ -522,7 +575,7 @@ while True:
         };
         let manager = LspManager::new();
         assert!(manager
-            .diagnostics_for(config, &dir, &source)
+            .diagnostics_for(config, &dir, &source, true, DIAGNOSTIC_TIMEOUT)
             .await
             .expect("a dead server is not an error")
             .is_none());
@@ -530,7 +583,7 @@ while True:
 
         // Once a language is marked unavailable it is not spawned again.
         assert!(manager
-            .diagnostics_for(config, &dir, &source)
+            .diagnostics_for(config, &dir, &source, true, DIAGNOSTIC_TIMEOUT)
             .await
             .unwrap()
             .is_none());

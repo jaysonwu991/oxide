@@ -169,9 +169,10 @@ import {
   isFile,
   readFileHead,
   readTextFile,
+  openSession as openCliSession,
   resolveBinary,
   runCapture,
-  startTurn,
+  type CliSession,
   type Turn,
 } from "./cli";
 
@@ -367,6 +368,12 @@ export class ChatController {
   private commandLoad: Promise<CommandEntry[]> | null = null;
   private nextChipId = 1;
   private turn: Turn | null = null;
+  /// The rpc process a thread's next turn reuses. Keyed by the folder and the
+  /// flags a session was started with, and checked against the thread id, so a
+  /// process is never handed a message for another conversation or a different
+  /// model.
+  private cliSessions = new Map<string, CliSession>();
+  private lastSessionKey: string | null = null;
   private run: RunState | null = null;
   private continueLast = false;
   /// The dialog the panel paints over the transcript — the MCP server list or
@@ -542,6 +549,8 @@ export class ChatController {
 
   dispose(): void {
     this.turn?.cancel();
+    for (const session of this.cliSessions.values()) session.close();
+    this.cliSessions.clear();
     this.store.dispose();
     this.onDidChange.dispose();
   }
@@ -1891,8 +1900,9 @@ export class ChatController {
   /// is false and the composer is left alone.
   private startTurn(prepared: PreparedSend, showUser: boolean, target = this.transcript): void {
     const folder = this.folder();
+    const options = this.turnOptions();
     const args = buildTurnArgs({
-      ...this.turnOptions(),
+      ...options,
       session: target.sessionId,
       continueLast: this.continueLast && !target.sessionId,
     });
@@ -1907,7 +1917,39 @@ export class ChatController {
     }
 
     const command = this.binary();
-    this.output.appendLine(`\n$ ${command} ${args.join(" ")}`);
+    // The session is the process's, not the turn's: the next message in this
+    // thread reuses the warm config, ecosystem and toolchain instead of
+    // spawning (and re-reading them) for every prompt. The flags are part of
+    // its identity, so a model or agent change starts a fresh process; the
+    // thread id is checked separately, so one process never receives a
+    // message for another conversation.
+    const signature = buildTurnArgs({ ...options, session: null, continueLast: false }).join("\u0000");
+    const key = `${prepared.cwd}\u0000${signature}`;
+    let session = this.cliSessions.get(key);
+    if (session && (!session.alive || session.sessionId !== (target.sessionId ?? null))) {
+      session.close();
+      this.cliSessions.delete(key);
+      session = undefined;
+    }
+    if (!session) {
+      this.output.appendLine(`\n$ ${command} ${args.join(" ")}`);
+      session = openCliSession(command, args, prepared.cwd, {
+        onEvent: (event) => this.handleEvent(event),
+        onStderr: (line) => {
+          this.run?.stderr.push(line.trim());
+          this.output.appendLine(`[stderr] ${line}`);
+        },
+        onTurnEnd: () => this.handleTurnEnd(),
+        onExit: (result) => {
+          this.cliSessions.delete(key);
+          this.handleExit(result);
+        },
+      });
+      this.cliSessions.set(key, session);
+    } else {
+      this.output.appendLine(`\n$ ${command} ${args.join(" ")}  (reusing this thread's process)`);
+    }
+    this.lastSessionKey = key;
     if (folder) this.output.appendLine(`  cwd ${folder.uri.fsPath}`);
     this.output.appendLine(`  prompt:\n${indent(prepared.prompt)}`);
 
@@ -1923,26 +1965,32 @@ export class ChatController {
       context: prepared.context,
       attachments: prepared.attachments,
     };
-    this.turn = startTurn(
-      command,
-      args,
-      prepared.cwd,
-      {
-        prompt: prepared.prompt,
-        // The paths travel with the prompt instead of in `--image` flags: in
-        // rpc mode the prompt itself is a request frame.
-        images: prepared.images,
-      },
-      {
-        onEvent: (event) => this.handleEvent(event),
-        onStderr: (line) => {
-          this.run?.stderr.push(line.trim());
-          this.output.appendLine(`[stderr] ${line}`);
-        },
-        onExit: (result) => this.handleExit(result),
-      },
-    );
+    this.turn = session.start({
+      prompt: prepared.prompt,
+      // The paths travel with the prompt instead of in `--image` flags: in
+      // rpc mode the prompt itself is a request frame.
+      images: prepared.images,
+    });
     this.broadcastStatus();
+  }
+
+  /// The turn ended and the process stayed open for the next one. The same
+  /// settling the old per-turn process did on exit happens here instead.
+  private handleTurnEnd(): void {
+    this.finishRun({ code: 0, signal: null }, true);
+    this.pruneSessions();
+  }
+
+  /// Keeps at most two idle processes: the thread that just ran and the one the
+  /// reader may switch back to. A panel that opens many threads would otherwise
+  /// leave a CLI alive for each.
+  private pruneSessions(): void {
+    const idle = [...this.cliSessions.entries()].filter(([key]) => key !== this.lastSessionKey);
+    while (this.cliSessions.size > 2 && idle.length > 0) {
+      const [key, session] = idle.shift()!;
+      session.close();
+      this.cliSessions.delete(key);
+    }
   }
 
   /// Clears the chips the user attached from the composer. The tracked file's
@@ -2074,7 +2122,23 @@ export class ChatController {
   }
 
   private handleExit(result: { code: number | null; signal: string | null; error?: string }): void {
+    this.finishRun(result, false);
+  }
+
+  /// Settles a run. `turnEnded` says the CLI reported `agent_end` and the
+  /// process is still open; otherwise the process exited while the turn was
+  /// running (or could not start).
+  private finishRun(
+    result: { code: number | null; signal: string | null; error?: string },
+    turnEnded: boolean,
+  ): void {
     const run = this.run;
+    if (!run) {
+      // A process that was only parked between turns exited; there is no run
+      // to settle, and the next message starts a fresh session.
+      this.onDidChange.fire();
+      return;
+    }
     // Whether this process's thread is the one on screen, read before the run is
     // dropped: a turn that finished in a thread the reader moved away from is a
     // strip that says "finished" and a transcript nobody has repainted, so what
@@ -2093,7 +2157,7 @@ export class ChatController {
 
     if (run?.cancelled) {
       this.showNotice(this.t("surface.runStoppedTheNextMessageContinuesThisSession", "Run stopped. The next message continues this session."));
-    } else if (result.error) {
+    } else if (!turnEnded && result.error) {
       // The turn never started, so hand the message's chips back to the
       // composer instead of losing them with the failed run.
       for (const chip of run?.context ?? []) this.context.push(chip);
@@ -2103,7 +2167,7 @@ export class ChatController {
         `Could not run ${this.binary()}: ${result.error}. Set "oxide.binaryPath" to the oxide binary, then use "Oxide: Open Terminal" to connect a provider.`,
         "error",
       );
-    } else if (result.code !== 0) {
+    } else if (!turnEnded && result.code !== 0) {
       const detail = (run?.stderr ?? []).filter(Boolean).join(" ").trim();
       const hint = /no api key|not logged in|authenticate/i.test(detail)
         ? ' Run "Oxide: Open Terminal" and use /connect there to connect a provider.'

@@ -501,7 +501,7 @@ later messages.";
 fn summary_max_tokens(budget: Option<Budget>, config: &Config, factor: f64) -> u32 {
     let reserved = budget.map(|budget| budget.reserve_tokens).unwrap_or(0) as f64 * factor;
     let ceiling = if config.max_tokens > 0 {
-        config.max_tokens as f64
+        config.max_output_tokens() as f64
     } else {
         f64::INFINITY
     };
@@ -538,6 +538,9 @@ async fn complete_summary(
     let mut config = config.clone();
     if max_tokens > 0 {
         config.max_tokens = max_tokens;
+        // The cap is this call's decision, not a reader's; without this the
+        // catalog's output limit would raise it back.
+        config.max_tokens_explicit = true;
     }
     let messages = vec![
         Message::system(SUMMARY_SYSTEM_PROMPT),

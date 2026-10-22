@@ -14,22 +14,23 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::time::{timeout, Duration};
 
-const MAX_OUTPUT_BYTES: usize = 6_000;
-const MAX_OUTPUT_LINES: usize = 250;
+/// Pi's truncation budget (`core/tools/truncate.ts`): 2000 lines or 50 KB,
+/// whichever is hit first. A smaller cap is not a speed win — it turns one
+/// call into several paged round trips and hides the tail of a failing build
+/// from the model, which is exactly the output the next step needs.
+const MAX_OUTPUT_BYTES: usize = 50 * 1024;
+const MAX_OUTPUT_LINES: usize = 2_000;
 const MAX_LINE_LEN: usize = 1_000;
-/// `read` gets a larger budget than the other tools: the prompt tells the model
-/// to read a whole file in one call, and a 6 KB cap forced ordinary source
-/// files into several paged round trips.
-const READ_MAX_BYTES: usize = 16_000;
-const READ_MAX_LINES: usize = 400;
+const READ_MAX_BYTES: usize = MAX_OUTPUT_BYTES;
+const READ_MAX_LINES: usize = MAX_OUTPUT_LINES;
 const DEFAULT_READ_LINES: usize = READ_MAX_LINES;
-/// An MCP result gets its own budget, between `read`'s and the generic cap. It
-/// is structured data a server chose the shape of, so unlike a file read the
-/// model cannot narrow it with `offset`/`limit`, and unlike `grep` it cannot
-/// re-ask for less: whatever the server returned is the only answer available.
-/// Pi gives the same output 20 KB (`extensions/mcp/tools.ts`).
-const MCP_OUTPUT_BYTES: usize = 20_000;
-const MCP_OUTPUT_LINES: usize = 500;
+/// An MCP result is structured data a server chose the shape of, so unlike a
+/// file read the model cannot narrow it with `offset`/`limit`, and unlike
+/// `grep` it cannot re-ask for less: whatever the server returned is the only
+/// answer available. It gets the same budget as the built-ins, with the record
+/// elision below keeping a JSON answer readable rather than cut mid-token.
+const MCP_OUTPUT_BYTES: usize = MAX_OUTPUT_BYTES;
+const MCP_OUTPUT_LINES: usize = MAX_OUTPUT_LINES;
 const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 /// What a search that found nothing answers with, in Pi's own words
 /// (`coding-agent/src/core/tools/{grep,find}.ts`). Short, but never an empty
@@ -307,7 +308,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
                 "properties": {
                     "path": { "type": "string", "description": path_description },
                     "offset": { "type": "integer", "description": "1-based display line to start from (text only; a long line counts once per chunk)" },
-                    "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 400)" }
+                    "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 2000)" }
                 },
                 "required": ["path"]
             }),
@@ -385,15 +386,15 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "grep",
-            if project_only { "Search file contents inside the current project and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression." } else if registered_only { "Search file contents inside projects registered in Oxide and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths inside those projects are allowed." } else { "Search file contents and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern matches a literal substring by default; set `regex` to treat it as a regular expression. Absolute paths are allowed." },
+            if project_only { "Search file contents inside the current project and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern is a regular expression by default; set `literal: true` to search for plain text. Output is truncated to 2000 matches or 50KB (whichever is hit first)." } else if registered_only { "Search file contents inside projects registered in Oxide and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern is a regular expression by default; set `literal: true` to search for plain text. Output is truncated to 2000 matches or 50KB (whichever is hit first). Absolute paths inside those projects are allowed." } else { "Search file contents and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern is a regular expression by default; set `literal: true` to search for plain text. Output is truncated to 2000 matches or 50KB (whichever is hit first). Absolute paths are allowed." },
             json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Literal text by default. For alternatives such as Foo|Bar or expressions such as Foo.*Bar, also set regex: true" },
+                    "pattern": { "type": "string", "description": "Search pattern (regular expression by default, or literal text when `literal` is true)" },
                     "path": { "type": "string", "description": "Directory to search in (default: .)" },
                     "glob": { "type": "string", "description": "Glob pattern to restrict which file names are searched (e.g. `*.rs`)" },
                     "ignoreCase": { "type": "boolean", "description": "Case-insensitive search" },
-                    "regex": { "type": "boolean", "description": "Treat `pattern` as a regular expression (default: literal substring)" },
+                    "literal": { "type": "boolean", "description": "Treat the pattern as a literal string instead of a regular expression (default: false)" },
                     "context": { "type": "integer", "description": "Number of context lines to include around each match" },
                     "limit": { "type": "integer", "description": "Maximum number of matches to return" }
                 },
@@ -934,8 +935,8 @@ fn read(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let full = resolve(cwd, path);
     if full.is_dir() {
         let mut entries = dir_entries(&full)?;
-        let truncated = entries.len() > MAX_MATCHES;
-        entries.truncate(MAX_MATCHES);
+        let truncated = entries.len() > DEFAULT_LS_ENTRIES;
+        entries.truncate(DEFAULT_LS_ENTRIES);
         let mut out = format!("{} is a directory. Entries:\n", full.display());
         out.push_str(&entries.join("\n"));
         if truncated {
@@ -1812,7 +1813,7 @@ fn dir_entries(full: &Path) -> Result<Vec<String>> {
 
 fn ls(cwd: &Path, args: &Value) -> Result<String> {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
+    let limit = int_arg(args, "limit").unwrap_or(DEFAULT_LS_ENTRIES).max(1);
     let full = resolve(cwd, path);
 
     let metadata =
@@ -1834,12 +1835,18 @@ fn ls(cwd: &Path, args: &Value) -> Result<String> {
     Ok(out)
 }
 
-const MAX_MATCHES: usize = 200;
+/// Default result counts, Pi's own (`tools/{grep,find,ls}.js`); each answer is
+/// still bounded by the shared byte and line budget.
+const DEFAULT_GREP_MATCHES: usize = 100;
+const DEFAULT_FIND_MATCHES: usize = 1_000;
+const DEFAULT_LS_ENTRIES: usize = 500;
 
 fn find(cwd: &Path, args: &Value) -> Result<String> {
     let pattern = required_string(args, "find", "pattern", r#"{"pattern":"**/*.rs"}"#)?;
     let base = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
+    let limit = int_arg(args, "limit")
+        .unwrap_or(DEFAULT_FIND_MATCHES)
+        .max(1);
     let root = resolve(cwd, base);
 
     let metadata = std::fs::metadata(&root)
@@ -1955,7 +1962,7 @@ fn collect_find_child(command: &mut std::process::Command, limit: usize) -> Opti
         .spawn()
         .ok()?;
     let stdout = child.stdout.take()?;
-    let mut matches = Vec::with_capacity(limit.saturating_add(1).min(MAX_MATCHES + 1));
+    let mut matches = Vec::with_capacity(limit.saturating_add(1));
     let mut kill_requested = false;
     let mut read_failed = false;
     for line in BufReader::new(stdout).lines() {
@@ -2021,9 +2028,37 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
         .and_then(Value::as_str)
         .or_else(|| args.get("include").and_then(Value::as_str));
     let ignore_case = bool_arg(args, "ignoreCase", "ignore_case");
-    let use_regex = bool_arg(args, "regex", "use_regex");
+    let literal = opt_bool_arg(args, "literal").unwrap_or(false);
+    // `regex`/`use_regex` are the previous spelling. A call that still sends
+    // `regex: false` keeps its old literal meaning; a call that sends neither
+    // gets Pi's default, a regular expression.
+    let mut use_regex = if literal {
+        false
+    } else {
+        opt_bool_arg(args, "regex")
+            .or_else(|| opt_bool_arg(args, "use_regex"))
+            .unwrap_or(true)
+    };
+    let mut note = String::new();
+    if use_regex {
+        if let Err(err) = regex::RegexBuilder::new(pattern)
+            .case_insensitive(ignore_case)
+            .build()
+        {
+            // A pattern that is not valid regex syntax is almost always a
+            // literal string copied from source (a line with parentheses or
+            // brackets). Search it literally and say so instead of failing the
+            // call and spending a whole turn on the retry.
+            use_regex = false;
+            note = format!(
+                "[note: `{pattern}` is not a valid regular expression ({err}); searched it as literal text instead]\n"
+            );
+        }
+    }
     let context = int_arg(args, "context").unwrap_or(0);
-    let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
+    let limit = int_arg(args, "limit")
+        .unwrap_or(DEFAULT_GREP_MATCHES)
+        .max(1);
     let root = resolve(cwd, base);
 
     std::fs::metadata(&root)
@@ -2045,23 +2080,7 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
         let matcher = GrepMatcher::new(pattern, use_regex, ignore_case)?;
         rust_grep(&root, &matcher, include, context, limit)?
     };
-    // A regex sent in the default literal mode can hide existing code and
-    // tests. Explain the mode without silently changing the search semantics.
-    if output == NO_MATCHES
-        && args.get("regex").is_none()
-        && args.get("use_regex").is_none()
-        && ["|", ".*", r"\b", r"\s", r"\d"]
-            .iter()
-            .any(|syntax| pattern.contains(syntax))
-    {
-        return Ok(format!(
-            "{NO_MATCHES}\n[hint: This was a literal search. The pattern contains regex syntax; \
-             set `regex: true` for alternatives (`Foo|Bar`), wildcards, or character classes. \
-             Escape source-code punctuation when using regex. A literal no-match does not \
-             establish that each alternative is absent.]"
-        ));
-    }
-    Ok(output)
+    Ok(format!("{note}{output}"))
 }
 
 /// How a `grep` line is matched: a literal substring or a compiled regex.
@@ -2079,7 +2098,7 @@ impl GrepMatcher {
                 .map_err(|err| {
                     anyhow::anyhow!(
                         "grep could not compile `pattern` as a regular expression: {err}. \
-                         Fix the expression or set `regex` to false for a literal search"
+                         Fix the expression or set `literal` to true for a plain-text search"
                     )
                 })?;
             Ok(GrepMatcher::Regex(regex))
@@ -2505,10 +2524,15 @@ fn strict_int_arg(args: &Value, key: &str) -> Result<Option<usize>> {
 
 /// Reads a boolean argument under either of two names (Pi name first).
 fn bool_arg(args: &Value, primary: &str, legacy: &str) -> bool {
-    args.get(primary)
-        .or_else(|| args.get(legacy))
-        .and_then(Value::as_bool)
+    opt_bool_arg(args, primary)
+        .or_else(|| opt_bool_arg(args, legacy))
         .unwrap_or(false)
+}
+
+/// The same read, leaving an absent argument absent so a caller can tell
+/// "not sent" from an explicit `false`.
+fn opt_bool_arg(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(Value::as_bool)
 }
 
 /// Fetches a URL unless a configured MCP server owns it, in which case the
@@ -3502,7 +3526,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     #[cfg(unix)]
     let no_matches = exit == 1 && search_returned_no_matches(command, &pipeline_status);
     #[cfg(not(unix))]
-    let no_matches = false;
+    let no_matches = exit == 1 && last_pipeline_is_search(command) && stderr.trim().is_empty();
     let mut output = finish_bash_output(stdout, stderr, if reader_closed { 0 } else { exit })?;
     if reader_closed {
         output.push_str(" (a command in the pipeline stopped because its reader closed)");
@@ -3565,6 +3589,29 @@ fn search_returned_no_matches(command: &str, text: &str) -> bool {
                         "grep" | "egrep" | "fgrep" | "rg"
                     ))
         })
+}
+
+/// Whether the last stage of a `cmd` pipeline is a search. Windows has no
+/// `pipefail`, so the process exit status is already the last stage's; a search
+/// that found nothing exits 1, which is a result rather than a failure.
+#[cfg(not(unix))]
+fn last_pipeline_is_search(command: &str) -> bool {
+    let Some(last) = shell_segments(command)
+        .into_iter()
+        .rev()
+        .find(|segment| !segment.trim().is_empty())
+    else {
+        return false;
+    };
+    let words: Vec<&str> = last.split_whitespace().collect();
+    shell_command_index(&words)
+        .map(|index| {
+            matches!(
+                shell_word_name(words[index]),
+                "grep" | "egrep" | "fgrep" | "rg"
+            )
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(unix)]
@@ -4328,9 +4375,12 @@ fn is_mcp_tool(name: &str) -> bool {
 
 fn output_limits(name: &str) -> (usize, usize) {
     match name {
-        "bash" => (5_000, 160),
-        "grep" | "find" | "ls" => (4_000, 160),
-        "webfetch" => (6_000, 200),
+        "bash" => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
+        "grep" | "find" | "ls" => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
+        "webfetch" => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
+        // A write or an edit answers with a confirmation and a diff the model
+        // already knows; only the built-ins whose output it must reason from
+        // need the full budget.
         "write" | "edit" => (3_000, 120),
         // One extra line for the `… more lines; use offset=` pointer, so a
         // full page of `read` output is never trimmed by the central cap.
@@ -5668,7 +5718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn grep_explains_regex_shaped_literal_misses_without_changing_modes() {
+    async fn grep_indexes_regex_by_default_and_searches_literally_on_request() {
         let dir = std::env::temp_dir().join(format!("oxide_grep_mode_hint_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
@@ -5680,53 +5730,48 @@ mod tests {
         let mcp = McpRegistry::default();
         let progress = Progress::default();
         let pattern = "BOUTIQUE_HOTELS_IN_CITY|VILLAS_IN_CITY";
-        let mut args = json!({ "pattern": pattern, "path": "noindex-resolver.test.ts" });
 
-        let missed = execute(&call("grep", args.clone()), &dir, &mcp, &progress).await;
-        assert!(!missed.is_error, "{}", missed.text);
-        assert!(missed.text.starts_with(NO_MATCHES), "{}", missed.text);
-        assert!(missed.text.contains("regex: true"), "{}", missed.text);
-        assert!(!is_empty_search_result("grep", &missed.text));
-
-        args["regex"] = json!(true);
-        let corrected = execute(&call("grep", args.clone()), &dir, &mcp, &progress).await;
-        assert!(!corrected.is_error, "{}", corrected.text);
+        // Pi's default is a regular expression, so a pattern a model writes
+        // from knowledge of its tools matches without a second call.
+        let matched = execute(
+            &call("grep", json!({ "pattern": pattern })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!matched.is_error, "{}", matched.text);
         assert!(
-            corrected.text.contains("noindex-resolver.test.ts:1:"),
+            matched.text.contains("noindex-resolver.test.ts:1:"),
             "{}",
-            corrected.text
+            matched.text
         );
-        assert!(!corrected.text.contains("[hint:"), "{}", corrected.text);
+        assert!(!matched.text.contains("[note:"), "{}", matched.text);
 
-        for mode in ["regex", "use_regex"] {
-            let explicit_literal = execute(
-                &call("grep", json!({ "pattern": pattern, (mode): false })),
-                &dir,
-                &mcp,
-                &progress,
-            )
-            .await;
-            assert_eq!(explicit_literal.text, NO_MATCHES);
+        // A caller that means the characters themselves asks for a literal
+        // search; the old `regex: false` spelling keeps working.
+        for args in [
+            json!({ "pattern": pattern, "literal": true }),
+            json!({ "pattern": pattern, "regex": false }),
+            json!({ "pattern": pattern, "use_regex": false }),
+        ] {
+            let literal = execute(&call("grep", args), &dir, &mcp, &progress).await;
+            assert_eq!(literal.text, NO_MATCHES);
         }
 
-        for pattern in [r"BOUTIQUE.*CITY", r"\bVILLAS", r"\sVILLAS", r"\d+"] {
-            let output = grep(&dir, &json!({ "pattern": pattern })).unwrap();
-            assert!(output.contains("regex: true"), "{output}");
-        }
         assert_eq!(
             grep(&dir, &json!({ "pattern": "missing" })).unwrap(),
             NO_MATCHES
         );
 
         std::fs::write(dir.join("literal.txt"), pattern).unwrap();
-        let literal = grep(&dir, &json!({ "pattern": pattern })).unwrap();
+        let literal = grep(&dir, &json!({ "pattern": pattern, "literal": true })).unwrap();
         assert!(literal.contains("literal.txt:1:"), "{literal}");
-        assert!(!literal.contains("[hint:"), "{literal}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
-    async fn grep_supports_regex_patterns() {
+    async fn grep_falls_back_to_literal_text_for_an_invalid_regex() {
         let dir = std::env::temp_dir().join(format!("oxide_grep_regex_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
@@ -5738,22 +5783,9 @@ mod tests {
         let mcp = McpRegistry::default();
         let progress = Progress::default();
 
-        // A literal search does not match the pattern as a whole...
-        let literal = execute(
-            &call("grep", json!({ "pattern": "@Placeholder.*hotel" })),
-            &dir,
-            &mcp,
-            &progress,
-        )
-        .await;
-        assert!(!literal.text.contains("a.java"), "{}", literal.text);
-
-        // ...but `regex: true` does.
+        // A pattern written as a regex matches by default.
         let regex = execute(
-            &call(
-                "grep",
-                json!({ "pattern": "@Placeholder.*hotel", "regex": true }),
-            ),
+            &call("grep", json!({ "pattern": "@Placeholder.*hotel" })),
             &dir,
             &mcp,
             &progress,
@@ -5761,16 +5793,36 @@ mod tests {
         .await;
         assert!(regex.text.contains("a.java"), "{}", regex.text);
 
-        let bad = execute(
-            &call("grep", json!({ "pattern": "([", "regex": true })),
+        // The same pattern read literally finds nothing.
+        let literal = execute(
+            &call(
+                "grep",
+                json!({ "pattern": "@Placeholder.*hotel", "literal": true }),
+            ),
             &dir,
             &mcp,
             &progress,
         )
         .await;
-        assert!(bad.is_error, "{}", bad.text);
-        assert!(bad.text.contains("could not compile"), "{}", bad.text);
-        assert!(bad.text.contains("set `regex` to false"), "{}", bad.text);
+        assert!(!literal.text.contains("a.java"), "{}", literal.text);
+
+        // An unbalanced bracket is source text, not a regex. Searching it
+        // literally is what the caller meant, and one saved round trip.
+        std::fs::write(dir.join("b.txt"), "before ([ after\n").unwrap();
+        let bad = execute(
+            &call("grep", json!({ "pattern": "([" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!bad.is_error, "{}", bad.text);
+        assert!(
+            bad.text.contains("not a valid regular expression"),
+            "{}",
+            bad.text
+        );
+        assert!(bad.text.contains("b.txt:1:"), "{}", bad.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -6260,6 +6312,7 @@ mod tests {
         for command in [
             "grep '^error' input.txt",
             "printf 'build succeeded\\n' | grep '^error' | head -40",
+            "printf 'build succeeded\\n' | grep -v 'succeeded'",
             "cd . && printf 'build succeeded\\n' | grep '^error' | head -40",
         ] {
             let out = execute(
@@ -7107,21 +7160,22 @@ mod tests {
         assert!(result.contains("SUMMARY: 3 issues found"), "{result}");
         assert!(result.contains("TOTAL: 3 open, 1 blocked"), "{result}");
         assert!(result.contains("truncated…"), "{result}");
-        assert!(!result.contains("filler line 300"), "{result}");
+        assert!(!result.contains("filler line 1100"), "{result}");
     }
 
     #[test]
-    fn an_mcp_result_gets_a_bigger_budget_than_the_generic_cap() {
+    fn an_mcp_result_gets_the_shared_budget_and_keeps_both_ends() {
         assert_eq!(
             output_limits("server__tool"),
             (MCP_OUTPUT_BYTES, MCP_OUTPUT_LINES)
         );
-        const { assert!(MCP_OUTPUT_BYTES > MAX_OUTPUT_BYTES) };
         assert_eq!(keep_end("server__tool"), Keep::Middle);
 
-        // A result that fits the MCP budget but not the generic one is kept whole.
-        let output = "y".repeat(MAX_OUTPUT_BYTES + 100);
-        assert_eq!(truncate_into("server__tool", output.clone(), None), output);
+        // Non-JSON output over the budget is kept from both ends within it.
+        let output = "y".repeat(MCP_OUTPUT_BYTES + 100);
+        let result = truncate_into("server__tool", output, None);
+        assert!(result.starts_with("[truncated:"), "{result:.120}");
+        assert!(result.len() <= MCP_OUTPUT_BYTES + 400, "{}", result.len());
     }
 
     /// A server's answer in the shape New Relic's NRQL tools return, which is
@@ -7289,7 +7343,7 @@ mod tests {
         // no marker is drawn: the answer is returned whole.
         let output = format!(
             "{{\n  \"rows\": [\n{}\n  ]\n}}",
-            (0..1_500)
+            (0..3_000)
                 .map(|i| format!("    {{\"id\": {i}}}"))
                 .collect::<Vec<_>>()
                 .join(",\n")
@@ -7298,7 +7352,7 @@ mod tests {
         let result = truncate_into("server__tool", output, None);
         assert!(!result.starts_with("[truncated:"), "{result:.120}");
         let document: Value = serde_json::from_str(&result).expect("still parses");
-        assert_eq!(document["rows"].as_array().unwrap().len(), 1_500);
+        assert_eq!(document["rows"].as_array().unwrap().len(), 3_000);
         assert!(result.len() <= MCP_OUTPUT_BYTES, "{}", result.len());
     }
 

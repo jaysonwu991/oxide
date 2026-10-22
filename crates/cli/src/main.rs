@@ -2221,6 +2221,10 @@ async fn run_rpc_mode(
     // a handle on the same broker.
     let driver_approvals = approvals.clone();
     let driver_questions = questions.clone();
+    // One process serves every prompt in this project, so its MCP servers,
+    // plugin host and language servers are started once and reused, rather than
+    // rebuilt for each turn.
+    let environment = runner::TurnEnvironment::new(&config, &cwd).await;
     let driver = tokio::spawn(async move {
         let mut pending_prompts = std::collections::VecDeque::new();
         loop {
@@ -2265,6 +2269,7 @@ async fn run_rpc_mode(
             let ask = driver_questions
                 .as_ref()
                 .map(|broker| broker.asker(run_tx.clone()));
+            let cancel = Cancel::new();
             let run = runner::AgentRun {
                 config: config.clone(),
                 cwd: cwd.clone(),
@@ -2277,9 +2282,9 @@ async fn run_rpc_mode(
                 ask,
                 steering: steering.clone(),
                 follow_ups: follow_ups.clone(),
-                cancel: Cancel::new(),
+                cancel: cancel.clone(),
             };
-            runner::spawn_agent(run, run_tx).await;
+            runner::spawn_agent_in(run, environment.clone(), run_tx).await;
             let mut input_open = true;
             loop {
                 tokio::select! {
@@ -2320,6 +2325,10 @@ async fn run_rpc_mode(
                             Some(request @ RpcRequest::Prompt { .. }) => {
                                 pending_prompts.push_back(request);
                             }
+                            // Stop this turn; the process stays open for the
+                            // prompt that follows (the extension keeps one
+                            // session per thread rather than spawning a turn).
+                            Some(RpcRequest::Abort) => cancel.cancel(),
                             Some(_) => {}
                             None => input_open = false,
                         }
@@ -2330,17 +2339,22 @@ async fn run_rpc_mode(
                         if let AgentEvent::Finished(messages) = &event {
                             history = messages.clone();
                         }
+                        if finished {
+                            // Ahead of `agent_end`, so the listing still belongs to
+                            // the run it describes: a client that keeps one process
+                            // for the next turn (the VS Code panel does) paints the
+                            // card while that run is the one on screen, and
+                            // `agent_end` is the turn's last frame.
+                            if let Some(frame) = turn_changes(&cwd, &baseline).await {
+                                let _ = frame_tx.send(frame);
+                            }
+                        }
                         if let Some(frame) = cli::event_json(&event) {
                             if frame_tx.send(frame).is_err() {
                                 break;
                             }
                         }
                         if finished {
-                            // Queued behind the turn's own last event, so the listing
-                            // reaches the client after the run it belongs to.
-                            if let Some(frame) = turn_changes(&cwd, &baseline).await {
-                                let _ = frame_tx.send(frame);
-                            }
                             break;
                         }
                     }

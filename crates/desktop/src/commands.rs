@@ -59,6 +59,9 @@ pub struct DesktopState {
     /// it would have heard. See `LaunchUpdate`.
     pub launch_update: std::sync::Mutex<Option<LaunchUpdate>>,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
+    /// The MCP servers, plugin host and language servers each project's last
+    /// turn used, so the next turn reuses them instead of starting them again.
+    environments: Arc<Mutex<HashMap<PathBuf, oxide_core::runner::TurnEnvironment>>>,
     next_run: AtomicU64,
     events: EventSink,
 }
@@ -72,6 +75,7 @@ impl DesktopState {
             at: PathCache::default(),
             launch_update: std::sync::Mutex::new(None),
             runs: Arc::new(Mutex::new(HashMap::new())),
+            environments: Arc::new(Mutex::new(HashMap::new())),
             next_run: AtomicU64::new(1),
             events,
         }
@@ -701,6 +705,13 @@ async fn drive_turn(
     let baseline = mark_baseline(&cwd).await;
     let approver = state.approvals.approver(cwd.clone());
     let asker = state.questions.asker_for(run_id);
+    let environment_key = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+    let environment = state
+        .environments
+        .lock()
+        .await
+        .get(&environment_key)
+        .cloned();
     let turn = start_turn(
         &cwd,
         &prompt,
@@ -710,17 +721,25 @@ async fn drive_turn(
         reasoning,
         agent,
         attachments,
+        environment,
     )
     .await?;
     let Turn {
         session_id,
         title,
+        environment,
         mut events,
         handle,
         steering,
         follow_ups,
         cancel,
     } = turn;
+    // Whatever this turn built or reused stays for the next one in the project.
+    state
+        .environments
+        .lock()
+        .await
+        .insert(environment_key, environment);
     let stopped = cancel.clone();
     state.runs.lock().await.insert(
         run_id,

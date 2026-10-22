@@ -62,7 +62,20 @@ starting level, and resuming a session restores the level recorded on it. See
 `max_tokens` caps the output of a single model turn, reasoning included. When a
 reasoning model exhausts that budget on hidden reasoning and returns nothing,
 Oxide retries with a doubled budget (up to 32768) before reporting the failure,
-so a long-thinking turn recovers instead of ending in an empty response.
+so a long-thinking turn recovers instead of ending in an empty response. A
+`max_tokens` set in `config.json` is used as written; when it is unset, Oxide
+takes the output limit the provider catalog publishes for the model (held to
+32768), so a model that can write far more than the old 8k default is not
+truncated into a retry.
+
+A conversation large enough to matter is kept warm while the reader is idle:
+when the model's provider publishes a prompt-cache lifetime for it, Oxide
+replays the last request with a one-token output cap before that entry expires,
+so the next turn reuses the cached prefix instead of paying full input for the
+whole transcript. It runs at most a few times in a half-hour idle window, never
+for a small conversation, and never for an Anthropic model whose thinking
+budget is derived from `max_tokens`. `cacheWarming` in `settings.json` (the
+project file winning) or `OXIDE_CACHE_WARMING=false` turns it off.
 
 `context_window` is the model's full context window in tokens, and controls both
 the context gauge and the automatic compaction threshold. When it is unset (or
@@ -180,6 +193,7 @@ oxide clipboard --json
 | `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` | Recent tokens kept verbatim when compacting. |
 | `OXIDE_TRUNCATION_DIR` | Directory for saved truncated tool output (default `truncated/` in the config dir). |
 | `OXIDE_NOTIFY_ON_COMPLETE` / `OXIDE_NOTIFY_SOUND` | Override the desktop-notification flags (`/notify`). |
+| `OXIDE_CACHE_WARMING` | Enable/disable keeping the prompt cache warm between turns (`cacheWarming` in `settings.json`). |
 | `OXIDE_SETTINGS_FILE` | Override the global `settings.json` path the TUI writes. |
 | `OXIDE_LANG` | Interface language for this process: `en-GB` (the default) or `zh-CN`, over the `language` setting. |
 | `OXIDE_CHECK_FOR_UPDATES` | Enable/disable the launch's look for a newer CLI release (`/updates`). |
