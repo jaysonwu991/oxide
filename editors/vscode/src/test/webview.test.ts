@@ -888,6 +888,17 @@ describe("webview footer", () => {
     assert.match(label, /min-width: 0/, "the label can shrink inside the clamped wrap");
   });
 
+  it("centers 100 percent inside the ring without a second label beside it", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ footer: { ...footer, percent: 100, level: "high" } }));
+    assert.equal(byId.get("context-percent")!.textContent, "100%");
+    assert.equal(byId.get("gauge-fill")!.getAttribute("stroke-dasharray"), "76.97 76.97");
+    assert.match(shell, /id="gauge"[^>]*>[\s\S]*?<span id="context-percent" hidden><\/span><\/span>/);
+    assert.match(style, /#context-percent \{[^}]*position: absolute;[^}]*inset: 0;[^}]*font-size: 8px;/);
+    send(stateMessage({ footer: { ...footer, percent: 120, level: "high" } }));
+    assert.equal(byId.get("context-percent")!.textContent, "100%");
+  });
+
   it("hides the gauge and the usage line when there is nothing to show", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ footer }));
@@ -1068,6 +1079,7 @@ describe("webview composer", () => {
     assert.equal(byId.get("run-time")!.hidden, false);
     assert.match(shell, /id="run-time"[^>]*role="timer"/);
     assert.equal(byId.get("run-time-text")!.textContent, "Working for 0s");
+    assert.equal(byId.get("transcript")!.children.at(-1), byId.get("run-time"));
 
     // An idle turn has no phase to report, so the label (and its dot) goes
     // rather than sitting there reading like a control.
@@ -1078,6 +1090,7 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.dataset.level, "info");
     assert.equal(byId.get("run-time")!.hidden, false);
     assert.equal(byId.get("run-time-text")!.textContent, "Worked for 5s");
+    assert.equal(byId.get("transcript")!.children.at(-1), byId.get("run-time"));
     now = 66_500;
     send(stateMessage());
     assert.equal(

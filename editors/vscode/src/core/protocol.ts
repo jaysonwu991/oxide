@@ -603,9 +603,11 @@ export class Transcript {
   usage: UsageTotals = emptyUsage();
   contextWindow: { tokens: number; provider: string; model: string } | null = null;
 
+  contextLimits: { tokens: number; provider: string; model: string }[] = [];
+
   correctedContextWindow(provider: string, model: string): number | null {
-    const correction = this.contextWindow;
-    return correction?.provider === provider && correction.model === model ? correction.tokens : null;
+    return [this.contextWindow, ...this.contextLimits].find((limit) =>
+      limit?.provider === provider && limit.model === model)?.tokens ?? null;
   }
   status = "Idle";
   busy = false;

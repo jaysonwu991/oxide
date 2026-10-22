@@ -229,9 +229,9 @@ pre,
 
 .run-time {
   flex: 0 0 auto;
-  width: calc(100% - 20px);
+  width: 100%;
   max-width: 760px;
-  margin: 10px auto 0;
+  margin: 0 auto;
   padding: 0 0 7px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   color: var(--vscode-descriptionForeground);
@@ -2565,11 +2565,22 @@ footer {
 }
 
 /* The context reading holds the row's end: a ring filled to the percent the
-   thread has used, with the percent spelled out beside it. */
+   thread has used, with the percent spelled out inside it. */
 .context-status { display: flex; align-items: center; min-height: var(--control-size); gap: 6px; flex: none; margin-left: 1px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
 .context-status:has(.gauge:focus-visible) { outline: 1px solid var(--vscode-focusBorder); outline-offset: 3px; border-radius: 50%; }
-.context-status .gauge:not([hidden]) { display: flex; align-items: center; justify-content: center; order: -1; flex: none; width: var(--control-size); height: var(--control-size); }
+.context-status .gauge:not([hidden]) { display: flex; position: relative; align-items: center; justify-content: center; order: -1; flex: none; width: var(--control-size); height: var(--control-size); }
 .context-status .gauge svg { display: block; width: var(--composer-ring-size); height: var(--composer-ring-size); flex: none; }
+#context-percent {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
 .context-status:has(.gauge[data-level="warn"]) { color: var(--vscode-editorWarning-foreground); }
 .context-status:has(.gauge[data-level="high"]) { color: var(--vscode-errorForeground); }
 

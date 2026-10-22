@@ -709,6 +709,7 @@ let repositoryError = null;
 // What `session_messages` answers for a stored thread's own totals, and nothing
 // everywhere else.
 let sessionUsage = null;
+let sessionContextLimits = [];
 // What a real `project_info` answers for a folder, for the sections that need the
 // window a turn would resolve rather than the stub's silence.
 const projectFacts = (contextWindow) => ({
@@ -799,6 +800,7 @@ const invoke = async (command, args = {}) => {
         header: { id: args.id, name: target?.name || null },
         messages: [],
         usage: sessionUsage,
+        contextLimits: sessionContextLimits,
       };
     }
     case "repository_changes":
@@ -5335,8 +5337,8 @@ reasoningAnswer.supportsReasoning = false;
 reasoningAnswer.reasoningLevels = [];
 app.state.reasoning = "high";
 await app.openReasoning();
-check("hid unsupported reasoning without clearing an explicit effort",
-  elementFor("reasoning").hidden && app.state.reasoning === "high" && elementFor("reasoning-modal").hidden,
+check("offered Auto without clearing an explicit effort when reasoning is unsupported",
+  !elementFor("reasoning").hidden && app.state.reasoning === "high" && !elementFor("reasoning-modal").hidden && reasoningNames().join(" ") === "auto",
   `${elementFor("reasoning").hidden} / ${app.state.reasoning} / ${reasoningNames()}`);
 await app.runSlashCommand("/reasoning high");
 check("refused a hidden selector without changing the explicit effort", app.state.reasoning === "high", app.state.reasoning);
@@ -5346,11 +5348,11 @@ reasoningAnswer.reasoningLevels = [];
 app.state.reasoningLevels = null;
 await app.openReasoning();
 const effortWritesBefore = projectCalls("set_reasoning").length;
-document.fire("keydown", { key: "Tab", shiftKey: true, preventDefault() {} });
 await nextTick();
-check("hid the entire selector when a support flag had no effort metadata",
-  elementFor("reasoning").hidden && elementFor("reasoning-modal").hidden && reasoningRows().length === 0 &&
+check("offered only Auto when a support flag had no effort metadata",
+  !elementFor("reasoning").hidden && !elementFor("reasoning-modal").hidden && reasoningNames().join(" ") === "auto" &&
     app.state.reasoning === "high" && projectCalls("set_reasoning").length === effortWritesBefore);
+document.fire("keydown", { key: "Escape", preventDefault() {} });
 Object.assign(reasoningAnswer, savedReasoningAnswer);
 app.state.reasoningLevels = null;
 await app.openReasoning();
@@ -5689,9 +5691,10 @@ check(
   `${elementFor("status").hidden} / ${elementFor("stop").title}`,
 );
 check(
-  "showed the turn's total working time above the transcript",
+  "showed the turn's total working time after its output",
   elementFor("run-time").hidden === false &&
     /id="run-time"[^>]*role="timer"/.test(shell) &&
+    elementFor("transcript").children.at(-1) === elementFor("run-time") &&
     /^Working for \d+s$/.test(elementFor("run-time-text").textContent) &&
     /\.run-time \{[^}]*max-width: 780px;[^}]*font-variant-numeric: tabular-nums;/.test(sheet),
   `${elementFor("run-time").hidden} / ${elementFor("run-time-text").textContent}`,
@@ -5735,6 +5738,23 @@ check(
     /^Worked for \d+s$/.test(elementFor("run-time-text").textContent),
   `${elementFor("run-time").hidden} / ${elementFor("run-time-text").textContent}`,
 );
+app.setBusy();
+await emit("agent-event", { type: "error", message: "the model returned an empty response" });
+const failedTurnNotice = elementFor("transcript").querySelector(".run-error");
+await emit("agent-end", {});
+check(
+  "kept a failed turn's error in the transcript and status after completion",
+  failedTurnNotice?.textContent === "Error: the model returned an empty response" &&
+    failedTurnNotice.getAttribute("role") === "alert" &&
+    elementFor("transcript").children.includes(failedTurnNotice) &&
+    app.state.statusLevel === "error" &&
+    status() === failedTurnNotice.textContent &&
+    elementFor("transcript").children.at(-1) === elementFor("run-time"),
+  `${failedTurnNotice?.textContent} / ${status()}`,
+);
+app.setBusy();
+check("cleared the previous failure for a new turn", app.state.runError === "");
+app.setIdle();
 // The accessible name follows the action the button performs, so a screen
 // reader hears what the click will do rather than the label it was built with.
 const cornerLabel = () => elementFor("send").getAttribute("aria-label");
@@ -6122,7 +6142,7 @@ check("kept cumulative billing distinct from the live request's context reading"
 Object.assign(correctedTab, beforeCorrectedTab);
 projectInfo = beforeWindowInfo;
 Object.assign(app.state, beforeWindowCorrection);
-app.state.contextWindow = 128000;
+app.state.contextWindow = app.state.catalogWindow = 128000;
 const ringFill = () => {
   const [filled, whole] = String(el("context-ring-fill").getAttribute("stroke-dasharray"))
     .split(" ")
@@ -6131,7 +6151,7 @@ const ringFill = () => {
 };
 app.setUsage({ input: 30000, output: 40, cost: 0.01, prompt: 30000 });
 check(
-  "filled the ring to the percent it spells out beside the arc",
+  "filled the ring to the percent it spells out inside the arc",
   el("usage").textContent === "↑30k ↓40 $0.010" &&
     el("context-ring").hidden === false &&
     Math.round(ringFill()) === 23 &&
@@ -6189,6 +6209,28 @@ check(
     el("context-ring").title === "50% · 64k/128k",
   `${el("usage").textContent} / ${el("context-percent").textContent} / ${el("context-ring-fill").getAttribute("stroke-dasharray")} / ${el("context-ring").title}`,
 );
+sessionUsage.contextTokens = 178439;
+sessionContextLimits = [{ provider: "gateway", model: "A", window: 200000 }];
+app.applyContextInfo({ provider: "gateway", model: "A", contextWindow: 1050000 });
+app.state.session = null;
+await app.openSession({ id: "stored-backend-limit", cwd: barProject, name: "saved limit" });
+check("restored the backend-reported window when reopening a stored thread",
+  app.state.contextWindow === 200000 && el("context-percent").textContent === "89%",
+  `${app.state.contextWindow} / ${el("context-percent").textContent}`);
+app.applyContextInfo({ provider: "gateway", model: "A", contextWindow: 1050000 });
+check("kept the saved backend limit after catalog refresh", app.state.contextWindow === 200000);
+app.applyContextInfo({ provider: "other-gateway", model: "A", contextWindow: 1050000 });
+check("scoped a saved backend limit to its provider", app.state.contextWindow === 1050000);
+app.applyContextInfo({ provider: "gateway", model: "B", contextWindow: 1050000 });
+check("scoped a saved backend limit to its model", app.state.contextWindow === 1050000);
+sessionContextLimits = [];
+app.state.contextLimits = [];
+app.applyContextInfo(projectFacts(128000));
+app.setUsage({ prompt: 128000 });
+check("fit 100 percent inside the context ring",
+  el("context-percent").textContent === "100%" && Math.round(ringFill()) === 100 &&
+    /#context-percent \{[^}]*position: absolute;[^}]*inset: 0;[^}]*font-size: 8px;/s.test(sheet),
+  el("context-percent").textContent);
 sessionUsage = null;
 // The line counts the chat, the way the terminal footer counts it: each step is
 // added to the last rather than replacing it, so a long run reads as one
@@ -8635,8 +8677,8 @@ let releaseReasoningReply;
 reasoningReplyGate = new Promise((resolve) => { releaseReasoningReply = resolve; });
 projectInfo = { ...projectInfo, reasoning: "high", supportsReasoning: false, reasoningLevels: null };
 await app.loadInfo();
-check("kept saved effort while cold metadata was pending and hid its selector",
-  app.state.reasoning === "high" && !app.state.reasoningPicked && elementFor("reasoning").hidden);
+check("kept saved effort while cold metadata was pending and exposed Auto recovery",
+  app.state.reasoning === "high" && !app.state.reasoningPicked && !elementFor("reasoning").hidden);
 releaseReasoningReply({ reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high"] });
 await nextTick();
 await nextTick();
@@ -8664,6 +8706,20 @@ check("loaded advertised reasoning levels for a cold project without opening the
     app.state.reasoningLevels?.join(" ") === `auto ${reasoningAnswer.reasoningLevels.join(" ")}` &&
     elementFor("reasoning-modal").hidden && elementFor("project-meta").hidden,
   `${app.state.reasoningLevels} / ${elementFor("project-meta").textContent}`);
+app.state.supportsReasoning = false;
+app.state.reasoningLevels = ["auto"];
+app.state.reasoning = "medium";
+app.updateChips();
+await app.openReasoning();
+check("offered Auto to recover from a saved effort the backend rejects",
+  !elementFor("reasoning").hidden && !elementFor("reasoning-modal").hidden &&
+    elementFor("reasoning-list").children.length === 1 &&
+    elementFor("reasoning-list").children[0].children[0].textContent === "auto");
+elementFor("reasoning-list").children[0].click();
+await nextTick();
+check("saved Auto explicitly without silently disabling the selected effort",
+  app.state.reasoning === "auto" && app.state.reasoningPicked &&
+    projectCalls("set_reasoning").at(-1)?.[1].reasoning === "auto");
 projectInfo = { ...projectInfo, model: "gpt-4o-mini", reasoning: "auto", supportsReasoning: false, reasoningLevels: [] };
 await app.loadInfo();
 check("reset effort after switching to a model without reasoning",

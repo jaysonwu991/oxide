@@ -505,6 +505,29 @@ describe("Transcript", () => {
     assert.equal(failure.tone, "error");
   });
 
+  it("uses restored backend limits only for the matching provider and model", () => {
+    const transcript = new Transcript();
+    transcript.contextLimits = [
+      { provider: "gateway", model: "A", tokens: 200000 },
+      { provider: "gateway", model: "B", tokens: 128000 },
+    ];
+    assert.equal(transcript.correctedContextWindow("gateway", "A"), 200000);
+    assert.equal(transcript.correctedContextWindow("gateway", "B"), 128000);
+    assert.equal(transcript.correctedContextWindow("other", "A"), null);
+    transcript.apply({ type: "context_window", provider: "gateway", model: "A", tokens: 180000 });
+    assert.equal(transcript.correctedContextWindow("gateway", "A"), 180000);
+  });
+
+  it("keeps a failed turn's error after agent_end", () => {
+    const transcript = new Transcript();
+    transcript.busy = true;
+    const failure = notice(push(transcript.apply({ type: "error", message: "the model returned an empty response" })[0]));
+    transcript.apply({ type: "agent_end", messages: [] });
+    assert.ok(transcript.items.includes(failure));
+    assert.equal(failure.tone, "error");
+    assert.equal(failure.text, "Error: the model returned an empty response");
+  });
+
   it("closes the stream on agent_end", () => {
     const transcript = new Transcript();
     transcript.busy = true;

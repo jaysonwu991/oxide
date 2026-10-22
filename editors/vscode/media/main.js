@@ -1851,6 +1851,7 @@ function installMarkdownInput(editor, render) {
     else if (item.kind === "question") paintQuestion(entry);
     else if (item.kind === "changes") { paintChanges(entry); paintLiveChanges(); }
     if (item.kind === "user") paintLiveChanges();
+    if (startedAt) updateElapsed();
     scrollDown(keepScroll);
     return entry;
   }
@@ -2110,7 +2111,7 @@ function installMarkdownInput(editor, render) {
     document.body.classList.toggle("running", busy && !runAway());
   }
 
-  /// A running turn reports its total above the transcript, then keeps the
+  /// A running turn reports its total after the latest output, then keeps the
   /// completed total as “Worked for …” instead of discarding it at the end.
   function updateElapsed(finished = false) {
     if (!busy) {
@@ -2119,6 +2120,10 @@ function installMarkdownInput(editor, render) {
       if (finished && startedAt) finishedElapsed = Math.max(0, Date.now() - startedAt);
       const belongsHere = clockSession === currentSession && clockFolder === currentFolder;
       runTime.hidden = runAway() || !startedAt || !belongsHere;
+      if (!runTime.hidden && transcript.lastElementChild !== runTime) {
+        runTime.remove();
+        transcript.appendChild(runTime);
+      }
       if (startedAt) runTimeText.textContent = t("ui.workedFor", "Worked for {value0}", { value0: workingDuration(finishedElapsed) });
       return;
     }
@@ -2129,6 +2134,10 @@ function installMarkdownInput(editor, render) {
       clockFolder = currentFolder;
     }
     runTime.hidden = runAway();
+    if (!runTime.hidden && transcript.lastElementChild !== runTime) {
+      runTime.remove();
+      transcript.appendChild(runTime);
+    }
     runTimeText.textContent = t("ui.workingFor", "Working for {value0}", { value0: workingDuration(Date.now() - startedAt) });
     if (!elapsedTimer) elapsedTimer = setInterval(updateElapsed, 500);
   }
@@ -2177,7 +2186,7 @@ function installMarkdownInput(editor, render) {
     usageText.setAttribute("aria-label", footer.usage ? t("surface.UsageValue", "Usage: {value}", { value: footer.usage }) : t("ui.noUsageReported", "No usage reported"));
     usageRow.title = footer.usage || "";
     usageRow.hidden = true;
-    $("context-percent").textContent = percent === null ? "" : `${percent}%`;
+    $("context-percent").textContent = percent === null ? "" : `${Math.round(Math.max(0, Math.min(100, percent)))}%`;
     $("context-percent").hidden = percent === null;
     gauge.hidden = !footer.usage && percent === null;
     gauge.dataset.level = footer.level || "ok";

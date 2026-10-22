@@ -160,6 +160,7 @@ async fn event_loop(
         app.tokens_cache_write = totals.cache_write;
         app.cost = totals.cost;
         app.cache_hit_rate = totals.cache_hit_rate;
+        app.context_used = log.context_tokens();
     }
     app.show_thinking = config.supports_reasoning();
     app.show_thinking_blocks = !crate::config::load_hide_thinking_block();
@@ -310,6 +311,9 @@ async fn event_loop(
     let approvals = ApprovalBroker::new();
 
     loop {
+        if !app.busy {
+            app.context_limit = session_context_limit(&config, session.as_ref());
+        }
         let terminal_area = terminal.draw(|frame| ui::draw(frame, &mut app))?.area;
 
         let mut got_agent_event = false;
@@ -437,7 +441,6 @@ async fn event_loop(
                     // from the catalog the provider published, so the footer's
                     // gauge is repainted with the window this run resolves.
                     config.catalog_windows = windows;
-                    app.context_limit = context_limit(&config);
                 }
             }
             adopted = adopted_rx.recv() => {
@@ -1954,6 +1957,12 @@ fn init_prompt() -> String {
 /// The model's context window, used to show a Pi-style context percentage.
 fn context_limit(config: &Config) -> u64 {
     config.context_window()
+}
+
+fn session_context_limit(config: &Config, log: Option<&SessionLog>) -> u64 {
+    let configured = context_limit(config);
+    log.and_then(|log| log.context_window(&config.provider, &config.model))
+        .map_or(configured, |learned| configured.min(learned))
 }
 
 /// Providers with a stored credential plus the active one. Pi shows the provider
@@ -4471,7 +4480,7 @@ fn switch_session(
             app.tokens_cache_write = totals.cache_write;
             app.cost = totals.cost;
             app.cache_hit_rate = totals.cache_hit_rate;
-            app.context_used = 0;
+            app.context_used = log.context_tokens();
             app.invalidate_render_cache();
             app.auto_scroll = true;
             *session = Some(log);
@@ -6171,6 +6180,63 @@ mod tests {
 
         answered.abort();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resumed_context_uses_the_backend_limit_for_the_selected_model() {
+        let dir = approval_dir("tui_context_limit");
+        let path = dir.join("session.jsonl");
+        let header = serde_json::json!({
+            "type": "session",
+            "version": crate::session::SESSION_VERSION,
+            "id": "context-limit-test",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "cwd": dir,
+        });
+        std::fs::write(&path, format!("{header}\n")).unwrap();
+        let log = SessionLog::open(path).unwrap();
+        let kept = log.append(&Message::user("first request")).unwrap();
+        log.append_compaction(
+            "summary",
+            kept,
+            197007,
+            Some(crate::compact::CompactionDetails {
+                context_limit: Some(crate::compact::ModelContextLimit {
+                    provider: "portkey".into(),
+                    model: "gpt-5.6-sol".into(),
+                    window: 200000,
+                }),
+                ..Default::default()
+            }),
+            None,
+        )
+        .unwrap();
+        let mut config = Config {
+            provider: "portkey".into(),
+            model: "gpt-5.6-sol".into(),
+            context_window: 1050000,
+            ..Default::default()
+        };
+        assert_eq!(session_context_limit(&config, Some(&log)), 200000);
+        config.model = "another-model".into();
+        assert_eq!(session_context_limit(&config, Some(&log)), 1050000);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_failed_turn_keeps_its_error_after_completion() {
+        let mut app = test_app();
+        app.busy = true;
+        handle_agent_event(
+            AgentEvent::Error("the model returned an empty response".into()),
+            &mut app,
+        );
+        handle_agent_event(AgentEvent::Finished(Vec::new()), &mut app);
+        assert!(!app.busy);
+        assert!(matches!(
+            app.items.last(),
+            Some(ChatItem::Error(message)) if message == "the model returned an empty response"
+        ));
     }
 
     #[test]

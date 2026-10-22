@@ -678,20 +678,36 @@ impl SessionLog {
         None
     }
 
-    /// A backend limit learned on this branch, scoped to the selected model.
-    pub fn context_window(&self, provider: &str, model: &str) -> Option<u64> {
+    /// Latest backend limits on the active branch, one per provider and model.
+    pub fn context_limits(&self) -> Vec<crate::compact::ModelContextLimit> {
         let state = self.state();
         let path = leaf_path_with(&state.entries, state.leaf_id.as_deref(), &state.by_id);
-        path.iter().rev().find_map(|entry| {
+        let mut limits: Vec<crate::compact::ModelContextLimit> = Vec::new();
+        for entry in path.iter().rev() {
             let details = match entry {
                 Entry::Compaction(entry) => entry.details.as_ref(),
                 Entry::BranchSummary(entry) => entry.details.as_ref(),
                 _ => None,
-            }?;
-            let limit = details.context_limit.as_ref()?;
-            (limit.provider == provider && limit.model == model && limit.window > 0)
-                .then_some(limit.window)
-        })
+            };
+            if let Some(limit) = details.and_then(|details| details.context_limit.as_ref()) {
+                if limit.window > 0
+                    && !limits
+                        .iter()
+                        .any(|known| known.provider == limit.provider && known.model == limit.model)
+                {
+                    limits.push(limit.clone());
+                }
+            }
+        }
+        limits
+    }
+
+    /// A backend limit learned on this branch, scoped to the selected model.
+    pub fn context_window(&self, provider: &str, model: &str) -> Option<u64> {
+        self.context_limits()
+            .into_iter()
+            .find(|limit| limit.provider == provider && limit.model == model)
+            .map(|limit| limit.window)
     }
 
     /// Appends a compaction entry and returns its id.
@@ -1600,6 +1616,10 @@ mod tests {
         assert_eq!(log.context_window("gateway", "A"), Some(200000));
         assert_eq!(log.context_window("gateway", "B"), Some(128000));
         assert_eq!(log.context_window("other-gateway", "A"), None);
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.context_limits().len(), 2);
+        assert_eq!(reopened.context_limits()[0].model, "B");
+        assert_eq!(reopened.context_limits()[1].window, 200000);
         log.branch_with_summary(Some(&root), "another branch", None, None)
             .unwrap();
         assert_eq!(
@@ -1607,6 +1627,7 @@ mod tests {
             None,
             "an unrelated branch must not inherit the limit"
         );
+        assert!(log.context_limits().is_empty());
         std::fs::remove_dir_all(dir).ok();
     }
 

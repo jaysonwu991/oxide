@@ -36,6 +36,7 @@ export interface SessionHistory {
   total: number;
   shown: number;
   usage: UsageTotals;
+  contextLimits: { tokens: number; provider: string; model: string }[];
 }
 
 const obj = (value: unknown): Record<string, unknown> =>
@@ -127,6 +128,10 @@ export function parseSessionHistory(json: string): SessionHistory | null {
     // replays are the CLI's, with a call and the result that answered it folded
     // into one card.
     shown: num(root.shown) || entries.length,
+    contextLimits: (Array.isArray(root.contextLimits) ? root.contextLimits : []).map((value) => {
+      const limit = obj(value);
+      return { tokens: num(limit.window), provider: str(limit.provider), model: str(limit.model) };
+    }).filter((limit) => limit.tokens > 0 && limit.provider && limit.model),
     usage: {
       ...emptyUsage(),
       input: num(usage.input),
