@@ -208,6 +208,7 @@ pub fn show(cwd: &Path, id: &str, tail: Option<usize>, json: bool) -> Result<()>
             &summary,
             totals,
             log.context_tokens(),
+            &log.context_limits(),
             tail,
             json
         )
@@ -222,6 +223,7 @@ fn render_show(
     summary: &SessionSummary,
     totals: UsageTotals,
     context_tokens: u64,
+    context_limits: &[compact::ModelContextLimit],
     tail: Option<usize>,
     json: bool,
 ) -> String {
@@ -249,6 +251,7 @@ fn render_show(
             "shown": kept.len(),
             "messages": kept.iter().map(message_view).collect::<Vec<_>>(),
             "usage": usage,
+            "contextLimits": context_limits,
         });
         out.push_str(&format!("{view}\n"));
         return out;
@@ -576,7 +579,15 @@ mod tests {
 
     #[test]
     fn json_carries_the_conversation_and_what_it_cost() {
-        let out = render_show(&conversation(), &summary(), totals(), 1_000, None, true);
+        let out = render_show(
+            &conversation(),
+            &summary(),
+            totals(),
+            1_000,
+            &[],
+            None,
+            true,
+        );
         let view: Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(view["id"], "77f032d6");
         assert_eq!(view["name"], "Fix these 2");
@@ -591,6 +602,28 @@ mod tests {
         assert_eq!(view["usage"]["cacheRead"], 900);
         assert_eq!(view["usage"]["contextTokens"], 1_000);
         assert_eq!(view["usage"]["cacheHitRate"], 90.0);
+    }
+
+    #[test]
+    fn json_carries_the_backend_limits_even_when_only_the_tail_is_requested() {
+        let limits = [compact::ModelContextLimit {
+            provider: "gateway".into(),
+            model: "A".into(),
+            window: 200000,
+        }];
+        let out = render_show(
+            &conversation(),
+            &summary(),
+            totals(),
+            178439,
+            &limits,
+            Some(1),
+            true,
+        );
+        let view: Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(view["contextLimits"][0]["window"], 200000);
+        assert_eq!(view["contextLimits"][0]["provider"], "gateway");
+        assert_eq!(view["usage"]["contextTokens"], 178439);
     }
 
     #[test]
@@ -609,7 +642,7 @@ mod tests {
                 },
             }],
         );
-        let out = render_show(&conversation, &summary(), totals(), 0, None, true);
+        let out = render_show(&conversation, &summary(), totals(), 0, &[], None, true);
         let view: Value = serde_json::from_str(out.trim()).unwrap();
         assert!(view["messages"][0]["content"]
             .as_str()
@@ -626,14 +659,22 @@ mod tests {
 
     #[test]
     fn tail_keeps_the_newest_messages_and_says_so() {
-        let out = render_show(&conversation(), &summary(), totals(), 0, Some(2), true);
+        let out = render_show(&conversation(), &summary(), totals(), 0, &[], Some(2), true);
         let view: Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(view["messageCount"], 4);
         assert_eq!(view["shown"], 2);
         assert_eq!(view["messages"][0]["role"], "tool");
         assert_eq!(view["messages"][1]["content"], "done");
 
-        let text = render_show(&conversation(), &summary(), totals(), 0, Some(2), false);
+        let text = render_show(
+            &conversation(),
+            &summary(),
+            totals(),
+            0,
+            &[],
+            Some(2),
+            false,
+        );
         assert!(
             text.contains("showing the newest 2 of 4 messages"),
             "{text}"
@@ -644,14 +685,22 @@ mod tests {
 
     #[test]
     fn a_tail_larger_than_the_thread_keeps_everything() {
-        let text = render_show(&conversation(), &summary(), totals(), 0, Some(50), false);
+        let text = render_show(
+            &conversation(),
+            &summary(),
+            totals(),
+            0,
+            &[],
+            Some(50),
+            false,
+        );
         assert!(!text.contains("showing the newest"), "{text}");
         assert!(text.contains("user:\nhello"));
     }
 
     #[test]
     fn the_text_form_names_roles_and_reports_tool_only_steps() {
-        let text = render_show(&conversation(), &summary(), totals(), 0, None, false);
+        let text = render_show(&conversation(), &summary(), totals(), 0, &[], None, false);
         assert!(
             text.starts_with("77f032d6  Fix these 2  4 messages\n/repo\n"),
             "{text}"

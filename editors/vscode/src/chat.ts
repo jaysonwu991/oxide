@@ -748,11 +748,14 @@ export class ChatController {
   private footer(): FooterState {
     const project = this.project;
     const agent = this.setting<string>("agent", "").trim();
+    const configuredWindow = this.contextWindow ?? project?.contextWindow ?? 0;
+    const learnedWindow = this.transcript.correctedContextWindow(project?.provider ?? "", project?.model ?? "");
+    const contextWindow = learnedWindow == null ? configuredWindow : Math.min(learnedWindow, configuredWindow || learnedWindow);
     return footerState({
       language: this.languageInfo,
       model: project?.model || "",
       provider: project?.provider ?? "",
-      contextWindow: this.transcript.correctedContextWindow(project?.provider ?? "", project?.model ?? "") ?? this.contextWindow ?? project?.contextWindow ?? 0,
+      contextWindow,
       reasoning: this.currentReasoning(),
       reasoningLevels: this.reasoningLevels.length ? this.reasoningLevels : undefined,
       supportsReasoning: this.supportsReasoning,
@@ -2443,6 +2446,7 @@ export class ChatController {
     // per stored turn would repaint the panel sixty times over.
     target.replay(history.entries);
     target.usage = history.usage;
+    target.contextLimits = history.contextLimits;
     if (history.name) this.sessionTitle = history.name;
     // The thread runs where its own header says it did: a thread resumed from a
     // worktree continues in that checkout rather than in the folder the reader

@@ -48,6 +48,21 @@ describe("stored session history", () => {
     assert.equal(history.shown, 4);
   });
 
+  it("restores backend-reported limits without trusting missing or invalid values", () => {
+    const history = parseSessionHistory(JSON.stringify({ ...payload, contextLimits: [
+      { provider: "gateway", model: "A", window: 200000 },
+      { provider: "gateway", model: "B", window: 128000 },
+      { provider: "gateway", model: "A", window: -1 },
+      { provider: "gateway", window: 200000 },
+    ] }));
+    assert.ok(history);
+    assert.deepEqual(history.contextLimits, [
+      { provider: "gateway", model: "A", tokens: 200000 },
+      { provider: "gateway", model: "B", tokens: 128000 },
+    ]);
+    assert.deepEqual(parseSessionHistory(JSON.stringify(payload))!.contextLimits, []);
+  });
+
   it("keeps the media a stored message carried", () => {
     // `oxide sessions show --json` reports what a message carried under the same
     // two field names the desktop app's own view of a stored thread uses, so a

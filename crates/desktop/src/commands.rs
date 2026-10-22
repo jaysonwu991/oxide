@@ -572,6 +572,7 @@ pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
     let totals = log.usage_totals();
     Ok(json!({
         "header": session_header(&log),
+        "contextLimits": log.context_limits(),
         "messages": messages.iter().map(message_view).collect::<Vec<_>>(),
         "usage": {
             "input": totals.input,
@@ -646,7 +647,9 @@ pub async fn send_prompt(
     let run_id = state.next_run.fetch_add(1, Ordering::Relaxed);
     let attachments = attachment_parts(attachments, &prompt, Path::new(&project))?;
     tokio::spawn(async move {
-        let _ = drive_turn(
+        let events = state.events.clone();
+        let failed_project = project.clone();
+        if let Err(error) = drive_turn(
             state,
             run_id,
             project,
@@ -656,7 +659,21 @@ pub async fn send_prompt(
             agent,
             attachments,
         )
-        .await;
+        .await
+        {
+            let _ = events.emit(
+                "agent-event",
+                json!({
+                    "runId": run_id, "type": "error", "message": format!("{error:#}")
+                }),
+            );
+            let _ = events.emit(
+                "agent-end",
+                json!({
+                    "runId": run_id, "project": failed_project
+                }),
+            );
+        }
     });
     Ok(run_id)
 }
@@ -736,6 +753,13 @@ async fn drive_turn(
         }
     }
 
+    if let Err(error) = handle.await {
+        if !stopped.is_cancelled() {
+            let _ = state.events.emit("agent-event", json!({
+                "runId": run_id, "type": "error", "message": format!("Agent task failed: {error}")
+            }));
+        }
+    }
     state.runs.lock().await.remove(&run_id);
     // The turn is over, so the files it wrote are on disk: drop the completion's
     // listing rather than offering paths from before the work. A question it
@@ -1611,6 +1635,68 @@ fn set_language(project: Option<String>, tag: String) -> CmdResult<Value> {
 mod tests {
     use super::*;
     use oxide_core::llm::{FunctionCall, ToolCall};
+
+    #[tokio::test]
+    async fn a_turn_that_cannot_start_reports_its_error_and_ends() {
+        #[derive(Clone, Default)]
+        struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("oxide_failed_start_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = Output::default();
+        let state = Arc::new(DesktopState::new(
+            DesktopManager::load_from(dir.join("projects.json")).unwrap(),
+            EventSink::new(Arc::new(Host::new(output.clone()))),
+        ));
+        let run_id = send_prompt(
+            state.clone(),
+            dir.to_string_lossy().into_owned(),
+            "hello".into(),
+            Some(
+                dir.join("missing-session.jsonl")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let packets = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let text = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+                let packets: Vec<Value> = text
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                if packets.len() == 2 {
+                    break packets;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a failed start must end instead of leaving the composer busy");
+        assert_eq!(packets[0]["id"], "agent-event");
+        assert_eq!(packets[0]["payload"]["type"], "error");
+        assert!(!packets[0]["payload"]["message"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+        assert_eq!(packets[1]["id"], "agent-end");
+        assert_eq!(packets[1]["payload"]["runId"], run_id);
+        assert!(state.runs.lock().await.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     #[test]
     fn a_plan_provider_says_so_where_the_usage_line_reads_it() {

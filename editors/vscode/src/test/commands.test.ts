@@ -121,8 +121,10 @@ describe("command contributions", () => {
       "and on every path that says the shared configuration moved",
     );
     assert.ok(
-      chat.includes('contextWindow: this.transcript.correctedContextWindow(project?.provider ?? "", project?.model ?? "") ?? this.contextWindow ?? project?.contextWindow ?? 0'),
-      "the footer paints the CLI's answer, with the shared files' window behind it",
+      chat.includes('const configuredWindow = this.contextWindow ?? project?.contextWindow ?? 0') &&
+        chat.includes('this.transcript.correctedContextWindow(project?.provider ?? "", project?.model ?? "")') &&
+        chat.includes('Math.min(learnedWindow, configuredWindow || learnedWindow)'),
+      "the footer uses the CLI's window capped by the matching session's backend-reported limit",
     );
   });
 

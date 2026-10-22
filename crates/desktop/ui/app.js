@@ -272,6 +272,7 @@ const state = {
   catalogWindow: 0,
   currentProvider: "",
   contextCorrection: null,
+  contextLimits: [],
   // Whether the credential is a plan rather than a metered key, which the usage
   // line marks ` (sub)` the way the terminal footer does.
   subscription: false,
@@ -280,6 +281,7 @@ const state = {
   // the idle placeholder, so the badge is the icon alone.
   statusText: "",
   statusLevel: "info",
+  runError: "",
   runStartedAt: 0,
   runElapsed: 0,
   runClockProject: null,
@@ -634,6 +636,8 @@ function paintStatus() {
   badge.setAttribute("aria-label", text || IDLE_STATUS);
 }
 
+const runClockElement = el("run-time");
+const runClockText = el("run-time-text");
 let runClockTimer = 0;
 
 function runDuration(ms) {
@@ -649,11 +653,17 @@ function paintRunClock() {
   const belongsHere =
     state.runClockProject === state.project && state.runClockSession === state.session;
   const visible = state.runStartedAt > 0 && (active || (!state.busy && belongsHere));
-  const clock = el("run-time");
+  const clock = runClockElement;
   clock.hidden = !visible;
   if (!visible) return;
+  const transcript = active ? runTranscript(state.runSession) : el("transcript");
+  if (transcript.lastElementChild !== clock) {
+    clock.remove();
+    transcript.appendChild(clock);
+    scrollDown(transcript);
+  }
   const elapsed = active ? Date.now() - state.runStartedAt : state.runElapsed;
-  el("run-time-text").textContent = t(active ? "run.workingFor" : "run.workedFor", active ? "Working for {duration}" : "Worked for {duration}", { duration: runDuration(elapsed) });
+  runClockText.textContent = t(active ? "run.workingFor" : "run.workedFor", active ? "Working for {duration}" : "Worked for {duration}", { duration: runDuration(elapsed) });
 }
 
 function startRunClock() {
@@ -802,7 +812,7 @@ function captureChatTab() {
     project: state.project, projectName: state.projectName, session: state.session, trust: state.trust,
     worktree: state.worktree, worktrees: state.worktrees, agent: state.agent,
     changes: state.changes, repositoryChanges: state.repositoryChanges,
-    usage: state.usage, contextWindow: state.contextWindow, contextCorrection: state.contextCorrection,
+    usage: state.usage, contextWindow: state.contextWindow, contextCorrection: state.contextCorrection, contextLimits: state.contextLimits,
     draft: el("prompt").value, attachments: [...state.attachments],
     selectionStart: el("prompt").selectionStart, selectionEnd: el("prompt").selectionEnd,
     inputScrollTop: el("prompt").scrollTop, undo: el("prompt").captureHistory?.(),
@@ -888,7 +898,7 @@ async function activateChatTab(id) {
     activeTabId = id;
     const saved = tab.snapshot;
     if (saved) {
-      for (const key of ["project", "projectName", "session", "trust", "worktree", "worktrees", "agent", "changes", "repositoryChanges", "contextWindow", "contextCorrection"]) state[key] = saved[key];
+      for (const key of ["project", "projectName", "session", "trust", "worktree", "worktrees", "agent", "changes", "repositoryChanges", "contextWindow", "contextCorrection", "contextLimits"]) state[key] = saved[key];
       el("transcript").replaceChildren(...saved.nodes);
       const ownsParked = tab.session != null
         ? state.parked?.session === tab.session
@@ -1815,9 +1825,10 @@ async function selectProject(project) {
 }
 
 function correctionWindow(correction = state.contextCorrection) {
-  return correction && correction.project === state.project && correction.session === state.session &&
-    correction.provider === state.currentProvider && correction.model === state.currentModel
-    ? correction.tokens : null;
+  const learned = [correction, ...(state.contextLimits || [])].find((limit) => limit &&
+    limit.project === state.project && limit.session === state.session &&
+    limit.provider === state.currentProvider && limit.model === state.currentModel)?.tokens ?? null;
+  return learned == null ? null : Math.min(learned, state.catalogWindow || learned);
 }
 
 function applyContextInfo(info) {
@@ -2060,7 +2071,7 @@ async function loadGit() {
 
 /// The composer's own top row, above the message box: the branch the folder is on
 /// and the context reading the row ends with — an arc filled to the percent the
-/// thread's totals come to, with that percent spelled out beside it and the tokens
+/// thread's totals come to, with that percent spelled out inside it and the tokens
 /// and the window behind it in its tooltip. Nothing but the folder chip is shown
 /// before a folder is open, since there is no turn to place and no window to
 /// measure: the row then says the one thing the reader can act on.
@@ -2093,9 +2104,9 @@ function paintComposerFacts() {
     `${((length * spent) / 100).toFixed(2)} ${length.toFixed(2)}`,
   );
   ring.dataset.level = contextLevel(percent);
-  // The percent the arc is filled to, beside it: the number and the arc are one
+  // The percent the arc is filled to, inside it: the number and the arc are one
   // reading, and a thread that has spent nothing yet has none to spell out.
-  el("context-percent").textContent = percent == null ? "" : `${percent.toFixed(0)}%`;
+  el("context-percent").textContent = percent == null ? "" : `${Math.min(100, Math.max(0, percent)).toFixed(0)}%`;
   const limit = state.contextWindow ? formatTokens(state.contextWindow) : "";
   let label = t("ui.noRequestYet", "No request yet");
   if (percent != null) {
@@ -2544,6 +2555,12 @@ async function openSession(session) {
     setThreadTitle(sessionLabel(session));
     paintThreadWorktree();
     loadGit();
+    state.contextCorrection = null;
+    state.contextLimits = (data.contextLimits || []).filter((limit) =>
+      Number.isFinite(limit.window) && limit.window > 0 && limit.provider && limit.model,
+    ).map((limit) => ({ tokens: limit.window, provider: limit.provider, model: limit.model,
+      project: state.project, session: state.session }));
+    state.contextWindow = correctionWindow() ?? state.catalogWindow;
     if (data.usage) {
       setUsage({
         input: data.usage.input,
@@ -2553,7 +2570,7 @@ async function openSession(session) {
         cost: data.usage.cost,
         // The prompt of the newest recorded request is the context the thread was
         // last run with, so a thread opened again draws its context reading — the
-        // arc and the percent beside it — from that rather than from nothing until
+        // arc and the percent inside it — from that rather than from nothing until
         // the next turn runs, and the hit rate the store kept is what the totals
         // line's `CH` shows.
         prompt: data.usage.contextTokens || 0,
@@ -3190,6 +3207,7 @@ function setBusy() {
   const starting = !state.busy;
   state.busy = true;
   if (starting) {
+    state.runError = "";
     state.runStartedAt = 0;
     startRunClock();
   }
@@ -3327,7 +3345,7 @@ function parkRun() {
     // while the reader is away.
     usage: state.usage,
     contextWindow: state.contextWindow,
-    contextCorrection: state.contextCorrection,
+    contextCorrection: state.contextCorrection, contextLimits: state.contextLimits,
     title: state.runTitle,
     // And the folder it belongs to travels with it: the turn may end while the
     // reader is in another project, and the strip still opens this thread's own
@@ -3351,6 +3369,7 @@ function restoreParked(session) {
   transcript.replaceChildren(...parked.node.children);
   scrollDown(transcript, true);
   state.contextCorrection = parked.contextCorrection || null;
+  state.contextLimits = parked.contextLimits || [];
   state.contextWindow = correctionWindow() ?? state.catalogWindow;
   setUsage(parked.usage || {});
   return true;
@@ -3823,7 +3842,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
       attachments: attachments.length ? attachments : null,
     });
   } catch (error) {
-    setStatus(t("common.errorDetail", "Error: {value0}", { value0: error }), "error");
+    reportRunError(String(error));
     setIdle();
   }
 }
@@ -4924,6 +4943,17 @@ function activeTool(name) {
   );
 }
 
+function reportRunError(message) {
+  state.runError = t("common.errorDetail", "Error: {value0}", { value0: message });
+  const notice = document.createElement("div");
+  notice.className = "run-error";
+  notice.setAttribute("role", "alert");
+  notice.textContent = state.runError;
+  runTranscript(state.runSession).appendChild(notice);
+  setStatus(state.runError, "error");
+  scrollDown(runTranscript(state.runSession));
+}
+
 function handleEvent(event) {
   updateTranscriptFollow(runTranscript(state.runSession));
   if (event.runId != null) state.runId = event.runId;
@@ -5022,7 +5052,7 @@ function handleEvent(event) {
       setStatus(t("ui.compactedEarlierMessages", "Compacted {value0} earlier messages", { value0: event.summarized }));
       break;
     case "error":
-      setStatus(t("common.errorDetail", "Error: {value0}", { value0: event.message }), "error");
+      reportRunError(event.message);
       break;
     default:
       break;
@@ -5572,9 +5602,13 @@ let reasoningEpoch = 0;
 /// rather than a step, and the panel's own chip offers the same list. A level
 /// is applied to the turns this window sends, the way the chip's cycle applied
 /// it — `updateChips` is what says which one it is now.
+function reasoningChoices() {
+  return state.supportsReasoning !== false && Array.isArray(state.reasoningLevels)
+    ? state.reasoningLevels : ["auto"];
+}
+
 function hasReasoningLevels() {
-  return state.supportsReasoning !== false &&
-    Array.isArray(state.reasoningLevels) && state.reasoningLevels.some((level) => level !== "auto");
+  return reasoningChoices().some((level) => level !== "auto") || state.reasoning !== "auto";
 }
 
 async function openReasoning() {
@@ -5583,10 +5617,8 @@ async function openReasoning() {
     return Promise.resolve();
   }
   reasoningReturnFocus = document.activeElement || null;
-  if (!hasReasoningLevels()) {
-    await ensureReasoningLevels();
-    if (!hasReasoningLevels()) return;
-  }
+  if (!state.reasoningLevels) await ensureReasoningLevels();
+  if (!hasReasoningLevels()) return;
   closeOverlays("reasoning-modal");
   renderReasoning();
   el("reasoning-modal").hidden = false;
@@ -5661,7 +5693,7 @@ function closeReasoning(restoreFocus = true) {
 function renderReasoning() {
   const box = el("reasoning-list");
   box.innerHTML = "";
-  const levels = state.reasoningLevels || [];
+  const levels = reasoningChoices();
   for (const level of levels) {
     const current = level === state.reasoning;
     const row = document.createElement("button");
@@ -6764,10 +6796,10 @@ async function runSlashCommand(text) {
       // rather than silently changed by the run.
       if (!args) {
         await openReasoning();
-      } else if (hasReasoningLevels() && state.reasoningLevels.includes(args)) {
+      } else if (reasoningChoices().includes(args)) {
         pickReasoning(args);
       } else {
-        setStatus(t("ui.reasoningMustBeOneOf", "Reasoning must be one of {value0}.", { value0: (state.reasoningLevels || []).join(", ") }));
+        setStatus(t("ui.reasoningMustBeOneOf", "Reasoning must be one of {value0}.", { value0: reasoningChoices().join(", ") }));
       }
       return true;
     case "attach":
@@ -7116,8 +7148,7 @@ function toggleHelp() {
 let reasoningSave = Promise.resolve();
 
 function setReasoning(level) {
-  if (!hasReasoningLevels()) return;
-  const levels = state.reasoningLevels;
+  const levels = reasoningChoices();
   if (!levels.includes(level)) return;
   state.reasoning = level;
   state.reasoningPicked = true;
@@ -7146,7 +7177,7 @@ function cycleReasoning() {
   // Cycle the model's own levels when its listing narrowed them, so the cycle
   // never steps onto a level the picker does not offer.
   if (!hasReasoningLevels()) return;
-  const levels = state.reasoningLevels;
+  const levels = reasoningChoices();
   setReasoning(levels[(levels.indexOf(state.reasoning) + 1) % levels.length]);
 }
 
@@ -7196,10 +7227,13 @@ async function initEvents() {
     updateRunBanner();
     await loadSessions();
   });
-  await listen("agent-event", (event) => handleEvent(event.payload || {}));
+  await listen("agent-event", (event) => {
+    handleEvent(event.payload || {});
+    paintRunClock();
+  });
   await listen("agent-end", async (event) => {
     setIdle();
-    setStatus(idleStatus());
+    setStatus(state.runError || idleStatus(), state.runError ? "error" : "info");
     renderChanges(event.payload || {});
     resetTurn();
     // A turn is where the branch the composer's top row reads can change — the
