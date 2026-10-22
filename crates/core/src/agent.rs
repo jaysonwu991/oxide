@@ -2695,7 +2695,11 @@ fn announces_unfinished_work(text: &str) -> bool {
         return false;
     }
     let tail = tail.to_ascii_lowercase();
-    let sentence = tail.rsplit(". ").next().unwrap_or(&tail);
+    let sentence = tail.rsplit(['.', '!', '?']).next().unwrap_or(&tail).trim();
+    let sentence = ["now ", "now, ", "next ", "next, ", "then ", "then, "]
+        .iter()
+        .find_map(|prefix| sentence.strip_prefix(prefix))
+        .unwrap_or(sentence);
     !sentence.starts_with("let me know")
         && ["let me ", "i'll ", "i will ", "i’ll ", "i am going to "]
             .iter()
@@ -4565,6 +4569,9 @@ mod tests {
             "Let me create a summary:",
             "The request failed. Let me check the documented endpoint:",
             "I'll inspect the response:",
+            "Excellent! Now let me set the session title and provide my review:",
+            "Perfect! Now I'll verify the build:",
+            "The build passed. Next, I will summarize the findings:",
         ] {
             assert!(announces_unfinished_work(text), "{text}");
         }
@@ -4576,9 +4583,60 @@ mod tests {
             "> Let me create a summary:",
             "`Let me create a summary:`",
             "The fields are:",
+            "Excellent! Now the review is complete:",
+            "Now let me know which endpoint you prefer:",
+            "Excellent! Now let me provide my review:\n\nNo issues found.",
         ] {
             assert!(!announces_unfinished_work(text), "{text}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_titled_review_announcement_still_requires_the_review() {
+        let announcement = "Excellent! Now let me set the session title and provide my review:";
+        let review = "Review complete. No correctness issues found; the build passed.";
+        let (addr, server) = sse_server(vec![
+            bash_call_body("printf 'build passed'"),
+            titled_answer_body("Review coding agent guide split PR", announcement),
+            answer_body(review),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("Review the coding agent guide split PR")],
+            tx,
+            runtime,
+        )
+        .await;
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Error(error) => panic!("{error}"),
+                AgentEvent::Finished(history) => finished = Some(history),
+                _ => {}
+            }
+        }
+        let history = finished.expect("the turn must finish");
+        let answer = history.last().unwrap().display().unwrap();
+        assert!(answer.contains(review), "{answer}");
+        assert!(history
+            .iter()
+            .flat_map(|message| message.tool_calls.iter().flatten())
+            .all(|call| call.function.name != "session_title"));
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[2].contains("Complete the announced action or summary now"));
     }
 
     #[tokio::test]
