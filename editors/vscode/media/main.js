@@ -766,9 +766,10 @@ function installMarkdownInput(editor, render) {
           code.push(lines[i]);
           i += 1;
         }
+        const complete = i < lines.length && fence[1].toLowerCase() === "mermaid" && !softBreaks;
         i += 1;
-        const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1])}"` : "";
-        out.push(`<pre${lang}><code>${highlight(code.join("\n"), fence[1])}</code></pre>`);
+        const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1].toLowerCase())}"` : "";
+        out.push(`<pre${lang}${complete ? ' data-complete="true"' : ""}><code>${highlight(code.join("\n"), fence[1])}</code></pre>`);
         continue;
       }
 
@@ -862,7 +863,7 @@ function installMarkdownInput(editor, render) {
         para.push(lines[i]);
         i += 1;
       }
-      out.push(`<p>${softBreaks ? para.map((line) => inline(line, true)).join("<br>") : inline(para.join(" "))}</p>`);
+      out.push(`<p>${softBreaks ? para.map((line) => inline(line, true)).join("<br>") : para.join("\n").split(/ {2,}\n|\\\n/).map((part) => inline(part.replace(/\n/g, " "))).join("<br>")}</p>`);
     }
     closeList();
     return out.join("");
@@ -953,8 +954,10 @@ function installMarkdownInput(editor, render) {
     const preferred = all.at(-1) === "[exit: 0]" && stderr > 0 &&
       all.slice(0, stderr).some((line) => line.trim()) && warningsOnly
       ? [...all.slice(0, stderr), all.at(-1)] : all;
-    const shown = preferred.slice(-limit);
-    return { text: shown.join("\n"), more: all.length - shown.length, earlier: preferred === all };
+    // Blank lines and decorative rules at the tail should not displace results.
+    const meaningful = preferred.filter((line) => line.trim() && !/^[\s═─━_=-]{3,}$/.test(line));
+    const shown = (meaningful.length ? meaningful : preferred).slice(-limit);
+    return { text: shown.join("\n"), more: all.length - shown.length, earlier: preferred === all && meaningful.length === preferred.length };
   }
   /// What a preview line's own marker means: an addition, a removal, a hunk
   /// header, or context. The CLI renders one file's preview as

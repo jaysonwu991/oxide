@@ -349,7 +349,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "ls",
-            &format!("List the entries of a directory.{directory_scope}"),
+            &format!("List directory entries, or report a file and its size. Use `read` for file contents.{directory_scope}"),
             json!({
                 "type": "object",
                 "properties": {
@@ -1815,6 +1815,15 @@ fn ls(cwd: &Path, args: &Value) -> Result<String> {
     let limit = int_arg(args, "limit").unwrap_or(MAX_MATCHES).max(1);
     let full = resolve(cwd, path);
 
+    let metadata =
+        std::fs::metadata(&full).with_context(|| format!("listing {}", full.display()))?;
+    if metadata.is_file() {
+        return Ok(format!(
+            "{} (file, {} bytes; use `read` to inspect its contents)",
+            full.display(),
+            metadata.len()
+        ));
+    }
     let mut entries = dir_entries(&full)?;
     let truncated = entries.len() > limit;
     entries.truncate(limit);
@@ -7516,6 +7525,20 @@ mod tests {
         assert!(!capped.starts_with("[truncated:"), "{capped}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ls_reports_files_without_reading_their_contents() {
+        let dir = std::env::temp_dir().join(format!("oxide_ls_file_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "private contents").unwrap();
+        let out = ls(&dir, &json!({ "path": "AGENTS.md" })).unwrap();
+        assert!(out.contains("AGENTS.md (file, 16 bytes"), "{out}");
+        assert!(out.contains("use `read`"), "{out}");
+        assert!(!out.contains("private contents"), "{out}");
+        assert_eq!(ls(&dir, &json!({})).unwrap(), "AGENTS.md");
+        assert!(ls(&dir, &json!({ "path": "missing" })).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

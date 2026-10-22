@@ -3278,6 +3278,27 @@ describe("webview questions", () => {
 
 describe("webview links", () => {
 
+  it("preserves Markdown hard breaks while joining soft wraps", () => {
+    const { byId, send } = loadRenderer();
+    const text = "✅ Committed  \n✅ Verified  \n✅ Ready\n\nWrapped\nprose\n\nFirst\\\nSecond";
+    send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
+    const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+    assert.equal(html, "<p>✅ Committed<br>✅ Verified<br>✅ Ready</p><p>Wrapped prose</p><p>First<br>Second</p>");
+  });
+
+  it("marks complete Mermaid fences while leaving streamed and ordinary code alone", () => {
+    const { byId, send } = loadRenderer();
+    for (const [text, complete] of [
+      ["```mermaid\nflowchart LR; A --> B\n```", true],
+      ["```mermaid\nflowchart LR; A -->", false],
+      ["```js\nconst x = 1;\n```", false],
+    ] as const) {
+      send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
+      const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+      assert.equal(html.includes('data-complete="true"'), complete);
+    }
+  });
+
   it("renders balanced brackets in link labels without leaking Markdown", () => {
     const { byId, send } = loadRenderer();
     const text = "PR [#11519 [CYB-5757] feat: allow indexing](https://github.com/Skyscanner/falcon/pull/11519) is open.";
@@ -3908,6 +3929,17 @@ describe("webview tool card", () => {
     transcript.fire("click", { target: head });
     assert.equal(diff.hidden, true, "clicking again folds it away");
     assert.equal(card.querySelector(".tbody")!.hidden, true);
+  });
+
+  it("shows shell results above blank and decorative footer lines", () => {
+    const { byId, send } = loadRenderer();
+    const output = "Result: complete\nFiles: 5\nTests: passed\n════════════════\n\n[exit: 0]";
+    send(stateMessage({ items: [{ id: 6, kind: "tool", name: "bash", args: "{}", output, running: false }] }));
+    const transcript = byId.get("transcript")!;
+    const card = find(transcript, "tool")!;
+    assert.equal(card.querySelector(".tbody")!.textContent, "Files: 5\nTests: passed\n[exit: 0]");
+    transcript.fire("click", { target: card.querySelector(".thint")! });
+    assert.equal(card.querySelector(".tbody")!.textContent, output);
   });
 
   it("opens a folded result from the row that offers it, and folds it back", () => {

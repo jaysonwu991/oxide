@@ -115,6 +115,8 @@ jobs:
         run: node crates/desktop/check-shell.mjs
       - name: Check the front-end
         run: node crates/desktop/check-app.mjs
+      - name: Check shared diagram rendering
+        run: node --test shared/diagrams.test.mjs
 
   # The extension is a standalone pnpm/TypeScript package, so it is not covered
   # by the Cargo jobs. Run its type check and unit tests on each platform the

@@ -4188,6 +4188,12 @@ check("preferred command results over dependency warnings in a successful shell 
   warningCard.pre.textContent);
 warningCard.hint.onclick?.();
 check("kept all stderr diagnostics when the shell card expanded", warningCard.pre.textContent === warningOutput, warningCard.pre.textContent);
+const proseCard = app.startTool("bash", JSON.stringify({ command: "legacy summary" }));
+const proseOutput = "Result: complete\nFiles: 5\nTests: passed\n════════════════\n\n[exit: 0]";
+app.finishTool(proseCard, proseOutput);
+check("kept useful shell results above a decorative footer", proseCard.pre.textContent === "Files: 5\nTests: passed\n[exit: 0]", proseCard.pre.textContent);
+proseCard.hint.onclick?.();
+check("preserved the full shell output when expanded", proseCard.pre.textContent === proseOutput, proseCard.pre.textContent);
 const plainCard = app.startTool("bash", JSON.stringify({ command: "cargo test" }));
 app.finishTool(plainCard, "ok\nline two\nline three\nline four\n", { elapsed: 30 });
 check(
@@ -5511,6 +5517,20 @@ for (const [source, expected] of [
   check("kept nested link labels safe and incomplete links readable: " + source,
     html === `<p>${expected}</p>`, html);
 }
+for (const [source, expected] of [
+  ["✅ Committed  \n✅ Verified  \n✅ Ready", "<p>✅ Committed<br>✅ Verified<br>✅ Ready</p>"],
+  ["First\\\nSecond", "<p>First<br>Second</p>"],
+  ["Wrapped\nprose", "<p>Wrapped prose</p>"],
+  ["**Bold**  \n`code`", "<p><strong>Bold</strong><br><code>code</code></p>"],
+]) {
+  const html = app.renderMarkdown(source);
+  check("preserved explicit Markdown line breaks: " + source, html === expected, html);
+}
+const completeDiagram = app.renderMarkdown("```mermaid\nflowchart LR\n A --> B\n```");
+check("marked only a closed Mermaid fence for diagram rendering", completeDiagram.includes('data-lang="mermaid" data-complete="true"'), completeDiagram);
+check("left streaming Mermaid source as code until its closing fence", !app.renderMarkdown("```mermaid\nflowchart LR\n A -->").includes("data-complete"));
+check("left the editable composer's Mermaid source alone", !app.renderMarkdown("```mermaid\nflowchart LR; A --> B\n```", true).includes("data-complete"));
+check("kept ordinary code blocks as code", !app.renderMarkdown("```js\nconst x = 1;\n```").includes("data-complete"));
 const bracketLink = app.renderMarkdown(
   "PR [#11519 [CYB-5757] feat: allow indexing](https://github.com/Skyscanner/falcon/pull/11519) is open.",
 );
