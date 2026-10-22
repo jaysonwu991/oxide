@@ -3526,7 +3526,8 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     #[cfg(unix)]
     let no_matches = exit == 1 && search_returned_no_matches(command, &pipeline_status);
     #[cfg(not(unix))]
-    let no_matches = exit == 1 && last_pipeline_is_search(command) && stderr.trim().is_empty();
+    let no_matches =
+        exit == 1 && last_pipeline_is_search(command) && stderr.tail_text().trim().is_empty();
     let mut output = finish_bash_output(stdout, stderr, if reader_closed { 0 } else { exit })?;
     if reader_closed {
         output.push_str(" (a command in the pipeline stopped because its reader closed)");
