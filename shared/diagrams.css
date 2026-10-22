@@ -39,6 +39,7 @@
 .diagram-button svg { width: 18px; height: 18px; }
 .diagram-button:hover:not(:disabled) { color: var(--diagram-accent); border-color: var(--diagram-accent); }
 .diagram-viewport { overflow: auto; padding: 4px; }
+.diagram-viewport img[hidden] { display: none !important; }
 .diagram-viewport img { display: block; width: 100%; height: auto; min-width: 320px; -webkit-user-drag: none; }
 .mermaid-diagram details { margin-top: 8px; }
 .mermaid-diagram summary { cursor: pointer; color: var(--diagram-dim); width: fit-content; }

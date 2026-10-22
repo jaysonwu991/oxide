@@ -7,6 +7,7 @@
   let nextId = 0;
   const cache = new Map();
   const figures = new Map();
+  const records = new WeakMap();
   let fullscreen;
   let scheduled = false;
 
@@ -96,6 +97,7 @@
     viewport.append(image);
     dialog.append(header, viewport);
     dialog.onclick = (event) => { if (event.target === dialog) dialog.close(); };
+    dialog.addEventListener("keydown", (event) => event.stopPropagation());
     dialog.addEventListener("close", () => {
       dialog.remove();
       if (fullscreen?.dialog === dialog) fullscreen = undefined;
@@ -109,6 +111,7 @@
 
   function update(record, appearance) {
     record.appearance = appearance;
+    record.pending = true;
     const version = ++record.version;
     record.image.hidden = true;
     record.expand.disabled = true;
@@ -116,16 +119,20 @@
     record.status.textContent = text("loading");
     render(record.source, appearance).then((url) => {
       if (!record.figure.isConnected || record.version !== version) return;
+      record.pending = false;
       record.image.src = url;
       record.image.hidden = false;
       record.expand.disabled = false;
       record.status.hidden = true;
       record.details.open = false;
       if (fullscreen?.record === record) fullscreen.image.src = url;
+      notifyLayout(record.figure);
     }, () => {
       if (!record.figure.isConnected || record.version !== version) return;
+      record.pending = false;
       record.status.textContent = text("error");
       record.details.open = true;
+      notifyLayout(record.figure);
     });
   }
 
@@ -150,6 +157,7 @@
     image.alt = text("title");
     image.draggable = false;
     image.hidden = true;
+    image.onload = () => notifyLayout(figure);
     viewport.append(image);
     const details = document.createElement("details");
     details.open = true;
@@ -161,8 +169,29 @@
     const record = { figure, source, image, expand, status, details, version: 0 };
     expand.onclick = () => open(record);
     figures.set(figure, record);
+    records.set(figure, record);
+    details.addEventListener("toggle", () => notifyLayout(figure));
     update(record, appearance);
+    notifyLayout(figure);
   }
+
+  function notifyLayout(figure) {
+    if (figure.isConnected) figure.dispatchEvent(new Event("oxide-diagram-layout", { bubbles: true }));
+  }
+
+  // Keep the same figures when a streaming message replaces its surrounding
+  // prose, including two identical diagrams at distinct positions.
+  globalThis.OxideDiagrams = {
+    paint(body, html) {
+      const previous = [...body.querySelectorAll(".mermaid-diagram")];
+      body.innerHTML = html;
+      for (const pre of body.querySelectorAll('pre[data-lang="mermaid"][data-complete="true"]')) {
+        const index = previous.findIndex((figure) => records.get(figure)?.source === pre.textContent);
+        if (index < 0) continue;
+        pre.replaceWith(previous.splice(index, 1)[0]);
+      }
+    },
+  };
 
   function scan() {
     scheduled = false;
@@ -170,10 +199,19 @@
     for (const [figure, record] of figures) {
       if (!figure.isConnected) {
         figures.delete(figure);
-        if (fullscreen?.record === record) fullscreen.dialog.close();
+        if (record.pending) record.version++;
       } else if (record.appearance !== appearance) update(record, appearance);
     }
+    // Tabs park actual DOM nodes. Weak state lets a restored figure recover
+    // without keeping discarded transcripts alive through the active map.
+    for (const figure of document.querySelectorAll(".msg.assistant .mermaid-diagram")) {
+      const record = records.get(figure);
+      if (!record || figures.has(figure)) continue;
+      figures.set(figure, record);
+      if (record.pending || record.appearance !== appearance) update(record, appearance);
+    }
     for (const pre of document.querySelectorAll('.msg.assistant pre[data-lang="mermaid"][data-complete="true"]')) mount(pre, appearance);
+    if (fullscreen && !fullscreen.record.figure.isConnected) fullscreen.dialog.close();
   }
 
   function schedule() {

@@ -3286,6 +3286,21 @@ describe("webview links", () => {
     assert.equal(html, "<p>✅ Committed<br>✅ Verified<br>✅ Ready</p><p>Wrapped prose</p><p>First<br>Second</p>");
   });
 
+  it("keeps inline formatting across hard breaks and protects multiline code", () => {
+    const { byId, send } = loadRenderer();
+    for (const [text, expected] of [
+      ["**first  \nsecond**", "<p><strong>first<br>second</strong></p>"],
+      ["*first  \nsecond*", "<p><em>first<br>second</em></p>"],
+      ["~~first  \nsecond~~", "<p><del>first<br>second</del></p>"],
+      ["`first  \nsecond`", "<p><code>first   second</code></p>"],
+      ["``first `code`  \nsecond``", "<p><code>first `code`   second</code></p>"],
+    ]) {
+      send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
+      const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+      assert.equal(html, expected);
+    }
+  });
+
   it("marks complete Mermaid fences while leaving streamed and ordinary code alone", () => {
     const { byId, send } = loadRenderer();
     for (const [text, complete] of [
@@ -3611,6 +3626,24 @@ describe("webview scrolling", () => {
   /// A reply arrives as a delta per model chunk and is painted on the next
   /// animation frame, so the view has to follow the height the paint adds rather
   /// than the one it had when the delta arrived.
+  it("follows diagram layout changes only while following output", async () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ items: [{ id: 1, kind: "assistant", text: "a line. ".repeat(200) }] }));
+    const transcript = byId.get("transcript")!;
+    transcript.clientHeight = 100;
+    byId.get("jump-latest")!.fire("click");
+    const image = new StubElement("img");
+    image.textContent = "diagram grows. ".repeat(100);
+    transcript.appendChild(image);
+    transcript.fire("oxide-diagram-layout");
+    assert.equal(transcript.scrollTop, transcript.scrollHeight);
+    transcript.scrollTop = 0;
+    transcript.fire("scroll");
+    image.textContent += "more output. ".repeat(100);
+    transcript.fire("oxide-diagram-layout");
+    assert.equal(transcript.scrollTop, 0);
+  });
+
   it("follows a streamed reply to its last line", async () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());

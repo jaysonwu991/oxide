@@ -5526,6 +5526,16 @@ for (const [source, expected] of [
   const html = app.renderMarkdown(source);
   check("preserved explicit Markdown line breaks: " + source, html === expected, html);
 }
+for (const [source, expected] of [
+  ["**first  \nsecond**", "<p><strong>first<br>second</strong></p>"],
+  ["*first  \nsecond*", "<p><em>first<br>second</em></p>"],
+  ["~~first  \nsecond~~", "<p><del>first<br>second</del></p>"],
+  ["`first  \nsecond`", "<p><code>first   second</code></p>"],
+  ["``first `code`  \nsecond``", "<p><code>first `code`   second</code></p>"],
+]) {
+  const html = app.renderMarkdown(source);
+  check("kept inline spans whole across hard breaks: " + source, html === expected, html);
+}
 const completeDiagram = app.renderMarkdown("```mermaid\nflowchart LR\n A --> B\n```");
 check("marked only a closed Mermaid fence for diagram rendering", completeDiagram.includes('data-lang="mermaid" data-complete="true"'), completeDiagram);
 check("left streaming Mermaid source as code until its closing fence", !app.renderMarkdown("```mermaid\nflowchart LR\n A -->").includes("data-complete"));
@@ -8843,6 +8853,14 @@ check("jumped to the bottom and resumed following output", jumpTranscript.scroll
 jumpTranscript.scrollHeight = 1100;
 app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "The next update" } });
 check("followed the response again after jumping", jumpTranscript.scrollTop === 1100);
+jumpTranscript.scrollHeight = 1300;
+jumpTranscript.fire("oxide-diagram-layout", {});
+check("followed an asynchronously loaded diagram", jumpTranscript.scrollTop === 1300);
+jumpTranscript.scrollTop = 100;
+jumpTranscript.fire("scroll", {});
+jumpTranscript.scrollHeight = 1500;
+jumpTranscript.fire("oxide-diagram-layout", {});
+check("left a reader in place when a diagram changed height", jumpTranscript.scrollTop === 100 && jumpTranscript.followLatest === false);
 jumpTranscript.scrollHeight = 1000;
 jumpTranscript.scrollTop = 600;
 jumpTranscript.fire("scroll", {});

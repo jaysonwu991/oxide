@@ -7,6 +7,7 @@ const renderer = readFileSync(new URL("diagrams.js", import.meta.url), "utf8");
 
 function page(render = async (_id, source) => ({ svg: `<svg><text>${source}</text></svg>` })) {
   const nodes = [];
+  const events = [];
   class Element {
     constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.hidden = false; nodes.push(this); }
     get isConnected() { return this === document.documentElement || Boolean(this.parent?.isConnected); }
@@ -20,6 +21,23 @@ function page(render = async (_id, source) => ({ svg: `<svg><text>${source}</tex
     removeAttribute(key) { delete this.attributes[key]; }
     cloneNode() { const node = new Element(this.tag); node.src = this.src; return node; }
     addEventListener(key, fn) { this.listeners[key] = fn; }
+    dispatchEvent(event) { events.push({ node: this, type: event.type }); this.listeners[event.type]?.(event); }
+    querySelectorAll(selector) {
+      const children = this.children.flatMap((child) => [child, ...descendants(child)]);
+      if (selector === ".mermaid-diagram") return children.filter((node) => node.className === "mermaid-diagram");
+      assert.equal(selector, 'pre[data-lang="mermaid"][data-complete="true"]');
+      return children.filter((node) => node.tag === "pre" && node.attributes["data-complete"] === "true");
+    }
+    set innerHTML(html) {
+      for (const child of [...this.children]) child.remove();
+      for (const match of html.matchAll(/<pre data-lang="mermaid" data-complete="true"><code>(.*?)<\/code><\/pre>/gs)) {
+        const pre = new Element("pre");
+        pre.textContent = match[1]; pre.eligible = true;
+        pre.setAttribute("data-complete", "true");
+        this.append(pre);
+      }
+    }
+
     focus() { document.activeElement = this; }
     showModal() { this.open = true; }
     close() { this.open = false; this.listeners.close?.(); }
@@ -29,6 +47,7 @@ function page(render = async (_id, source) => ({ svg: `<svg><text>${source}</tex
   const document = {
     createElement: (tag) => new Element(tag),
     querySelectorAll(selector) {
+      if (selector === ".msg.assistant .mermaid-diagram") return nodes.filter((node) => node.className === "mermaid-diagram" && node.isConnected);
       assert.equal(selector, '.msg.assistant pre[data-lang="mermaid"][data-complete="true"]');
       return nodes.filter((node) => node.tag === "pre" && node.isConnected && node.attributes["data-complete"] === "true" && node.eligible);
     },
@@ -44,7 +63,7 @@ function page(render = async (_id, source) => ({ svg: `<svg><text>${source}</tex
   const configurations = [];
   const calls = [];
   const context = vm.createContext({
-    document, URL, queueMicrotask, encodeURIComponent,
+    document, URL, queueMicrotask, encodeURIComponent, Event,
     getComputedStyle: () => ({ backgroundColor: background }),
     requestAnimationFrame: (fn) => frames.push(fn),
     MutationObserver: class { constructor(fn) { observers.push(fn); } observe() {} },
@@ -67,7 +86,7 @@ function page(render = async (_id, source) => ({ svg: `<svg><text>${source}</tex
     for (const frame of frames.splice(0)) frame();
     await new Promise((resolve) => setImmediate(resolve));
   }
-  return { document, nodes, code, flush, calls, configurations, light() { background = "rgb(255, 255, 255)"; } };
+  return { document, nodes, code, flush, calls, configurations, events, paint: context.OxideDiagrams.paint, light() { background = "rgb(255, 255, 255)"; } };
 }
 const figures = (p) => p.nodes.filter((node) => node.className === "mermaid-diagram" && node.isConnected);
 const descendants = (node) => node.children.flatMap((child) => [child, ...descendants(child)]);
@@ -158,4 +177,70 @@ test("fullscreen closes on dismissal and restores keyboard focus", async () => {
   expand.onclick();
   figure.remove(); await p.flush();
   assert.equal(p.nodes.filter((node) => node.tag === "dialog" && node.isConnected).length, 0);
+});
+
+
+test("restores a pending diagram after its DOM nodes were parked", async () => {
+  let resolve;
+  const p = page(() => new Promise((done) => { resolve = done; }));
+  p.code("flowchart LR; A --> B"); await p.flush();
+  const figure = figures(p)[0];
+  figure.remove(); await p.flush();
+  resolve({ svg: "<svg>restored</svg>" }); await p.flush();
+  assert.equal(find(figure, "img").hidden, true);
+  p.document.body.append(figure); await p.flush();
+  assert.match(decodeURIComponent(find(figure, "img").src), /restored/);
+  assert.equal(find(figure, "button").disabled, false);
+  assert.equal(p.calls.length, 1, "the pending render result is reused");
+});
+
+test("restored completed diagrams follow theme changes", async () => {
+  const p = page(); p.code("flowchart LR; A --> B"); await p.flush();
+  const figure = figures(p)[0];
+  figure.remove(); await p.flush(); p.light();
+  p.document.body.append(figure); await p.flush();
+  assert.equal(p.calls.length, 2);
+  assert.equal(p.calls[1].config.theme, "default");
+});
+
+test("streaming paints preserve fullscreen identity and repeated diagrams", async () => {
+  const p = page();
+  const source = "flowchart LR; A --> B";
+  const body = p.document.body;
+  const html = `<pre data-lang="mermaid" data-complete="true"><code>${source}</code></pre>`;
+  p.paint(body, html + html); await p.flush();
+  const [first, second] = figures(p);
+  find(first, "button").onclick();
+  const dialog = p.nodes.find((node) => node.tag === "dialog");
+  // Real paints replace only the reply body; keep the modal outside that body.
+  const reply = p.document.createElement("div");
+  reply.append(first, second); body.append(reply);
+  p.paint(reply, html + html + "Following prose."); await p.flush();
+  assert.equal(figures(p)[0], first);
+  assert.equal(figures(p)[1], second);
+  assert.equal(dialog.isConnected, true);
+  assert.equal(dialog.open, true);
+  find(dialog, "button").onclick();
+  assert.equal(p.document.activeElement, find(first, "button"));
+});
+
+test("modal keys stop at the dialog while native defaults remain enabled", async () => {
+  const p = page(); p.code("flowchart LR; A --> B"); await p.flush();
+  find(figures(p)[0], "button").onclick();
+  const dialog = p.nodes.find((node) => node.tag === "dialog");
+  for (const key of ["Tab", "Escape"]) {
+    let stopped = false;
+    dialog.listeners.keydown({ key, shiftKey: true, stopPropagation() { stopped = true; }, preventDefault() { assert.fail("native defaults must remain enabled"); } });
+    assert.equal(stopped, true);
+  }
+});
+
+test("mounting, rendering and loading a diagram announce layout changes", async () => {
+  const p = page(); p.code("flowchart LR; A --> B"); await p.flush();
+  const figure = figures(p)[0];
+  assert.ok(p.events.filter((event) => event.type === "oxide-diagram-layout").length >= 2);
+  const count = p.events.length;
+  find(figure, "img").onload();
+  assert.equal(p.events.length, count + 1);
+  assert.equal(p.events.at(-1).node, figure);
 });
