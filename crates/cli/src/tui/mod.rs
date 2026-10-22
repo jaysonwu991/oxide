@@ -6185,7 +6185,16 @@ mod tests {
     #[test]
     fn resumed_context_uses_the_backend_limit_for_the_selected_model() {
         let dir = approval_dir("tui_context_limit");
-        let log = SessionLog::create_in(&dir, &dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let header = serde_json::json!({
+            "type": "session",
+            "version": crate::session::SESSION_VERSION,
+            "id": "context-limit-test",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "cwd": dir,
+        });
+        std::fs::write(&path, format!("{header}\n")).unwrap();
+        let log = SessionLog::open(path).unwrap();
         let kept = log.append(&Message::user("first request")).unwrap();
         log.append_compaction(
             "summary",
