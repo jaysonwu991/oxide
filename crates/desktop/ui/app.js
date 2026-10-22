@@ -1842,8 +1842,8 @@ async function loadInfo() {
     state.reasoningIdentity = identity;
     state.supportsReasoning = info.supportsReasoning !== false &&
       Array.isArray(info.reasoningLevels) && info.reasoningLevels.length > 0;
-    state.reasoning = state.supportsReasoning ? info.reasoning : "auto";
-    state.reasoningPicked = Boolean(changedModel) || !state.supportsReasoning;
+    state.reasoning = info.reasoning || "auto";
+    state.reasoningPicked = Boolean(changedModel);
     state.reasoningLevels = state.supportsReasoning ? ["auto", ...info.reasoningLevels] : null;
     applyContextInfo(info);
     // A plan rather than a metered key: the spend is what the plan would have
@@ -1988,8 +1988,6 @@ function updateChips() {
   labelControl("reasoning", t("ui.thinking", "thinking: {value0}", { value0: t(`reasoning.${state.reasoning}`, state.reasoning) }), t("ui.chooseTheReasoningLevelShiftTabCycles", "Choose the reasoning level (Shift+Tab cycles)"));
   el("reasoning").hidden = !hasReasoningLevels();
   if (!hasReasoningLevels()) {
-    state.reasoning = "auto";
-    state.reasoningPicked = true;
     closeReasoning(false);
     el("reasoning-list").innerHTML = "";
   }
@@ -5612,7 +5610,10 @@ function ensureReasoningLevels() {
         state.supportsReasoning = info.supportsReasoning !== false &&
           Array.isArray(info.reasoningLevels) && info.reasoningLevels.length > 0;
         state.reasoningLevels = state.supportsReasoning ? ["auto", ...info.reasoningLevels] : ["auto"];
-        if (state.reasoningLevels && !state.reasoningLevels.includes(state.reasoning)) {
+        if (state.supportsReasoning && !state.reasoningPicked && state.reasoningLevels.includes(info.reasoning)) {
+          state.reasoning = info.reasoning;
+        }
+        if (state.supportsReasoning && !state.reasoningLevels.includes(state.reasoning)) {
           state.reasoning = "auto";
           state.reasoningPicked = true;
         }

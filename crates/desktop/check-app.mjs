@@ -578,6 +578,7 @@ let clipboardAnswer = null;
 // What the harness' `reasoning_levels` answers, which is the active model's own
 // levels read from the model cache. The full set stands in for a model whose
 // listing advertised nothing; a check below narrows it.
+let reasoningReplyGate = null;
 let reasoningAnswer = {
   reasoning: "auto",
   reasoningLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
@@ -918,7 +919,7 @@ const invoke = async (command, args = {}) => {
     case "read_clipboard":
       return clipboardAnswer;
     case "reasoning_levels":
-      return { ...reasoningAnswer, reasoningLevels: [...reasoningAnswer.reasoningLevels] };
+      return reasoningReplyGate || { ...reasoningAnswer, reasoningLevels: [...reasoningAnswer.reasoningLevels] };
     case "set_project_trust":
       return { ...projectInfo, trust: { required: true, trusted: args.trusted } };
     case "project_info":
@@ -5334,11 +5335,11 @@ reasoningAnswer.supportsReasoning = false;
 reasoningAnswer.reasoningLevels = [];
 app.state.reasoning = "high";
 await app.openReasoning();
-check("hid unsupported reasoning and discarded the previous effort",
-  elementFor("reasoning").hidden && app.state.reasoning === "auto" && elementFor("reasoning-modal").hidden,
+check("hid unsupported reasoning without clearing an explicit effort",
+  elementFor("reasoning").hidden && app.state.reasoning === "high" && elementFor("reasoning-modal").hidden,
   `${elementFor("reasoning").hidden} / ${app.state.reasoning} / ${reasoningNames()}`);
 await app.runSlashCommand("/reasoning high");
-check("refused effort for a model without reasoning", app.state.reasoning === "auto", app.state.reasoning);
+check("refused a hidden selector without changing the explicit effort", app.state.reasoning === "high", app.state.reasoning);
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 reasoningAnswer.supportsReasoning = true;
 reasoningAnswer.reasoningLevels = [];
@@ -5349,7 +5350,7 @@ document.fire("keydown", { key: "Tab", shiftKey: true, preventDefault() {} });
 await nextTick();
 check("hid the entire selector when a support flag had no effort metadata",
   elementFor("reasoning").hidden && elementFor("reasoning-modal").hidden && reasoningRows().length === 0 &&
-    app.state.reasoning === "auto" && projectCalls("set_reasoning").length === effortWritesBefore);
+    app.state.reasoning === "high" && projectCalls("set_reasoning").length === effortWritesBefore);
 Object.assign(reasoningAnswer, savedReasoningAnswer);
 app.state.reasoningLevels = null;
 await app.openReasoning();
@@ -8630,7 +8631,31 @@ check("kept the initial model's configured effort", app.state.reasoning === "hig
 check("loaded project details without a header error",
   elementFor("project-meta").hidden && elementFor("model-value").textContent === "gpt-5",
   `${elementFor("project-meta").textContent} / ${elementFor("model-value").textContent}`);
-projectInfo = { ...projectInfo, reasoningLevels: null };
+let releaseReasoningReply;
+reasoningReplyGate = new Promise((resolve) => { releaseReasoningReply = resolve; });
+projectInfo = { ...projectInfo, reasoning: "high", supportsReasoning: false, reasoningLevels: null };
+await app.loadInfo();
+check("kept saved effort while cold metadata was pending and hid its selector",
+  app.state.reasoning === "high" && !app.state.reasoningPicked && elementFor("reasoning").hidden);
+releaseReasoningReply({ reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high"] });
+await nextTick();
+await nextTick();
+reasoningReplyGate = null;
+check("restored the saved high effort after metadata confirmed it",
+  app.state.reasoning === "high" && !app.state.reasoningPicked && !elementFor("reasoning").hidden);
+reasoningReplyGate = new Promise((resolve) => { releaseReasoningReply = resolve; });
+app.state.reasoningLevels = null;
+const pendingReasoningOpen = app.openReasoning();
+app.state.reasoningLevels = ["auto", "low", "high"];
+app.state.supportsReasoning = true;
+app.setReasoning("low");
+releaseReasoningReply({ reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high"] });
+await pendingReasoningOpen;
+reasoningReplyGate = null;
+check("kept a newer explicit choice when metadata arrived late",
+  app.state.reasoning === "low" && app.state.reasoningPicked);
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+projectInfo = { ...projectInfo, supportsReasoning: true, reasoningLevels: null };
 const levelsReadsBefore = projectCalls("reasoning_levels").length;
 await app.loadInfo();
 await nextTick();
@@ -8639,12 +8664,12 @@ check("loaded advertised reasoning levels for a cold project without opening the
     app.state.reasoningLevels?.join(" ") === `auto ${reasoningAnswer.reasoningLevels.join(" ")}` &&
     elementFor("reasoning-modal").hidden && elementFor("project-meta").hidden,
   `${app.state.reasoningLevels} / ${elementFor("project-meta").textContent}`);
-projectInfo = { ...projectInfo, model: "gpt-4o-mini", supportsReasoning: false, reasoningLevels: [] };
+projectInfo = { ...projectInfo, model: "gpt-4o-mini", reasoning: "auto", supportsReasoning: false, reasoningLevels: [] };
 await app.loadInfo();
 check("reset effort after switching to a model without reasoning",
   app.state.reasoning === "auto" && app.state.reasoningPicked && elementFor("reasoning").hidden,
   `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning").hidden}`);
-projectInfo = { ...projectInfo, model: "deepseek-reasoner", supportsReasoning: true, reasoningLevels: ["low", "high", "max"] };
+projectInfo = { ...projectInfo, model: "deepseek-reasoner", reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high", "max"] };
 await app.loadInfo();
 check("read the shared effort when the model changed elsewhere",
   app.state.reasoning === "high" && !elementFor("reasoning").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",

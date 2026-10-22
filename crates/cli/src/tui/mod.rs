@@ -573,9 +573,6 @@ fn saved_selection(path: &Path) -> Option<serde_json::Value> {
 
 fn refresh_reasoning(config: &mut Config) {
     config.reasoning_supported = crate::llm::cached_model_reasoning(config, &config.model);
-    if !config.supports_reasoning() {
-        config.reasoning = Reasoning::Auto;
-    }
 }
 
 fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<SessionLog>) {
@@ -5168,9 +5165,6 @@ fn switch_provider(app: &mut App, config: &mut Config, provider: &str) -> Result
 /// Refreshes the footer and picker state after the active provider or model
 /// changed.
 fn apply_model_state(app: &mut App, config: &mut Config) {
-    if !config.supports_reasoning() {
-        config.reasoning = Reasoning::Auto;
-    }
     app.reasoning = config.reasoning;
     app.model = config.model.clone();
     app.provider = config.provider.clone();
@@ -6861,6 +6855,25 @@ mod tests {
         assert_eq!(repair_empty_pasted_image_name("ordinary text"), None);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_effort_metadata_hides_controls_without_losing_explicit_effort() {
+        let mut config = Config {
+            provider: "test-explicit-effort".into(),
+            model: "uncached-model".into(),
+            reasoning: Reasoning::High,
+            ..Config::default()
+        };
+        let mut app = test_app();
+        refresh_reasoning(&mut config);
+        apply_model_state(&mut app, &mut config);
+        assert!(!app.show_thinking);
+        assert_eq!(app.reasoning, Reasoning::High);
+        assert_eq!(config.effective_reasoning(), Reasoning::High);
+        cycle_reasoning(&mut app, &mut config, &mut None);
+        assert_eq!(config.reasoning, Reasoning::High);
+        assert!(!app.show_thinking);
     }
 
     #[test]
