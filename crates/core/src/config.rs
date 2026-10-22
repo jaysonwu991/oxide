@@ -1652,63 +1652,20 @@ impl Config {
             .unwrap_or(0.0)
     }
 
-    /// Whether the active model is known to support a thinking/reasoning level.
-    /// A level the provider advertised settles it; otherwise the model-name
-    /// heuristic below is used. The footer appends ` • <level>` only for these,
-    /// like Pi's `model.reasoning`.
+    /// Whether the provider advertised configurable effort levels for this model.
+    /// Model names and a default level alone are not evidence of selectable levels.
     pub fn supports_reasoning(&self) -> bool {
-        if let Some(meta) = &self.reasoning_supported {
-            if !meta.is_empty() {
-                return true;
-            }
-        }
-        let model = self.model.to_ascii_lowercase();
-        const REASONING: [&str; 12] = [
-            "o1",
-            "o3",
-            "o4",
-            "gpt-5",
-            "claude",
-            "deepseek-reasoner",
-            "deepseek-v4",
-            "deepseek-flash",
-            "glm",
-            "gemini-2.5",
-            "qwen3",
-            "sonnet",
-        ];
-        REASONING.iter().any(|prefix| model.starts_with(prefix))
+        self.reasoning_supported
+            .as_ref()
+            .is_some_and(|meta| !meta.supported.is_empty())
     }
 
-    /// The explicit levels the active model accepts, cheapest first, with
-    /// `off` always offered (a model that cannot fully disable thinking still
-    /// has a lowest-effort answer for it). A model whose listing carried levels
-    /// returns exactly those; otherwise the built-in set is offered for a model
-    /// the name heuristic recognizes, and a model known not to reason keeps
-    /// no explicit levels.
+    /// Only the explicit levels advertised by the provider, in its order.
     pub fn reasoning_levels(&self) -> Vec<Reasoning> {
-        if !self.supports_reasoning() {
-            return Vec::new();
-        }
-        let mut levels = vec![Reasoning::Off];
-        if let Some(meta) = &self.reasoning_supported {
-            if !meta.supported.is_empty() {
-                for level in &meta.supported {
-                    if *level != Reasoning::Off && !levels.contains(level) {
-                        levels.push(*level);
-                    }
-                }
-                return levels;
-            }
-        }
-        if self.supports_reasoning() {
-            for level in Reasoning::LEVELS {
-                if level != Reasoning::Off {
-                    levels.push(level);
-                }
-            }
-        }
-        levels
+        self.reasoning_supported
+            .as_ref()
+            .map(|meta| meta.supported.clone())
+            .unwrap_or_default()
     }
 
     /// The reasoning level a request should send: the chosen one clamped onto
@@ -2905,7 +2862,13 @@ impl Config {
              against its own directory, not the working directory, so `require('./...')` fails the \
              moment it runs. When a command can print a large \
              payload, select just the fields you need (for example a `--jq`/`jq` filter) rather \
-             than piping it through `head`, which still fetches and renders everything."
+             than piping it through `head`, which still fetches and renders everything. A `--jq` \
+             filter emitting `.[] | {...}` produces separate JSON values, not one JSON document: \
+             collect `[.[] | {...}]` when another program expects an array; do not pipe JSON lines \
+             to `python -m json.tool`. Stderr is a diagnostic stream, not a failure status: \
+             successful git operations can report progress there. Judge the exit status and \
+             actual result, and preserve useful diagnostics. A search with no matches is a search \
+             result, not proof the task failed; use the dedicated `grep` tool for that distinction."
                 .to_string(),
         );
 
@@ -3588,7 +3551,7 @@ mod tests {
         assert_eq!(config.model, "glm-5.3");
         assert_eq!(config.base_url, "https://api.z.ai/api/paas/v4");
         assert!(config.is_zai());
-        assert!(config.supports_reasoning());
+        assert!(!config.supports_reasoning());
 
         let catalog = config.model_catalog();
         assert!(catalog.contains(&"glm-5.3-flash".to_string()));
@@ -3701,7 +3664,7 @@ mod tests {
         config.reasoning = Reasoning::High;
         config.apply_provider("anthropic", "key");
         assert_eq!(config.reasoning, Reasoning::Auto);
-        assert!(config.supports_reasoning());
+        assert!(!config.supports_reasoning());
     }
 
     #[test]
@@ -3735,6 +3698,35 @@ mod tests {
         config.persist_selection_at(&path).unwrap();
         assert_eq!(read()["reasoning"], "auto");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn effort_selection_requires_advertised_levels() {
+        for model in [
+            "gpt-5.6-sol",
+            "claude-sonnet-5",
+            "glm-5.3",
+            "deepseek-flash",
+        ] {
+            let mut config = Config {
+                model: model.into(),
+                ..Default::default()
+            };
+            assert!(!config.supports_reasoning());
+            assert!(config.reasoning_levels().is_empty());
+            config.reasoning_supported = Some(ModelReasoning {
+                supported: vec![],
+                default: Some(Reasoning::High),
+            });
+            assert!(!config.supports_reasoning());
+            config.reasoning_supported.as_mut().unwrap().supported =
+                vec![Reasoning::Low, Reasoning::High];
+            assert!(config.supports_reasoning());
+            assert_eq!(
+                config.reasoning_levels(),
+                vec![Reasoning::Low, Reasoning::High]
+            );
+        }
     }
 
     #[test]

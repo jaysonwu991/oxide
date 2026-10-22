@@ -140,6 +140,7 @@ async fn event_loop(
     trust_cwd: PathBuf,
     mut notices_rx: UnboundedReceiver<Notice>,
 ) -> Result<()> {
+    refresh_reasoning(&mut config);
     let mut app = App::new(
         config.model.clone(),
         cwd.display().to_string(),
@@ -460,7 +461,7 @@ async fn event_loop(
                         config.reasoning = saved.reasoning;
                         config.reasoning_supported = saved.reasoning_supported;
                         config.context_window = saved.context_window;
-                        apply_model_state(&mut app, &config);
+                        apply_model_state(&mut app, &mut config);
                         shared_selection = latest;
                     }
                 }
@@ -576,8 +577,10 @@ fn refresh_reasoning(config: &mut Config) {
 
 fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<SessionLog>) {
     refresh_reasoning(config);
-    // The model's own advertised levels when the listing carried them, else
-    // the built-in set, so the cycle never offers a level the model rejects.
+    apply_model_state(app, config);
+    if !config.supports_reasoning() {
+        return;
+    }
     let level = config.reasoning.next_in(&config.reasoning_levels());
     if let Err(error) = Config::set_reasoning_at(&Config::config_path(), level) {
         app.items.push(ChatItem::Error(format!(
@@ -1472,8 +1475,15 @@ fn handle_key(
             if raw == "/reasoning" || raw.starts_with("/reasoning ") {
                 app.clear_input();
                 refresh_reasoning(config);
+                apply_model_state(app, config);
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/reasoning").unwrap_or_default().trim();
+                if !config.supports_reasoning() && requested != "auto" {
+                    app.items.push(ChatItem::Info(
+                        "No configurable effort metadata advertised for this model.".into(),
+                    ));
+                    return;
+                }
                 if requested.is_empty() {
                     let mut names = vec!["auto".to_string()];
                     names.extend(
@@ -5154,7 +5164,7 @@ fn switch_provider(app: &mut App, config: &mut Config, provider: &str) -> Result
 
 /// Refreshes the footer and picker state after the active provider or model
 /// changed.
-fn apply_model_state(app: &mut App, config: &Config) {
+fn apply_model_state(app: &mut App, config: &mut Config) {
     app.reasoning = config.reasoning;
     app.model = config.model.clone();
     app.provider = config.provider.clone();
@@ -6845,6 +6855,25 @@ mod tests {
         assert_eq!(repair_empty_pasted_image_name("ordinary text"), None);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_effort_metadata_hides_controls_without_losing_explicit_effort() {
+        let mut config = Config {
+            provider: "test-explicit-effort".into(),
+            model: "uncached-model".into(),
+            reasoning: Reasoning::High,
+            ..Config::default()
+        };
+        let mut app = test_app();
+        refresh_reasoning(&mut config);
+        apply_model_state(&mut app, &mut config);
+        assert!(!app.show_thinking);
+        assert_eq!(app.reasoning, Reasoning::High);
+        assert_eq!(config.effective_reasoning(), Reasoning::High);
+        cycle_reasoning(&mut app, &mut config, &mut None);
+        assert_eq!(config.reasoning, Reasoning::High);
+        assert!(!app.show_thinking);
     }
 
     #[test]

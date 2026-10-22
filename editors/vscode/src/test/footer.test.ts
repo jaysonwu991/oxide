@@ -26,6 +26,8 @@ function input(overrides: Partial<FooterInput> = {}): FooterInput {
     provider: "zai",
     contextWindow: 128_000,
     reasoning: "auto",
+    supportsReasoning: true,
+    reasoningLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     agent: "",
     agentCount: 0,
     access: "untrusted",
@@ -209,16 +211,7 @@ describe("footer formatting", () => {
   });
 
   it("narrows the offered levels to the model's own when it advertised them", () => {
-    assert.deepEqual(reasoningChoices({}), [
-      "auto",
-      "off",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ]);
+    assert.deepEqual(reasoningChoices({}), ["auto"]);
     assert.deepEqual(reasoningChoices({ reasoningLevels: ["off", "low", "high", "max"] }), [
       "auto",
       "off",
@@ -236,6 +229,9 @@ describe("footer formatting", () => {
     assert.deepEqual(reasoningChoices(options), ["auto"]);
     assert.equal(nextReasoning("high", reasoningChoices(options)), "auto");
     assert.equal(footerState(input(options)).chips.some((chip) => chip.id === "reasoning"), false);
+    for (const reasoningLevels of [undefined, []]) {
+      assert.equal(footerState(input({ supportsReasoning: true, reasoningLevels })).chips.some((chip) => chip.id === "reasoning"), false);
+    }
     assert.equal(footerState(input({ supportsReasoning: true })).chips.some((chip) => chip.id === "reasoning"), true);
   });
 

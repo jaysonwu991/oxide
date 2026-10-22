@@ -14,7 +14,6 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -44,7 +43,6 @@ pub struct LlmClient {
     /// OpenAI, `x-session-id` for gateways). `None` disables the hint, as for
     /// one-off catalog and compaction requests.
     session_id: Option<String>,
-    rejected_effort: AtomicBool,
 }
 
 /// The provider finished a turn without an answer: it either emitted nothing at
@@ -163,7 +161,6 @@ impl LlmClient {
             http,
             config,
             session_id: None,
-            rejected_effort: AtomicBool::new(false),
         }
     }
 
@@ -582,38 +579,39 @@ impl LlmClient {
         }
     }
 
-    /// Gateways may route an alias to a backend whose effort support differs
-    /// from its advertised model. Adapt only to an explicit rejection, once.
+    /// A gateway can route an alias to a backend with different capabilities.
+    /// Never silently discard the user's explicit effort selection.
     async fn send_compatible_request(
         &self,
         builder: reqwest::RequestBuilder,
-        mut body: Value,
+        body: Value,
     ) -> Result<reqwest::Response> {
-        if self.rejected_effort.load(Ordering::Relaxed) {
-            remove_effort(&mut body);
+        let response = builder
+            .json(&body)
+            .send()
+            .await
+            .context("requesting the provider")?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
         }
-        loop {
-            let response = builder
-                .try_clone()
-                .context("cloning the provider request")?
-                .json(&body)
-                .send()
-                .await
-                .context("requesting the provider")?;
-            let status = response.status();
-            if status.is_success() {
-                return Ok(response);
-            }
-            let error = response.text().await.unwrap_or_default();
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && rejects_effort(&error)
-                && remove_effort(&mut body)
-            {
-                self.rejected_effort.store(true, Ordering::Relaxed);
-                continue;
-            }
-            anyhow::bail!("provider returned {status}: {}", error.trim());
+        let error = response.text().await.unwrap_or_default();
+        if status == reqwest::StatusCode::BAD_REQUEST
+            && rejects_effort(&error)
+            && (body.get("reasoning_effort").is_some()
+                || body.pointer("/output_config/effort").is_some())
+        {
+            anyhow::bail!(
+                "provider returned {status}: {} rejected reasoning level '{}' for '{}'. \
+                     Select Auto to use the provider default, or select a model/backend that \
+                     supports effort. The selected level was not silently disabled. Backend: {}",
+                self.config.provider,
+                self.config.reasoning.label(),
+                self.config.model,
+                error.trim()
+            );
         }
+        anyhow::bail!("provider returned {status}: {}", error.trim());
     }
 
     async fn stream_openai(
@@ -1591,23 +1589,6 @@ fn rejects_effort(error: &str) -> bool {
         || ((message.contains("unsupported parameter")
             || message.contains("unrecognized request argument"))
             && (message.contains("reasoning_effort") || message.contains("output_config.effort")))
-}
-
-fn remove_effort(body: &mut Value) -> bool {
-    let Some(object) = body.as_object_mut() else {
-        return false;
-    };
-    let mut removed = object.remove("reasoning_effort").is_some();
-    if let Some(config) = object
-        .get_mut("output_config")
-        .and_then(Value::as_object_mut)
-    {
-        removed |= config.remove("effort").is_some();
-        if config.is_empty() {
-            object.remove("output_config");
-        }
-    }
-    removed
 }
 
 /// Whether a failed model request is worth retrying. Network failures, stream
@@ -2820,49 +2801,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_gateway_effort_rejection_is_adapted_once_and_remembered() {
+    async fn explicit_gateway_effort_is_never_silently_removed() {
         for model in ["gpt-5.6-sol", "claude-sonnet-5"] {
-            let rejection = serde_json::json!({"error": {"message": "bedrock error: This model does not support the effort parameter."}}).to_string();
-            let (addr, server) = status_server(vec![
-                (400, rejection),
-                (200, completed_turn("done")),
-                (200, completed_turn("again")),
-            ])
-            .await;
-            let client = LlmClient::new(Config {
-                provider: "portkey".into(),
-                model: model.into(),
-                reasoning: Reasoning::Medium,
-                ..sse_test_config(addr, 8192)
-            });
-            for answer in ["done", "again"] {
+            for level in [Reasoning::Medium, Reasoning::High] {
+                let rejection = serde_json::json!({"error": {"message": "bedrock error: This model does not support the effort parameter."}}).to_string();
+                let (addr, server) = status_server(vec![(400, rejection)]).await;
+                let client = LlmClient::new(Config {
+                    provider: "portkey".into(),
+                    model: model.into(),
+                    reasoning: level,
+                    ..sse_test_config(addr, 8192)
+                });
                 let mut hooks = StreamHooks {
                     text: &mut |_| {},
                     thinking: &mut |_| {},
-                    retry: &mut |_| {},
+                    retry: &mut |_| panic!("must not retry a capability error"),
                 };
-                let turn = client
+                let error = client
                     .stream_chat(&[Message::user("hi")], &[], &mut hooks)
                     .await
-                    .unwrap();
-                assert_eq!(turn.content, answer);
+                    .unwrap_err();
+                let error = error.to_string();
+                assert!(error.contains("Select Auto"), "{error}");
+                assert!(error.contains(level.label()), "{error}");
+                let requests = server.await.unwrap();
+                assert_eq!(requests.len(), 1);
+                let body: Value =
+                    serde_json::from_str(requests[0].split_once("\r\n\r\n").unwrap().1).unwrap();
+                let effort = body
+                    .get("reasoning_effort")
+                    .or_else(|| body.pointer("/output_config/effort"));
+                assert_eq!(effort.and_then(Value::as_str), Some(level.label()));
             }
-            let requests = server.await.unwrap();
-            let bodies: Vec<Value> = requests
-                .iter()
-                .map(|request| {
-                    serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap()
-                })
-                .collect();
-            assert!(
-                bodies[0].get("reasoning_effort").is_some()
-                    || bodies[0].pointer("/output_config/effort").is_some()
-            );
-            for body in &bodies[1..] {
-                assert!(body.get("reasoning_effort").is_none());
-                assert!(body.pointer("/output_config/effort").is_none());
-                assert_eq!(body.get("thinking"), bodies[0].get("thinking"));
-            }
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_gateway_levels_reach_the_provider_unchanged() {
+        let (addr, server) = status_server(vec![
+            (200, completed_turn("medium")),
+            (200, completed_turn("high")),
+        ])
+        .await;
+        for level in [Reasoning::Medium, Reasoning::High] {
+            let client = LlmClient::new(Config {
+                provider: "portkey".into(),
+                model: "gpt-5.6-sol".into(),
+                reasoning: level,
+                ..sse_test_config(addr, 8192)
+            });
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            let turn = client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap();
+            assert_eq!(turn.content, level.label());
+        }
+        let requests = server.await.unwrap();
+        for (request, effort) in requests.iter().zip(["medium", "high"]) {
+            let body: Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body["reasoning_effort"], effort);
         }
     }
 
@@ -2887,7 +2890,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("does not support images"));
-        assert!(!client.rejected_effort.load(Ordering::Relaxed));
         assert_eq!(server.await.unwrap().len(), 1);
     }
 

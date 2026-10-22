@@ -16,7 +16,7 @@ use crate::tools;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -674,6 +674,9 @@ async fn run_loop(
     // model gets one hidden reminder to verify before its summary. A file
     // written outside the run's directory is not part of that delivery.
     let mut verification = VerificationState::new(&cwd);
+    if let Some(user) = messages.iter().rev().find(|message| message.role == "user") {
+        verification.request_replies(&user.display().unwrap_or_default());
+    }
     let mut verification_reminder: Option<String> = None;
     let mut follow_through_nudged = false;
     let mut follow_through_pending = false;
@@ -741,6 +744,7 @@ async fn run_loop(
                     label,
                     follow_up: false,
                 });
+                verification.request_replies(&steered.display().unwrap_or_default());
                 record(&runtime.session, depth, &steered);
                 messages.push(steered);
                 workspace_context = project_context(&cwd, &messages);
@@ -866,6 +870,19 @@ async fn run_loop(
         let mut request = Vec::with_capacity(messages.len() + 3);
         let mut system = config.compose_system_prompt();
         system.push_str(&workspace_context);
+        if verification.replies_requested {
+            system.push_str(
+                "\n\nThe user requested replies to review comments. Read the inline review \
+                comments with `gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments`. \
+                Preserve each root comment's numeric `id` and `path`, and each reply's \
+                `in_reply_to_id`. After fixing and pushing, reply separately in each addressed \
+                thread through its `/replies` endpoint, then re-read the comments to confirm \
+                the replies. A top-level `gh pr comment` does not answer inline threads. \
+                Report any comments you could not address or reply to; never claim all were \
+                replied to from a summary comment alone. Follow the user's scope and any \
+                instruction to skip posting.",
+            );
+        }
         let offer_session_title = needs_session_title(&runtime, depth) && !title_attempted;
         if offer_session_title {
             system.push_str(concat!(
@@ -1245,6 +1262,7 @@ async fn run_loop(
                     label,
                     follow_up: false,
                 });
+                verification.request_replies(&message.display().unwrap_or_default());
                 record(&runtime.session, depth, &message);
                 messages.push(message);
             }
@@ -1255,6 +1273,7 @@ async fn run_loop(
                     label,
                     follow_up: true,
                 });
+                verification.request_replies(&message.display().unwrap_or_default());
                 record(&runtime.session, depth, &message);
                 messages.push(message);
             }
@@ -1298,6 +1317,7 @@ async fn run_loop(
                 });
                 let message =
                     Message::tool(call.id.clone(), "error: cancelled by the user".to_string());
+                verification.request_replies(&message.display().unwrap_or_default());
                 record(&runtime.session, depth, &message);
                 messages.push(message);
             }
@@ -1482,6 +1502,11 @@ async fn run_loop(
                     }));
                     let started = std::time::Instant::now();
                     let canonical = name.as_str();
+                    let misplaced_reply = canonical == "bash"
+                        && effective_args
+                            .get("command")
+                            .and_then(Value::as_str)
+                            .is_some_and(|command| verification.blocks_summary_reply(command));
                     let block_reply = if canonical == "bash" {
                         match effective_args.get("command").and_then(Value::as_str) {
                             Some(command) if posts_review_reply(command) => {
@@ -1494,7 +1519,20 @@ async fn run_loop(
                         false
                     };
                     let mut dispatched = false;
-                    let mut output = if block_reply {
+                    let mut output = if misplaced_reply {
+                        tools::ToolOutput::error(
+                            if verification.summaries_forbidden {
+                                "The user asked not to post a top-level summary. Reply only in the requested review threads."
+                            } else {
+                            "The user requested inline review replies. `gh pr comment` creates a \
+                             top-level summary and does not reply to the review threads. List \
+                             `gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments`, then post \
+                             each addressed reply to its root comment's `/replies` endpoint and \
+                             read it back. Complete those replies before adding a summary."
+                            }
+                                .to_string(),
+                        )
+                    } else if block_reply {
                         tools::ToolOutput::error(
                             "commit and push the code changes before replying to the review, so \
                          the reply does not claim a fix that is not on the branch under review"
@@ -2036,6 +2074,13 @@ struct VerificationState {
     /// Files were edited since the last successful `git push`. Reading the
     /// change back proves it is on disk but does not put it in the pull request.
     edited_since_push: bool,
+    replies_requested: bool,
+    summaries_forbidden: bool,
+    review_comments_discovered: bool,
+    requested_review_comments: Option<BTreeSet<u64>>,
+    review_comments: BTreeSet<u64>,
+    posted_replies: BTreeMap<u64, u64>,
+    confirmed_replies: BTreeSet<u64>,
 }
 
 /// The directory a push from `cwd` delivers: the closest enclosing repository,
@@ -2051,6 +2096,157 @@ fn delivery_root(cwd: &Path) -> PathBuf {
 }
 
 impl VerificationState {
+    fn blocks_summary_reply(&self, command: &str) -> bool {
+        (self.summaries_forbidden || self.inline_replies_pending())
+            && tools::shell_segments(command).into_iter().any(|segment| {
+                let words = review_shell_words(segment);
+                let Some(index) = tools::shell_command_index(&words) else {
+                    return false;
+                };
+                let program = words[index]
+                    .trim_matches(['\'', '"'])
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or("");
+                matches!(program, "gh" | "gh.exe")
+                    && words.get(index + 1..index + 3) == Some(["pr", "comment"].as_slice())
+                    && !words[index + 3..]
+                        .iter()
+                        .any(|arg| matches!(*arg, "--help" | "-h"))
+            })
+    }
+
+    fn reply_targets(&self) -> BTreeSet<u64> {
+        let mut targets = self
+            .requested_review_comments
+            .as_ref()
+            .unwrap_or(&self.review_comments)
+            .clone();
+        targets.extend(self.posted_replies.values());
+        targets
+    }
+
+    fn inline_replies_pending(&self) -> bool {
+        if !self.replies_requested {
+            return false;
+        }
+        let targets = self.reply_targets();
+        ((self.requested_review_comments.is_none() || targets.is_empty())
+            && !self.review_comments_discovered)
+            || !targets.is_subset(&self.confirmed_replies)
+            || (self.requested_review_comments.is_some()
+                && targets.is_empty()
+                && !self.review_comments.is_empty())
+    }
+
+    fn request_replies(&mut self, text: &str) {
+        let text = text
+            .to_ascii_lowercase()
+            .replace(" but ", ";")
+            .replace(" and don't ", ";don't ")
+            .replace(" and do not ", ";do not ");
+        let ids = regex::Regex::new(
+            r"(?:comments?(?:\s+ids?)?\s*#?\s*|discussion_r)(\d+(?:\s*(?:,|and)\s*#?\d+)*)",
+        )
+        .unwrap();
+        let numbers = regex::Regex::new(r"\d+").unwrap();
+        for clause in text.split([';', '\n']) {
+            let negative = [
+                "do not reply",
+                "don't reply",
+                "do not post",
+                "don't post",
+                "不用回复",
+                "不要回复",
+            ]
+            .iter()
+            .any(|phrase| clause.contains(phrase));
+            let summary = clause.contains("summary") || clause.contains("top-level");
+            if negative && summary {
+                self.summaries_forbidden = true;
+                continue;
+            }
+            let reply = ["reply", "replies", "respond", "回复"]
+                .iter()
+                .any(|word| clause.contains(word));
+            if !reply {
+                continue;
+            }
+            let inline = clause.contains("inline") || clause.contains("review thread");
+            let general = !inline
+                && ["general", "top-level", "discussion comment"]
+                    .iter()
+                    .any(|word| clause.contains(word));
+            if general || negative {
+                self.replies_requested = false;
+                continue;
+            }
+            if !["comment", "review", "inline", "评论"]
+                .iter()
+                .any(|word| clause.contains(word))
+            {
+                continue;
+            }
+            self.replies_requested = true;
+            self.nudged = false;
+            let targets: BTreeSet<u64> = ids
+                .captures_iter(clause)
+                .flat_map(|capture| numbers.find_iter(capture.get(1).unwrap().as_str()))
+                .filter_map(|number| number.as_str().parse().ok())
+                .collect();
+            let selected = !targets.is_empty()
+                || ["only", "selected", "specific", "this comment"]
+                    .iter()
+                    .any(|word| clause.contains(word));
+            self.requested_review_comments = selected.then_some(targets);
+        }
+    }
+
+    fn record_review_comments(&mut self, command: &str, output: &str) {
+        let calls = github_review_api_calls(command);
+        if calls.len() != 1 {
+            return;
+        }
+        let (endpoint, method) = calls[0];
+        let posting = method.eq_ignore_ascii_case("POST") && endpoint.ends_with("/replies");
+        if !posting && !method.eq_ignore_ascii_case("GET") {
+            return;
+        }
+        let listing = !posting && endpoint.ends_with("/comments");
+        // The shell suffix is not JSON; streaming also accepts paginated arrays
+        // and the JSON objects a --jq filter emits one per line.
+        let values = serde_json::Deserializer::from_str(output).into_iter::<Value>();
+        for value in values {
+            let Ok(value) = value else {
+                break;
+            };
+            let comments = match &value {
+                Value::Array(items) => {
+                    if listing {
+                        self.review_comments_discovered = true;
+                    }
+                    items.as_slice()
+                }
+                _ => std::slice::from_ref(&value),
+            };
+            for comment in comments {
+                let Some(id) = comment.get("id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                if let Some(parent) = comment.get("in_reply_to_id").and_then(Value::as_u64) {
+                    if posting {
+                        self.posted_replies.insert(id, parent);
+                    } else if self.posted_replies.get(&id) == Some(&parent) {
+                        self.confirmed_replies.insert(parent);
+                    }
+                } else if !posting && comment.get("path").and_then(Value::as_str).is_some() {
+                    self.review_comments.insert(id);
+                    self.review_comments_discovered |= listing;
+                }
+            }
+        }
+    }
+
     /// Tracks the work of a run started in `cwd`, judging its edits against what
     /// a push from there delivers.
     fn new(cwd: &Path) -> Self {
@@ -2127,6 +2323,9 @@ impl VerificationState {
                 }
                 let command = raw.to_ascii_lowercase();
                 let failed = output_failed_with_state(output, is_error);
+                if !failed {
+                    self.record_review_comments(raw, output);
+                }
                 if !failed && runs_git_push(raw) {
                     self.edited_since_push = false;
                 }
@@ -2179,6 +2378,23 @@ impl VerificationState {
             return None;
         }
         let mut parts = Vec::new();
+        if self.inline_replies_pending() {
+            let missing: Vec<_> = self
+                .reply_targets()
+                .difference(&self.confirmed_replies)
+                .map(u64::to_string)
+                .collect();
+            parts.push(format!(
+                    "The user requested inline review replies. {} List the review comments with \
+                     `gh api --paginate repos/{{owner}}/{{repo}}/pulls/<n>/comments`, keeping numeric \
+                     `id`, `path`, and `in_reply_to_id`. Fix and push before posting a reply to each \
+                     addressed root comment's `/replies` endpoint, then read back the posted replies. \
+                     A top-level PR summary is not an inline reply. If blocked or instructed not to \
+                     post, report the remaining comments honestly instead of claiming all were replied to.",
+                    if missing.is_empty() { "Discover the requested inline comment targets; do not expand the user's scope.".to_string() }
+                    else { format!("Replies remain unconfirmed for root comment IDs: {}.", missing.join(", ")) }
+            ));
+        }
         if !self.edited.is_empty() {
             let files = self.edited.iter().cloned().collect::<Vec<_>>().join(", ");
             parts.push(format!(
@@ -2566,21 +2782,110 @@ fn combine_usage(
 /// Whether a shell command posts a reply or review comment on a pull/merge
 /// request. Replying that a comment is fixed before the fix is on the branch is
 /// misleading, so these commands are held until the pending edits are pushed.
-/// The bare `/replies` endpoint also reads a thread, so a REST call counts only
-/// when it explicitly POSTs.
+/// Fields imply POST for `gh api`, unless an explicit method overrides it.
 fn posts_review_reply(command: &str) -> bool {
-    let command = command.to_ascii_lowercase();
     if DONE_RULES
         .iter()
         .find(|rule| rule.key == "comment")
-        .is_some_and(|rule| rule.actions.iter().any(|action| command.contains(action)))
+        .is_some_and(|rule| {
+            rule.actions
+                .iter()
+                .any(|action| command.to_ascii_lowercase().contains(action))
+        })
     {
         return true;
     }
-    command.contains("/replies")
-        && ["-x post", "-xpost", "--method post", "--method=post"]
-            .iter()
-            .any(|flag| command.contains(flag))
+    github_review_api_calls(command)
+        .iter()
+        .any(|(endpoint, method)| {
+            endpoint.ends_with("/replies") && method.eq_ignore_ascii_case("POST")
+        })
+}
+
+fn github_review_api_calls(command: &str) -> Vec<(&str, &str)> {
+    tools::shell_segments(command)
+        .into_iter()
+        .filter_map(|segment| {
+            let words = review_shell_words(segment);
+            let index = tools::shell_command_index(&words)?;
+            let program = words[index].rsplit(['/', '\\']).next()?;
+            if !matches!(program, "gh" | "gh.exe") || words.get(index + 1) != Some(&"api") {
+                return None;
+            }
+            let mut method = None;
+            let mut fields = false;
+            let mut endpoint = None;
+            let mut args = words[index + 2..].iter();
+            while let Some(arg) = args.next() {
+                if matches!(*arg, "-X" | "--method") {
+                    method = args.next().copied();
+                } else if let Some(value) = arg
+                    .strip_prefix("--method=")
+                    .or_else(|| arg.strip_prefix("-X"))
+                {
+                    method = Some(value);
+                } else if matches!(*arg, "-f" | "-F" | "--field" | "--raw-field" | "--input") {
+                    fields = true;
+                    args.next();
+                } else if arg.starts_with("--field=")
+                    || arg.starts_with("--raw-field=")
+                    || arg.starts_with("--input=")
+                    || arg.starts_with("-f")
+                    || arg.starts_with("-F")
+                {
+                    fields = true;
+                } else if (arg.starts_with("repos/")
+                    || arg.starts_with("/repos/")
+                    || arg.starts_with("https://"))
+                    && arg.contains("/pulls/")
+                    && arg.contains("/comments")
+                {
+                    endpoint = Some(arg.split('?').next().unwrap_or(arg));
+                }
+            }
+            Some((
+                endpoint?,
+                method.unwrap_or(if fields { "POST" } else { "GET" }),
+            ))
+        })
+        .collect()
+}
+
+// A flag mentioned inside a quoted reply body is data, not a method override.
+fn review_shell_words(command: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if start.is_none() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            start = Some(index);
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch.is_whitespace() => {
+                words.push(command[start.take().unwrap()..index].trim_matches(['\'', '"']));
+            }
+            None => {}
+        }
+    }
+    if let Some(start) = start {
+        words.push(command[start..].trim_matches(['\'', '"']));
+    }
+    words
 }
 
 /// Whether a shell command runs `git push` as the invoked program (not, say,
@@ -5845,6 +6150,193 @@ for line in sys.stdin:
         assert!(!recheck_extends_summary(true, true));
         assert!(!recheck_extends_summary(false, false));
         assert!(!recheck_extends_summary(false, true));
+    }
+
+    #[test]
+    fn requested_inline_replies_need_each_posted_reply_read_back() {
+        let mut state = VerificationState::default();
+        state.request_replies("Fix and reply PR's comments");
+        assert!(state.blocks_summary_reply("gh pr comment 9 --body-file reply.md"));
+        assert!(!state.blocks_summary_reply("echo 'gh pr comment 9'"));
+        assert!(!state.blocks_summary_reply("gh pr comment --help"));
+        assert!(!state.blocks_summary_reply(
+            "gh api -X POST repos/org/repo/pulls/9/comments/10/replies -f body=fixed"
+        ));
+        let listing = "gh api --paginate repos/org/repo/pulls/9/comments";
+        let comments =
+            r#"[{"id":10,"path":"a.rs"},{"id":20,"path":"b.rs"},{"id":21,"in_reply_to_id":20}]"#;
+        state.record("bash", &json!({"command": listing}), comments);
+        state.record(
+            "bash",
+            &json!({"command": "gh pr comment 9 --body-file reply.md"}),
+            "posted\n[exit: 0]",
+        );
+        state.record(
+            "bash",
+            &json!({"command": "gh pr view 9 --json comments"}),
+            "summary\n[exit: 0]",
+        );
+        let reminder = state.reminder().unwrap();
+        assert!(reminder.contains("10, 20"), "{reminder}");
+        state.nudged = false;
+        for (root, reply) in [(10, 30), (20, 40)] {
+            let command = format!(
+                "gh api -X POST repos/org/repo/pulls/9/comments/{root}/replies -f body=fixed"
+            );
+            let posted = json!({"id": reply, "in_reply_to_id": root}).to_string();
+            state.record("bash", &json!({"command": command}), &posted);
+            assert!(!state.confirmed_replies.contains(&root));
+            state.record("bash", &json!({"command": listing}), &posted);
+            assert!(state.confirmed_replies.contains(&root));
+        }
+        assert!(state.reminder().is_none());
+        assert!(!state.blocks_summary_reply("gh pr comment 9 --body-file summary.md"));
+    }
+
+    #[test]
+    fn reply_checks_respect_scope_and_failed_posts() {
+        let mut state = VerificationState::default();
+        state.request_replies("Review the PR comments");
+        assert!(!state.replies_requested);
+        assert!(state.reminder().is_none());
+        state.request_replies("Reply to the review comments");
+        assert!(state.replies_requested);
+        let command = "gh api -X POST repos/org/repo/pulls/9/comments/10/replies -f body=fixed";
+        state.record_result(
+            "bash",
+            &json!({"command": command}),
+            r#"{"id":30,"in_reply_to_id":10}"#,
+            true,
+        );
+        assert!(state.posted_replies.is_empty());
+        state.request_replies("Don't post replies to these comments");
+        assert!(!state.replies_requested);
+    }
+
+    #[test]
+    fn summary_restrictions_do_not_cancel_inline_reply_requests() {
+        let mut state = VerificationState::default();
+        state.request_replies(
+            "Reply to every inline review comment, but don't post a top-level summary",
+        );
+        assert!(state.replies_requested);
+        assert!(state.summaries_forbidden);
+        assert!(state.inline_replies_pending());
+        assert!(state.blocks_summary_reply("gh pr comment 9 --body done"));
+        state.record(
+            "bash",
+            &json!({"command": "gh api repos/o/r/pulls/9/comments"}),
+            "[]\n[exit: 0]",
+        );
+        assert!(!state.inline_replies_pending());
+        assert!(state.reminder().is_none());
+        assert!(state.blocks_summary_reply("gh pr comment 9 --body done"));
+    }
+
+    #[test]
+    fn general_discussions_and_empty_inline_discovery_do_not_block_comments() {
+        let mut state = VerificationState::default();
+        state.request_replies("Reply to the reviewer's general PR comment");
+        assert!(!state.replies_requested);
+        assert!(!state.blocks_summary_reply("gh pr comment 9 --body reply"));
+        state.request_replies("Reply to the inline review comments");
+        assert!(!state.review_comments_discovered);
+        assert!(state.blocks_summary_reply("gh pr comment 9 --body reply"));
+        state.record(
+            "bash",
+            &json!({"command": "gh api repos/o/r/pulls/9/comments"}),
+            "[]\n[exit: 0]",
+        );
+        assert!(state.review_comments_discovered);
+        assert!(!state.blocks_summary_reply("gh pr comment 9 --body reply"));
+        assert!(state.reminder().is_none());
+    }
+
+    #[test]
+    fn inline_reply_targets_follow_the_requested_comment_ids() {
+        let mut state = VerificationState::default();
+        state.request_replies("Fix and reply only to inline comment 10");
+        let listing = json!({"command": "gh api repos/o/r/pulls/9/comments"});
+        state.record(
+            "bash",
+            &listing,
+            r#"[{"id":10,"path":"a.rs"},{"id":20,"path":"b.rs"}]"#,
+        );
+        assert_eq!(state.reply_targets(), BTreeSet::from([10]));
+        state.record(
+            "bash",
+            &json!({"command": "gh api repos/o/r/pulls/9/comments/10/replies -f body=fixed"}),
+            r#"{"id":30,"in_reply_to_id":10}"#,
+        );
+        assert!(state.inline_replies_pending());
+        state.record("bash", &listing, r#"[{"id":30,"in_reply_to_id":10}]"#);
+        assert!(!state.inline_replies_pending());
+        assert!(!state.blocks_summary_reply("gh pr comment 9 --body done"));
+        assert!(state.reminder().is_none());
+        state.request_replies("Reply to inline comments 10, 20 and 40");
+        assert_eq!(
+            state.requested_review_comments,
+            Some(BTreeSet::from([10, 20, 40]))
+        );
+    }
+
+    #[test]
+    fn implicit_posts_are_tracked_but_explicit_gets_are_not() {
+        assert!(posts_review_reply(
+            "gh api repos/o/r/pulls/9/comments/10/replies -f body='fixed; example --method GET'"
+        ));
+        assert!(!posts_review_reply(
+            "echo 'gh api repos/o/r/pulls/9/comments/10/replies -f body=fixed'"
+        ));
+        for fields in [
+            "-f body=fixed",
+            "-F body=fixed",
+            "--raw-field body=fixed",
+            "--field=body=fixed",
+            "-fbody=fixed",
+        ] {
+            let command = format!("gh api repos/o/r/pulls/9/comments/10/replies {fields}");
+            assert!(posts_review_reply(&command), "{command}");
+            let mut state = VerificationState::default();
+            assert!(state.blocks_review_reply(&command, true));
+            state.record(
+                "bash",
+                &json!({"command": command}),
+                r#"{"id":30,"in_reply_to_id":10}"#,
+            );
+            assert_eq!(state.posted_replies.get(&30), Some(&10));
+            for method in ["--method GET", "-X GET", "--method=GET", "-XGET"] {
+                let get = format!("{command} {method}");
+                assert!(!posts_review_reply(&get), "{get}");
+                let mut state = VerificationState::default();
+                state.record(
+                    "bash",
+                    &json!({"command": get}),
+                    r#"{"id":30,"in_reply_to_id":10}"#,
+                );
+                assert!(state.posted_replies.is_empty());
+                assert!(state.confirmed_replies.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_specific_comment_can_be_verified_without_listing_unrelated_threads() {
+        let mut state = VerificationState::default();
+        state.request_replies("Reply to inline comment 10");
+        state.record(
+            "bash",
+            &json!({"command": "gh api repos/o/r/pulls/9/comments/10/replies -f body=fixed"}),
+            r#"{"id":30,"in_reply_to_id":10}"#,
+        );
+        state.record(
+            "bash",
+            &json!({"command": "gh api repos/o/r/pulls/comments/30"}),
+            r#"{"id":30,"in_reply_to_id":10}"#,
+        );
+        assert!(!state.review_comments_discovered);
+        assert!(!state.inline_replies_pending());
+        assert!(state.reminder().is_none());
     }
 
     #[test]

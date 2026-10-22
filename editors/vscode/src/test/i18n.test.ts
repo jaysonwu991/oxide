@@ -147,7 +147,8 @@ test("localizes real MCP display statuses without discarding diagnostics or unkn
 test("keeps chip values and trust state independent of translated labels", () => {
   const footer = footerState({
     language: chinese, model: "claude-test", provider: "anthropic", contextWindow: 128000,
-    reasoning: "auto", agent: "", agentCount: 0, access: "trusted", trustSetting: "default",
+    reasoning: "auto", supportsReasoning: true, reasoningLevels: ["low", "high"],
+    agent: "", agentCount: 0, access: "trusted", trustSetting: "default",
     defaultTrust: "ask", savedTrust: true, branch: "main", autoCompact: false,
     subscription: false, usage: emptyUsage(),
   });

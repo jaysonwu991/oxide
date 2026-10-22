@@ -95,11 +95,11 @@ export function nextReasoning(current: string, levels: readonly string[] = REASO
 }
 
 /// The levels a chip's tooltip, the picker and the cycle offer: `auto` plus the
-/// model's own advertised levels, or the built-in set when none was advertised.
+/// model's own advertised levels. Missing metadata offers no selectable effort.
 export function reasoningChoices(input: Pick<FooterInput, "reasoningLevels" | "supportsReasoning">): readonly string[] {
   if (input.supportsReasoning === false) return ["auto"];
   const advertised = input.reasoningLevels;
-  if (!advertised || advertised.length === 0) return REASONING_LEVELS;
+  if (!advertised || advertised.length === 0) return ["auto"];
   return ["auto", ...advertised.filter((level) => level !== "auto")];
 }
 
@@ -114,7 +114,7 @@ export function footerState(input: FooterInput): FooterState {
         label: t("ui.model", "model: {value0}{value1}", { value0: input.model || "config.json", value1: input.contextWindow ? ` · ${formatTokens(input.contextWindow)}` : "" }),
         title: t("ui.modelATurnRunsWithModelClickToChangeIt", "Model a turn runs with (--model){value0}. Click to change it.", { value0: input.provider ? ` on ${input.provider}` : "" }),
       },
-      ...(input.supportsReasoning === false ? [] : [{
+      ...(reasoningChoices(input).length <= 1 ? [] : [{
         id: "reasoning" as const,
         value: translate(input.language ?? null, `reasoning.${input.reasoning}`, input.reasoning.charAt(0).toUpperCase() + input.reasoning.slice(1)),
         label: t("ui.thinking", "thinking: {value0}", { value0: input.reasoning }),
