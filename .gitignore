@@ -32,3 +32,8 @@
 # Session dumps captured into the repo root
 /*.jsonl
 /sessions/
+
+# Front-end Mermaid assets are prepared from shared/ and the locked npm package.
+/crates/desktop/ui/diagrams.js
+/crates/desktop/ui/diagrams.css
+/crates/desktop/ui/vendor/

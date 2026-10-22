@@ -392,7 +392,7 @@ console.log("the window");
 check(
   "runs this package's own main process",
   packaged.main === "electron/dist/main.js" &&
-    packaged.scripts.build === "tsc -p tsconfig.json" &&
+    packaged.scripts.build === "node ../../scripts/prepare-diagrams.mjs desktop && tsc -p tsconfig.json" &&
     /tsc -p tsconfig\.json && cargo build --release && electron-builder --config electron-builder\.yml/.test(
       packaged.scripts.dist,
     ) &&
@@ -555,6 +555,13 @@ check(
     /href="style\.css"/.test(html) &&
     exists("ui/app.js") &&
     exists("ui/style.css"),
+);
+check(
+  "ships the shared offline diagram renderer with the page",
+  /src="diagrams\.js"/.test(html) && /href="diagrams\.css"/.test(html) &&
+    packaged.devDependencies.mermaid === "12.2.0" &&
+    exists("../../shared/diagrams.js") && exists("../../scripts/prepare-diagrams.mjs") &&
+    ["build", "start", "dist"].every((name) => packaged.scripts[name].includes("prepare-diagrams.mjs desktop")),
 );
 check(
   "gives the policy to the page that carries it rather than to a window it is injected into",

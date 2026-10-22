@@ -111,8 +111,9 @@ its own (`restart`, below) is read there at all, so the page and the engine are
 the only two parties to the protocol.
 
 The page is this crate's own `ui/` directory, loaded with `loadFile` (in a
-checkout and inside the packaged app's archive alike): one plain script with no
-imports to resolve, so there is nothing for a bundler to do. The window's preload
+checkout and inside the packaged app's archive alike). Its plain scripts have no
+imports to resolve; the build copies the shared diagram renderer and Mermaid's
+self-contained browser bundle into the page's resources. The window's preload
 hands it the three globals its script has always read — `__electrobunHostBridge`
 (what it sends through), `__electrobun.receiveMessageFromHost` (what the window
 calls to hand it a packet) and the `__electrobunPendingHostMessages` queue in
@@ -1126,6 +1127,19 @@ painted in the app (`setWindowOpenHandler` denies every popup, and
 `will-navigate`/`will-attach-webview` are prevented). A tool result is a card of
 that same column (see [Interface](#interface)): a finished call is a line with its
 output behind it, and `write`/`edit` results include a colored diff.
+
+Fenced `mermaid` blocks in assistant replies render as diagrams once their closing
+fence arrives, including in saved conversations. Each diagram follows the current
+theme and offers **Diagram source** and **View fullscreen**. Invalid diagrams keep
+their source visible. User messages, the composer, and the CLI retain the code.
+
+The shared renderer lives in `shared/diagrams.js` and `shared/diagrams.css`.
+`scripts/prepare-diagrams.mjs` copies it and the pinned Mermaid browser bundle
+into Desktop's `ui/` or the extension's `media/` during build/compile. Mermaid is
+loaded locally on the first diagram, with strict security and no CDN. SVGs are
+shown as isolated images; render jobs are serialized, repeated sources are cached,
+and results for removed messages or old themes are discarded. Run
+`node --test shared/diagrams.test.mjs` for the renderer's lifecycle checks.
 
 ## Check for updates
 

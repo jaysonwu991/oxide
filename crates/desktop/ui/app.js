@@ -1060,6 +1060,7 @@ function initJumpLatest() {
   transcript.addEventListener("scroll", () => paintJumpLatest(true));
   el("jump-latest").onclick = () => scrollDown(transcript, true);
   transcript.addEventListener("load", () => scrollDown(transcript), true);
+  transcript.addEventListener("oxide-diagram-layout", () => scrollDown(transcript));
   if (typeof MutationObserver !== "undefined") {
     let queued = false;
     new MutationObserver(() => {
@@ -1225,7 +1226,7 @@ function inlineLinks(text, stash) {
   return output + text.slice(copied);
 }
 
-function inline(text, references = false) {
+function inline(text, references = false, hardBreaks = false) {
   const stashed = [];
   const stash = (html) => {
     stashed.push(html);
@@ -1236,7 +1237,7 @@ function inline(text, references = false) {
   // entity is never read as part of the URL. Whatever is left is escaped once,
   // after the placeholders are in place.
   let s = String(text);
-  s = s.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`));
+  s = s.replace(/(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (_, _ticks, code) => stash(`<code>${escapeHtml(code.replace(/\n/g, " "))}</code>`));
   if (references) {
     for (const [start, end] of referenceRanges(s).reverse()) {
       const reference = s.slice(start, end);
@@ -1247,6 +1248,7 @@ function inline(text, references = false) {
   s = inlineLinks(s, stash);
   s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
   s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
+  if (hardBreaks) s = s.replace(/ {2,}\n|\\\n/g, () => stash("<br>")).replace(/\n/g, " ");
   s = escapeHtml(s);
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
@@ -1405,6 +1407,12 @@ function tableHtml(header, rows, references = false) {
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
+function paintMarkdown(body, text) {
+  const html = renderMarkdown(text);
+  if (globalThis.OxideDiagrams) globalThis.OxideDiagrams.paint(body, html);
+  else body.innerHTML = html;
+}
+
 function renderMarkdown(text, softBreaks = false) {
   const lines = String(text).split("\n");
   const out = [];
@@ -1430,9 +1438,10 @@ function renderMarkdown(text, softBreaks = false) {
         code.push(lines[i]);
         i += 1;
       }
+      const complete = i < lines.length && fence[1].toLowerCase() === "mermaid" && !softBreaks;
       i += 1;
-      const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1])}"` : "";
-      out.push(`<pre${lang}><code>${highlight(code.join("\n"), fence[1])}</code></pre>`);
+      const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1].toLowerCase())}"` : "";
+      out.push(`<pre${lang}${complete ? ' data-complete="true"' : ""}><code>${highlight(code.join("\n"), fence[1])}</code></pre>`);
       continue;
     }
 
@@ -1526,7 +1535,7 @@ function renderMarkdown(text, softBreaks = false) {
       para.push(lines[i]);
       i += 1;
     }
-    out.push(`<p>${softBreaks ? para.map((line) => inline(line, true)).join("<br>") : inline(para.join(" "))}</p>`);
+    out.push(`<p>${softBreaks ? para.map((line) => inline(line, true)).join("<br>") : inline(para.join("\n"), false, true)}</p>`);
   }
   closeList();
   return out.join("");
@@ -2643,7 +2652,7 @@ function bubble(kind, text, attachments = []) {
   const label = speakerLabel(kind);
   const body = document.createElement("div");
   body.className = "body";
-  body.innerHTML = renderMarkdown(text);
+  paintMarkdown(body, text);
   if (kind === "user") wrap.dataset.prompt = text;
   const images = attachments.filter((attachment) => isPaintableImage(attachment.dataUrl));
   if (images.length) {
@@ -3894,7 +3903,7 @@ function ensureAssistant() {
 function appendText(delta) {
   const assistant = ensureAssistant();
   assistant.text += delta;
-  assistant.body.innerHTML = renderMarkdown(assistant.text);
+  paintMarkdown(assistant.body, assistant.text);
   scrollDown(runTranscript(state.runSession));
 }
 
@@ -3974,8 +3983,10 @@ function previewShell(text, limit) {
   const preferred = all.at(-1) === "[exit: 0]" && stderr > 0 &&
     all.slice(0, stderr).some((line) => line.trim()) && warningsOnly
     ? [...all.slice(0, stderr), all.at(-1)] : all;
-  const shown = preferred.slice(-limit);
-  return { text: shown.join("\n"), more: all.length - shown.length, earlier: preferred === all };
+  // Blank lines and decorative rules at the tail should not displace results.
+  const meaningful = preferred.filter((line) => line.trim() && !/^[\s═─━_=-]{3,}$/.test(line));
+  const shown = (meaningful.length ? meaningful : preferred).slice(-limit);
+  return { text: shown.join("\n"), more: all.length - shown.length, earlier: preferred === all && meaningful.length === preferred.length };
 }
 
 

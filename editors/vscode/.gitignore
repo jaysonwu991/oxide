@@ -2,3 +2,7 @@ node_modules/
 out/
 *.vsix
 .vscode-test/
+
+/media/diagrams.js
+/media/diagrams.css
+/media/vendor/

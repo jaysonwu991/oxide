@@ -325,13 +325,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const media = vscode.Uri.joinPath(this.extensionUri, "media");
     const script = webview.asWebviewUri(vscode.Uri.joinPath(media, "main.js"));
     const style = webview.asWebviewUri(vscode.Uri.joinPath(media, "style.css"));
+    const diagrams = webview.asWebviewUri(vscode.Uri.joinPath(media, "diagrams.js"));
+    const diagramStyle = webview.asWebviewUri(vscode.Uri.joinPath(media, "diagrams.css"));
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource};">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource};">
 <link href="${style}" rel="stylesheet">
+<link href="${diagramStyle}" rel="stylesheet">
 <title>Oxide</title>
 </head>
 <body>
@@ -419,6 +422,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <img id="image-view-img" alt="Attachment preview" data-i18n-alt="surface.attachmentPreview">
   </div>
 </div>
+<script nonce="${nonce}" src="${diagrams}"></script>
 <script nonce="${nonce}" src="${script}"></script>
 </body>
 </html>`;

@@ -3278,6 +3278,42 @@ describe("webview questions", () => {
 
 describe("webview links", () => {
 
+  it("preserves Markdown hard breaks while joining soft wraps", () => {
+    const { byId, send } = loadRenderer();
+    const text = "✅ Committed  \n✅ Verified  \n✅ Ready\n\nWrapped\nprose\n\nFirst\\\nSecond";
+    send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
+    const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+    assert.equal(html, "<p>✅ Committed<br>✅ Verified<br>✅ Ready</p><p>Wrapped prose</p><p>First<br>Second</p>");
+  });
+
+  it("keeps inline formatting across hard breaks and protects multiline code", () => {
+    const { byId, send } = loadRenderer();
+    for (const [text, expected] of [
+      ["**first  \nsecond**", "<p><strong>first<br>second</strong></p>"],
+      ["*first  \nsecond*", "<p><em>first<br>second</em></p>"],
+      ["~~first  \nsecond~~", "<p><del>first<br>second</del></p>"],
+      ["`first  \nsecond`", "<p><code>first   second</code></p>"],
+      ["``first `code`  \nsecond``", "<p><code>first `code`   second</code></p>"],
+    ]) {
+      send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
+      const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+      assert.equal(html, expected);
+    }
+  });
+
+  it("marks complete Mermaid fences while leaving streamed and ordinary code alone", () => {
+    const { byId, send } = loadRenderer();
+    for (const [text, complete] of [
+      ["```mermaid\nflowchart LR; A --> B\n```", true],
+      ["```mermaid\nflowchart LR; A -->", false],
+      ["```js\nconst x = 1;\n```", false],
+    ] as const) {
+      send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
+      const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+      assert.equal(html.includes('data-complete="true"'), complete);
+    }
+  });
+
   it("renders balanced brackets in link labels without leaking Markdown", () => {
     const { byId, send } = loadRenderer();
     const text = "PR [#11519 [CYB-5757] feat: allow indexing](https://github.com/Skyscanner/falcon/pull/11519) is open.";
@@ -3590,6 +3626,24 @@ describe("webview scrolling", () => {
   /// A reply arrives as a delta per model chunk and is painted on the next
   /// animation frame, so the view has to follow the height the paint adds rather
   /// than the one it had when the delta arrived.
+  it("follows diagram layout changes only while following output", async () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ items: [{ id: 1, kind: "assistant", text: "a line. ".repeat(200) }] }));
+    const transcript = byId.get("transcript")!;
+    transcript.clientHeight = 100;
+    byId.get("jump-latest")!.fire("click");
+    const image = new StubElement("img");
+    image.textContent = "diagram grows. ".repeat(100);
+    transcript.appendChild(image);
+    transcript.fire("oxide-diagram-layout");
+    assert.equal(transcript.scrollTop, transcript.scrollHeight);
+    transcript.scrollTop = 0;
+    transcript.fire("scroll");
+    image.textContent += "more output. ".repeat(100);
+    transcript.fire("oxide-diagram-layout");
+    assert.equal(transcript.scrollTop, 0);
+  });
+
   it("follows a streamed reply to its last line", async () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
@@ -3908,6 +3962,17 @@ describe("webview tool card", () => {
     transcript.fire("click", { target: head });
     assert.equal(diff.hidden, true, "clicking again folds it away");
     assert.equal(card.querySelector(".tbody")!.hidden, true);
+  });
+
+  it("shows shell results above blank and decorative footer lines", () => {
+    const { byId, send } = loadRenderer();
+    const output = "Result: complete\nFiles: 5\nTests: passed\n════════════════\n\n[exit: 0]";
+    send(stateMessage({ items: [{ id: 6, kind: "tool", name: "bash", args: "{}", output, running: false }] }));
+    const transcript = byId.get("transcript")!;
+    const card = find(transcript, "tool")!;
+    assert.equal(card.querySelector(".tbody")!.textContent, "Files: 5\nTests: passed\n[exit: 0]");
+    transcript.fire("click", { target: card.querySelector(".thint")! });
+    assert.equal(card.querySelector(".tbody")!.textContent, output);
   });
 
   it("opens a folded result from the row that offers it, and folds it back", () => {

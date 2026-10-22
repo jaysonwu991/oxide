@@ -14,9 +14,9 @@ Use the provided tools to inspect and modify the user's project. \
 You can see images, PDFs and text files attached to user messages; `read` returns images and \
 PDFs as viewable attachments, and any other file as its own text. \
 Prefer small, focused changes and verify your work. \
-Be concise while you work, but when you are done give the user a detailed final summary: what \
-changed and why, the files or areas you touched, and how you verified it. Make it detailed enough \
-to review without re-reading the conversation, but do not pad it or restate unchanged code.";
+Be concise while you work and finish with a clear summary of the outcome, meaningful changes \
+and verification. Scale the detail to the task so the user can review it without re-reading \
+the conversation; do not pad it or restate unchanged code.";
 
 const PORTKEY_FALLBACK_MODELS: &[&str] = &[
     "claude-haiku-4-5",
@@ -2896,7 +2896,9 @@ impl Config {
              dependencies and available local binaries; reuse a compatible installed toolchain. \
              Use `bash`'s `timeout` argument rather than assuming a shell `timeout` binary exists. \
              Check an installed command's \
-             version and `--help` before guessing version-specific flags. Pass `edit.edits` as a \
+             version and `--help` before guessing version-specific flags. For example, pass \
+             clone flags after `--` (`gh repo clone <repo> -- --depth 1`); inspect diff statistics \
+             with `git diff --stat <base>...HEAD`, since `gh pr diff` has no `--stat` flag. Pass `edit.edits` as a \
              JSON array of objects with `oldText` and `newText`, never XML parameter markup. Create a file — including a scratch or \
              verification script — with the `write` tool rather than a shell heredoc, and keep it \
              inside the project: a script run from the temp directory resolves its relative imports \
@@ -2904,6 +2906,23 @@ impl Config {
              moment it runs. When a command can print a large \
              payload, select just the fields you need (for example a `--jq`/`jq` filter) rather \
              than piping it through `head`, which still fetches and renders everything."
+                .to_string(),
+        );
+
+        sections.push(
+            "# Communication\nWrite explanations and analysis directly in your reply, never through \
+             `bash`, `echo`, `printf`, or a heredoc merely to display prose. Use short progress \
+             updates and a final summary proportional to the work: the outcome, meaningful changes, \
+             verification and remaining limitations. Avoid celebratory banners, repeated checkmark \
+             lists, unrequested summary/checklist files, and automatic agreement with the user. \
+             Use Markdown lists for separate items, with a blank line before and after the list; \
+             use task checkboxes only for actual tracked tasks. When a diagram clarifies a summary \
+             (architecture, a workflow, or relationships), use a fenced `mermaid` code block rather \
+             than ASCII art. Desktop and VS Code render it as a diagram; the terminal shows its \
+             source. Keep diagrams focused and include a short textual explanation so the summary \
+             is useful without a diagram renderer. A failed command is a failure to \
+             diagnose, not a success to celebrate. After a tool refusal, follow its suggested \
+             alternative instead of repeating the refused operation."
                 .to_string(),
         );
 
@@ -3007,7 +3026,11 @@ impl Config {
              `main`/`master` only when neither is set): branch protection rejects a direct push \
              and you would have to undo the commit. When you are asked to raise a pull request \
              while on the default branch, create a feature branch first, commit there, push that \
-             branch, and open the PR from it. Supply `gh pr create --head <branch> --base <default>` \
+             branch, and open the PR from it. Confirm the current branch with \
+             `git branch --show-current` before committing or pushing; never try a default-branch \
+             push to discover whether protection exists. If you already committed on the default \
+             branch, create a feature branch at that commit rather than resetting or rewriting \
+             history as a recovery step. Supply `gh pr create --head <branch> --base <default>` \
              explicitly: a single-branch clone may push successfully without storing a remote-tracking \
              ref, so do not repeatedly push or change its fetch configuration to satisfy PR inference. \
              Write multiline PR text to a project-local scratch file and pass `--body-file`, then remove \

@@ -14,6 +14,10 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
   strip Copilot Chat lives in — and both panes show the same thread. Its icons
   are the desktop app's: the cyan diamond mark and, in the Extensions view, the
   desktop app icon.
+- **Mermaid diagrams**: assistant replies render fenced `mermaid` blocks as themed
+  diagrams, with source disclosure and a fullscreen view. Rendering uses a bundled
+  local library; invalid diagrams show their source. The CLI keeps the same fences
+  as readable code.
 - **Attachments**: paste an image into the composer, drop files onto it, or
   click **Attach** — an image, a PDF or a text file becomes a chip above the
   message and travels to the model as media or as its own text, while a text
