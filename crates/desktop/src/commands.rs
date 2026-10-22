@@ -316,25 +316,13 @@ pub async fn set_project_trust(
     Ok(project_info_value(&config, &path))
 }
 
-/// The levels the active model's own listing advertised, or `null` when it
-/// advertised none (so a front-end keeps its built-in set rather than treating
-/// the name heuristic's guess as if the model had said it).
+/// Selectable levels come only from the provider's effort metadata.
 fn advertised_reasoning_levels(config: &Config) -> Value {
-    let advertised = config
-        .reasoning_supported
-        .as_ref()
-        .is_some_and(|meta| !meta.supported.is_empty());
-    if !config.supports_reasoning() {
-        json!([])
-    } else if advertised {
-        json!(config
-            .reasoning_levels()
-            .iter()
-            .map(|level| level.label())
-            .collect::<Vec<_>>())
-    } else {
-        Value::Null
-    }
+    json!(config
+        .reasoning_levels()
+        .iter()
+        .map(|level| level.label())
+        .collect::<Vec<_>>())
 }
 
 /// What the header's own line adds to the model chip: the window the model
@@ -377,7 +365,7 @@ pub async fn reasoning_levels(project: String, state: &DesktopState) -> CmdResul
         let manager = state.manager.lock().await;
         manager.config_for(&PathBuf::from(&project)).map_err(err)?
     };
-    if config.reasoning_supported.is_none() {
+    if !config.supports_reasoning() {
         // Bypasses the TTL cache: a fresh entry the provider answered without
         // effort metadata must not keep the model's own levels hidden.
         let _ = LlmClient::new(config.clone()).refresh_models().await;

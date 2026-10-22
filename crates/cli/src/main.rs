@@ -1764,7 +1764,7 @@ async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -
 /// Prints the active model's reasoning levels and current choice, so a front-end
 /// that cannot link oxide-core (the VS Code panel) narrows its picker the way
 /// the terminal and desktop do. The levels come from the model cache; with
-/// `--refresh` a cold cache is warmed from the provider's listing first.
+/// `--refresh` the provider's listing is fetched again before reporting levels.
 async fn list_reasoning(
     current_dir: &Path,
     json_output: bool,
@@ -1772,29 +1772,17 @@ async fn list_reasoning(
     model: Option<String>,
 ) -> Result<()> {
     let mut config = Config::load(current_dir, model, None, None, None)?;
-    if refresh && config.reasoning_supported.is_none() {
+    if refresh {
         // Bypasses the TTL cache: a fresh entry the provider answered without
         // effort metadata must not keep the model's own levels hidden.
         let _ = llm::LlmClient::new(config.clone()).refresh_models().await;
         config.reasoning_supported = llm::cached_model_reasoning(&config, &config.model);
     }
-    // Only a model whose listing actually advertised levels narrows a front-end;
-    // the name heuristic's guess is not the model's own word, so it is reported
-    // as `null` and the caller keeps its built-in set.
-    let advertised = config
-        .reasoning_supported
-        .as_ref()
-        .is_some_and(|meta| !meta.supported.is_empty());
-    let levels: Option<Vec<&str>> = (advertised || !config.supports_reasoning()).then(|| {
-        if !config.supports_reasoning() {
-            return Vec::new();
-        }
-        config
-            .reasoning_levels()
-            .iter()
-            .map(|level| level.label())
-            .collect()
-    });
+    let levels: Vec<&str> = config
+        .reasoning_levels()
+        .iter()
+        .map(|level| level.label())
+        .collect();
     if json_output {
         println!(
             "{}",
@@ -1804,14 +1792,14 @@ async fn list_reasoning(
                 "reasoningLevels": levels,
             }))?
         );
-    } else if let Some(levels) = levels {
+    } else if !levels.is_empty() {
         println!(
             "thinking: {} (levels: {})",
             config.reasoning.label(),
             levels.join(", ")
         );
     } else {
-        println!("thinking: {}", config.reasoning.label());
+        println!("No configurable effort metadata advertised for this model.");
     }
     Ok(())
 }

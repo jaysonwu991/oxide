@@ -5204,6 +5204,7 @@ const pressedReasoning = () =>
 const reasoningRow = (level) => reasoningRows().find((row) => row.children[0].textContent === level);
 // The chip has the keyboard when a reader clicks it, which is what the picker
 // gives back when it closes.
+const reasoningPickedBeforeOpening = app.state.reasoningPicked;
 elementFor("reasoning").focus();
 elementFor("reasoning").click();
 check(
@@ -5262,11 +5263,10 @@ check(
   app.state.reasoning === heldLevel && elementFor("reasoning-modal").hidden === false,
   `${app.state.reasoning} / ${heldLevel} / ${elementFor("reasoning-modal").hidden}`,
 );
-// Until the reader picks a level, the window leaves the choice to the core so a
-// resumed session can restore the level it recorded.
+// Opening the picker must not change how the next turn selects its effort.
 check(
-  "left the reasoning level to the thread until a row was picked",
-  app.state.reasoningPicked === false,
+  "left the effort override unchanged until a row was picked",
+  app.state.reasoningPicked === reasoningPickedBeforeOpening,
   String(app.state.reasoningPicked),
 );
 // A shortcut that does change the level with the picker up moves its mark rather
@@ -5335,11 +5335,21 @@ reasoningAnswer.reasoningLevels = [];
 app.state.reasoning = "high";
 await app.openReasoning();
 check("hid unsupported reasoning and discarded the previous effort",
-  elementFor("reasoning").hidden && app.state.reasoning === "auto" && reasoningNames().join(" ") === "auto",
+  elementFor("reasoning").hidden && app.state.reasoning === "auto" && elementFor("reasoning-modal").hidden,
   `${elementFor("reasoning").hidden} / ${app.state.reasoning} / ${reasoningNames()}`);
 await app.runSlashCommand("/reasoning high");
 check("refused effort for a model without reasoning", app.state.reasoning === "auto", app.state.reasoning);
 document.fire("keydown", { key: "Escape", preventDefault() {} });
+reasoningAnswer.supportsReasoning = true;
+reasoningAnswer.reasoningLevels = [];
+app.state.reasoningLevels = null;
+await app.openReasoning();
+const effortWritesBefore = projectCalls("set_reasoning").length;
+document.fire("keydown", { key: "Tab", shiftKey: true, preventDefault() {} });
+await nextTick();
+check("hid the entire selector when a support flag had no effort metadata",
+  elementFor("reasoning").hidden && elementFor("reasoning-modal").hidden && reasoningRows().length === 0 &&
+    app.state.reasoning === "auto" && projectCalls("set_reasoning").length === effortWritesBefore);
 Object.assign(reasoningAnswer, savedReasoningAnswer);
 app.state.reasoningLevels = null;
 await app.openReasoning();

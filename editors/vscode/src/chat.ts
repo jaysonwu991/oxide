@@ -711,7 +711,7 @@ export class ChatController {
     );
     // The reasoning levels belong to the active model. When the identity
     // moves, the old model's levels are dropped before the new ones are read,
-    // so a failed read leaves the built-in set rather than the previous model's.
+    // so a failed read keeps effort hidden rather than offering the previous model's levels.
     const identity = `${folder.uri.fsPath}\n${this.project.model}\n${this.project.provider}`;
     const moved = identity !== this.reasoningIdentity;
     if (moved) {
@@ -776,7 +776,7 @@ export class ChatController {
   /// Reads the active model's own reasoning levels through the CLI. Called in
   /// the background when a pane attaches, and with `refresh` after a model
   /// change so the picker and the chip title follow the model. A stale answer
-  /// is dropped, and a CLI too old to know the command keeps the built-in set.
+  /// is dropped, and a CLI too old to report metadata leaves effort hidden.
   private async refreshReasoning(refresh: boolean): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) return;
@@ -795,7 +795,7 @@ export class ChatController {
       this.supportsReasoning = info.supportsReasoning;
       this.broadcast(this.stateMessage());
     } catch {
-      // The built-in set stands.
+      // Effort stays hidden without advertised levels.
     }
   }
 
@@ -3551,10 +3551,13 @@ export class ChatController {
   }
 
   async setReasoning(): Promise<void> {
+    await this.refreshReasoning(true);
+    const choices = reasoningChoices({ reasoningLevels: this.reasoningLevels, supportsReasoning: this.supportsReasoning });
+    if (choices.length <= 1) return;
     this.showDialog(
       reasoningDialog(
         this.currentReasoning(),
-        reasoningChoices({ reasoningLevels: this.reasoningLevels, supportsReasoning: this.supportsReasoning }), this.languageInfo
+        choices, this.languageInfo
       ),
     );
   }

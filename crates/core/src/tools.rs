@@ -2463,7 +2463,10 @@ fn int_arg(args: &Value, key: &str) -> Option<usize> {
 fn int_value(value: &Value) -> Option<usize> {
     match value {
         Value::Number(number) => number.as_u64().map(|value| value as usize),
-        Value::String(text) => text.trim().parse().ok(),
+        Value::String(text) => text.trim().parse().ok().or_else(|| {
+            let parsed: Value = serde_json::from_str(text).ok()?;
+            parsed.as_array()?.iter().find_map(int_value)
+        }),
         Value::Array(items) => items.iter().find_map(int_value),
         _ => None,
     }
@@ -2472,6 +2475,10 @@ fn int_value(value: &Value) -> Option<usize> {
 /// The number of lines covered by an array offset like `[820, 850]`, so a
 /// model that asks for a range gets that span instead of the default page.
 fn range_len(value: &Value) -> Option<usize> {
+    if let Value::String(text) = value {
+        let parsed: Value = serde_json::from_str(text).ok()?;
+        return parsed.as_array().and_then(|_| range_len(&parsed));
+    }
     let Value::Array(items) = value else {
         return None;
     };
@@ -7687,6 +7694,18 @@ mod tests {
         assert!(out.text.contains("3|three"), "{}", out.text);
         assert!(!out.text.contains("1|one"), "{}", out.text);
         assert!(!out.text.contains("4|four"), "{}", out.text);
+
+        for offset in [json!("[2, 3]"), json!("[2]")] {
+            let out = read(
+                &dir,
+                &json!({ "path": "a.txt", "offset": offset,
+                "limit": "[2]" }),
+            )
+            .unwrap();
+            assert!(out.text.contains("2|two"), "{}", out.text);
+            assert!(out.text.contains("3|three"), "{}", out.text);
+            assert!(!out.text.contains("4|four"), "{}", out.text);
+        }
 
         // A reversed or overflowing range must not panic; the first number is
         // still the offset and the page falls back to the default span.

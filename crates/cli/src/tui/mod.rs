@@ -140,6 +140,7 @@ async fn event_loop(
     trust_cwd: PathBuf,
     mut notices_rx: UnboundedReceiver<Notice>,
 ) -> Result<()> {
+    refresh_reasoning(&mut config);
     let mut app = App::new(
         config.model.clone(),
         cwd.display().to_string(),
@@ -460,7 +461,7 @@ async fn event_loop(
                         config.reasoning = saved.reasoning;
                         config.reasoning_supported = saved.reasoning_supported;
                         config.context_window = saved.context_window;
-                        apply_model_state(&mut app, &config);
+                        apply_model_state(&mut app, &mut config);
                         shared_selection = latest;
                     }
                 }
@@ -572,12 +573,17 @@ fn saved_selection(path: &Path) -> Option<serde_json::Value> {
 
 fn refresh_reasoning(config: &mut Config) {
     config.reasoning_supported = crate::llm::cached_model_reasoning(config, &config.model);
+    if !config.supports_reasoning() {
+        config.reasoning = Reasoning::Auto;
+    }
 }
 
 fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<SessionLog>) {
     refresh_reasoning(config);
-    // The model's own advertised levels when the listing carried them, else
-    // the built-in set, so the cycle never offers a level the model rejects.
+    apply_model_state(app, config);
+    if !config.supports_reasoning() {
+        return;
+    }
     let level = config.reasoning.next_in(&config.reasoning_levels());
     if let Err(error) = Config::set_reasoning_at(&Config::config_path(), level) {
         app.items.push(ChatItem::Error(format!(
@@ -1472,8 +1478,15 @@ fn handle_key(
             if raw == "/reasoning" || raw.starts_with("/reasoning ") {
                 app.clear_input();
                 refresh_reasoning(config);
+                apply_model_state(app, config);
                 refresh_suggestions(app, config);
                 let requested = raw.strip_prefix("/reasoning").unwrap_or_default().trim();
+                if !config.supports_reasoning() && requested != "auto" {
+                    app.items.push(ChatItem::Info(
+                        "No configurable effort metadata advertised for this model.".into(),
+                    ));
+                    return;
+                }
                 if requested.is_empty() {
                     let mut names = vec!["auto".to_string()];
                     names.extend(
@@ -5154,7 +5167,10 @@ fn switch_provider(app: &mut App, config: &mut Config, provider: &str) -> Result
 
 /// Refreshes the footer and picker state after the active provider or model
 /// changed.
-fn apply_model_state(app: &mut App, config: &Config) {
+fn apply_model_state(app: &mut App, config: &mut Config) {
+    if !config.supports_reasoning() {
+        config.reasoning = Reasoning::Auto;
+    }
     app.reasoning = config.reasoning;
     app.model = config.model.clone();
     app.provider = config.provider.clone();

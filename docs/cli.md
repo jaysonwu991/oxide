@@ -776,6 +776,12 @@ extended-thinking `budget_tokens` (scaled by level and kept below `max_tokens`).
 Thinking blocks returned by Anthropic are replayed on later turns so multi-step
 tool use keeps its reasoning context.
 
+Some providers keep reasoning private and return no thinking text. The absence
+of a visible thinking block does not mean effort was disabled. If a gateway
+rejects an explicit effort setting, Oxide reports that rejection instead of
+silently removing the setting. Choose `auto` for the provider default or a
+backend that supports the selected effort.
+
 ### The model's own levels
 
 When a provider's model listing advertises the effort levels a model accepts
@@ -801,12 +807,17 @@ the model thinking at its own default; `minimal` and `low` send `low`, `medium`
 and `high` send `high`, and `xhigh` and `max` send `max`, each with
 `thinking.type = "enabled"`.
 
+The effort selector is shown only when the provider advertises a nonempty list
+of supported levels. CLI, Desktop, and Extension hide it when metadata is
+missing, empty, or has only a default. Model names never supply fallback choices.
+Thinking text returned by the provider still appears in the transcript.
+
 Set the starting level with `--reasoning auto|off|minimal|low|medium|high|xhigh|max`,
 the `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in
 `config.json`. In the TUI, press Shift+Tab to cycle `auto` → the model's levels
-(the built-in set is `off` → `minimal` → `low` → `medium` → `high` → `xhigh` →
-`max`); the current level is shown in the footer (for models that support
-reasoning) and colors the composer rules. Shift+Tab and `/reasoning` save the
+when metadata is available; otherwise the shortcut does nothing. The current
+level is shown in the footer only when selectable effort metadata exists and
+colors the composer rules. Shift+Tab and `/reasoning` save the
 choice to the shared `config.json`, so it survives restarting and is also used
 by Desktop and VS Code. Resuming a session keeps this shared choice. Explicit
 `--reasoning` and `OXIDE_REASONING` values override it for a run.

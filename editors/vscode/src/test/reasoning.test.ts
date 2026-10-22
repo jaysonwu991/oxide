@@ -33,10 +33,10 @@ describe("reasoning levels", () => {
     );
   });
 
-  it("keeps a model that advertised none on the built-in set", () => {
+  it("hides effort when metadata is missing despite a support flag", () => {
     assert.deepEqual(
       parseReasoning(JSON.stringify({ current: "high", supportsReasoning: true })),
-      { current: "high", supportsReasoning: true, levels: [] },
+      { current: "auto", supportsReasoning: false, levels: [] },
     );
   });
 

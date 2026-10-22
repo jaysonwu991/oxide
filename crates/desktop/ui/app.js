@@ -95,7 +95,6 @@ async function listen(name, handler) {
 
 const el = (id) => document.getElementById(id);
 
-const REASONING = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 // What each level asks the model for, in the words the picker shows beside it.
 // `off` is worded as a request rather than a promise: a model that always
@@ -1841,14 +1840,11 @@ async function loadInfo() {
     const identity = `${project}\n${info.provider}\n${info.model}`;
     const changedModel = state.reasoningIdentity && identity !== state.reasoningIdentity;
     state.reasoningIdentity = identity;
-    state.supportsReasoning = info.supportsReasoning;
-    state.reasoning = info.supportsReasoning === false ? "auto" : info.reasoning;
-    state.reasoningPicked = Boolean(changedModel) || info.supportsReasoning === false;
-    state.reasoningLevels = info.supportsReasoning === false
-      ? ["auto"]
-      : Array.isArray(info.reasoningLevels)
-        ? ["auto", ...info.reasoningLevels]
-        : null;
+    state.supportsReasoning = info.supportsReasoning !== false &&
+      Array.isArray(info.reasoningLevels) && info.reasoningLevels.length > 0;
+    state.reasoning = state.supportsReasoning ? info.reasoning : "auto";
+    state.reasoningPicked = Boolean(changedModel) || !state.supportsReasoning;
+    state.reasoningLevels = state.supportsReasoning ? ["auto", ...info.reasoningLevels] : null;
     applyContextInfo(info);
     // A plan rather than a metered key: the spend is what the plan would have
     // billed, and the usage line says so.
@@ -1990,7 +1986,13 @@ function updateChips() {
   el("model-value").textContent = state.currentModel || t("composer.model", "Model");
   labelControl("model", state.currentModel ? t("ui.model", "model: {value0}{value1}", { value0: state.currentModel, value1: state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "" }) : t("composer.model", "Model"), t("ui.switchModel", "Switch model"));
   labelControl("reasoning", t("ui.thinking", "thinking: {value0}", { value0: t(`reasoning.${state.reasoning}`, state.reasoning) }), t("ui.chooseTheReasoningLevelShiftTabCycles", "Choose the reasoning level (Shift+Tab cycles)"));
-  el("reasoning").hidden = state.supportsReasoning === false;
+  el("reasoning").hidden = !hasReasoningLevels();
+  if (!hasReasoningLevels()) {
+    state.reasoning = "auto";
+    state.reasoningPicked = true;
+    closeReasoning(false);
+    el("reasoning-list").innerHTML = "";
+  }
   el("reasoning-value").textContent = reasoningLabel(state.reasoning);
   updateProjectChip();
   paintWorktreeChip();
@@ -5572,25 +5574,33 @@ let reasoningEpoch = 0;
 /// rather than a step, and the panel's own chip offers the same list. A level
 /// is applied to the turns this window sends, the way the chip's cycle applied
 /// it — `updateChips` is what says which one it is now.
-function openReasoning() {
+function hasReasoningLevels() {
+  return state.supportsReasoning !== false &&
+    Array.isArray(state.reasoningLevels) && state.reasoningLevels.some((level) => level !== "auto");
+}
+
+async function openReasoning() {
   if (!state.project) {
     setStatus(t("composer.selectProject", "Select a project first."));
     return Promise.resolve();
   }
   reasoningReturnFocus = document.activeElement || null;
+  if (!hasReasoningLevels()) {
+    await ensureReasoningLevels();
+    if (!hasReasoningLevels()) return;
+  }
   closeOverlays("reasoning-modal");
   renderReasoning();
   el("reasoning-modal").hidden = false;
   syncSettingsDropdowns();
   positionSettingsDropdowns();
   focusReasoning();
-  return ensureReasoningLevels();
 }
 
 function ensureReasoningLevels() {
   // A cold model cache has no advertised levels yet; ask the host, which warms
   // it from the provider's listing, and repaint the open picker with the model's
-  // own levels. The built-in set stands until that answer arrives, and a late
+  // own levels. The selector stays hidden until metadata arrives, and a late
   // answer for a project or model the reader has left is dropped.
   if (!state.project || state.reasoningLevels) return Promise.resolve();
   const epoch = ++reasoningEpoch;
@@ -5599,10 +5609,9 @@ function ensureReasoningLevels() {
     .then((info) => {
       if (epoch !== reasoningEpoch || state.project !== project) return;
       if (info) {
-        state.supportsReasoning = info.supportsReasoning;
-        state.reasoningLevels = info.supportsReasoning === false
-          ? ["auto"]
-          : Array.isArray(info.reasoningLevels) ? ["auto", ...info.reasoningLevels] : null;
+        state.supportsReasoning = info.supportsReasoning !== false &&
+          Array.isArray(info.reasoningLevels) && info.reasoningLevels.length > 0;
+        state.reasoningLevels = state.supportsReasoning ? ["auto", ...info.reasoningLevels] : ["auto"];
         if (state.reasoningLevels && !state.reasoningLevels.includes(state.reasoning)) {
           state.reasoning = "auto";
           state.reasoningPicked = true;
@@ -5615,7 +5624,7 @@ function ensureReasoningLevels() {
       }
     })
     .catch(() => {
-      // Keep the built-in list.
+      updateChips();
     });
 }
 
@@ -5651,7 +5660,7 @@ function closeReasoning(restoreFocus = true) {
 function renderReasoning() {
   const box = el("reasoning-list");
   box.innerHTML = "";
-  const levels = state.reasoningLevels || REASONING;
+  const levels = state.reasoningLevels || [];
   for (const level of levels) {
     const current = level === state.reasoning;
     const row = document.createElement("button");
@@ -6754,10 +6763,10 @@ async function runSlashCommand(text) {
       // rather than silently changed by the run.
       if (!args) {
         await openReasoning();
-      } else if ((state.reasoningLevels || REASONING).includes(args)) {
+      } else if (hasReasoningLevels() && state.reasoningLevels.includes(args)) {
         pickReasoning(args);
       } else {
-        setStatus(t("ui.reasoningMustBeOneOf", "Reasoning must be one of {value0}.", { value0: (state.reasoningLevels || REASONING).join(", ") }));
+        setStatus(t("ui.reasoningMustBeOneOf", "Reasoning must be one of {value0}.", { value0: (state.reasoningLevels || []).join(", ") }));
       }
       return true;
     case "attach":
@@ -7106,7 +7115,8 @@ function toggleHelp() {
 let reasoningSave = Promise.resolve();
 
 function setReasoning(level) {
-  const levels = state.reasoningLevels || REASONING;
+  if (!hasReasoningLevels()) return;
+  const levels = state.reasoningLevels;
   if (!levels.includes(level)) return;
   state.reasoning = level;
   state.reasoningPicked = true;
@@ -7134,7 +7144,8 @@ function pickReasoning(level) {
 function cycleReasoning() {
   // Cycle the model's own levels when its listing narrowed them, so the cycle
   // never steps onto a level the picker does not offer.
-  const levels = state.reasoningLevels || REASONING;
+  if (!hasReasoningLevels()) return;
+  const levels = state.reasoningLevels;
   setReasoning(levels[(levels.indexOf(state.reasoning) + 1) % levels.length]);
 }
 
