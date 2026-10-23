@@ -8726,10 +8726,16 @@ check("reset effort after switching to a model without reasoning",
   app.state.reasoning === "auto" && app.state.reasoningPicked && elementFor("reasoning").hidden,
   `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning").hidden}`);
 projectInfo = { ...projectInfo, model: "deepseek-reasoner", reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high", "max"] };
+const cachedLevelsReadsBefore = projectCalls("reasoning_levels").length;
 await app.loadInfo();
 check("read the shared effort when the model changed elsewhere",
   app.state.reasoning === "high" && !elementFor("reasoning").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",
   `${app.state.reasoning} / ${app.state.reasoningLevels.join(" ")}`);
+await app.openReasoning();
+check("showed cached effort levels after a model switch and opened its picker without a metadata request",
+  projectCalls("reasoning_levels").length === cachedLevelsReadsBefore &&
+    !elementFor("reasoning-modal").hidden && elementFor("reasoning-list").children.length === 4);
+document.fire("keydown", { key: "Escape", preventDefault() {} });
 
 calls.length = 0;
 app.setReasoning("max");

@@ -17,8 +17,7 @@ export interface ReasoningInfo {
 
 export function reasoningArgs(refresh = false, model = ""): string[] {
   const args = ["reasoning", "--json"];
-  // `--refresh` warms the model cache from the provider's listing when it is
-  // cold, and revalidates existing metadata when a picker is opened.
+  // `--refresh` warms missing reasoning metadata when the cache is cold.
   if (refresh) args.push("--refresh");
   // The panel's own `oxide.model` setting overrides the active model for a run,
   // so the levels read are that model's rather than `config.json`'s.

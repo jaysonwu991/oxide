@@ -269,7 +269,7 @@ enum Command {
         /// Print the listing as JSON
         #[arg(long)]
         json: bool,
-        /// Warm the model cache from the provider before answering, so a
+        /// Warm missing reasoning metadata before answering, so a
         /// front-end that never opens the model picker still learns the
         /// model's own levels
         #[arg(long)]
@@ -1764,8 +1764,8 @@ async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -
 /// Prints the active model's reasoning levels and current choice, so a front-end
 /// that cannot link oxide-core (the VS Code panel) narrows its picker the way
 /// the terminal and desktop do. The levels come from the model cache or the
-/// remembered pi.dev catalog; with `--refresh` both are warmed before reporting
-/// levels.
+/// remembered pi.dev catalog; `--refresh` warms missing metadata without
+/// fetching levels the machine already remembers.
 async fn list_reasoning(
     current_dir: &Path,
     json_output: bool,
@@ -1774,14 +1774,7 @@ async fn list_reasoning(
 ) -> Result<()> {
     let mut config = Config::load(current_dir, model, None, None, None)?;
     if refresh {
-        // Bypasses the TTL cache: a fresh entry the provider answered without
-        // effort metadata must not keep the model's own levels hidden.
-        let _ = llm::LlmClient::new(config.clone()).refresh_models().await;
-        // And the pi.dev catalog is the fallback a provider that publishes no
-        // effort metadata needs, so the picker also warms it when it is old.
-        let provider = catalog::reasoning_provider(&config.provider, &config.model);
-        let _ = catalog::refresh_if_stale(provider, Some(current_dir)).await;
-        config.refresh_reasoning_supported();
+        config.ensure_reasoning_supported(Some(current_dir)).await;
     }
     let levels: Vec<&str> = config
         .reasoning_levels()

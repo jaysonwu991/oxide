@@ -5278,9 +5278,7 @@ fn start_catalog_lookup(tx: &UnboundedSender<AdoptedCatalog>, config: &Config, p
         // listing carries no effort metadata; a fresh login is the moment it
         // is worth warming, since the launch's look ran before this credential
         // existed.
-        let metadata_provider = catalog::reasoning_provider(&provider, &adopted.model);
-        let _ = catalog::refresh_if_stale(metadata_provider, None).await;
-        adopted.refresh_reasoning_supported();
+        adopted.ensure_reasoning_supported(None).await;
         let _ = tx.send(AdoptedCatalog {
             provider,
             from,

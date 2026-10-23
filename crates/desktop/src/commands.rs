@@ -371,16 +371,7 @@ pub async fn reasoning_levels(project: String, state: &DesktopState) -> CmdResul
         let manager = state.manager.lock().await;
         manager.config_for(&path).map_err(err)?
     };
-    if !config.supports_reasoning() {
-        // Bypasses the TTL cache: a fresh entry the provider answered without
-        // effort metadata must not keep the model's own levels hidden.
-        let _ = LlmClient::new(config.clone()).refresh_models().await;
-        // Most providers publish no effort metadata; pi.dev's catalog does,
-        // and a stale one is looked up again before the picker gives up.
-        let provider = oxide_core::catalog::reasoning_provider(&config.provider, &config.model);
-        let _ = oxide_core::catalog::refresh_if_stale(provider, Some(&path)).await;
-        config.refresh_reasoning_supported();
-    }
+    config.ensure_reasoning_supported(Some(&path)).await;
     Ok(json!({
         "reasoning": config.reasoning.label(),
         "reasoningLevels": advertised_reasoning_levels(&config),

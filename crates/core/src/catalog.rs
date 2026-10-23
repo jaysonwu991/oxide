@@ -1202,15 +1202,23 @@ mod tests {
     async fn a_cold_portkey_claude_lookup_warms_the_upstream_reasoning_catalog() {
         let _env = crate::env_lock::hold();
         let dir = temp_dir("portkey-reasoning");
-        std::env::set_var(FILE_ENV, dir.join(FILE_NAME));
+        let path = dir.join(FILE_NAME);
+        std::env::set_var(FILE_ENV, &path);
         std::env::set_var(ENV_NAME, "true");
         let body = r#"{"claude-sonnet-5":{"id":"claude-sonnet-5","contextWindow":1000000,"reasoning":true,"thinkingLevelMap":{"xhigh":"xhigh","max":"max"}}}"#;
         let server = TestServer::start(vec![Response::new(200, body, &[], &[])]);
         std::env::set_var(URL_ENV, server.url());
 
         assert_eq!(reasoning_for("portkey", "claude-sonnet-5"), None);
-        let provider = reasoning_provider("portkey", "claude-sonnet-5");
-        assert!(refresh_if_stale(provider, None).await.unwrap().is_some());
+        let mut config = crate::config::Config {
+            provider: "portkey".into(),
+            model: "claude-sonnet-5".into(),
+            base_url: server.url(),
+            api_key: "test-key".into(),
+            ..Default::default()
+        };
+        config.ensure_reasoning_supported(None).await;
+        assert!(config.supports_reasoning());
         assert_eq!(server.requests()[0].path, "/api/models/providers/anthropic");
         assert_eq!(
             reasoning_for("portkey", "claude-sonnet-5")
@@ -1218,7 +1226,22 @@ mod tests {
                 .supported,
             Reasoning::LEVELS.to_vec()
         );
-        assert!(refresh_if_stale(provider, None).await.unwrap().is_none());
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "published levels bypass /models"
+        );
+        let mut entry = cached("anthropic").unwrap();
+        entry.checked_at = 0;
+        write(&path, "anthropic", &entry).unwrap();
+        config.reasoning_supported = None;
+        config.ensure_reasoning_supported(None).await;
+        assert!(config.supports_reasoning());
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "cached levels bypass even stale lookups"
+        );
 
         std::env::remove_var(URL_ENV);
         std::env::remove_var(FILE_ENV);

@@ -1711,6 +1711,26 @@ impl Config {
         self.reasoning_supported = self.resolve_reasoning_supported();
     }
 
+    /// Warms missing reasoning metadata without putting a provider request in
+    /// front of levels already on disk. The published catalog can answer for a
+    /// whole model family, so try it before a listing that may carry no effort.
+    pub async fn ensure_reasoning_supported(&mut self, cwd: Option<&Path>) {
+        self.refresh_reasoning_supported();
+        if self.supports_reasoning() {
+            return;
+        }
+        let provider = crate::catalog::reasoning_provider(&self.provider, &self.model);
+        let _ = crate::catalog::refresh_if_stale(provider, cwd).await;
+        self.refresh_reasoning_supported();
+        if self.supports_reasoning() {
+            return;
+        }
+        let _ = crate::llm::LlmClient::new(self.clone())
+            .refresh_models()
+            .await;
+        self.refresh_reasoning_supported();
+    }
+
     /// Only the explicit levels advertised by the provider, in its order.
     pub fn reasoning_levels(&self) -> Vec<Reasoning> {
         self.reasoning_supported
