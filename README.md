@@ -29,9 +29,11 @@ support for compatibility.
 - **Providers** — 35 built-in providers behind one table: every OpenAI-compatible
   endpoint (OpenAI, DeepSeek, Groq, Mistral, xAI, OpenRouter, Z.AI/GLM, …), the
   Anthropic Messages API, Gemini and Vertex AI, Amazon Bedrock, Azure OpenAI,
-  GitHub Copilot (device-flow login) and GitLab Duo (the AI gateway's proxy),
-  plus any custom endpoint. Reasoning effort
-  from `auto` to `high`, and resilient streaming that retries transient failures.
+  GitHub Copilot (device-flow login), GitLab Duo (the AI gateway's proxy) and the
+  Portkey gateway (with its spend bar in the footer), plus any custom endpoint.
+  Reasoning effort from `auto`/`off` up to `max`, narrowed to the levels the
+  model's own listing or the pi.dev catalog advertises, and resilient streaming
+  that retries transient failures.
   See [Providers](docs/configuration.md#providers).
 - **Tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, `webfetch`
   plus agent-level `task`, `skill`, `command`, `memory`, `diagnostics`, and `ask`;
@@ -46,8 +48,8 @@ support for compatibility.
   Scope rule keeps commits limited to the task.
 
 The full list is in [docs/features.md](docs/features.md), and
-[docs/comparison.md](docs/comparison.md) compares Oxide with Codex, OpenCode, and
-Claude Code.
+[docs/comparison.md](docs/comparison.md) compares Oxide with Claude Code, Codex,
+Pi Coding Agent, and OpenCode.
 
 ## Install
 
@@ -178,7 +180,7 @@ setting tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 | [docs/cli.md](docs/cli.md) | Task-by-task guide: MCP servers, subagents, commands, skills, plugins, permissions, reasoning, attachments, notifications. |
 | [docs/desktop.md](docs/desktop.md) | Desktop app architecture, interface, packaging, signing. |
 | [docs/vscode.md](docs/vscode.md) | VS Code extension architecture, protocol, testing. |
-| [docs/comparison.md](docs/comparison.md) | Oxide next to Codex, OpenCode, and Claude Code. |
+| [docs/comparison.md](docs/comparison.md) | Oxide next to Claude Code, Codex, Pi Coding Agent, and OpenCode. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Architecture notes, conventions, releases. |
 
 ## Development

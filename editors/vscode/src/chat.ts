@@ -396,7 +396,7 @@ export class ChatController {
   private modelNote = "";
   private modelProbe = 0;
   /// The active model's advertised reasoning levels, read through the CLI.
-  /// Empty until the answer arrives, when the built-in set stands in.
+  /// Empty until the answer arrives, when the chip offers `auto` alone.
   private reasoningLevels: string[] = [];
   private supportsReasoning: boolean | undefined;
   /// The folder, model and provider those levels belong to. `refreshProject`

@@ -23,13 +23,14 @@ page is the detail behind it, and the task-by-task guides live in
   DeepSeek, Groq, Mistral, xAI, OpenRouter, Together, Fireworks, NVIDIA,
   Perplexity, Z.AI/GLM, Moonshot, Qwen, and more), the Anthropic Messages API
   (Anthropic, MiniMax), Gemini and Vertex AI, Amazon Bedrock, Azure OpenAI,
-  GitHub Copilot and GitLab Duo — plus any custom OpenAI-compatible endpoint.
-  See [Providers](configuration.md#providers).
+  GitHub Copilot, GitLab Duo and the Portkey gateway — plus any custom
+  OpenAI-compatible endpoint. See [Providers](configuration.md#providers).
 - Reasoning effort: `auto` (default), `off`, `minimal`, `low`, `medium`, `high`,
-  `xhigh` or `max` — `off` always, then the levels the active model's own
-  listing advertises; a model whose listing advertises none falls back to the
-  built-in effort levels when Oxide recognizes it as a reasoning model, and
-  otherwise offers `auto` and `off` alone. Cycled in the TUI with Shift+Tab or
+  `xhigh` or `max` — `off` is always accepted as a mode, then the levels the
+  active model's own listing advertises (`effort.supported_levels`, as DeepSeek
+  returns them), else the levels the remembered pi.dev catalog publishes for it,
+  under Pi's rules; a model neither source says reasons offers no selector and is
+  left on the provider's own behavior. Cycled in the TUI with Shift+Tab or
   set with `--reasoning` / `OXIDE_REASONING`.
   `auto` uses the provider/model's native behavior; explicit levels map to
   OpenAI-compatible effort, Anthropic adaptive thinking, or legacy extended

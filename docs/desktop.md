@@ -927,9 +927,10 @@ The composer's own chips expose the same controls the CLI has:
   which applies it through `apply_provider` / `apply_login_options` and
   persists with `Config::persist_selection_at`.
 - **Reasoning** — opens a picker listing the active model's own advertised
-  levels with the level in use marked, the way the panel's own thinking chip does,
-  falling back to the built-in set (`auto`, `off`, `minimal`, `low`, `medium`,
-  `high`, `xhigh`, `max`) when the model advertised none.
+  levels (`oxide reasoning --json`: the provider's effort metadata, else the
+  remembered pi.dev catalog) with the level in use marked, the way the panel's
+  own thinking chip does; a model neither source says reasons has no selectable
+  effort, so the picker offers `auto` alone rather than inventing a full set.
   It is a `role="dialog"` / `aria-modal` panel named by its own title: the
   keyboard goes to the level in use when it opens and comes back to the chip
   whatever closes it, so a reader who picked a level is not left behind the

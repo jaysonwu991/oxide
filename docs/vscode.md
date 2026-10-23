@@ -552,9 +552,10 @@ beside its gauge.
   picker offers the levels the active model advertised, read through
   `oxide reasoning --json` (`core/reasoning.ts`) in the background when a pane
   attaches and again after a model change — so the panel offers `low`/`high`/`max`
-  for a DeepSeek model rather than the full built-in set, and falls back to that
-  set when the model advertised none. The window the model chip names and the
-  context gauge is a fraction of is read through `oxide context --json`
+  for a DeepSeek model rather than the full set, and offers `auto` alone when
+  neither the listing nor the pi.dev catalog gives the model any level, since a
+  model nothing says reasons has no selectable effort. The window the model chip
+  names and the context gauge is a fraction of is read through `oxide context --json`
   (`core/context.ts`) at those same two moments and again whenever the shared
   configuration may have moved — a settings change, the start or the end of a
   turn, and a login — because the window composes a `modelContextWindows`
