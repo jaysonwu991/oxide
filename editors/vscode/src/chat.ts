@@ -692,8 +692,7 @@ export class ChatController {
   /// the shared settings and the window the provider's catalog published, and no
   /// read here can see either change, so the paths that know the shared
   /// configuration may have moved say so. The reasoning levels are not re-read
-  /// on that path: with `--refresh` they cost a provider request, and only the
-  /// model's own identity decides them.
+  /// on that path: only the model's own identity decides them.
   private refreshProject(recheckWindow = false): void {
     const languageDirectory = this.languageCwd();
     if (languageDirectory !== this.languageDirectory || recheckWindow) {
@@ -787,26 +786,31 @@ export class ChatController {
   }
 
   /// Reads the active model's own reasoning levels through the CLI. Called in
-  /// the background when a pane attaches, and with `refresh` after a model
-  /// change so the picker and the chip title follow the model. A stale answer
-  /// is dropped, and a CLI too old to report metadata leaves effort hidden.
+  /// the background when a pane attaches. Read remembered levels first so a
+  /// model switch never waits on the network when its metadata is already on
+  /// disk; `refresh` warms missing metadata only. Stale answers are dropped.
   private async refreshReasoning(refresh: boolean): Promise<void> {
     const cwd = this.cwd();
     if (!cwd) return;
     const probe = ++this.reasoningProbe;
+    const model = this.project?.model ?? "";
     try {
-      const result = await runCapture(
-        this.binary(),
-        reasoningArgs(refresh, this.project?.model ?? ""),
-        cwd,
-        30_000,
-      );
-      if (result.error || result.code !== 0) return;
-      const info = parseReasoning(result.stdout);
-      if (!info || probe !== this.reasoningProbe) return;
-      this.reasoningLevels = info.levels;
-      this.supportsReasoning = info.supportsReasoning;
-      this.broadcast(this.stateMessage());
+      for (const warm of refresh ? [false, true] : [false]) {
+        const result = await runCapture(
+          this.binary(),
+          reasoningArgs(warm, model),
+          cwd,
+          30_000,
+        );
+        if (probe !== this.reasoningProbe) return;
+        if (result.error || result.code !== 0) return;
+        const info = parseReasoning(result.stdout);
+        if (!info) return;
+        this.reasoningLevels = info.levels;
+        this.supportsReasoning = info.supportsReasoning;
+        this.broadcast(this.stateMessage());
+        if (info.supportsReasoning) return;
+      }
     } catch {
       // Effort stays hidden without advertised levels.
     }
@@ -3627,7 +3631,7 @@ export class ChatController {
   }
 
   async setReasoning(): Promise<void> {
-    await this.refreshReasoning(true);
+    if (!this.reasoningLevels.length) await this.refreshReasoning(true);
     const choices = reasoningChoices({ reasoningLevels: this.reasoningLevels, supportsReasoning: this.supportsReasoning });
     if (choices.length <= 1) return;
     this.showDialog(
