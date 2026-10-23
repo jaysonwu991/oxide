@@ -317,9 +317,23 @@ pub fn window_for(models: &Models, model: &str) -> Option<u64> {
 /// the desktop app and the extension read when the provider's own listing
 /// carries no `effort` metadata.
 pub fn reasoning_for(provider: &str, model: &str) -> Option<ModelReasoning> {
-    let entry = cached(provider)?;
+    let entry = cached(reasoning_provider(provider, model))?;
     let (_, model) = matching_entry(&entry.models, model, |_| true)?;
     model.reasoning_levels()
+}
+
+/// Portkey forwards Claude's thinking parameters but has no pi.dev catalog of
+/// its own. Resolve those models against Anthropic's published metadata; an
+/// unknown model still needs a matching entry before it gets any levels.
+pub fn reasoning_provider<'a>(provider: &'a str, model: &str) -> &'a str {
+    let model = model.to_ascii_lowercase();
+    if crate::config::canonical_provider(provider) == "portkey"
+        && crate::config::vendorless(&model).starts_with("claude-")
+    {
+        "anthropic"
+    } else {
+        provider
+    }
 }
 
 /// The entry an id names, under the same spellings [`window_for`] accepts and
@@ -506,6 +520,9 @@ pub async fn refresh_if_stale(provider: &str, cwd: Option<&Path>) -> Result<Opti
 pub fn launch_providers(active: &str) -> Vec<String> {
     let mut providers = crate::auth::stored_providers();
     providers.push(crate::config::canonical_provider(active));
+    if providers.iter().any(|provider| provider == "portkey") {
+        providers.push("anthropic".to_string());
+    }
     providers.sort();
     providers.dedup();
     providers
@@ -960,6 +977,16 @@ mod tests {
         // remembered catalog answers nothing.
         assert_eq!(reasoning_for("anthropic", "claude-unknown"), None);
         assert_eq!(reasoning_for("openai", "claude-haiku-4-5"), None);
+        for model in [
+            "claude-haiku-4-5",
+            "ANTHROPIC/CLAUDE-HAIKU-4-5",
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        ] {
+            assert_eq!(reasoning_for("portkey", model), Some(levels.clone()));
+        }
+        assert_eq!(reasoning_for("portkey", "claude-unknown"), None);
+        assert_eq!(reasoning_for("portkey", "gpt-5"), None);
+        assert_eq!(reasoning_for("ollama", "claude-haiku-4-5"), None);
         assert!(reasoning_for("anthropic", "gpt-5").is_some());
         for model in [
             "gpt-5-chat",
@@ -1169,6 +1196,35 @@ mod tests {
         }
         .is_stale());
         assert!(CatalogEntry::default().is_stale());
+    }
+
+    #[tokio::test]
+    async fn a_cold_portkey_claude_lookup_warms_the_upstream_reasoning_catalog() {
+        let _env = crate::env_lock::hold();
+        let dir = temp_dir("portkey-reasoning");
+        std::env::set_var(FILE_ENV, dir.join(FILE_NAME));
+        std::env::set_var(ENV_NAME, "true");
+        let body = r#"{"claude-sonnet-5":{"id":"claude-sonnet-5","contextWindow":1000000,"reasoning":true,"thinkingLevelMap":{"xhigh":"xhigh","max":"max"}}}"#;
+        let server = TestServer::start(vec![Response::new(200, body, &[], &[])]);
+        std::env::set_var(URL_ENV, server.url());
+
+        assert_eq!(reasoning_for("portkey", "claude-sonnet-5"), None);
+        let provider = reasoning_provider("portkey", "claude-sonnet-5");
+        assert!(refresh_if_stale(provider, None).await.unwrap().is_some());
+        assert_eq!(server.requests()[0].path, "/api/models/providers/anthropic");
+        assert_eq!(
+            reasoning_for("portkey", "claude-sonnet-5")
+                .unwrap()
+                .supported,
+            Reasoning::LEVELS.to_vec()
+        );
+        assert!(refresh_if_stale(provider, None).await.unwrap().is_none());
+
+        std::env::remove_var(URL_ENV);
+        std::env::remove_var(FILE_ENV);
+        std::env::remove_var(ENV_NAME);
+        server.stop();
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
@@ -1641,6 +1697,7 @@ mod tests {
         // A name that is no provider at all is looked up as it stands; pi.dev
         // answers with no catalog, which is nothing to do rather than an error.
         assert!(launch_providers("not-a-provider").contains(&"not-a-provider".to_string()));
+        assert!(launch_providers("portkey").contains(&"anthropic".to_string()));
     }
 
     /// A response handed to a [`TestServer`], in the order the test expects the

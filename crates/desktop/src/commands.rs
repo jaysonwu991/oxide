@@ -377,7 +377,8 @@ pub async fn reasoning_levels(project: String, state: &DesktopState) -> CmdResul
         let _ = LlmClient::new(config.clone()).refresh_models().await;
         // Most providers publish no effort metadata; pi.dev's catalog does,
         // and a stale one is looked up again before the picker gives up.
-        let _ = oxide_core::catalog::refresh_if_stale(&config.provider, Some(&path)).await;
+        let provider = oxide_core::catalog::reasoning_provider(&config.provider, &config.model);
+        let _ = oxide_core::catalog::refresh_if_stale(provider, Some(&path)).await;
         config.refresh_reasoning_supported();
     }
     Ok(json!({

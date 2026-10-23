@@ -1779,7 +1779,8 @@ async fn list_reasoning(
         let _ = llm::LlmClient::new(config.clone()).refresh_models().await;
         // And the pi.dev catalog is the fallback a provider that publishes no
         // effort metadata needs, so the picker also warms it when it is old.
-        let _ = catalog::refresh_if_stale(&config.provider, Some(current_dir)).await;
+        let provider = catalog::reasoning_provider(&config.provider, &config.model);
+        let _ = catalog::refresh_if_stale(provider, Some(current_dir)).await;
         config.refresh_reasoning_supported();
     }
     let levels: Vec<&str> = config
