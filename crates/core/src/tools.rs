@@ -4487,6 +4487,10 @@ mod tests {
         }
     }
 
+    // `awk` is the generator here, so these two drive the shell path on Unix
+    // only; the cut itself is covered on every platform by the `end_preview`
+    // and `tail_preview` tests above, which need no child process.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_real_oversized_diff_preview_opens_on_a_line() {
         // The shape that exposed this: `gh pr diff | head`, whose 270 KB of
@@ -4551,6 +4555,7 @@ mod tests {
         assert!(preview.contains('y'), "a tail must keep readable content");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_oversized_bash_result_keeps_whole_lines() {
         // The end-to-end path: real command output over the budget, capped by
