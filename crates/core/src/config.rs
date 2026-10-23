@@ -1195,9 +1195,9 @@ pub struct Config {
     pub auto_approve: bool,
     #[serde(default)]
     pub reasoning: Reasoning,
-    /// The levels the active model advertised in the provider's listing, when
-    /// it carried them. Read from the model cache; not persisted with the
-    /// config, since it belongs to the provider's catalog rather than a choice.
+    /// The levels the active model accepts: the provider's own listing when it
+    /// advertised them, else the remembered pi.dev catalog. Not persisted with
+    /// the config, since it belongs to the model's catalog rather than a choice.
     #[serde(skip)]
     pub reasoning_supported: Option<ModelReasoning>,
     #[serde(skip)]
@@ -1660,6 +1660,34 @@ impl Config {
             .is_some_and(|meta| !meta.supported.is_empty())
     }
 
+    /// The levels this model accepts, from the provider's own listing when it
+    /// carries `effort` metadata (DeepSeek), else from the pi.dev catalog the
+    /// machine already remembers, which publishes `reasoning` and
+    /// `thinkingLevelMap` for every model it lists. A model name alone still
+    /// supplies no fallback choices, and a listing that names only a default
+    /// level is no evidence of selectable levels.
+    pub fn resolve_reasoning_supported(&self) -> Option<ModelReasoning> {
+        if let Some(mut meta) = crate::llm::cached_model_reasoning(self, &self.model)
+            .filter(|meta| !meta.supported.is_empty())
+        {
+            // `off` is one of Oxide's modes rather than an effort level a
+            // listing names, so a model that advertises levels also offers it
+            // (the request disables thinking, or asks for the lowest effort a
+            // model that cannot disable it accepts).
+            if !meta.supported.contains(&Reasoning::Off) {
+                meta.supported.insert(0, Reasoning::Off);
+            }
+            return Some(meta);
+        }
+        crate::catalog::reasoning_for(&self.provider, &self.model)
+    }
+
+    /// Re-reads the model's reasoning metadata after the model, provider or a
+    /// cached listing changed.
+    pub fn refresh_reasoning_supported(&mut self) {
+        self.reasoning_supported = self.resolve_reasoning_supported();
+    }
+
     /// Only the explicit levels advertised by the provider, in its order.
     pub fn reasoning_levels(&self) -> Vec<Reasoning> {
         self.reasoning_supported
@@ -1846,8 +1874,9 @@ impl Config {
             })?;
         }
         // A model whose provider listing advertised reasoning levels carries
-        // them here, so the UI and the request clamp use the model's own set.
-        config.reasoning_supported = crate::llm::cached_model_reasoning(&config, &config.model);
+        // them here, or the pi.dev catalog supplies them when the listing did
+        // not, so the UI and the request clamp use the model's own set.
+        config.refresh_reasoning_supported();
         config.default_project_trust = load_default_project_trust();
         config.workspaces = crate::workspaces::Workspaces::load(cwd);
         config.ecosystem = ecosystem::load(cwd);
@@ -2015,7 +2044,7 @@ impl Config {
     /// Refresh model-specific capabilities without carrying an effort from the previous model.
     pub fn reset_model_reasoning(&mut self) {
         self.reasoning = Reasoning::Auto;
-        self.reasoning_supported = crate::llm::cached_model_reasoning(self, &self.model);
+        self.refresh_reasoning_supported();
     }
 
     /// Records the outgoing provider's endpoint when it was customized, or
@@ -2291,7 +2320,7 @@ impl Config {
                 .insert(canonical_provider(&self.provider), self.model.clone());
             adopted = true;
         }
-        self.reasoning_supported = crate::llm::cached_model_reasoning(self, &self.model);
+        self.reasoning_supported = self.resolve_reasoning_supported();
         adopted
     }
 
@@ -3383,6 +3412,95 @@ mod tests {
         };
         assert_eq!(no_catalog.catalog_window(), None);
         assert_eq!(no_catalog.context_window(), 128_000);
+    }
+
+    #[test]
+    fn a_remembered_catalog_supplies_reasoning_when_the_listing_does_not() {
+        // A provider whose `/models` answer carries no effort metadata (the
+        // usual case outside DeepSeek) still has levels: pi.dev publishes
+        // `reasoning` and `thinkingLevelMap` beside every model.
+        let _env = crate::env_lock::hold();
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-config-reasoning-catalog-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("model-catalog.json");
+        std::fs::write(
+            &path,
+            r#"{"providers": {"anthropic": {"checkedAt": 0, "models": {
+                "claude-haiku-4-5": {"id": "claude-haiku-4-5", "contextWindow": 200000, "reasoning": true},
+                "claude-sonnet-4-5": {"id": "claude-sonnet-4-5", "contextWindow": 1000000, "reasoning": true,
+                    "thinkingLevelMap": {"off": null, "low": "low", "high": "high", "max": "max"}},
+                "gpt-4o": {"id": "gpt-4o", "contextWindow": 128000, "reasoning": false}
+            }}}}"#,
+        )
+        .unwrap();
+        std::env::set_var("OXIDE_MODEL_CATALOG_FILE", &path);
+
+        let mut config = Config {
+            provider: "anthropic".to_string(),
+            model: "claude-haiku-4-5".to_string(),
+            base_url: "https://anthropic.test/v1".to_string(),
+            ..Config::default()
+        };
+        config.refresh_reasoning_supported();
+        assert!(config.supports_reasoning());
+        assert_eq!(
+            config.reasoning_levels(),
+            vec![
+                Reasoning::Off,
+                Reasoning::Minimal,
+                Reasoning::Low,
+                Reasoning::Medium,
+                Reasoning::High,
+            ]
+        );
+
+        // The map removes `off` and opts into `max`, and a level the model does
+        // not accept is clamped onto one it does.
+        let mut sonnet = Config {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
+            base_url: "https://anthropic.test/v1".to_string(),
+            reasoning: Reasoning::Xhigh,
+            ..Config::default()
+        };
+        sonnet.refresh_reasoning_supported();
+        assert_eq!(
+            sonnet.reasoning_levels(),
+            vec![
+                Reasoning::Minimal,
+                Reasoning::Low,
+                Reasoning::Medium,
+                Reasoning::High,
+                Reasoning::Max,
+            ]
+        );
+        assert_eq!(sonnet.effective_reasoning(), Reasoning::Max);
+
+        // A model the catalog says does not reason keeps no selector, and a
+        // provider pi.dev has no catalog for is not consulted.
+        let mut plain = Config {
+            provider: "anthropic".to_string(),
+            model: "gpt-4o".to_string(),
+            base_url: "https://anthropic.test/v1".to_string(),
+            ..Config::default()
+        };
+        plain.refresh_reasoning_supported();
+        assert!(!plain.supports_reasoning());
+        let mut portkey = Config {
+            provider: "portkey".to_string(),
+            model: "claude-haiku-4-5".to_string(),
+            base_url: "https://portkey.test/v1".to_string(),
+            ..Config::default()
+        };
+        portkey.refresh_reasoning_supported();
+        assert!(!portkey.supports_reasoning());
+
+        std::env::remove_var("OXIDE_MODEL_CATALOG_FILE");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

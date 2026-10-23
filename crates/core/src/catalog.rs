@@ -1,26 +1,29 @@
 //! The models pi.dev publishes for a provider, which is where the context
-//! window of a model the built-in table does not know comes from.
+//! window of a model the built-in table does not know — and the reasoning
+//! levels a model accepts when the provider's own listing carries no `effort`
+//! metadata — come from.
 //!
 //! Pi resolves a window from a catalog it fetches from `pi.dev`, so a model
 //! released since this binary was built gets its own window there rather than
-//! the conservative fallback. Oxide keeps the same answer: the catalog is
-//! fetched per provider, revalidated with an ETag and remembered in
+//! the conservative fallback. Oxide keeps the same answer, plus the
+//! `reasoning`/`thinkingLevelMap` Pi publishes beside each model: the catalog
+//! is fetched per provider, revalidated with an ETag and remembered in
 //! `model-catalog.json` beside the rest of Oxide's state, so a launch reads the
-//! windows from disk and never waits on the network for them. The lookup itself
-//! is redone only once the remembered answer is old ([`REFRESH_AFTER_SECS`]),
-//! from a background task a front-end starts at launch, so a launch costs at
-//! most one request every four hours.
+//! windows and levels from disk and never waits on the network for them. The
+//! lookup itself is redone only once the remembered answer is old
+//! ([`REFRESH_AFTER_SECS`]), from a background task a front-end starts at
+//! launch, so a launch costs at most one request every four hours.
 //!
 //! `modelCatalog` in a `settings.json` — with `OXIDE_MODEL_CATALOG` overriding
 //! it — turns the lookups off, which is what an offline or air-gapped machine
-//! wants; the remembered windows are still read, since reading them touches no
-//! network.
+//! wants; the remembered windows and levels are still read, since reading them
+//! touches no network.
 //!
 //! Two oxide processes share the file — a terminal and the app — so a write
 //! holds a lock of the file's own, beside it, across the read that merges one
 //! provider's answer in and the rename that replaces it.
 
-use crate::config::lookup_context_window;
+use crate::config::{ModelReasoning, Reasoning};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -51,6 +54,11 @@ const URL_ENV: &str = "OXIDE_MODEL_CATALOG_URL";
 /// connection for minutes, long enough for a slow network.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The shape a remembered entry is written with. Entries written before the
+/// reasoning metadata was kept carry `0`, so a launch re-reads the provider's
+/// catalog instead of trusting an ETag that would answer `304` forever.
+const STORE_VERSION: u32 = 2;
+
 /// Two oxide processes — a terminal and the desktop app — can write the file at
 /// the same time, so the read that merges one process's answer into it and the
 /// rename that puts it in place are held under a lock of the file's own, beside
@@ -58,14 +66,54 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// threads within one of them.
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 
-/// One model as the catalog publishes it. Only the window is kept: it is what
-/// the resolution needs, and the rest of the entry changes shape with Pi's
-/// catalog rather than with anything Oxide reads.
+/// One model as the catalog publishes it. The window and the reasoning
+/// metadata are what the resolution needs; the rest of the entry changes shape
+/// with Pi's catalog rather than with anything Oxide reads.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogModel {
     #[serde(default)]
     pub context_window: u64,
+    /// Whether the model reasons at all, which is what makes an effort level
+    /// selectable where the provider's own listing carries no effort metadata.
+    #[serde(default)]
+    pub reasoning: bool,
+    /// Pi's `thinkingLevelMap`: an explicit `null` removes a level, a string
+    /// renames it on the wire, and a missing entry leaves the built-in level
+    /// in place (`xhigh` and `max` are opt-in and need a non-null entry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level_map: Option<BTreeMap<String, Option<String>>>,
+}
+
+impl CatalogModel {
+    /// The levels this model accepts, by Pi's rules: a model that does not
+    /// reason offers none; otherwise `off`/`minimal`/`low`/`medium`/`high` are
+    /// offered unless the map names them `null`, and `xhigh`/`max` only when
+    /// the map names them at all.
+    pub fn reasoning_levels(&self) -> Option<ModelReasoning> {
+        if !self.reasoning {
+            return None;
+        }
+        let mapped = |level: Reasoning| {
+            self.thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get(level.label()))
+        };
+        let supported = Reasoning::LEVELS
+            .iter()
+            .copied()
+            .filter(|level| match level {
+                Reasoning::Xhigh | Reasoning::Max => {
+                    mapped(*level).is_some_and(|value| value.is_some())
+                }
+                _ => !mapped(*level).is_some_and(|value| value.is_none()),
+            })
+            .collect();
+        Some(ModelReasoning {
+            supported,
+            default: None,
+        })
+    }
 }
 
 /// One provider's catalog: the models, the validator the next lookup
@@ -76,6 +124,9 @@ pub struct CatalogEntry {
     /// When the catalog was last looked up, in Unix seconds.
     #[serde(default)]
     pub checked_at: u64,
+    /// The shape this entry was written with (see [`STORE_VERSION`]).
+    #[serde(default)]
+    pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
     #[serde(default)]
@@ -83,9 +134,12 @@ pub struct CatalogEntry {
 }
 
 impl CatalogEntry {
-    /// Whether it is time to look the catalog up again.
+    /// Whether it is time to look the catalog up again. An entry written by an
+    /// older release is always re-read, since its ETag would keep a `304`
+    /// answering for a body whose reasoning metadata was never kept.
     pub fn is_stale(&self) -> bool {
-        now_secs().saturating_sub(self.checked_at) >= REFRESH_AFTER_SECS
+        self.version != STORE_VERSION
+            || now_secs().saturating_sub(self.checked_at) >= REFRESH_AFTER_SECS
     }
 
     /// The windows alone, which is what a lookup reads.
@@ -188,34 +242,67 @@ pub fn cached(provider: &str) -> Option<CatalogEntry> {
 /// was dated — since a key that has nothing but the model's own name before a
 /// release stamp is that model rather than a longer name that begins with it.
 pub fn window_for(models: &Models, model: &str) -> Option<u64> {
+    matching_entry(models, model, |window| *window > 0).map(|(_, window)| *window)
+}
+
+/// The reasoning levels the provider's catalog publishes for `model`, or
+/// `None` when pi.dev has no catalog for the provider, the catalog does not
+/// hold the model, or the model does not reason. This is the fallback the CLI,
+/// the desktop app and the extension read when the provider's own listing
+/// carries no `effort` metadata.
+pub fn reasoning_for(provider: &str, model: &str) -> Option<ModelReasoning> {
+    let entry = cached(provider)?;
+    let (_, model) = matching_entry(&entry.models, model, |_| true)?;
+    model.reasoning_levels()
+}
+
+/// The entry an id names, under the same spellings [`window_for`] accepts and
+/// filtered by `usable`, so a zero window does not shadow a usable one.
+/// Reasoning callers keep non-reasoning entries eligible: they rule out levels
+/// inherited from a shorter model name.
+fn matching_entry<'a, V>(
+    models: &'a BTreeMap<String, V>,
+    model: &str,
+    usable: impl Fn(&V) -> bool,
+) -> Option<(&'a String, &'a V)> {
     let model = model.trim();
     let exact = models
-        .iter()
-        .find(|(id, window)| **window > 0 && id.eq_ignore_ascii_case(model));
-    if let Some((_, window)) = exact {
-        return Some(*window);
+        .get_key_value(model)
+        .filter(|(_, value)| usable(value))
+        .or_else(|| {
+            models
+                .iter()
+                .find(|(id, value)| usable(value) && id.eq_ignore_ascii_case(model))
+        });
+    if let Some(entry) = exact {
+        return Some(entry);
     }
     let lowered = model.to_ascii_lowercase();
     let stripped = crate::config::vendorless(&lowered);
     // The same model under another spelling of the prefixes. The longer
     // prefixes come off both sides, so the comparison below is the same one
     // the table makes.
-    let spelled = models
-        .iter()
-        .find(|(id, window)| **window > 0 && crate::config::vendorless(id) == stripped);
-    if let Some((_, window)) = spelled {
-        return Some(*window);
+    let spelled = models.iter().find(|(id, value)| {
+        usable(value) && crate::config::vendorless(id).eq_ignore_ascii_case(stripped)
+    });
+    if let Some(entry) = spelled {
+        return Some(entry);
     }
     // The table's rule, over the keys with their prefixes off: the longest key
     // the requested model still begins with.
-    let dated = lookup_context_window(
-        models
-            .iter()
-            .map(|(id, window)| (crate::config::vendorless(id), *window)),
-        model,
-    );
-    if dated.is_some() {
-        return dated;
+    let basename = lowered.rsplit('/').next().unwrap_or(&lowered);
+    let candidates = [lowered.as_str(), basename, stripped];
+    let dated = models
+        .iter()
+        .filter(|(id, value)| {
+            usable(value)
+                && candidates.iter().any(|candidate| {
+                    starts_with_ignore_case(candidate, crate::config::vendorless(id))
+                })
+        })
+        .max_by_key(|(id, _)| crate::config::vendorless(id).len());
+    if let Some(entry) = dated {
+        return Some(entry);
     }
     // And the other way round: a key that carries on from the model's own name
     // with a release, which is what the run's spelling leaves off. The shortest
@@ -223,9 +310,16 @@ pub fn window_for(models: &Models, model: &str) -> Option<u64> {
     // rather than another name — `gpt-4o-mini` is not `gpt-4o`.
     models
         .iter()
-        .filter(|(id, window)| **window > 0 && dated_from(stripped, crate::config::vendorless(id)))
+        .filter(|(id, value)| usable(value) && dated_from(stripped, crate::config::vendorless(id)))
         .min_by_key(|(id, _)| id.len())
-        .map(|(_, window)| *window)
+}
+
+/// Whether `candidate` begins with `key`, ASCII case aside. Byte length decides
+/// the prefix, so a key that would split a character is no prefix of it.
+fn starts_with_ignore_case(candidate: &str, key: &str) -> bool {
+    candidate
+        .get(..key.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(key))
 }
 
 /// Whether `key` is `model` with the release it was dated with after it —
@@ -253,11 +347,12 @@ pub async fn refresh(provider: &str) -> Result<CatalogEntry> {
         .with_context(|| format!("pi.dev publishes no model catalog for {provider}"))?;
     let path = path().context("resolving the Oxide config directory")?;
     let stored = read(&path, id);
-    // Only revalidate when a remembered body backs the validator, so a `304`
-    // can never leave the catalog empty.
+    // Only revalidate when a remembered body written by this shape backs the
+    // validator, so a `304` can never leave the catalog empty — or preserve a
+    // body that predates the metadata this release reads.
     let validator = stored
         .as_ref()
-        .filter(|entry| !entry.models.is_empty())
+        .filter(|entry| entry.version == STORE_VERSION && !entry.models.is_empty())
         .and_then(|entry| entry.etag.clone());
     let mut request = client()?
         .get(format!("{}/api/models/providers/{id}", base_url()))
@@ -299,6 +394,7 @@ pub async fn refresh(provider: &str) -> Result<CatalogEntry> {
     };
     let entry = CatalogEntry {
         checked_at: now_secs(),
+        version: STORE_VERSION,
         etag,
         models: parse_catalog(&value),
     };
@@ -311,10 +407,14 @@ pub async fn refresh(provider: &str) -> Result<CatalogEntry> {
 /// lookup that reached the service and was answered nothing new keeps the
 /// models it had; one the provider no longer answers for keeps nothing.
 fn keep_remembered(path: &Path, id: &str, stored: Option<&CatalogEntry>) -> Result<CatalogEntry> {
-    let entry = CatalogEntry {
-        checked_at: now_secs(),
-        ..stored.cloned().unwrap_or_default()
-    };
+    let mut entry = stored.cloned().unwrap_or_default();
+    entry.checked_at = now_secs();
+    // Keep the retry cooldown even when migration fails, but discard the old
+    // validator so the next attempt fetches the missing metadata in full.
+    if entry.version != STORE_VERSION {
+        entry.etag = None;
+    }
+    entry.version = STORE_VERSION;
     write(path, id, &entry)?;
     Ok(entry)
 }
@@ -346,8 +446,8 @@ pub fn launch_providers(active: &str) -> Vec<String> {
 }
 
 /// The look a launch makes in the background: every catalog old enough to be
-/// looked up again is refreshed, and the windows are answered only when one of
-/// those lookups changed them. `None` covers both halves of the usual case —
+/// looked up again is refreshed, and the windows are answered when a lookup
+/// changed a model's window or reasoning metadata. `None` covers the usual case —
 /// the lookups are off, or nothing was stale — and a front-end has nothing to
 /// repaint for a catalog it already read through
 /// [`crate::config::Config::load`].
@@ -355,7 +455,8 @@ pub async fn refresh_launch(providers: &[String], cwd: Option<&Path>) -> Option<
     if !enabled_in(cwd) {
         return None;
     }
-    let remembered = windows();
+    let path = path()?;
+    let remembered = load(&path);
     let mut looked_up = false;
     for provider in providers {
         if matches!(refresh_if_stale(provider, cwd).await, Ok(Some(_))) {
@@ -365,8 +466,26 @@ pub async fn refresh_launch(providers: &[String], cwd: Option<&Path>) -> Option<
     if !looked_up {
         return None;
     }
-    let refreshed = windows();
-    (refreshed != remembered).then_some(refreshed)
+    let refreshed = load(&path);
+    let changed = refreshed
+        .providers
+        .iter()
+        .map(|(id, entry)| (id, &entry.models))
+        .ne(remembered
+            .providers
+            .iter()
+            .map(|(id, entry)| (id, &entry.models)));
+    if !changed {
+        return None;
+    }
+    Some(
+        refreshed
+            .providers
+            .into_iter()
+            .map(|(provider, entry)| (provider, entry.windows()))
+            .filter(|(_, models)| !models.is_empty())
+            .collect(),
+    )
 }
 
 /// Whether a launch should look the catalogs up at all. `modelCatalog` in a
@@ -429,10 +548,24 @@ fn parse_catalog(value: &serde_json::Value) -> BTreeMap<String, CatalogModel> {
             .get("contextWindow")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
+        let reasoning = object
+            .get("reasoning")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let thinking_level_map = object
+            .get("thinkingLevelMap")
+            .and_then(serde_json::Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .map(|(level, value)| (level.clone(), value.as_str().map(str::to_string)))
+                    .collect()
+            });
         models.insert(
             id.to_string(),
             CatalogModel {
                 context_window: window,
+                reasoning,
+                thinking_level_map,
             },
         );
     }
@@ -557,6 +690,7 @@ mod tests {
                     id.to_string(),
                     CatalogModel {
                         context_window: *window,
+                        ..CatalogModel::default()
                     },
                 )
             })
@@ -632,6 +766,103 @@ mod tests {
             .len(),
             0
         );
+    }
+
+    #[test]
+    fn a_catalog_carries_the_reasoning_levels_pi_publishes() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{
+                "gpt-5.6-sol": {"id": "gpt-5.6-sol", "contextWindow": 272000, "reasoning": true,
+                    "thinkingLevelMap": {"off": "none", "minimal": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"}},
+                "claude-haiku-4-5": {"id": "claude-haiku-4-5", "contextWindow": 200000, "reasoning": true},
+                "gpt-4o": {"id": "gpt-4o", "contextWindow": 128000, "reasoning": false}
+            }"#,
+        )
+        .unwrap();
+        let catalog = parse_catalog(&value);
+        // A named level is offered; `minimal` is explicitly null, and `xhigh`
+        // and `max` are offered only because the map names them.
+        assert_eq!(
+            catalog["gpt-5.6-sol"].reasoning_levels(),
+            Some(ModelReasoning {
+                supported: vec![
+                    Reasoning::Off,
+                    Reasoning::Low,
+                    Reasoning::Medium,
+                    Reasoning::High,
+                    Reasoning::Xhigh,
+                    Reasoning::Max,
+                ],
+                default: None,
+            })
+        );
+        // Without a map, Pi offers the five base levels and not the opt-in two.
+        assert_eq!(
+            catalog["claude-haiku-4-5"].reasoning_levels(),
+            Some(ModelReasoning {
+                supported: vec![
+                    Reasoning::Off,
+                    Reasoning::Minimal,
+                    Reasoning::Low,
+                    Reasoning::Medium,
+                    Reasoning::High,
+                ],
+                default: None,
+            })
+        );
+        assert_eq!(catalog["gpt-4o"].reasoning_levels(), None);
+    }
+
+    #[test]
+    fn a_remembered_catalog_answers_a_models_reasoning_levels_by_any_spelling() {
+        let _env = crate::env_lock::hold();
+        let dir = temp_dir("reasoning");
+        let path = dir.join(FILE_NAME);
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{
+                "claude-haiku-4-5": {"id": "claude-haiku-4-5", "contextWindow": 200000, "reasoning": true},
+                "gpt-5": {"id": "gpt-5", "contextWindow": 400000, "reasoning": true},
+                "gpt-5-chat": {"id": "gpt-5-chat", "contextWindow": 128000, "reasoning": false}
+            }"#,
+        )
+        .unwrap();
+        write(
+            &path,
+            "anthropic",
+            &CatalogEntry {
+                checked_at: now_secs(),
+                version: STORE_VERSION,
+                etag: None,
+                models: parse_catalog(&value),
+            },
+        )
+        .unwrap();
+        std::env::set_var(FILE_ENV, &path);
+
+        let levels = reasoning_for("anthropic", "claude-haiku-4-5")
+            .expect("the catalog advertises reasoning for the model");
+        assert!(levels.supported.contains(&Reasoning::Low));
+        assert!(!levels.supported.contains(&Reasoning::Max));
+        assert_eq!(
+            reasoning_for("anthropic", "CLAUDE-HAIKU-4-5"),
+            Some(levels.clone())
+        );
+        // A model pi.dev does not list reasons at all, and a provider with no
+        // remembered catalog answers nothing.
+        assert_eq!(reasoning_for("anthropic", "claude-unknown"), None);
+        assert_eq!(reasoning_for("openai", "claude-haiku-4-5"), None);
+        assert!(reasoning_for("anthropic", "gpt-5").is_some());
+        for model in [
+            "gpt-5-chat",
+            "GPT-5-CHAT",
+            "openai/gpt-5-chat",
+            "gpt-5-chat-20261001",
+        ] {
+            assert_eq!(reasoning_for("anthropic", model), None, "{model}");
+        }
+
+        std::env::remove_var(FILE_ENV);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -714,6 +945,7 @@ mod tests {
             "deepseek",
             &CatalogEntry {
                 checked_at: 1_000,
+                version: STORE_VERSION,
                 etag: Some("\"abc\"".into()),
                 models: entry_models(&[("deepseek-flash", 1_000_000)]),
             },
@@ -725,6 +957,7 @@ mod tests {
             "amazon-bedrock",
             &CatalogEntry {
                 checked_at: 1_000,
+                version: STORE_VERSION,
                 etag: None,
                 models: entry_models(&[("anthropic.claude-sonnet-4-5", 200_000)]),
             },
@@ -816,11 +1049,13 @@ mod tests {
     fn an_old_catalog_is_looked_up_again() {
         let entry = CatalogEntry {
             checked_at: now_secs(),
+            version: STORE_VERSION,
             ..CatalogEntry::default()
         };
         assert!(!entry.is_stale());
         assert!(CatalogEntry {
             checked_at: now_secs() - REFRESH_AFTER_SECS,
+            version: STORE_VERSION,
             ..CatalogEntry::default()
         }
         .is_stale());
@@ -866,6 +1101,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_catalog_written_before_the_reasoning_metadata_is_read_again() {
+        let _env = crate::env_lock::hold();
+        let dir = temp_dir("upgrade");
+        let path = dir.join(FILE_NAME);
+        std::env::set_var(FILE_ENV, &path);
+        // What an older release remembered: the windows, an ETag, no shape.
+        write(
+            &path,
+            "deepseek",
+            &CatalogEntry {
+                checked_at: now_secs(),
+                version: 0,
+                etag: Some("\"old\"".into()),
+                models: entry_models(&[("deepseek-flash", 1_000_000)]),
+            },
+        )
+        .unwrap();
+        assert!(read(&path, "deepseek").unwrap().is_stale());
+
+        let body = r#"{"deepseek-flash":{"id":"deepseek-flash","contextWindow":1000000,"reasoning":true,
+            "thinkingLevelMap":{"low":"low","high":"high","max":"max"}}}"#;
+        let server = TestServer::start(vec![Response::new(200, body, &[], &[])]);
+        std::env::set_var(URL_ENV, server.url());
+
+        let entry = refresh("deepseek").await.unwrap();
+        // The old validator is not sent, so the answer is the whole body rather
+        // than a `304` that would keep the metadata forever missing.
+        assert_eq!(server.requests()[0].header("if-none-match"), None);
+        assert_eq!(entry.version, STORE_VERSION);
+        assert!(entry.models["deepseek-flash"].reasoning);
+        assert!(!entry.is_stale());
+
+        std::env::remove_var(URL_ENV);
+        std::env::remove_var(FILE_ENV);
+        server.stop();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_failed_migration_waits_before_retrying_without_the_old_validator() {
+        let _env = crate::env_lock::hold();
+        let dir = temp_dir("upgrade-failure");
+        let path = dir.join(FILE_NAME);
+        std::env::set_var(FILE_ENV, &path);
+        write(
+            &path,
+            "openai",
+            &CatalogEntry {
+                checked_at: now_secs(),
+                version: 0,
+                etag: Some("\"old\"".into()),
+                models: entry_models(&[("gpt-5", 400_000)]),
+            },
+        )
+        .unwrap();
+        let body = r#"{"gpt-5":{"id":"gpt-5","contextWindow":400000,"reasoning":true}}"#;
+        let server = TestServer::start(vec![
+            Response::new(500, "", &[], &[]),
+            Response::new(200, body, &[], &[]),
+        ]);
+        std::env::set_var(URL_ENV, server.url());
+
+        assert!(refresh_if_stale("openai", None).await.is_err());
+        let mut kept = read(&path, "openai").unwrap();
+        assert_eq!(kept.models["gpt-5"].context_window, 400_000);
+        assert!(!kept.is_stale());
+        assert!(kept.etag.is_none());
+        assert!(refresh_if_stale("openai", None).await.unwrap().is_none());
+        assert_eq!(server.requests().len(), 1);
+
+        kept.checked_at = now_secs() - REFRESH_AFTER_SECS;
+        write(&path, "openai", &kept).unwrap();
+        let updated = refresh_if_stale("openai", None).await.unwrap().unwrap();
+        assert!(updated.models["gpt-5"].reasoning);
+        assert_eq!(server.requests()[1].header("if-none-match"), None);
+
+        std::env::remove_var(URL_ENV);
+        std::env::remove_var(FILE_ENV);
+        server.stop();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn a_catalog_that_is_gone_is_remembered_as_gone() {
         let _env = crate::env_lock::hold();
         let dir = temp_dir("missing");
@@ -898,6 +1216,7 @@ mod tests {
             "openai",
             &CatalogEntry {
                 checked_at: 0,
+                version: STORE_VERSION,
                 etag: Some("\"one\"".into()),
                 models: entry_models(&[("gpt-5", 400_000)]),
             },
@@ -932,6 +1251,7 @@ mod tests {
             "openai",
             &CatalogEntry {
                 checked_at: 0,
+                version: STORE_VERSION,
                 etag: Some("\"one\"".into()),
                 models: entry_models(&[("gpt-5", 400_000)]),
             },
@@ -999,6 +1319,7 @@ mod tests {
             "deepseek",
             &CatalogEntry {
                 checked_at: 1_000,
+                version: STORE_VERSION,
                 etag: None,
                 models: entry_models(&[("deepseek-flash", 1_000_000)]),
             },
@@ -1018,6 +1339,7 @@ mod tests {
                     "openai",
                     &CatalogEntry {
                         checked_at: 2_000,
+                        version: STORE_VERSION,
                         etag: None,
                         models: entry_models(&[("gpt-5", 400_000)]),
                     },
@@ -1064,6 +1386,7 @@ mod tests {
             "deepseek",
             &CatalogEntry {
                 checked_at: now_secs(),
+                version: STORE_VERSION,
                 etag: Some("\"one\"".into()),
                 models: entry_models(&[("deepseek-flash", 1_000_000)]),
             },
@@ -1094,6 +1417,7 @@ mod tests {
         std::env::set_var(FILE_ENV, &path);
         let stale = |checked_at: u64| CatalogEntry {
             checked_at,
+            version: STORE_VERSION,
             models: entry_models(&[("deepseek-flash", 1_000_000)]),
             ..CatalogEntry::default()
         };
@@ -1121,6 +1445,15 @@ mod tests {
         let server = TestServer::start(vec![
             Response::new(200, body, &[], &[]),
             Response::new(200, body, &[], &[]),
+            Response::new(
+                200,
+                &body.replace(
+                    "\"contextWindow\":1000000",
+                    "\"contextWindow\":1000000,\"reasoning\":true",
+                ),
+                &[],
+                &[],
+            ),
         ]);
         std::env::set_var(URL_ENV, server.url());
 
@@ -1150,6 +1483,16 @@ mod tests {
             .await
             .is_none());
         assert_eq!(server.requests().len(), 2);
+
+        let mut entry = read(&path, "deepseek").unwrap();
+        entry.checked_at = 0;
+        write(&path, "deepseek", &entry).unwrap();
+        let reasoning_only = refresh_launch(&["deepseek".to_string()], None)
+            .await
+            .expect("reasoning metadata changed with no change to the windows");
+        assert_eq!(reasoning_only, refreshed);
+        assert!(reasoning_for("deepseek", "deepseek-flash").is_some());
+        assert_eq!(server.requests().len(), 3);
 
         // The lookups off is no request at all, stale catalog or not.
         std::env::set_var(ENV_NAME, "false");
