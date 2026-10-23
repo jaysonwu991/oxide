@@ -3474,11 +3474,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
 
     let mut child = shell
         .current_dir(cwd)
+        .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("spawning shell")?;
+    let mut process_tree = crate::child::ProcessTree::new(&child);
 
     let stdout = child.stdout.take().context("capturing stdout")?;
     let stderr = child.stderr.take().context("capturing stderr")?;
@@ -3488,8 +3490,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     let stderr_task = tokio::spawn(read_stream(stderr, progress.clone(), stderr_path.clone()));
 
     let status = match timeout(Duration::from_secs(secs), child.wait()).await {
-        Ok(status) => Some(status.context("waiting for shell")?),
+        Ok(status) => {
+            let status = status.context("waiting for shell")?;
+            process_tree.disarm();
+            Some(status)
+        }
         Err(_) => {
+            process_tree.terminate();
             child.kill().await.ok();
             None
         }
@@ -3980,7 +3987,10 @@ fn tail_preview(text: &str, max_bytes: usize, max_lines: usize) -> String {
 /// character boundary at the minimum cut.
 fn tail_cut(text: &str, max_bytes: usize) -> usize {
     let least = text.len() - max_bytes;
-    if let Some(offset) = text[least..].find('\n') {
+    if let Some(offset) = text.as_bytes()[least..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+    {
         let cut = least + offset + 1;
         if text.len() - cut >= max_bytes / 2 {
             return cut;
@@ -4126,7 +4136,10 @@ fn end_preview(
 /// within budget when that still keeps most of it, else a character boundary
 /// at the budget.
 fn head_cut(text: &str, max_bytes: usize) -> usize {
-    if let Some(offset) = text[..max_bytes].rfind('\n') {
+    if let Some(offset) = text.as_bytes()[..max_bytes]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+    {
         if offset >= max_bytes / 2 {
             return offset;
         }
@@ -7256,6 +7269,20 @@ mod tests {
         assert!(result.contains("[exit: 1]"), "{result}");
         assert!(body.contains('x'), "a preview must keep readable content");
         assert!(body.len() <= MAX_OUTPUT_BYTES, "{}", body.len());
+    }
+
+    #[test]
+    fn unicode_previews_never_slice_inside_a_character() {
+        for text in ["中文🙂".repeat(80), "中文🙂一行\n".repeat(80)] {
+            for budget in 1..text.len() {
+                for tail in [false, true] {
+                    let (preview, _, _) =
+                        end_preview(&text.lines().collect::<Vec<_>>(), budget, 2000, tail);
+                    assert!(preview.len() <= budget);
+                }
+                assert!(tail_preview(&text, budget, 2000).len() <= budget);
+            }
+        }
     }
 
     #[test]

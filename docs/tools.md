@@ -156,3 +156,9 @@ injecting the message before the agent's next model step. Alt+Enter queues the
 current input as the next turn after the current response finishes instead. A
 `tool.execute.after` plugin can also request termination for the batch
 with `output.terminate = true`.
+
+Cancellation interrupts asynchronous tool waits. A cancelled call reports that
+its effects may be partial, so inspect the target before retrying; it does not
+undo edits. Shell cancellation terminates the process tree. Preview alignment
+searches newline bytes before slicing UTF-8, including when the budget falls
+inside a Chinese character or emoji.

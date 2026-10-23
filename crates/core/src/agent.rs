@@ -240,13 +240,19 @@ impl Steering {
     }
 }
 
-/// A cooperative cancellation flag shared with a running turn. Setting it makes
-/// the loop stop at the next step boundary (finishing the in-flight model call
-/// and tool batch), so the session is left in a valid state rather than torn
-/// mid-entry.
-#[derive(Clone, Default)]
+/// A sticky cancellation signal shared by a turn and its tool tasks.
+#[derive(Clone)]
 pub struct Cancel {
-    flag: Arc<AtomicBool>,
+    signal: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+impl Default for Cancel {
+    fn default() -> Self {
+        let (signal, _) = tokio::sync::watch::channel(false);
+        Self {
+            signal: Arc::new(signal),
+        }
+    }
 }
 
 impl Cancel {
@@ -255,11 +261,25 @@ impl Cancel {
     }
 
     pub fn cancel(&self) {
-        self.flag.store(true, Ordering::SeqCst);
+        self.signal.send_replace(true);
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.flag.load(Ordering::SeqCst)
+        *self.signal.borrow()
+    }
+
+    pub async fn cancelled(&self) {
+        let mut receiver = self.signal.subscribe();
+        let _ = receiver.wait_for(|cancelled| *cancelled).await;
+    }
+
+    /// Drops an in-flight wait when Stop arrives, including retry backoffs.
+    pub async fn until<T>(&self, future: impl Future<Output = T>) -> Option<T> {
+        tokio::select! {
+            biased;
+            _ = self.cancelled() => None,
+            result = future => Some(result),
+        }
     }
 }
 
@@ -687,7 +707,13 @@ async fn run_loop(
         });
     let mut overflow_error: Option<String> = None;
     let mut recovered_overflow = false;
-    auto_load_mcp_for_user_text(&runtime, messages.iter().filter(|m| m.role == "user")).await;
+    runtime
+        .cancel
+        .until(auto_load_mcp_for_user_text(
+            &runtime,
+            messages.iter().filter(|m| m.role == "user"),
+        ))
+        .await;
 
     // Set once a file edit succeeds and cleared when a later tool call could
     // confirm it. If a run tries to finish while an edit is unconfirmed, the
@@ -758,7 +784,13 @@ async fn run_loop(
                     record_usage(&runtime.session, depth, &held, held_usage);
                     held_is_tail = false;
                 }
-                auto_load_mcp_for_user_text(&runtime, std::iter::once(&steered)).await;
+                runtime
+                    .cancel
+                    .until(auto_load_mcp_for_user_text(
+                        &runtime,
+                        std::iter::once(&steered),
+                    ))
+                    .await;
                 let _ = tx.send(AgentEvent::Steered {
                     message: steered.clone(),
                     label,
@@ -786,15 +818,18 @@ async fn run_loop(
                 || crate::compact::needs_compaction(current, context_window, compaction_budget)
             {
                 if let Some(log) = &runtime.session {
-                    match crate::compact::generate(
-                        &config,
-                        &messages,
-                        &[],
-                        compaction_budget,
-                        current,
-                        None,
-                    )
-                    .await
+                    match runtime
+                        .cancel
+                        .until(crate::compact::generate(
+                            &config,
+                            &messages,
+                            &[],
+                            compaction_budget,
+                            current,
+                            None,
+                        ))
+                        .await
+                        .unwrap_or(Ok(None))
                     {
                         Ok(Some(mut compaction)) => {
                             compaction.details.context_limit =
@@ -1000,7 +1035,32 @@ async fn run_loop(
                 thinking: &mut on_thinking,
                 retry: &mut on_retry,
             };
-            match client.stream_chat(&request, &tool_specs, &mut hooks).await {
+            let response = runtime
+                .cancel
+                .until(client.stream_chat(&request, &tool_specs, &mut hooks))
+                .await;
+            let Some(response) = response else {
+                if let Some((held, usage)) = held_summary.take() {
+                    record_usage(&runtime.session, depth, &held, usage);
+                    send_usage(&tx, usage);
+                }
+                send_usage(&tx, pending_title_usage.take());
+                let streamed = attempt_text
+                    .lock()
+                    .map(|text| text.clone())
+                    .unwrap_or_default();
+                if !streamed.trim().is_empty() {
+                    let partial = Message::assistant(streamed, Vec::new());
+                    record(&runtime.session, depth, &partial);
+                    messages.push(partial);
+                }
+                let _ = tx.send(AgentEvent::ThoughtDone {
+                    millis: started.elapsed().as_millis() as u64,
+                });
+                finish(&runtime, &tx, messages, depth);
+                return;
+            };
+            match response {
                 Ok(turn) => turn,
                 Err(err) if nudge_failed_quietly(nudging && !following_through, &err) => {
                     // The reminder is advisory: the model already summarized its
@@ -1378,7 +1438,12 @@ async fn run_loop(
                     let mut call = original.clone();
                     let args = serde_json::from_str::<Value>(&call.function.arguments)
                         .unwrap_or(Value::Null);
-                    let effective_args = match runtime.plugins.tool_before(&name, &args).await {
+                    let effective_args = match runtime
+                        .cancel
+                        .until(runtime.plugins.tool_before(&name, &args))
+                        .await
+                        .flatten()
+                    {
                         Some(mutated) if mutated != args => {
                             if let Ok(text) = serde_json::to_string(&mutated) {
                                 call.function.arguments = text;
@@ -1389,14 +1454,17 @@ async fn run_loop(
                     };
                     let subject = subject_for(&name, &effective_args);
                     prepared.push(
-                        if permission_granted(
-                            permissions.decide(&name, &subject),
-                            config.auto_approve,
-                            &runtime.approve,
-                            &name,
-                            &subject,
-                        )
-                        .await
+                        if runtime
+                            .cancel
+                            .until(permission_granted(
+                                permissions.decide(&name, &subject),
+                                config.auto_approve,
+                                &runtime.approve,
+                                &name,
+                                &subject,
+                            ))
+                            .await
+                            .unwrap_or(false)
                         {
                             Prepared::Run {
                                 call,
@@ -1436,9 +1504,15 @@ async fn run_loop(
                                     dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress)
                                         .await;
                                 if let Some(result) = runtime
-                                    .plugins
-                                    .tool_after(&name, &args, &output.text, output.is_error)
+                                    .cancel
+                                    .until(runtime.plugins.tool_after(
+                                        &name,
+                                        &args,
+                                        &output.text,
+                                        output.is_error,
+                                    ))
                                     .await
+                                    .flatten()
                                 {
                                     output.text = result.output;
                                     if let Some(is_error) = result.is_error {
@@ -1502,7 +1576,12 @@ async fn run_loop(
                     let mut call = original.clone();
                     let args = serde_json::from_str::<Value>(&call.function.arguments)
                         .unwrap_or(Value::Null);
-                    let effective_args = match runtime.plugins.tool_before(&name, &args).await {
+                    let effective_args = match runtime
+                        .cancel
+                        .until(runtime.plugins.tool_before(&name, &args))
+                        .await
+                        .flatten()
+                    {
                         Some(mutated) if mutated != args => {
                             if let Ok(text) = serde_json::to_string(&mutated) {
                                 call.function.arguments = text;
@@ -1561,14 +1640,17 @@ async fn run_loop(
                          the reply does not claim a fix that is not on the branch under review"
                                 .to_string(),
                         )
-                    } else if permission_granted(
-                        permissions.decide(&name, &subject),
-                        config.auto_approve,
-                        &runtime.approve,
-                        &name,
-                        &subject,
-                    )
-                    .await
+                    } else if runtime
+                        .cancel
+                        .until(permission_granted(
+                            permissions.decide(&name, &subject),
+                            config.auto_approve,
+                            &runtime.approve,
+                            &name,
+                            &subject,
+                        ))
+                        .await
+                        .unwrap_or(false)
                     {
                         snapshot_needed |= tool_may_mutate_workspace(&name);
                         dispatched = true;
@@ -1580,9 +1662,10 @@ async fn run_loop(
                     if matches!(canonical_name, "write" | "edit") && !output.is_error {
                         if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
                             if let Some(diagnostics) = runtime
-                                .lsp
-                                .diagnostics_if_running(&cwd, Path::new(path))
+                                .cancel
+                                .until(runtime.lsp.diagnostics_if_running(&cwd, Path::new(path)))
                                 .await
+                                .flatten()
                             {
                                 output.text.push_str("\n\n");
                                 output.text.push_str(&diagnostics);
@@ -1590,9 +1673,15 @@ async fn run_loop(
                         }
                     }
                     if let Some(result) = runtime
-                        .plugins
-                        .tool_after(&name, &effective_args, &output.text, output.is_error)
+                        .cancel
+                        .until(runtime.plugins.tool_after(
+                            &name,
+                            &effective_args,
+                            &output.text,
+                            output.is_error,
+                        ))
                         .await
+                        .flatten()
                     {
                         output.text = result.output;
                         if let Some(is_error) = result.is_error {
@@ -1799,7 +1888,7 @@ fn finish(
     if let Some(warm) = runtime
         .cache_warm
         .as_ref()
-        .filter(|warm| warm.config.prompt_cache_ttl().is_some())
+        .filter(|warm| !runtime.cancel.is_cancelled() && warm.config.prompt_cache_ttl().is_some())
     {
         let (request, tools) = warmer_inputs(&warm.config, runtime, &warm.cwd, &messages);
         crate::cache_warmer::schedule(
@@ -3169,35 +3258,47 @@ async fn dispatch(
     if !tool_enabled(config, &call.function.name) {
         return tools::ToolOutput::error(format!("tool `{}` is disabled", call.function.name));
     }
-    match call.function.name.as_str() {
-        "task" => legacy_tool_output(
-            task(
-                config,
-                cwd,
-                runtime,
-                events,
-                &call.function.arguments,
-                depth,
+    runtime
+        .cancel
+        .until(async {
+            match call.function.name.as_str() {
+                "task" => legacy_tool_output(
+                    task(
+                        config,
+                        cwd,
+                        runtime,
+                        events,
+                        &call.function.arguments,
+                        depth,
+                    )
+                    .await,
+                ),
+                "skill" => legacy_tool_output(skill(config, &call.function.arguments)),
+                "ask" => ask(runtime, &call.function.arguments).await,
+                "command" => legacy_tool_output(
+                    command(
+                        config,
+                        cwd,
+                        runtime,
+                        events,
+                        &call.function.arguments,
+                        depth,
+                    )
+                    .await,
+                ),
+                "memory" => legacy_tool_output(memory(config, &call.function.arguments)),
+                "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
+                _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
+            }
+        })
+        .await
+        .unwrap_or_else(|| {
+            tools::ToolOutput::error(
+                "cancelled by the user; the operation may have partially completed. \
+                 Inspect the target state before retrying"
+                    .to_string(),
             )
-            .await,
-        ),
-        "skill" => legacy_tool_output(skill(config, &call.function.arguments)),
-        "ask" => ask(runtime, &call.function.arguments).await,
-        "command" => legacy_tool_output(
-            command(
-                config,
-                cwd,
-                runtime,
-                events,
-                &call.function.arguments,
-                depth,
-            )
-            .await,
-        ),
-        "memory" => legacy_tool_output(memory(config, &call.function.arguments)),
-        "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
-        _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
-    }
+        })
 }
 
 fn set_session_title(
@@ -5963,6 +6064,219 @@ for line in sys.stdin:
         assert!(!batch_terminates(&[]));
         assert!(!batch_terminates(&[true, false]));
         assert!(batch_terminates(&[true, true]));
+    }
+
+    #[tokio::test]
+    async fn cancellation_wakes_every_waiter_and_is_seen_by_late_waiters() {
+        let cancel = Cancel::new();
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let cancel = cancel.clone();
+            tasks.push(tokio::spawn(async move {
+                cancel.until(std::future::pending::<()>()).await
+            }));
+        }
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        for task in tasks {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(cancel
+            .until(async { panic!("cancelled work must not start") })
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_interrupts_a_stalled_stream_and_preserves_the_partial_reply() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"Partial reply\"}}]}\n\n").await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let dir = std::env::temp_dir().join(format!("oxide_cancel_stream_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        log.set_name("Existing thread").unwrap();
+        log.append(&Message::user("hello")).unwrap();
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(log.clone());
+        let cancel = runtime.cancel.clone();
+        let config = Config {
+            provider: "openai".into(),
+            model: "test-model".into(),
+            api_key: "test".into(),
+            base_url: format!("http://{address}"),
+            ..Config::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = tokio::spawn(run(
+            config,
+            dir.clone(),
+            log.messages().unwrap(),
+            tx,
+            runtime,
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(event) = rx.recv().await {
+                if matches!(event, AgentEvent::Text(_)) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the partial reply must arrive before Stop");
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("Stop must not wait for the server")
+            .unwrap();
+        let mut finished = false;
+        while let Ok(event) = rx.try_recv() {
+            assert!(!matches!(event, AgentEvent::Error(_)), "{event:?}");
+            if let AgentEvent::Finished(history) = event {
+                assert_eq!(
+                    history.last().unwrap().display().as_deref(),
+                    Some("Partial reply")
+                );
+                finished = true;
+            }
+        }
+        assert!(finished);
+        assert_eq!(
+            log.messages().unwrap().last().unwrap().display().as_deref(),
+            Some("Partial reply")
+        );
+        server.abort();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn stop_during_approval_records_the_whole_batch_and_the_session_resumes() {
+        let arguments = json!({"path":"never-written.txt", "content":"x"}).to_string();
+        let body = openai_sse(&[
+            json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"cancel_a","function":{"name":"write","arguments":arguments}},
+                {"index":1,"id":"cancel_b","function":{"name":"write","arguments":arguments}}
+            ]},"finish_reason":null}]}),
+            json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+        ]);
+        let (addr, server) = sse_server(vec![body, answer_body("Resumed")]).await;
+        let dir =
+            std::env::temp_dir().join(format!("oxide_cancel_approval_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        log.set_name("Existing thread").unwrap();
+        log.append(&Message::user("write the file")).unwrap();
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(log.clone());
+        let cancel = runtime.cancel.clone();
+        let (waiting, mut approvals) = tokio::sync::mpsc::unbounded_channel();
+        runtime.approve = Arc::new(move |_, _| {
+            let _ = waiting.send(());
+            Box::pin(std::future::pending())
+        });
+        let config = Config {
+            provider: "openai".into(),
+            model: "test-model".into(),
+            api_key: "test".into(),
+            base_url: format!("http://{addr}"),
+            auto_approve: false,
+            ..Config::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = tokio::spawn(run(
+            config.clone(),
+            dir.clone(),
+            log.messages().unwrap(),
+            tx,
+            runtime,
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), approvals.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        let messages = log.messages().unwrap();
+        let results: Vec<_> = messages
+            .iter()
+            .filter(|message| message.role == "tool")
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert!(!dir.join("never-written.txt").exists());
+        while let Ok(event) = rx.try_recv() {
+            assert!(!matches!(event, AgentEvent::Error(_)), "{event:?}");
+        }
+        log.append(&Message::user("continue")).unwrap();
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(log.clone());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        run(config, dir.clone(), log.messages().unwrap(), tx, runtime).await;
+        assert_eq!(
+            log.messages().unwrap().last().unwrap().display().as_deref(),
+            Some("Resumed")
+        );
+        assert_eq!(server.await.unwrap().len(), 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_interrupts_shell_children_before_they_can_keep_writing() {
+        let dir = std::env::temp_dir().join(format!("oxide_cancel_shell_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = test_runtime().await;
+        let cancel = runtime.cancel.clone();
+        let task_dir = dir.clone();
+        let handle = tokio::spawn(async move {
+            let call = ToolCall { signature: None, id: "shell".into(), kind: "function".into(), function: crate::llm::FunctionCall { name: "bash".into(), arguments: json!({"command": "(while [ ! -f release ]; do sleep 0.01; done; touch should-not-exist) & echo ready > started; wait", "timeout": 30}).to_string() }};
+            let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+            dispatch(
+                &Config::default(),
+                &task_dir,
+                &runtime,
+                &tx,
+                &call,
+                0,
+                &tools::Progress::default(),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !dir.join("started").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        cancel.cancel();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(output.is_error && output.text.contains("cancelled"));
+        std::fs::write(dir.join("release"), "go").unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !dir.join("should-not-exist").exists(),
+            "a shell child survived Stop"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

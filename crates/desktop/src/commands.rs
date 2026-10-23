@@ -39,7 +39,7 @@ fn err(error: impl std::fmt::Display) -> String {
 
 /// A running turn, reachable by id from the cancel/steer commands.
 struct RunHandle {
-    abort: AbortHandle,
+    abort: Option<AbortHandle>,
     steering: Steering,
     follow_ups: Steering,
     cancel: Cancel,
@@ -646,9 +646,21 @@ pub async fn send_prompt(
 ) -> CmdResult<u64> {
     let run_id = state.next_run.fetch_add(1, Ordering::Relaxed);
     let attachments = attachment_parts(attachments, &prompt, Path::new(&project))?;
+    // Reserve the run before returning its id: Stop also owns startup.
+    state.runs.lock().await.insert(
+        run_id,
+        RunHandle {
+            abort: None,
+            cancel: Cancel::new(),
+            steering: Steering::new(),
+            follow_ups: Steering::new(),
+            cwd: PathBuf::from(&project),
+        },
+    );
     tokio::spawn(async move {
         let events = state.events.clone();
         let failed_project = project.clone();
+        let run_state = state.clone();
         if let Err(error) = drive_turn(
             state,
             run_id,
@@ -674,6 +686,7 @@ pub async fn send_prompt(
                 }),
             );
         }
+        run_state.runs.lock().await.remove(&run_id);
     });
     Ok(run_id)
 }
@@ -690,45 +703,67 @@ async fn drive_turn(
     attachments: Vec<ContentPart>,
 ) -> anyhow::Result<()> {
     let cwd = PathBuf::from(project);
-    let reference = session.as_deref().unwrap_or("latest");
-    let log = open_session(&cwd, reference)?;
-    // The state the run starts from, so the files it changes can be listed and
-    // undone once it ends. `None` when the project must not be snapshotted — a
-    // directory that holds everything (the home directory or an ancestor of it,
-    // the config directory) or one too large to hash — in which case the window
-    // shows no change card for the turn rather than failing to start it. A
-    // project that is not a git clone is snapshotted all the same.
-    let baseline = mark_baseline(&cwd).await;
-    let approver = state.approvals.approver(cwd.clone());
-    let asker = state.questions.asker_for(run_id);
-    let environment_key = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-    let environment = state
-        .environments
-        .lock()
-        .await
-        .get(&environment_key)
-        .cloned();
-    let turn = start_turn(
-        &cwd,
-        &prompt,
-        log,
-        Some(approver),
-        Some(asker),
-        reasoning,
-        agent,
-        attachments,
-        environment,
-    )
-    .await?;
+    let (cancel, steering, follow_ups) = {
+        let runs = state.runs.lock().await;
+        let run = runs.get(&run_id).expect("run reserved before startup");
+        (
+            run.cancel.clone(),
+            run.steering.clone(),
+            run.follow_ups.clone(),
+        )
+    };
+    let setup = cancel
+        .until(async {
+            let reference = session.as_deref().unwrap_or("latest");
+            let log = open_session(&cwd, reference)?;
+            // The state the run starts from, so the files it changes can be listed and
+            // undone once it ends. `None` when the project must not be snapshotted — a
+            // directory that holds everything (the home directory or an ancestor of it,
+            // the config directory) or one too large to hash — in which case the window
+            // shows no change card for the turn rather than failing to start it. A
+            // project that is not a git clone is snapshotted all the same.
+            let baseline = mark_baseline(&cwd).await;
+            let approver = state.approvals.approver(cwd.clone());
+            let asker = state.questions.asker_for(run_id);
+            let environment_key = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+            let environment = state
+                .environments
+                .lock()
+                .await
+                .get(&environment_key)
+                .cloned();
+            let turn = start_turn(
+                &cwd,
+                &prompt,
+                log,
+                Some(approver),
+                Some(asker),
+                reasoning,
+                agent,
+                attachments,
+                environment,
+                (cancel.clone(), steering, follow_ups),
+            )
+            .await?;
+            Ok::<_, anyhow::Error>((turn, baseline, environment_key))
+        })
+        .await;
+    let Some(setup) = setup else {
+        let _ = state.events.emit(
+            "agent-end",
+            json!({ "runId": run_id, "project": cwd.to_string_lossy() }),
+        );
+        return Ok(());
+    };
+    let (turn, baseline, environment_key) = setup?;
     let Turn {
         session_id,
         title,
         environment,
         mut events,
         handle,
-        steering,
-        follow_ups,
         cancel,
+        ..
     } = turn;
     // Whatever this turn built or reused stays for the next one in the project.
     state
@@ -737,16 +772,9 @@ async fn drive_turn(
         .await
         .insert(environment_key, environment);
     let stopped = cancel.clone();
-    state.runs.lock().await.insert(
-        run_id,
-        RunHandle {
-            abort: handle.abort_handle(),
-            steering,
-            follow_ups,
-            cancel,
-            cwd: cwd.clone(),
-        },
-    );
+    if let Some(run) = state.runs.lock().await.get_mut(&run_id) {
+        run.abort = Some(handle.abort_handle());
+    }
     let _ = state.events.emit(
         "agent-start",
         json!({ "runId": run_id, "sessionId": session_id, "title": title }),
@@ -962,18 +990,18 @@ fn review_sides(old: &str, new: &str) -> Value {
     }
 }
 
-/// Asks a running turn to stop. The loop finishes the in-flight step (so the
-/// session stays a valid call/result sequence) and then ends; if it is still
-/// running after a grace period it is force-aborted.
+/// Interrupts startup, model streams and tool waits. A stuck task is aborted
+/// after a grace period; its entry stays registered until cleanup finishes.
 pub async fn cancel_run(run_id: u64, state: &DesktopState) -> CmdResult<()> {
     let runs = state.runs.clone();
-    if let Some(run) = runs.lock().await.remove(&run_id) {
+    if let Some(run) = runs.lock().await.get(&run_id) {
         run.cancel.cancel();
-        let abort = run.abort;
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            abort.abort();
-        });
+        if let Some(abort) = run.abort.clone() {
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                abort.abort();
+            });
+        }
     }
     Ok(())
 }
@@ -990,6 +1018,9 @@ pub async fn steer_run(
     let runs = state.runs.clone();
     let runs = runs.lock().await;
     if let Some(run) = runs.get(&run_id) {
+        if run.abort.is_none() || run.cancel.is_cancelled() {
+            return Ok(false);
+        }
         let queue = if follow_up.unwrap_or(false) {
             &run.follow_ups
         } else {
@@ -1710,6 +1741,64 @@ mod tests {
         assert_eq!(packets[1]["id"], "agent-end");
         assert_eq!(packets[1]["payload"]["runId"], run_id);
         assert!(state.runs.lock().await.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn stop_owns_the_run_before_startup_and_keeps_it_registered() {
+        #[derive(Clone, Default)]
+        struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("oxide_stop_startup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = Output::default();
+        let state = Arc::new(DesktopState::new(
+            DesktopManager::load_from(dir.join("projects.json")).unwrap(),
+            EventSink::new(Arc::new(Host::new(output.clone()))),
+        ));
+        let id = send_prompt(
+            state.clone(),
+            dir.to_string_lossy().into_owned(),
+            "hello".into(),
+            Some("new".into()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(state.runs.lock().await.contains_key(&id));
+        assert!(!steer_run(id, "later".into(), None, None, &state)
+            .await
+            .unwrap());
+        cancel_run(id, &state).await.unwrap();
+        {
+            let runs = state.runs.lock().await;
+            assert!(runs.get(&id).unwrap().cancel.is_cancelled());
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while state.runs.lock().await.contains_key(&id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("startup cancellation must finish promptly");
+        let text = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+        let packets: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(packets.len(), 1, "{text}");
+        assert_eq!(packets[0]["id"], "agent-end");
+        assert_eq!(packets[0]["payload"]["runId"], id);
         std::fs::remove_dir_all(dir).ok();
     }
 

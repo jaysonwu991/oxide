@@ -787,11 +787,13 @@ event channel serializes events with
   dialog with it. Nothing is remembered between questions: an answer is about
   the turn that asked it.
 - **Cancel / queue / steer** — `send_prompt` returns a run id immediately and runs the
-  turn in the background. `cancel_run` sets the run's cooperative `Cancel` flag
-  (`oxide_core::agent::Cancel`): the loop finishes the current step — recording
-  a result for any planned tool calls so the session stays a valid
-  call/result sequence — and ends cleanly, with a 5-second force-abort fallback
-  if it is stuck. While the turn is active, the composer's saved Queue/Steer
+  turn in the background. `cancel_run` signals `oxide_core::agent::Cancel`,
+  interrupting model streams, retries, approvals, questions and asynchronous
+  tools; shell cancellation kills the child process tree too. Partial text and
+  a result for each planned tool are saved so the session can resume. The run
+  is registered before startup, and a Stop click before its id arrives is
+  remembered and delivered once it does. A 5-second force-abort fallback handles
+  a stuck task. While the turn is active, the composer's saved Queue/Steer
   choice decides what a new message does, and a queued one can be steered from
   its own row. Queue is the safe
   default: it waits until the current response finishes, then becomes the next

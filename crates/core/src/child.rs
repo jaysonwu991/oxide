@@ -69,6 +69,46 @@ pub(crate) fn detach_terminal_std(cmd: &mut std::process::Command) {
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn detach_terminal_std(_cmd: &mut std::process::Command) {}
 
+/// Shells have their own session, so cancellation must also stop their children.
+pub(crate) struct ProcessTree(Option<u32>);
+
+impl ProcessTree {
+    pub(crate) fn new(child: &tokio::process::Child) -> Self {
+        Self(child.id())
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.0 = None;
+    }
+
+    pub(crate) fn terminate(&mut self) {
+        if let Some(pid) = self.0.take() {
+            #[cfg(unix)]
+            // SAFETY: the negative pid addresses the session created by setsid.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            #[cfg(windows)]
+            {
+                let mut command = std::process::Command::new("taskkill");
+                detach_terminal_std(&mut command);
+                let _ = command
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            }
+        }
+    }
+}
+
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

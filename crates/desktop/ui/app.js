@@ -225,6 +225,7 @@ const state = {
   expandedSidebarProjects: new Set(),
   busy: false,
   runId: null,
+  stopRequested: false,
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
   followUpBehavior: savedFollowUpBehavior(),
@@ -3825,6 +3826,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
     }
   }
   resetTurn();
+  state.stopRequested = false;
   setBusy();
   setStatus(t("composer.working", "Working…"));
   try {
@@ -3841,6 +3843,7 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
       reasoning: state.reasoningPicked ? state.reasoning : null,
       attachments: attachments.length ? attachments : null,
     });
+    if (state.stopRequested && state.busy) await stop();
   } catch (error) {
     reportRunError(String(error));
     setIdle();
@@ -3901,9 +3904,15 @@ async function queueAction(action, index, direction = 0) {
 }
 
 async function stop() {
-  if (state.runId == null) return;
-  await invoke("cancel_run", { runId: state.runId });
+  if (!state.busy) return;
+  state.stopRequested = true;
   setStatus(t("composer.stopping", "Stopping…"));
+  if (state.runId == null) return;
+  try {
+    await invoke("cancel_run", { runId: state.runId });
+  } catch (error) {
+    reportRunError(String(error));
+  }
 }
 
 function ensureAssistant() {
