@@ -317,15 +317,15 @@ pub fn window_for(models: &Models, model: &str) -> Option<u64> {
 /// the desktop app and the extension read when the provider's own listing
 /// carries no `effort` metadata.
 pub fn reasoning_for(provider: &str, model: &str) -> Option<ModelReasoning> {
-    let entry = cached(reasoning_provider(provider, model))?;
+    let entry = cached(metadata_provider(provider, model))?;
     let (_, model) = matching_entry(&entry.models, model, |_| true)?;
     model.reasoning_levels()
 }
 
-/// Portkey forwards Claude's thinking parameters but has no pi.dev catalog of
-/// its own. Resolve those models against Anthropic's published metadata; an
-/// unknown model still needs a matching entry before it gets any levels.
-pub fn reasoning_provider<'a>(provider: &'a str, model: &str) -> &'a str {
+/// Portkey forwards Claude requests but has no pi.dev catalog of its own.
+/// Resolve its model capabilities against Anthropic's published metadata;
+/// every lookup still requires a matching model entry.
+pub fn metadata_provider<'a>(provider: &'a str, model: &str) -> &'a str {
     let model = model.to_ascii_lowercase();
     if crate::config::canonical_provider(provider) == "portkey"
         && crate::config::vendorless(&model).starts_with("claude-")
