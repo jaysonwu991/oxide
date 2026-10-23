@@ -1465,7 +1465,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("cli.help.PrintProviderCatalogsAsJson", "Print provider catalogs as JSON", "以 JSON 格式输出提供商的模型目录"),
     ("cli.help.QueryOnlyTheActiveProviderForLatencySensitiveClients", "Query only the active provider (for latency-sensitive clients)", "仅查询当前提供商（供需要低延迟的客户端使用）"),
     ("cli.help.PrintTheActiveModelSReasoningLevelsAndCurrentChoice", "Print the active model's reasoning levels and current choice", "输出当前模型支持的推理等级和当前选项"),
-    ("cli.help.WarmTheModelCacheFromTheProviderBeforeAnsweringSoAFrontEndThatNeverOpensTheModelPickerStillLearnsTheModelSOwnLevels", "Warm the model cache from the provider before answering, so a front-end that never opens the model picker still learns the model's own levels", "答复前从提供商预热模型缓存，让未打开模型选择器的前端也能获取模型支持的推理等级"),
+    ("cli.help.WarmMissingReasoningMetadataBeforeAnsweringSoAFrontEndThatNeverOpensTheModelPickerStillLearnsTheModelSOwnLevels", "Warm missing reasoning metadata before answering, so a front-end that never opens the model picker still learns the model's own levels", "答复前补齐缺失的推理元数据，让未打开模型选择器的前端也能获取模型支持的推理等级"),
     ("cli.help.ReadTheLevelsForThisModelRatherThanTheActiveOne", "Read the levels for this model rather than the active one", "读取指定模型而非当前模型的推理等级"),
     ("cli.help.PrintTheContextWindowARunResolvesForTheActiveModel", "Print the context window a run resolves for the active model", "输出当前模型解析后的上下文窗口"),
     ("cli.help.PrintTheWindowAsJson", "Print the window as JSON", "以 JSON 格式输出上下文窗口"),

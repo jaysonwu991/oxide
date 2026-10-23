@@ -1711,6 +1711,26 @@ impl Config {
         self.reasoning_supported = self.resolve_reasoning_supported();
     }
 
+    /// Warms missing reasoning metadata without putting a provider request in
+    /// front of levels already on disk. The published catalog can answer for a
+    /// whole model family, so try it before a listing that may carry no effort.
+    pub async fn ensure_reasoning_supported(&mut self, cwd: Option<&Path>) {
+        self.refresh_reasoning_supported();
+        if self.supports_reasoning() {
+            return;
+        }
+        let provider = crate::catalog::reasoning_provider(&self.provider, &self.model);
+        let _ = crate::catalog::refresh_if_stale(provider, cwd).await;
+        self.refresh_reasoning_supported();
+        if self.supports_reasoning() {
+            return;
+        }
+        let _ = crate::llm::LlmClient::new(self.clone())
+            .refresh_models()
+            .await;
+        self.refresh_reasoning_supported();
+    }
+
     /// Only the explicit levels advertised by the provider, in its order.
     pub fn reasoning_levels(&self) -> Vec<Reasoning> {
         self.reasoning_supported
@@ -3353,6 +3373,8 @@ mod tests {
                 "claude-haiku-4-5": {"id": "claude-haiku-4-5", "contextWindow": 200000, "reasoning": true},
                 "claude-sonnet-4-5": {"id": "claude-sonnet-4-5", "contextWindow": 1000000, "reasoning": true,
                     "thinkingLevelMap": {"off": null, "low": "low", "high": "high", "max": "max"}},
+                "claude-sonnet-5": {"id": "claude-sonnet-5", "contextWindow": 1000000, "reasoning": true,
+                    "thinkingLevelMap": {"xhigh": "xhigh", "max": "max"}},
                 "gpt-4o": {"id": "gpt-4o", "contextWindow": 128000, "reasoning": false}
             }}}}"#,
         )
@@ -3400,8 +3422,8 @@ mod tests {
         );
         assert_eq!(sonnet.effective_reasoning(), Reasoning::Max);
 
-        // A model the catalog says does not reason keeps no selector, and a
-        // provider pi.dev has no catalog for is not consulted.
+        // A model the catalog says does not reason keeps no selector. Portkey
+        // forwards Claude thinking, so it uses the same published metadata.
         let mut plain = Config {
             provider: "anthropic".to_string(),
             model: "gpt-4o".to_string(),
@@ -3416,6 +3438,13 @@ mod tests {
             base_url: "https://portkey.test/v1".to_string(),
             ..Config::default()
         };
+        portkey.refresh_reasoning_supported();
+        assert!(portkey.supports_reasoning());
+        assert_eq!(portkey.reasoning_levels(), config.reasoning_levels());
+        portkey.model = "claude-sonnet-5".into();
+        portkey.refresh_reasoning_supported();
+        assert_eq!(portkey.reasoning_levels(), Reasoning::LEVELS.to_vec());
+        portkey.model = "claude-unknown".into();
         portkey.refresh_reasoning_supported();
         assert!(!portkey.supports_reasoning());
 

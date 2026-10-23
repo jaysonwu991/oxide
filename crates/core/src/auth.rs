@@ -152,7 +152,8 @@ pub async fn login_provider(
     // so a model whose listing carries no effort metadata still offers the
     // levels the terminal, the app and the panel draw, without waiting for the
     // next launch.
-    let _ = crate::catalog::refresh_if_stale(&name, Some(cwd)).await;
+    let provider = crate::catalog::reasoning_provider(&name, &config.model);
+    let _ = crate::catalog::refresh_if_stale(provider, Some(cwd)).await;
     Ok(LoginOutcome {
         label: provider_label(&name).to_string(),
         local: is_local(&name),
