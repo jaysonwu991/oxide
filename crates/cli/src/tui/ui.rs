@@ -2463,14 +2463,10 @@ fn render_item_themed(
     match item {
         ChatItem::Banner { info } => render_banner_themed(width, theme, info, lines),
         ChatItem::User(text) => lines.extend(wrapped_with_prefix(
-            vec![
-                Span::styled("❯ ", Style::default().fg(theme.user).add_modifier(bold)),
-                Span::styled(
-                    crate::i18n::t(lang, "ui.you"),
-                    Style::default().fg(theme.user).add_modifier(bold),
-                ),
-                Span::styled(" ", Style::default()),
-            ],
+            vec![Span::styled(
+                "❯ ",
+                Style::default().fg(theme.user).add_modifier(bold),
+            )],
             text,
             width,
             Style::default(),
@@ -2515,17 +2511,10 @@ fn render_item_themed(
             }
         }
         ChatItem::Assistant(text) => {
-            let prefix = vec![
-                Span::styled(
-                    "◆ ",
-                    Style::default().fg(theme.assistant).add_modifier(bold),
-                ),
-                Span::styled(
-                    "Oxide",
-                    Style::default().fg(theme.assistant).add_modifier(bold),
-                ),
-                Span::styled(" ", Style::default()),
-            ];
+            let prefix = vec![Span::styled(
+                "◆ ",
+                Style::default().fg(theme.assistant).add_modifier(bold),
+            )];
             lines.extend(crate::tui::markdown::render_with_prefix(
                 text, width, prefix, theme,
             ));
@@ -5276,10 +5265,10 @@ mod tests {
     }
 
     #[test]
-    fn speaker_labels_render_inline_with_message_text() {
+    fn speaker_marks_render_inline_with_message_text() {
         let mut lines = Vec::new();
         render_item(&ChatItem::User("hello there".into()), 80, false, &mut lines);
-        assert_eq!(line_text(&lines[0]), "❯ you hello there");
+        assert_eq!(line_text(&lines[0]), "❯ hello there");
 
         let mut lines = Vec::new();
         render_item(
@@ -5288,7 +5277,7 @@ mod tests {
             false,
             &mut lines,
         );
-        assert_eq!(line_text(&lines[0]), "◆ Oxide here is the answer");
+        assert_eq!(line_text(&lines[0]), "◆ here is the answer");
     }
 
     #[test]
@@ -5301,7 +5290,7 @@ mod tests {
             &mut lines,
         );
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(text[0], "◆ Oxide Summary");
+        assert_eq!(text[0], "◆ Summary");
         assert!(text.iter().any(|line| line.contains("• bold item")));
         assert!(text.iter().any(|line| line.contains("some code")));
         for line in &text {
@@ -6442,12 +6431,13 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        // The transcript is inset by a column on each side, so a 139-column
-        // terminal wraps a reply at the 137 the pane showed.
+        // The transcript is inset by a column on each side and the reply's first
+        // line carries the `◆` mark, so a 133-column terminal wraps the body at
+        // the 131 the pane showed.
         let body = "**Short answer: no code change is needed in either, but both do get the new behavior \u{2014} and I found one real asymmetry while checking, which I fixed.**";
         let mut app = App::new("model".into(), "/tmp/project".into(), Reasoning::Auto);
         app.items.push(ChatItem::Assistant(body.into()));
-        let mut terminal = Terminal::new(TestBackend::new(139, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(133, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
@@ -6459,10 +6449,10 @@ mod tests {
             Some(line)
         };
 
-        let head = row_of_text("\u{25c6} Oxide").expect("speaker label");
+        let head = row_of_text("\u{25c6} Short answer").expect("speaker mark");
         assert!(
             head.contains("asymmetry while"),
-            "the label line carries the first words: {head}"
+            "the mark line carries the first words: {head}"
         );
         let tail = row_of_text("checking,").expect("tail of the reply");
         assert!(
