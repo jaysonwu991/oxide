@@ -58,6 +58,14 @@ press Shift+Tab to cycle levels; `--reasoning` and `OXIDE_REASONING` set the
 starting level, and resuming a session restores the level recorded on it. See
 [Reasoning](cli.md#reasoning).
 
+The shared agent instructions also scale investigation and verification to the
+selected effort. Lower levels keep preparation brief; medium favors focused
+checks and implementation once enough evidence is available; higher levels
+allow broader investigation of relevant risks. Every level still completes the
+full request, and user instructions take precedence. This guides behavior; it
+does not impose a response-time limit. Each primary turn records its model and
+selected reasoning level in the session log across CLI, Desktop and VS Code.
+
 ### max_tokens and context_window
 
 `max_tokens` caps the output of a single model turn, reasoning included. When a
@@ -67,7 +75,10 @@ so a long-thinking turn recovers instead of ending in an empty response. A
 `max_tokens` set in `config.json` is used as written; when it is unset, Oxide
 takes the output limit the provider catalog publishes for the model (held to
 32768), so a model that can write far more than the old 8k default is not
-truncated into a retry.
+truncated into a retry. Portkey Claude models resolve output limits, context
+windows and prompt-cache lifetimes from the remembered Anthropic catalog, just
+as their effort levels do. Unknown models retain the conservative fallback,
+and explicit output/context settings still win.
 
 A conversation large enough to matter is kept warm while the reader is idle:
 when the model's provider publishes a prompt-cache lifetime for it, Oxide

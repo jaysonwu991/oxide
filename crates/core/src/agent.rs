@@ -648,6 +648,12 @@ async fn run_loop(
     runtime: Runtime,
     depth: usize,
 ) {
+    if depth == 0 {
+        if let Some(log) = &runtime.session {
+            let _ = log.append_model_change(&config.provider, &config.model);
+            let _ = log.append_thinking_level(config.reasoning.label());
+        }
+    }
     let client = match runtime.session.as_ref() {
         // The session id doubles as the provider's cache-affinity key, so
         // successive turns reuse the cached conversation prefix.
@@ -4484,6 +4490,75 @@ mod tests {
             ))
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn portkey_turns_send_catalog_budget_and_persist_effort_choices() {
+        let (addr, server) =
+            sse_server(vec![answer_body("Completed"), answer_body("Completed")]).await;
+        let dir = std::env::temp_dir().join(format!("oxide_portkey_turn_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        log.set_name("Existing work").unwrap();
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(Arc::clone(&log));
+        for reasoning in [
+            crate::config::Reasoning::Medium,
+            crate::config::Reasoning::Low,
+        ] {
+            let config = Config {
+                provider: "portkey".into(),
+                model: "claude-opus-5".into(),
+                api_key: "pk-test".into(),
+                base_url: format!("http://{addr}"),
+                reasoning,
+                catalog_output_limits: BTreeMap::from([(
+                    "anthropic".into(),
+                    BTreeMap::from([("claude-opus-5".into(), 128_000)]),
+                )]),
+                ..Config::default()
+            };
+            log.append(&Message::user("Update the article")).unwrap();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            run(
+                config,
+                dir.clone(),
+                log.messages().unwrap(),
+                tx,
+                runtime.clone(),
+            )
+            .await;
+            while let Ok(event) = rx.try_recv() {
+                assert!(
+                    !matches!(event, AgentEvent::Error(_) | AgentEvent::Retrying { .. }),
+                    "{event:?}"
+                );
+            }
+            let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+            assert_eq!(
+                reopened.thinking_level().as_deref(),
+                Some(reasoning.label())
+            );
+            assert!(
+                matches!(reopened.entries().iter().rev().find(|entry| matches!(entry, crate::session::Entry::ModelChange(_))),
+                Some(crate::session::Entry::ModelChange(entry)) if entry.provider == "portkey" && entry.model_id == "claude-opus-5")
+            );
+        }
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        for (request, effort) in requests.iter().zip(["medium", "low"]) {
+            let body: serde_json::Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body["max_tokens"], 32_768);
+            assert_eq!(body["thinking"]["type"], "adaptive");
+            assert_eq!(body["output_config"]["effort"], effort);
+            let system = body["messages"][0]["content"].to_string();
+            assert!(
+                system.contains(&format!("Effective reasoning effort: {effort}")),
+                "{system}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

@@ -1719,7 +1719,7 @@ impl Config {
         if self.supports_reasoning() {
             return;
         }
-        let provider = crate::catalog::reasoning_provider(&self.provider, &self.model);
+        let provider = crate::catalog::metadata_provider(&self.provider, &self.model);
         let _ = crate::catalog::refresh_if_stale(provider, cwd).await;
         self.refresh_reasoning_supported();
         if self.supports_reasoning() {
@@ -1791,30 +1791,29 @@ impl Config {
     /// gateway spells its own way — gets its own window instead of the built-in
     /// table's conservative one.
     pub fn catalog_window(&self) -> Option<u64> {
-        let models = self
-            .catalog_windows
-            .get(crate::catalog::provider_id(&self.provider)?)?;
+        let models = self.catalog_windows.get(crate::catalog::provider_id(
+            crate::catalog::metadata_provider(&self.provider, &self.model),
+        )?)?;
         crate::catalog::window_for(models, &self.model)
     }
 
     /// How long the provider keeps this model's prompt cache, when its catalog
     /// publishes a lifetime. `None` means the model is not warmed between turns.
     pub fn prompt_cache_ttl(&self) -> Option<std::time::Duration> {
-        let models = self
-            .catalog_prompt_cache
-            .get(crate::catalog::provider_id(&self.provider)?)?;
+        let models = self.catalog_prompt_cache.get(crate::catalog::provider_id(
+            crate::catalog::metadata_provider(&self.provider, &self.model),
+        )?)?;
         let seconds = crate::catalog::window_for(models, &self.model)?;
         Some(std::time::Duration::from_secs(seconds))
     }
 
     /// The output limit the active provider's catalog publishes for the model,
-    /// when it has been looked up. Pi reads the same figure from the same
-    /// catalog and defaults a response to it; Oxide keeps it as a ceiling on
-    /// the conservative [`default_max_tokens`].
+    /// when it has been looked up. This supplies the default request budget,
+    /// bounded by [`MAX_REQUEST_OUTPUT_TOKENS`].
     pub fn catalog_max_tokens(&self) -> Option<u64> {
-        let models = self
-            .catalog_output_limits
-            .get(crate::catalog::provider_id(&self.provider)?)?;
+        let models = self.catalog_output_limits.get(crate::catalog::provider_id(
+            crate::catalog::metadata_provider(&self.provider, &self.model),
+        )?)?;
         crate::catalog::window_for(models, &self.model)
     }
 
@@ -2922,6 +2921,22 @@ impl Config {
             "# Tool use\nWork in larger batches to avoid extra round trips: read a whole file (or a wide `offset`/`limit`) once, and issue independent `read`, `grep`, `find` or `ls` calls in the same step. Locate with `grep` (a regular expression by default; set `literal: true` for plain text), then read around a hit. Once a search identifies likely files, act on them instead of repeatedly rephrasing the same repository-wide search. If a search finds nothing, check its case, path and glob before concluding the code is absent; `*.ts` excludes `*.tsx`. Read code and its related tests together, and run the smallest relevant test early. Re-read a file only after something changed it, an edit mismatch, or for a region not previously returned.\n\nBefore editing, read the region and copy `oldText` from that result: leading indentation is significant, while `N|` numbering and trailing whitespace are tolerated. Every replacement in one `edit` call targets its single top-level `path` and is matched against the original file, not earlier replacements. Use one call per file, drop no-op replacements, and merge overlapping changes. A failed batch writes nothing: re-read, correct the targets, and resend the batch; a closest-region hint is context, not permission to replace unrelated text.\n\nPrefer `read`, `grep`, `find` and `ls` over shell equivalents. Search with the tools, never with a shell `grep -r`/`rg`/`find` from the repo root: the tools honor `.gitignore` and skip `.git/`, `target/`, `node_modules/` and `.venv/`, and `grep` spreads its scan across threads, while a shell search reads every build artifact — a `| grep -v` filter afterwards cannot give back the time spent. Scope a shell search to one directory and use it only for a command's own output; never sweep the whole filesystem with `find /`, or the home directory with `find ~`. `read`, `ls`, `find` and `grep` accept absolute paths. `bash` already starts in the project root, so do not prefix `cd <root> &&`; keep each command to one task instead of chaining with `;` or `&&`.\n\nShell functions such as `nvm` are not loaded; a matching `.nvmrc` under `~/.nvm/versions/node` is added to PATH. Check a command's version and `--help` before guessing flags, and inspect project scripts and installed binaries before installing anything. Use `bash`'s `timeout` argument. Pass clone flags after `--`, use `git diff --stat <base>...HEAD`, and pass `edit.edits` as a JSON array of `{oldText,newText}` objects, never XML. Create a file, including a scratch script, with `write` inside the project: a script in the temp directory resolves its relative imports against its own directory. Select only the fields a command needs (for example `--jq`) instead of piping a large payload through `head`; wrap `.[] | {...}` in `[.[] | {...}]` for an array, and do not pipe JSON lines to `python -m json.tool`. Stderr is diagnostic even on success: judge the exit status and the result. A search with no matches is a result, not proof of failure.".to_string(),
         );
 
+        let effort = self.effective_reasoning();
+        let scope = match effort {
+            Reasoning::Off | Reasoning::Minimal | Reasoning::Low =>
+                "Keep investigation brief: inspect the relevant files, make the requested change, and run the smallest meaningful verification. Expand only when a concrete failure or risk requires it.",
+            Reasoning::Medium =>
+                "Use focused investigation and relevant tests. Once you have enough evidence to make the requested change, implement it before expanding validation.",
+            Reasoning::High | Reasoning::Xhigh | Reasoning::Max =>
+                "Investigate relevant edge cases and use broader verification where the task warrants it. Depth should resolve concrete uncertainties rather than delay implementation.",
+            Reasoning::Auto =>
+                "Scale investigation and verification to the task's complexity and risk.",
+        };
+        sections.push(format!(
+            "# Work scope\nRequested reasoning effort: {}. Effective reasoning effort: {}. {scope} Complete the user's full request at every effort level. Prefer the project's existing checks over building a new validation harness. For content or diagram edits, draft the requested changes and validate those actual changes together; do not repeatedly probe hypothetical variants before writing. After a check passes, repeat it only when a relevant change, failure or unresolved concern justifies it. User instructions about scope and verification take precedence.",
+            self.reasoning.label(), effort.label(),
+        ));
+
         sections.push(
             "# Communication\nWrite prose in your reply, not through `bash`, `echo`, `printf` or a heredoc. Give short progress updates and a final summary proportional to the work: outcome, meaningful changes, verification and remaining limitations. Avoid banners, repeated checklist lists, unrequested summary files, and automatic agreement. Use Markdown lists with a blank line around them, and checkboxes only for tracked tasks. A diagram clarifying architecture, a workflow or relationships belongs in a fenced `mermaid` block (desktop and VS Code render it) with a short explanation. Diagnose a failed command instead of celebrating it; after a tool refusal, follow its suggested alternative.".to_string(),
         );
@@ -3314,6 +3329,59 @@ mod tests {
         };
         assert_eq!(no_catalog.catalog_window(), None);
         assert_eq!(no_catalog.context_window(), 128_000);
+    }
+
+    #[test]
+    fn portkey_claude_uses_upstream_limits_and_cache_lifetime() {
+        let metadata = BTreeMap::from([(
+            "anthropic".to_string(),
+            BTreeMap::from([("claude-opus-5".to_string(), 128_000)]),
+        )]);
+        for model in [
+            "claude-opus-5",
+            "ANTHROPIC/CLAUDE-OPUS-5",
+            "us.anthropic.claude-opus-5-20261001-v1:0",
+        ] {
+            let mut config = Config {
+                provider: "portkey".into(),
+                model: model.into(),
+                catalog_windows: BTreeMap::from([(
+                    "anthropic".into(),
+                    BTreeMap::from([("claude-opus-5".into(), 1_000_000)]),
+                )]),
+                catalog_output_limits: metadata.clone(),
+                catalog_prompt_cache: BTreeMap::from([(
+                    "anthropic".into(),
+                    BTreeMap::from([("claude-opus-5".into(), 300)]),
+                )]),
+                ..Config::default()
+            };
+            assert_eq!(config.context_window(), 1_000_000, "{model}");
+            assert_eq!(config.catalog_max_tokens(), Some(128_000), "{model}");
+            assert_eq!(config.max_output_tokens(), 32_768, "{model}");
+            assert_eq!(
+                config.prompt_cache_ttl(),
+                Some(std::time::Duration::from_secs(300))
+            );
+
+            config.context_window = 200_000;
+            config.max_tokens = 4_096;
+            config.max_tokens_explicit = true;
+            assert_eq!(config.context_window(), 200_000);
+            assert_eq!(config.max_output_tokens(), 4_096);
+
+            for (provider, model) in [
+                ("portkey", "claude-unknown"),
+                ("portkey", "gpt-5"),
+                ("custom", "claude-opus-5"),
+            ] {
+                config.provider = provider.into();
+                config.model = model.into();
+                assert_eq!(config.catalog_window(), None);
+                assert_eq!(config.catalog_max_tokens(), None);
+                assert_eq!(config.prompt_cache_ttl(), None);
+            }
+        }
     }
 
     #[test]
