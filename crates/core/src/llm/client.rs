@@ -444,24 +444,8 @@ impl LlmClient {
                     thinking: &mut *hooks.thinking,
                     retry: &mut *hooks.retry,
                 };
-                match self.config.provider_kind() {
-                    ProviderKind::Anthropic => {
-                        self.stream_anthropic(messages, tools, max_tokens, &mut attempt_hooks)
-                            .await
-                    }
-                    ProviderKind::Gemini => {
-                        self.stream_gemini(messages, tools, max_tokens, &mut attempt_hooks)
-                            .await
-                    }
-                    ProviderKind::Bedrock => {
-                        self.stream_bedrock(messages, tools, max_tokens, &mut attempt_hooks)
-                            .await
-                    }
-                    ProviderKind::OpenAi => {
-                        self.stream_openai(messages, tools, max_tokens, &mut attempt_hooks)
-                            .await
-                    }
-                }
+                self.stream_once(messages, tools, max_tokens, &mut attempt_hooks)
+                    .await
             }
             .map_err(|error| media_request_error(error, messages));
             match result {
@@ -576,6 +560,39 @@ impl LlmClient {
                     tokio::time::sleep(delay).await;
                 }
             }
+        }
+    }
+
+    /// Cache refreshes intentionally truncate after one token; retrying or
+    /// escalating that response would spend extra tokens without warming more.
+    pub(crate) async fn stream_cache_warm(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<()> {
+        self.stream_once(messages, tools, 1, hooks).await?;
+        Ok(())
+    }
+
+    async fn stream_once(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        max_tokens: u32,
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<AssistantTurn> {
+        match self.config.provider_kind() {
+            ProviderKind::Anthropic => {
+                self.stream_anthropic(messages, tools, max_tokens, hooks)
+                    .await
+            }
+            ProviderKind::Gemini => self.stream_gemini(messages, tools, max_tokens, hooks).await,
+            ProviderKind::Bedrock => {
+                self.stream_bedrock(messages, tools, max_tokens, hooks)
+                    .await
+            }
+            ProviderKind::OpenAi => self.stream_openai(messages, tools, max_tokens, hooks).await,
         }
     }
 

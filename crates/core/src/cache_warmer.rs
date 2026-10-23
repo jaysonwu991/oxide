@@ -140,11 +140,13 @@ pub fn schedule(
             {
                 return;
             }
-            if warm_once(&config, &request, &tools, session_id.as_deref())
-                .await
-                .is_err()
-            {
-                return;
+            tokio::select! {
+                _ = wake().notified() => return,
+                result = warm_once(&config, &request, &tools, session_id.as_deref()) => {
+                    if result.is_err() {
+                        return;
+                    }
+                }
             }
         }
     });
@@ -200,7 +202,7 @@ pub async fn warm_once(
         thinking: &mut ignore_thinking,
         retry: &mut ignore_retry,
     };
-    client.stream_chat(request, tools, &mut hooks).await?;
+    client.stream_cache_warm(request, tools, &mut hooks).await?;
     Ok(())
 }
 
@@ -280,7 +282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_warm_replay_asks_for_one_token() {
+    async fn a_truncated_warm_replay_asks_for_one_token_without_retrying() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
@@ -314,7 +316,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let request = read_request(&mut socket).await;
-            let body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            let body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n";
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
@@ -331,9 +333,13 @@ mod tests {
             api_key: "sk-test".into(),
             ..Config::default()
         };
-        warm_once(&config, &[Message::user("hello")], &[], None)
-            .await
-            .expect("a replay is a request like any other");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            warm_once(&config, &[Message::user("hello")], &[], None),
+        )
+        .await
+        .expect("a truncated warm-up must not enter the normal retry loop")
+        .expect("intentional truncation still refreshes the cache");
         let request = server.await.unwrap();
         assert!(
             request.contains("\"max_tokens\":1") || request.contains("\"max_tokens\": 1"),

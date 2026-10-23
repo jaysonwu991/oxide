@@ -1507,7 +1507,7 @@ describe("command contributions", () => {
       "a message in the same thread reuses it",
     );
     assert.ok(
-      chat.includes("onTurnEnd: () => this.handleTurnEnd()"),
+      chat.includes("if (this.activeCliSession === session) this.handleTurnEnd()"),
       "and a finished turn settles without a process exit",
     );
     // The flags are part of the process identity, so changing model or agent

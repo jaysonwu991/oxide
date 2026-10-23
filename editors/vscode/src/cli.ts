@@ -265,6 +265,9 @@ export function openSession(
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
+  child.stdin.on("error", () => {
+    // The process exit handler reports a pipe closed before stdin was read.
+  });
 
   const clearAbort = (): void => {
     if (abortTimer) clearTimeout(abortTimer);
@@ -376,14 +379,11 @@ export function openSession(
     close,
     start(input: TurnInput): Turn {
       if (exited) throw new Error("the oxide process has exited");
+      if (active) throw new Error("the oxide process already has an active turn");
       active = true;
       clearIdle();
       clearAbort();
       try {
-        child.stdin.on("error", () => {
-          // A process that exits before reading stdin closes the pipe; the
-          // exit handler reports the real problem.
-        });
         child.stdin.write(promptFrame(input.prompt, input.images ?? []));
       } catch {
         // Nothing to do: the exit handler reports the failure.

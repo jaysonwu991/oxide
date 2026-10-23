@@ -54,10 +54,10 @@ const URL_ENV: &str = "OXIDE_MODEL_CATALOG_URL";
 /// connection for minutes, long enough for a slow network.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The shape a remembered entry is written with. Entries written before the
-/// reasoning metadata was kept carry `0`, so a launch re-reads the provider's
-/// catalog instead of trusting an ETag that would answer `304` forever.
-const STORE_VERSION: u32 = 2;
+/// The shape a remembered entry is written with. Older entries lack reasoning
+/// or output/cache metadata, so re-read the full catalog instead of accepting
+/// an ETag that would leave those fields missing after a `304`.
+const STORE_VERSION: u32 = 3;
 
 /// Two oxide processes — a terminal and the desktop app — can write the file at
 /// the same time, so the read that merges one process's answer into it and the
@@ -1210,18 +1210,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_catalog_written_before_the_reasoning_metadata_is_read_again() {
+    async fn a_catalog_written_before_output_and_cache_metadata_is_read_again() {
         let _env = crate::env_lock::hold();
         let dir = temp_dir("upgrade");
         let path = dir.join(FILE_NAME);
         std::env::set_var(FILE_ENV, &path);
-        // What an older release remembered: the windows, an ETag, no shape.
+        // Version 2 remembered reasoning and windows, but no output/cache limits.
         write(
             &path,
             "deepseek",
             &CatalogEntry {
                 checked_at: now_secs(),
-                version: 0,
+                version: 2,
                 etag: Some("\"old\"".into()),
                 models: entry_models(&[("deepseek-flash", 1_000_000)]),
             },
@@ -1230,6 +1230,7 @@ mod tests {
         assert!(read(&path, "deepseek").unwrap().is_stale());
 
         let body = r#"{"deepseek-flash":{"id":"deepseek-flash","contextWindow":1000000,"reasoning":true,
+            "maxTokens":384000,"promptCache":{"short":300},
             "thinkingLevelMap":{"low":"low","high":"high","max":"max"}}}"#;
         let server = TestServer::start(vec![Response::new(200, body, &[], &[])]);
         std::env::set_var(URL_ENV, server.url());
@@ -1240,6 +1241,15 @@ mod tests {
         assert_eq!(server.requests()[0].header("if-none-match"), None);
         assert_eq!(entry.version, STORE_VERSION);
         assert!(entry.models["deepseek-flash"].reasoning);
+        assert_eq!(entry.models["deepseek-flash"].max_tokens, 384_000);
+        assert_eq!(
+            entry.models["deepseek-flash"]
+                .prompt_cache
+                .as_ref()
+                .unwrap()
+                .short,
+            300
+        );
         assert!(!entry.is_stale());
 
         std::env::remove_var(URL_ENV);
@@ -1259,7 +1269,7 @@ mod tests {
             "openai",
             &CatalogEntry {
                 checked_at: now_secs(),
-                version: 0,
+                version: 2,
                 etag: Some("\"old\"".into()),
                 models: entry_models(&[("gpt-5", 400_000)]),
             },

@@ -1809,7 +1809,7 @@ impl Config {
             return self.max_tokens;
         }
         self.catalog_max_tokens()
-            .map(|max| (max as u32).clamp(1, MAX_REQUEST_OUTPUT_TOKENS))
+            .map(|max| max.clamp(1, u64::from(MAX_REQUEST_OUTPUT_TOKENS)) as u32)
             .unwrap_or(self.max_tokens)
     }
 
@@ -3321,6 +3321,13 @@ mod tests {
             .insert("deepseek-flash".to_string(), 4_096);
         // A model with a smaller published limit is held to it.
         assert_eq!(config.max_output_tokens(), 4_096);
+
+        config
+            .catalog_output_limits
+            .get_mut("deepseek")
+            .unwrap()
+            .insert("deepseek-flash".to_string(), u64::from(u32::MAX) + 1);
+        assert_eq!(config.max_output_tokens(), 32_768);
 
         // A `max_tokens` the reader configured is theirs, never raised.
         config.max_tokens_explicit = true;

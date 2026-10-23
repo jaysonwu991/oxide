@@ -374,6 +374,7 @@ export class ChatController {
   /// model.
   private cliSessions = new Map<string, CliSession>();
   private lastSessionKey: string | null = null;
+  private activeCliSession: CliSession | null = null;
   private run: RunState | null = null;
   private continueLast = false;
   /// The dialog the panel paints over the transcript — the MCP server list or
@@ -1924,7 +1925,7 @@ export class ChatController {
     // thread id is checked separately, so one process never receives a
     // message for another conversation.
     const signature = buildTurnArgs({ ...options, session: null, continueLast: false }).join("\u0000");
-    const key = `${prepared.cwd}\u0000${signature}`;
+    const key = `${prepared.cwd}\u0000${command}\u0000${signature}`;
     let session = this.cliSessions.get(key);
     if (session && (!session.alive || session.sessionId !== (target.sessionId ?? null))) {
       session.close();
@@ -1934,15 +1935,20 @@ export class ChatController {
     if (!session) {
       this.output.appendLine(`\n$ ${command} ${args.join(" ")}`);
       session = openCliSession(command, args, prepared.cwd, {
-        onEvent: (event) => this.handleEvent(event),
+        onEvent: (event) => {
+          if (this.activeCliSession === session) this.handleEvent(event);
+        },
         onStderr: (line) => {
-          this.run?.stderr.push(line.trim());
+          if (this.activeCliSession === session) this.run?.stderr.push(line.trim());
           this.output.appendLine(`[stderr] ${line}`);
         },
-        onTurnEnd: () => this.handleTurnEnd(),
+        onTurnEnd: () => {
+          if (this.activeCliSession === session) this.handleTurnEnd();
+        },
         onExit: (result) => {
-          this.cliSessions.delete(key);
-          this.handleExit(result);
+          // A replaced or parked process may exit during another turn.
+          if (this.cliSessions.get(key) === session) this.cliSessions.delete(key);
+          if (this.activeCliSession === session) this.handleExit(result);
         },
       });
       this.cliSessions.set(key, session);
@@ -1965,6 +1971,7 @@ export class ChatController {
       context: prepared.context,
       attachments: prepared.attachments,
     };
+    this.activeCliSession = session;
     this.turn = session.start({
       prompt: prepared.prompt,
       // The paths travel with the prompt instead of in `--image` flags: in
@@ -2148,6 +2155,7 @@ export class ChatController {
     const title = away ? this.runLabel() : "";
     this.turn = null;
     this.run = null;
+    this.activeCliSession = null;
     target.busy = false;
     target.status = "Idle";
     // A card still waiting belongs to a request whose process is gone (a stop,

@@ -94,7 +94,11 @@ impl LspManager {
         path: &Path,
     ) -> Option<String> {
         let config = server_for(path)?;
-        if !self.servers.lock().await.contains_key(config.language_id) {
+        let running = match self.servers.try_lock() {
+            Ok(servers) => servers.contains_key(config.language_id),
+            Err(_) => return None,
+        };
+        if !running {
             // Start the server for the next edit instead of blocking this one:
             // a cold rust-analyzer can take seconds to index a project, and the
             // edit that triggered it has already been written.
@@ -151,7 +155,14 @@ impl LspManager {
             .with_context(|| format!("reading {}", full.display()))?;
         let uri = file_uri(&full);
 
-        let mut servers = self.servers.lock().await;
+        let mut servers = if connect {
+            self.servers.lock().await
+        } else {
+            match self.servers.try_lock() {
+                Ok(servers) => servers,
+                Err(_) => return Ok(None),
+            }
+        };
         if self.unavailable.lock().await.contains(config.language_id) {
             return Ok(None);
         }
@@ -160,6 +171,9 @@ impl LspManager {
         }
         for _ in 0..2 {
             if !servers.contains_key(config.language_id) {
+                if !connect {
+                    return Ok(None);
+                }
                 match Server::connect(config, cwd).await {
                     Ok(server) => {
                         servers.insert(config.language_id.to_string(), server);
@@ -427,6 +441,19 @@ fn command_exists(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn automatic_diagnostics_skip_a_busy_server() {
+        let manager = Arc::new(LspManager::new());
+        let _busy = manager.servers.lock().await;
+        let report = tokio::time::timeout(
+            Duration::from_millis(100),
+            manager.diagnostics_if_running(Path::new("."), Path::new("source.rs")),
+        )
+        .await
+        .expect("an edit must not queue behind server initialization");
+        assert!(report.is_none());
+    }
 
     /// A tiny stdio LSP server: it answers `initialize`, sends a diagnostic on
     /// the first `didOpen` and, on its very first run, exits right after so the
