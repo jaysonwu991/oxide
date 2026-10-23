@@ -259,6 +259,7 @@ export function openSession(
   let active = false;
   let sessionId: string | null = null;
   let nextSteerId = 1;
+  let turnGeneration = 0;
   let abortTimer: NodeJS.Timeout | undefined;
   let idleTimer: NodeJS.Timeout | undefined;
   const pendingSteers = new Map<number, (accepted: boolean) => void>();
@@ -381,6 +382,7 @@ export function openSession(
       if (exited) throw new Error("the oxide process has exited");
       if (active) throw new Error("the oxide process already has an active turn");
       active = true;
+      const generation = ++turnGeneration;
       clearIdle();
       clearAbort();
       try {
@@ -390,7 +392,7 @@ export function openSession(
       }
       return {
         steer(prompt: string, images: readonly string[] = [], followUp = false) {
-          if (exited || !active) return Promise.resolve(false);
+          if (exited || !active || generation !== turnGeneration) return Promise.resolve(false);
           const id = nextSteerId++;
           return new Promise<boolean>((resolve) => {
             pendingSteers.set(id, resolve);
@@ -403,7 +405,7 @@ export function openSession(
           });
         },
         approve(requestId: number, decision: ApprovalDecision) {
-          if (exited || !active) return;
+          if (exited || !active || generation !== turnGeneration) return;
           try {
             child.stdin.write(approvalFrame(requestId, decision));
           } catch {
@@ -411,7 +413,7 @@ export function openSession(
           }
         },
         answer(requestId: number, answers: readonly QuestionAnswer[]) {
-          if (exited || !active) return;
+          if (exited || !active || generation !== turnGeneration) return;
           try {
             child.stdin.write(questionFrame(requestId, answers));
           } catch {
@@ -419,7 +421,7 @@ export function openSession(
           }
         },
         cancel() {
-          if (exited || !active) return;
+          if (exited || !active || generation !== turnGeneration || abortTimer) return;
           try {
             child.stdin.write(abortFrame());
           } catch {

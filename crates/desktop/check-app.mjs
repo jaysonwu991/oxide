@@ -723,6 +723,7 @@ const projectFacts = (contextWindow) => ({
   trust: { required: false, trusted: false, awaiting: false },
 });
 
+let sendPromptGate = null;
 const invoke = async (command, args = {}) => {
   calls.push([command, args]);
   switch (command) {
@@ -751,6 +752,7 @@ const invoke = async (command, args = {}) => {
       if (threadsError) throw threadsError;
       return threads.map((session) => ({ ...session }));
     case "send_prompt":
+      if (sendPromptGate) await sendPromptGate;
       // The backend answers with the run's id, which the window holds while the
       // turn is starting — before `agent-start` says which thread it is in.
       return 62;
@@ -1073,7 +1075,7 @@ globalThis.FileReader = class {
 const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
-    "\nglobalThis.__app = { send, runSlashCommand, state, createProjectState, ICONS," +
+    "\nglobalThis.__app = { send, stop, startPrompt, runSlashCommand, state, createProjectState, ICONS," +
     " newChatFromSidebar, openProjects, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
     " openEditProject, projectActivity, formatTime, openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
     " openConnect, renderProviders, saveConnect, renderLoginFields," +
@@ -9093,6 +9095,22 @@ check(
     elementFor("status-text").hidden,
   `${document.documentElement.lang} / ${elementFor("status-text").textContent}`,
 );
+
+console.log("stopping during startup");
+app.setIdle();
+calls.length = 0;
+let releasePrompt;
+sendPromptGate = new Promise((resolve) => { releasePrompt = resolve; });
+const startingPrompt = app.startPrompt("stop during setup", [], false, { project: "/tmp/oxide", session: null });
+await nextTick();
+await app.stop();
+check("remembered Stop before the host supplied a run id", app.state.stopRequested && app.state.busy && projectCalls("cancel_run").length === 0);
+releasePrompt();
+await startingPrompt;
+check("cancelled the reserved run as soon as its id arrived", projectCalls("cancel_run").at(-1)?.[1]?.runId === 62);
+sendPromptGate = null;
+await emit("agent-end", { runId: 62 });
+check("ended a run stopped during startup", !app.state.busy);
 
 console.log("the bridge");
 check(

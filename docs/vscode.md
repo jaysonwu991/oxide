@@ -400,7 +400,12 @@ turns is closed after ten minutes.
   `Ctrl+Shift+Enter`/`⌘⇧Enter` was used for that message), which injects it
   before the model's next step, and a queued message's own **Steer** button
   moves just that one; **Stop** sends `abort`, which ends the turn while the
-  process stays open for the next message. A turn that ignores the abort is
+  process stays open for the next message. Cancellation interrupts an in-flight
+  model stream, retry backoff, approval/question wait, or asynchronous tool;
+  shell cancellation also kills the shell's child processes. Partial streamed
+  text is saved and every planned tool gets a result so the next message can
+  resume the session. Repeated Stop clicks are harmless and an old turn's
+  controls cannot stop a newer one. A turn that ignores the abort is
   stopped the hard way (SIGTERM, then SIGKILL after 3 s). The session on disk is
   intact either way, so the next message continues the thread.
 - **Approvals** — with `oxide.askApprovals` on (the default) a turn starts with

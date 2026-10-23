@@ -73,6 +73,17 @@ pub struct ApprovalBroker {
     timeout: Duration,
 }
 
+struct PendingRequest<'a> {
+    broker: &'a ApprovalBroker,
+    id: u64,
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        self.broker.pending().remove(&self.id);
+    }
+}
+
 impl Default for ApprovalBroker {
     fn default() -> Self {
         Self::from_store(ApprovalStore::load(), APPROVAL_TIMEOUT)
@@ -127,6 +138,7 @@ impl ApprovalBroker {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
         self.pending().insert(id, Pending { sender });
+        let _pending = PendingRequest { broker: self, id };
         if tx
             .send(AgentEvent::ApprovalRequest {
                 id,
@@ -294,6 +306,22 @@ mod tests {
             Some("use a narrower command")
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_request_removes_its_pending_approval() {
+        let (broker, dir) = broker("approval_cancel", APPROVAL_TIMEOUT);
+        let (tx, mut rx) = unbounded_channel();
+        let approve = broker.approver(&dir, tx, Steering::new());
+        let request = tokio::spawn(approve("bash".into(), "wait".into()));
+        let AgentEvent::ApprovalRequest { id, .. } = rx.recv().await.unwrap() else {
+            panic!("expected approval")
+        };
+        request.abort();
+        let _ = request.await;
+        assert!(broker.pending().is_empty());
+        assert!(!broker.resolve(id, "always", None));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]

@@ -29,16 +29,27 @@ struct Pending {
 
 pub struct ApprovalBroker {
     events: EventSink,
-    pending: Mutex<HashMap<u64, Pending>>,
+    pending: std::sync::Mutex<HashMap<u64, Pending>>,
     store: Mutex<ApprovalStore>,
     next: AtomicU64,
+}
+
+struct PendingRequest<'a> {
+    broker: &'a ApprovalBroker,
+    id: u64,
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        self.broker.pending().remove(&self.id);
+    }
 }
 
 impl ApprovalBroker {
     pub fn new(events: EventSink) -> Self {
         Self {
             events,
-            pending: Mutex::new(HashMap::new()),
+            pending: std::sync::Mutex::new(HashMap::new()),
             store: Mutex::new(ApprovalStore::load()),
             next: AtomicU64::new(1),
         }
@@ -61,7 +72,7 @@ impl ApprovalBroker {
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(
+        self.pending().insert(
             id,
             Pending {
                 sender: tx,
@@ -69,6 +80,7 @@ impl ApprovalBroker {
                 tool: tool.clone(),
             },
         );
+        let _pending = PendingRequest { broker: self, id };
         let _ = self.events.emit(
             "approval-request",
             json!({ "id": id, "tool": tool, "detail": detail }),
@@ -76,7 +88,7 @@ impl ApprovalBroker {
         match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
             Ok(Ok(approved)) => approved,
             _ => {
-                self.pending.lock().await.remove(&id);
+                self.pending().remove(&id);
                 false
             }
         }
@@ -86,7 +98,7 @@ impl ApprovalBroker {
     /// Returns `false` when the id is unknown (a duplicate response, or a
     /// request that already timed out).
     pub async fn resolve(&self, id: u64, decision: &str) -> bool {
-        let Some(pending) = self.pending.lock().await.remove(&id) else {
+        let Some(pending) = self.pending().remove(&id) else {
             return false;
         };
         let approved = decision != "deny";
@@ -104,6 +116,12 @@ impl ApprovalBroker {
             }
         }
         pending.sender.send(approved).is_ok()
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Pending>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub async fn list(&self, project: &Path) -> Vec<String> {

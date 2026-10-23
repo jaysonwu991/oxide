@@ -3474,11 +3474,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
 
     let mut child = shell
         .current_dir(cwd)
+        .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("spawning shell")?;
+    let mut process_tree = crate::child::ProcessTree::new(&child);
 
     let stdout = child.stdout.take().context("capturing stdout")?;
     let stderr = child.stderr.take().context("capturing stderr")?;
@@ -3488,8 +3490,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     let stderr_task = tokio::spawn(read_stream(stderr, progress.clone(), stderr_path.clone()));
 
     let status = match timeout(Duration::from_secs(secs), child.wait()).await {
-        Ok(status) => Some(status.context("waiting for shell")?),
+        Ok(status) => {
+            let status = status.context("waiting for shell")?;
+            process_tree.disarm();
+            Some(status)
+        }
         Err(_) => {
+            process_tree.terminate();
             child.kill().await.ok();
             None
         }
@@ -3957,18 +3964,43 @@ fn finish_bash_output(stdout: StreamCapture, stderr: StreamCapture, exit: i32) -
     Ok(sanitize_terminal_output(&output))
 }
 
+/// The tail of a spooled `bash` result, within both budgets.
+///
+/// The byte cut lands on a line boundary where one exists, so the preview opens
+/// where a line opens rather than mid-token. Snapping is skipped when it would
+/// spend most of the budget on alignment — a single line longer than the budget
+/// has no useful boundary, and dropping it would answer with a marker and
+/// nothing to read — in which case the cut falls back to a character boundary.
 fn tail_preview(text: &str, max_bytes: usize, max_lines: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(max_lines);
     let mut preview = lines[start..].join("\n");
     if preview.len() > max_bytes {
-        let mut cut = preview.len() - max_bytes;
-        while !preview.is_char_boundary(cut) {
-            cut += 1;
-        }
+        let cut = tail_cut(&preview, max_bytes);
         preview = preview[cut..].to_string();
     }
     preview
+}
+
+/// Where to start a tail preview that must lose `text.len() - max_bytes` bytes:
+/// the next line boundary when that still keeps most of the budget, else a
+/// character boundary at the minimum cut.
+fn tail_cut(text: &str, max_bytes: usize) -> usize {
+    let least = text.len() - max_bytes;
+    if let Some(offset) = text.as_bytes()[least..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+    {
+        let cut = least + offset + 1;
+        if text.len() - cut >= max_bytes / 2 {
+            return cut;
+        }
+    }
+    let mut cut = least;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    cut
 }
 
 fn save_bash_spool(
@@ -4067,6 +4099,12 @@ fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
 
 /// Keeps one end of `lines` within both budgets, returning the preview and how
 /// many lines and bytes it left out.
+///
+/// The byte cut lands on a line boundary where one exists, so a preview never
+/// opens or closes with a fragment of a line the model cannot see the rest of.
+/// Snapping is skipped when it would spend most of the budget on alignment: a
+/// line longer than the budget has no useful boundary, and dropping it would
+/// answer with a marker and nothing to read.
 fn end_preview(
     lines: &[&str],
     max_bytes: usize,
@@ -4076,26 +4114,41 @@ fn end_preview(
     let keep = max_lines.min(lines.len());
     let start = if tail { lines.len() - keep } else { 0 };
     let mut preview = lines[start..start + keep].join("\n");
-    let dropped_lines = lines.len() - keep;
+    let mut dropped_lines = lines.len() - keep;
     let mut dropped_bytes = 0;
     if preview.len() > max_bytes {
         if tail {
-            let mut cut = preview.len() - max_bytes;
-            while !preview.is_char_boundary(cut) {
-                cut += 1;
-            }
+            let cut = tail_cut(&preview, max_bytes);
             dropped_bytes = cut;
+            dropped_lines += preview[..cut].matches('\n').count();
             preview = preview[cut..].to_string();
         } else {
-            let mut cut = max_bytes;
-            while !preview.is_char_boundary(cut) {
-                cut -= 1;
-            }
+            let cut = head_cut(&preview, max_bytes);
             dropped_bytes = preview.len() - cut;
+            dropped_lines += preview[cut..].matches('\n').count();
             preview.truncate(cut);
         }
     }
     (preview, dropped_lines, dropped_bytes)
+}
+
+/// Where to end a head preview held to `max_bytes`: the last line boundary
+/// within budget when that still keeps most of it, else a character boundary
+/// at the budget.
+fn head_cut(text: &str, max_bytes: usize) -> usize {
+    if let Some(offset) = text.as_bytes()[..max_bytes]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+    {
+        if offset >= max_bytes / 2 {
+            return offset;
+        }
+    }
+    let mut cut = max_bytes;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
 }
 
 /// Keeps the head and the tail, half of each budget apiece, with a marker
@@ -4445,6 +4498,113 @@ mod tests {
                 arguments: args.to_string(),
             },
         }
+    }
+
+    // `awk` is the generator here, so these two drive the shell path on Unix
+    // only; the cut itself is covered on every platform by the `end_preview`
+    // and `tail_preview` tests above, which need no child process.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_real_oversized_diff_preview_opens_on_a_line() {
+        // The shape that exposed this: `gh pr diff | head`, whose 270 KB of
+        // patch text is spooled and previewed from its tail. Driven through
+        // the public tool path with a diff generated here, so the assertion is
+        // about the preview the model receives rather than about an internal.
+        let dir = std::env::temp_dir().join(format!("oxide_real_diff_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        // A patch's own line prefixes are what a reader needs intact.
+        let command = "awk 'BEGIN { \
+            for (i = 0; i < 2000; i++) { \
+                printf \"@@ -%d,7 +%d,7 @@ fn region_%d\\n\", i, i, i; \
+                printf \"-    const previous = readTheOldValue(%d);\\n\", i; \
+                printf \"+    const next = readTheReplacementValue(%d);\\n\", i; \
+            } }'";
+
+        let out = execute(
+            &call("bash", json!({ "command": command })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+
+        assert!(out.text.contains("[truncated:"), "expected a capped result");
+        let body = out.text.split_once("]\n").expect("a marker").1;
+        let first = body.lines().next().expect("a preview keeps lines");
+        assert!(
+            first.starts_with("@@ ") || first.starts_with('-') || first.starts_with('+'),
+            "a diff preview must open on a patch line, not mid-line: {first:?}"
+        );
+        // The exit code still has to survive at the other end.
+        assert!(out.text.trim_end().ends_with("[exit: 0]"), "{}", out.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_spooled_tail_keeps_whole_lines() {
+        let mut text = String::new();
+        for i in 0..400 {
+            text.push_str(&format!("line {i}: {}\n", "payload ".repeat(40)));
+        }
+        text.push_str("[exit: 2]");
+
+        let preview = tail_preview(&text, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES);
+        assert!(preview.ends_with("[exit: 2]"), "{preview}");
+        for line in preview.lines() {
+            assert!(
+                line.is_empty() || line.starts_with("line ") || line.starts_with("[exit:"),
+                "a spooled tail must not begin mid-line: {line:?}"
+            );
+        }
+
+        // One line with no boundary to snap to still yields readable content.
+        let huge = format!("{}\n[exit: 0]", "y".repeat(MAX_OUTPUT_BYTES * 2));
+        let preview = tail_preview(&huge, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES);
+        assert!(preview.ends_with("[exit: 0]"), "{}", preview.len());
+        assert!(preview.contains('y'), "a tail must keep readable content");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_oversized_bash_result_keeps_whole_lines() {
+        // The end-to-end path: real command output over the budget, capped by
+        // `execute` the way a model receives it. A diff is the shape that
+        // exposed the mid-line cut, since its lines are long and its leading
+        // characters (`+`/`-`/`@@`) are what a reader needs to tell apart.
+        let dir = std::env::temp_dir().join(format!("oxide_bash_lines_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let out = execute(
+            &call(
+                "bash",
+                json!({
+                    "command": "awk 'BEGIN { for (i = 0; i < 1200; i++) \
+                        printf \"+line %d: %s\\n\", i, \
+                        \"const value = computeSomethingRatherLong(argument);\" }'"
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+
+        assert!(out.text.contains("[truncated:"), "{}", out.text);
+        let body = out.text.split_once("]\n").expect("a marker").1;
+        for line in body.lines() {
+            assert!(
+                line.is_empty() || line.starts_with("+line ") || line.starts_with("[exit:"),
+                "an oversized bash result must keep whole lines: {line:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -7092,6 +7252,90 @@ mod tests {
         assert!(diff.text.contains("two"), "{}", diff.text);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn one_line_longer_than_the_budget_is_still_previewed() {
+        // There is no line boundary to snap to here. Dropping the whole line
+        // would leave the model with a marker and nothing to read, so the cut
+        // falls back to a character boundary.
+        let output = format!("{}\n[exit: 1]", "x".repeat(MAX_OUTPUT_BYTES * 2));
+        let result = truncate_into("bash", output, None);
+        let body = result
+            .split_once("]\n")
+            .expect("a truncated result carries a marker")
+            .1;
+        assert!(result.contains("[truncated:"), "{result}");
+        assert!(result.contains("[exit: 1]"), "{result}");
+        assert!(body.contains('x'), "a preview must keep readable content");
+        assert!(body.len() <= MAX_OUTPUT_BYTES, "{}", body.len());
+    }
+
+    #[test]
+    fn unicode_previews_never_slice_inside_a_character() {
+        for text in ["中文🙂".repeat(80), "中文🙂一行\n".repeat(80)] {
+            for budget in 1..text.len() {
+                for tail in [false, true] {
+                    let (preview, _, _) =
+                        end_preview(&text.lines().collect::<Vec<_>>(), budget, 2000, tail);
+                    assert!(preview.len() <= budget);
+                }
+                assert!(tail_preview(&text, budget, 2000).len() <= budget);
+            }
+        }
+    }
+
+    #[test]
+    fn a_tail_preview_starts_on_a_line_boundary() {
+        // A byte cut taken inside a line hands the model a fragment whose first
+        // characters belong to a line it cannot see the start of. The lines
+        // here are long enough that the byte budget, not the line budget, is
+        // what forces the cut.
+        let mut output = String::new();
+        for i in 0..400 {
+            output.push_str(&format!("line {i}: {}\n", "payload ".repeat(40)));
+        }
+        output.push_str("[exit: 7]");
+
+        let result = truncate_into("bash", output, None);
+        let body = result
+            .split_once("]\n")
+            .expect("a truncated result carries a marker")
+            .1;
+        assert!(result.contains("[exit: 7]"), "{result}");
+        for line in body.lines() {
+            assert!(
+                line.is_empty() || line.starts_with("line ") || line.starts_with("[exit:"),
+                "a tail preview must not begin mid-line: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_head_preview_ends_on_a_line_boundary() {
+        let mut output = String::new();
+        for i in 0..400 {
+            output.push_str(&format!("line {i}: {}\n", "payload ".repeat(40)));
+        }
+
+        let result = truncate_into("read", output, None);
+        let body = result
+            .split_once("]\n")
+            .expect("a truncated result carries a marker")
+            .1;
+        for line in body.lines() {
+            assert!(
+                line.is_empty() || line.starts_with("line "),
+                "a head preview must not begin mid-line: {line:?}"
+            );
+        }
+        // A head cut truncates the end of the last line it keeps, so the
+        // boundary that matters here is the final one.
+        let last = body.lines().next_back().expect("a preview keeps lines");
+        assert!(
+            last.ends_with("payload ") || last.ends_with("payload"),
+            "a head preview must not end mid-line: {last:?}"
+        );
     }
 
     #[test]

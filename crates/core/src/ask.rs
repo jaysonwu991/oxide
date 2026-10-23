@@ -108,6 +108,20 @@ pub struct AskBroker {
     timeout: Duration,
 }
 
+struct PendingRequest<'a> {
+    broker: &'a AskBroker,
+    id: u64,
+    events: &'a UnboundedSender<AgentEvent>,
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        if self.broker.lock().remove(&self.id).is_some() {
+            let _ = self.events.send(AgentEvent::QuestionClosed { id: self.id });
+        }
+    }
+}
+
 impl Default for AskBroker {
     fn default() -> Self {
         Self::from_timeout(ASK_TIMEOUT)
@@ -151,6 +165,11 @@ impl AskBroker {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
         self.lock().insert(id, Pending { sender });
+        let _pending = PendingRequest {
+            broker: self,
+            id,
+            events: &events,
+        };
         if events
             .send(AgentEvent::QuestionRequest { id, questions })
             .is_err()
@@ -608,6 +627,32 @@ mod tests {
         };
         assert!(broker.resolve(id, Vec::new()));
         assert_eq!(asking.await.unwrap(), Some(Reply::Dismissed));
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_question_closes_it_and_removes_the_pending_request() {
+        let broker = AskBroker::new();
+        let (tx, mut rx) = unbounded_channel();
+        let asker = broker.asker(tx);
+        let asking = tokio::spawn(async move {
+            asker(vec![Question {
+                question: "Continue?".into(),
+                header: None,
+                options: Vec::new(),
+                multi_select: false,
+            }])
+            .await
+        });
+        let AgentEvent::QuestionRequest { id, .. } = rx.recv().await.unwrap() else {
+            panic!("expected question")
+        };
+        asking.abort();
+        let _ = asking.await;
+        assert!(broker.lock().is_empty());
+        assert!(!broker.resolve(id, Vec::new()));
+        assert!(
+            matches!(rx.recv().await, Some(AgentEvent::QuestionClosed { id: closed }) if closed == id)
+        );
     }
 
     #[tokio::test]

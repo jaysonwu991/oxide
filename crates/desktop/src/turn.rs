@@ -30,7 +30,7 @@ pub struct Turn {
     pub handle: JoinHandle<()>,
     pub steering: Steering,
     pub follow_ups: Steering,
-    /// Cooperative stop: the loop finishes the current step then ends cleanly.
+    /// Interrupts model and tool waits while keeping the session resumable.
     pub cancel: Cancel,
 }
 
@@ -52,6 +52,7 @@ pub async fn start_turn(
     agent: Option<String>,
     inline: Vec<ContentPart>,
     environment: Option<TurnEnvironment>,
+    controls: (Cancel, Steering, Steering),
 ) -> Result<Turn> {
     let mut config = crate::manager::load_project_config_with(project, reasoning)
         .with_context(|| format!("loading configuration for {}", project.display()))?;
@@ -73,9 +74,7 @@ pub async fn start_turn(
     let title = oxide_core::title::summarize(&prompt, oxide_core::title::TITLE_LIMIT);
     let (history, log) = runner::begin_session(project, session, ephemeral, &prompt, &[], &inline)?;
     let session_id = log.as_ref().map(|entry| entry.id().to_string());
-    let steering = Steering::new();
-    let follow_ups = Steering::new();
-    let cancel = Cancel::new();
+    let (cancel, steering, follow_ups) = controls;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let run = AgentRun {
         config,

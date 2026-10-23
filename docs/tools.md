@@ -109,6 +109,19 @@ because a server's answer puts its summary at the top and its totals (a
 `nextPageToken`, a count) at the bottom — keeping one end alone discards the
 half the next call needs.
 
+A head or tail preview cuts on a **line boundary**, not at the byte offset the
+budget lands on: a tail begins where a line begins and a head ends where a line
+ends, so a result never opens or closes with a fragment whose other half the
+model cannot see — a `git diff` cut mid-hunk otherwise reads as a stray
+`t.mjs';` with no indication that the line it belongs to was severed. This
+applies to a spooled `bash` tail as well as the central cap, since a long
+command's output is previewed from its spool file. Snapping is skipped when it
+would spend more than half the budget on alignment — a single line longer than
+the budget has no useful boundary, and dropping it would answer with a marker
+and nothing to read — in which case the cut falls back to a character boundary.
+The leftover bytes are reported with the dropped lines, and the full text is
+still saved.
+
 A server's JSON answer is the one exception: instead of cutting it at a byte
 offset — which leaves a fragment that starts and ends mid-token, parses as
 nothing, and says nothing about how much of the answer was dropped — it is
@@ -143,3 +156,9 @@ injecting the message before the agent's next model step. Alt+Enter queues the
 current input as the next turn after the current response finishes instead. A
 `tool.execute.after` plugin can also request termination for the batch
 with `output.terminate = true`.
+
+Cancellation interrupts asynchronous tool waits. A cancelled call reports that
+its effects may be partial, so inspect the target before retrying; it does not
+undo edits. Shell cancellation terminates the process tree. Preview alignment
+searches newline bytes before slicing UTF-8, including when the budget falls
+inside a Chinese character or emoji.

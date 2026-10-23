@@ -100,3 +100,42 @@ test("a persistent CLI serves twelve turns without accumulating error listeners"
     process.off("warning", onWarning);
   }
 });
+
+
+test("Stop preserves the warm process and stale turn controls cannot cancel the next turn", { timeout: 10_000 }, async () => {
+  let ended: () => void = () => {};
+  let exited: () => void = () => {};
+  const exit = new Promise<void>((resolve) => { exited = resolve; });
+  const events: string[] = [];
+  const session = openSession(process.execPath, ["-e", `
+    const lines = require("node:readline").createInterface({ input: process.stdin });
+    lines.on("line", line => {
+      const request = JSON.parse(line);
+      if (request.type === "quit") process.exit(0);
+      if (request.type === "abort") console.log(JSON.stringify({ type: "agent_end" }));
+      if (request.type === "prompt" && request.message === "next") {
+        setTimeout(() => { console.log(JSON.stringify({ type: "text_delta", delta: "next completed" })); console.log(JSON.stringify({ type: "agent_end" })); }, 40);
+      }
+    });
+  `], process.cwd(), {
+    onEvent(event) { if (event.type) events.push(event.type); }, onStderr() {}, onTurnEnd() { ended(); }, onExit() { exited(); },
+  });
+  try {
+    const stopped = new Promise<void>((resolve) => { ended = resolve; });
+    const first = session.start({ prompt: "wait" });
+    first.cancel();
+    first.cancel();
+    await stopped;
+    assert.ok(session.alive, "Stop must keep the process reusable");
+    events.length = 0;
+    const completed = new Promise<void>((resolve) => { ended = resolve; });
+    session.start({ prompt: "next" });
+    first.cancel();
+    await completed;
+    assert.ok(events.includes("text_delta"), "a stale Stop cannot end the replacement turn");
+    assert.ok(session.alive);
+  } finally {
+    session.close();
+    await exit;
+  }
+});
