@@ -84,8 +84,22 @@ failure behavior.
 
 Shell failures caused by unsupported grep repetition counts, unclosed quotes,
 or selecting a package outside the current Cargo workspace carry a specific
-recovery hint. The recursive-search guard recognizes option arguments, so a
-pattern such as `grep -e -retry file` is not mistaken for a recursive flag.
+recovery hint, as does a command whose request never completed over the network
+— `gh`, `curl` and `git` report a TLS handshake timeout, a reset or a DNS
+failure that way, and the hint asks for the same command again rather than for a
+repository, authentication or syntax fix. A command that only reads over the
+network is also retried once on its own before that hint is returned: `gh` read
+commands (`api` without a method or field, `pr view`, `search`, and the like), a
+GET-shaped `curl`, and `git ls-remote`, optionally piped through a text filter,
+so a transport failure does not cost the run a step, while anything that could
+change something is left alone. The recursive-search guard refuses a
+recursive `grep` that could
+walk a directory — no operand, a glob, a folder, or a path that is not a file —
+and steers it to the `grep` tool, which applies the repository's ignore rules
+and bounds its results; a recursive search scoped to files named one by one
+(`grep -rn needle README.md docs/guide.md`) is not a directory sweep and runs
+as written. It also recognizes option arguments, so a pattern such as
+`grep -e -retry file` is not mistaken for a recursive flag.
 Repeated-build reminders are conditional: shell commands and other tools may
 have changed the inputs since the previous check.
 
