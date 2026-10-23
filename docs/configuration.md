@@ -51,7 +51,8 @@ effort override. `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`
 force a level using OpenAI-compatible `reasoning_effort`, Anthropic adaptive
 thinking with `output_config.effort`, or a legacy Anthropic thinking budget as
 appropriate; direct DeepSeek and Z.AI use their `thinking.type` object instead.
-A model whose provider listing advertised its own effort levels narrows the set
+A model whose provider listing advertised its own effort levels — or whose
+remembered pi.dev catalog publishes its reasoning support — narrows the set
 to those (see [the model's own levels](cli.md#the-models-own-levels)). In the TUI
 press Shift+Tab to cycle levels; `--reasoning` and `OXIDE_REASONING` set the
 starting level, and resuming a session restores the level recorded on it. See

@@ -439,8 +439,12 @@ async fn event_loop(
                 if let Some(windows) = refreshed {
                     // A model the built-in table does not know gets its window
                     // from the catalog the provider published, so the footer's
-                    // gauge is repainted with the window this run resolves.
+                    // gauge is repainted with the window this run resolves —
+                    // and a catalog that has just learned a model's reasoning
+                    // metadata puts its thinking level back in the footer.
                     config.catalog_windows = windows;
+                    refresh_reasoning(&mut config);
+                    apply_model_state(&mut app, &mut config);
                 }
             }
             adopted = adopted_rx.recv() => {
@@ -575,7 +579,7 @@ fn saved_selection(path: &Path) -> Option<serde_json::Value> {
 }
 
 fn refresh_reasoning(config: &mut Config) {
-    config.reasoning_supported = crate::llm::cached_model_reasoning(config, &config.model);
+    config.refresh_reasoning_supported();
 }
 
 fn cycle_reasoning(app: &mut App, config: &mut Config, session: &mut Option<SessionLog>) {
@@ -5270,6 +5274,11 @@ fn start_catalog_lookup(tx: &UnboundedSender<AdoptedCatalog>, config: &Config, p
     let from = config.model.clone();
     tokio::spawn(async move {
         adopted.adopt_provider_catalog().await;
+        // The provider's pi.dev catalog is the fallback for a model whose
+        // listing carries no effort metadata; a fresh login is the moment it
+        // is worth warming, since the launch's look ran before this credential
+        // existed.
+        let _ = catalog::refresh_if_stale(&provider, None).await;
         let _ = tx.send(AdoptedCatalog {
             provider,
             from,
