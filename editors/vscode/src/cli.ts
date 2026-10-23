@@ -1,13 +1,15 @@
 // The oxide CLI process layer: locating the binary, streaming one turn's JSON
 // events, and running one-shot commands (`sessions list`, `--version`).
 //
-// A turn is one process: `oxide --mode rpc` with the prompt written to its
+// A session is one process: `oxide --mode rpc`, with each prompt written to its
 // stdin as a request frame. The process streams Pi-shaped JSONL events; a tool
-// approval is answered on the same pipe (`core/rpc.ts`) rather than by starting
-// another process, and the turn ends with a `quit` frame so the process exits
-// on its own. Stopping a run is still a kill, and the next turn resumes the
-// same thread with `--session <id>` (the id arrives in the `session` header
-// event).
+// approval or question is answered on the same pipe (`core/rpc.ts`), and the
+// next message in the same thread reuses the process instead of spawning one,
+// so the loaded config, ecosystem and toolchain are not read again for every
+// turn. Stopping a run sends `abort` (the process stays open for the next
+// prompt); a process that has to be replaced is killed and the next turn
+// resumes the thread with `--session <id>` (the id arrives in the `session`
+// header event).
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
@@ -18,7 +20,7 @@ import type { ApprovalDecision } from "./core/approvals";
 import { SNIFF_BYTES } from "./core/attachments";
 import { drainLines, parseEvent, type WireEvent } from "./core/protocol";
 import type { QuestionAnswer } from "./core/questions";
-import { approvalFrame, promptFrame, questionFrame, quitFrame, steerFrame } from "./core/rpc";
+import { abortFrame, approvalFrame, promptFrame, questionFrame, quitFrame, steerFrame } from "./core/rpc";
 
 export interface BinaryLookup {
   env: NodeJS.ProcessEnv;
@@ -191,9 +193,12 @@ function stopCli(child: ChildProcessWithoutNullStreams, plan: SpawnPlan): void {
   }, 3_000);
 }
 
-export interface TurnCallbacks {
+export interface SessionCallbacks {
   onEvent: (event: WireEvent) => void;
   onStderr: (line: string) => void;
+  /// The turn ended (`agent_end`). The process stays open for the next prompt.
+  onTurnEnd: () => void;
+  /// The process exited, or could not start.
   onExit: (result: { code: number | null; signal: string | null; error?: string }) => void;
 }
 
@@ -215,44 +220,82 @@ export interface Turn {
   /// Answers a question the model asked with the `ask` tool. An empty list is a
   /// dismissal; an unknown id is ignored, like an approval's.
   answer(requestId: number, answers: readonly QuestionAnswer[]): void;
-  /// Stops the process. The session on disk stays intact, so the thread can be
-  /// resumed with `--session <id>`.
+  /// Stops this turn without ending the process, so the next message continues
+  /// the same thread in the same warm process.
   cancel(): void;
 }
 
-/// Starts one agent turn. The prompt is written to stdin as a request frame and
-/// the pipe stays open for approvals until the turn ends.
-export function startTurn(
+/// One `oxide --mode rpc` process, kept across the turns of one thread.
+export interface CliSession {
+  /// The session the CLI reported in its `session` header, once it has.
+  readonly sessionId: string | null;
+  readonly alive: boolean;
+  /// Starts the next turn. Only one may run at a time.
+  start(input: TurnInput): Turn;
+  /// Ends the process (`quit`, then a kill if it does not exit).
+  close(): void;
+}
+
+/// A process left between turns is closed after this long, so a panel that
+/// keeps a session per thread does not keep a CLI alive for the whole day.
+const IDLE_CLOSE_MS = 10 * 60_000;
+/// An `abort` that has not ended the turn by now is stopped the hard way.
+const ABORT_GRACE_MS = 3_000;
+/// A `quit` that has not ended the process by now is killed.
+const CLOSE_GRACE_MS = 2_000;
+
+/// Starts one agent session. The prompt of each turn is written to stdin as a
+/// request frame, and the pipe stays open for approvals and for the next turn.
+export function openSession(
   command: string,
   args: string[],
   cwd: string,
-  input: TurnInput,
-  callbacks: TurnCallbacks,
-): Turn {
+  callbacks: SessionCallbacks,
+): CliSession {
   const { child, plan } = startCli(command, args, cwd);
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let exited = false;
+  let active = false;
+  let sessionId: string | null = null;
   let nextSteerId = 1;
+  let abortTimer: NodeJS.Timeout | undefined;
+  let idleTimer: NodeJS.Timeout | undefined;
   const pendingSteers = new Map<number, (accepted: boolean) => void>();
 
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
+  child.stdin.on("error", () => {
+    // The process exit handler reports a pipe closed before stdin was read.
+  });
 
-  // `agent_end` is the last event of the turn, but the CLI waits on its input
-  // channel for another request instead of exiting, so the session is ended
-  // and its stdin closed here.
-  const quit = (): void => {
-    if (exited) return;
-    try {
-      child.stdin.write(quitFrame());
-      child.stdin.end();
-    } catch {
-      // The pipe is already gone; the exit handler reports why.
-    }
+  const clearAbort = (): void => {
+    if (abortTimer) clearTimeout(abortTimer);
+    abortTimer = undefined;
+  };
+  const clearIdle = (): void => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = undefined;
+  };
+  const armIdle = (): void => {
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      if (!active) close();
+    }, IDLE_CLOSE_MS);
+    idleTimer.unref?.();
+  };
+  const endTurn = (): void => {
+    if (!active) return;
+    active = false;
+    clearAbort();
+    callbacks.onTurnEnd();
+    armIdle();
   };
 
   const handleWireEvent = (event: WireEvent): void => {
+    if (event.type === "session" && typeof event.id === "string") {
+      sessionId = event.id;
+    }
     if (event.type === "steer_ack") {
       const id = typeof event.id === "number" ? event.id : 0;
       const resolve = pendingSteers.get(id);
@@ -262,8 +305,8 @@ export function startTurn(
       }
       return;
     }
-    if (event.type === "agent_end") quit();
     callbacks.onEvent(event);
+    if (event.type === "agent_end") endTurn();
   };
 
   child.stdout.on("data", (chunk: string) => {
@@ -285,11 +328,12 @@ export function startTurn(
   });
 
   // A failed spawn emits `error` and then `close`, and both are reported once.
-  // The controller treats an exit as final (it clears the run and drains the
-  // queue), so a second callback is ignored.
   const exit = (result: { code: number | null; signal: string | null; error?: string }): void => {
     if (exited) return;
     exited = true;
+    active = false;
+    clearAbort();
+    clearIdle();
     for (const resolve of pendingSteers.values()) resolve(false);
     pendingSteers.clear();
     callbacks.onExit(result);
@@ -308,48 +352,86 @@ export function startTurn(
     exit({ code, signal, error: undefined });
   });
 
-  try {
-    child.stdin.on("error", () => {
-      // A process that exits before reading stdin (a startup failure) closes
-      // the pipe; the exit handler reports the real problem.
-    });
-    child.stdin.write(promptFrame(input.prompt, input.images ?? []));
-  } catch {
-    // Nothing to do: the exit handler reports the failure.
+  function close(): void {
+    clearIdle();
+    if (exited) return;
+    try {
+      child.stdin.write(quitFrame());
+      child.stdin.end();
+    } catch {
+      // The pipe is already gone; the exit handler reports why.
+    }
+    const timer = setTimeout(() => {
+      if (!exited) stopCli(child, plan);
+    }, CLOSE_GRACE_MS);
+    timer.unref?.();
   }
 
+  armIdle();
+
   return {
-    steer(prompt: string, images: readonly string[] = [], followUp = false) {
-      if (exited) return Promise.resolve(false);
-      const id = nextSteerId++;
-      return new Promise<boolean>((resolve) => {
-        pendingSteers.set(id, resolve);
-        try {
-          child.stdin.write(steerFrame(id, prompt, images, followUp));
-        } catch {
-          pendingSteers.delete(id);
-          resolve(false);
-        }
-      });
+    get sessionId() {
+      return sessionId;
     },
-    approve(requestId: number, decision: ApprovalDecision) {
-      if (exited) return;
+    get alive() {
+      return !exited;
+    },
+    close,
+    start(input: TurnInput): Turn {
+      if (exited) throw new Error("the oxide process has exited");
+      if (active) throw new Error("the oxide process already has an active turn");
+      active = true;
+      clearIdle();
+      clearAbort();
       try {
-        child.stdin.write(approvalFrame(requestId, decision));
+        child.stdin.write(promptFrame(input.prompt, input.images ?? []));
       } catch {
-        // The turn is gone; the approval simply stays unanswered.
+        // Nothing to do: the exit handler reports the failure.
       }
-    },
-    answer(requestId: number, answers: readonly QuestionAnswer[]) {
-      if (exited) return;
-      try {
-        child.stdin.write(questionFrame(requestId, answers));
-      } catch {
-        // The turn is gone; the question simply stays unanswered.
-      }
-    },
-    cancel() {
-      stopCli(child, plan);
+      return {
+        steer(prompt: string, images: readonly string[] = [], followUp = false) {
+          if (exited || !active) return Promise.resolve(false);
+          const id = nextSteerId++;
+          return new Promise<boolean>((resolve) => {
+            pendingSteers.set(id, resolve);
+            try {
+              child.stdin.write(steerFrame(id, prompt, images, followUp));
+            } catch {
+              pendingSteers.delete(id);
+              resolve(false);
+            }
+          });
+        },
+        approve(requestId: number, decision: ApprovalDecision) {
+          if (exited || !active) return;
+          try {
+            child.stdin.write(approvalFrame(requestId, decision));
+          } catch {
+            // The turn is gone; the approval simply stays unanswered.
+          }
+        },
+        answer(requestId: number, answers: readonly QuestionAnswer[]) {
+          if (exited || !active) return;
+          try {
+            child.stdin.write(questionFrame(requestId, answers));
+          } catch {
+            // The turn is gone; the question simply stays unanswered.
+          }
+        },
+        cancel() {
+          if (exited || !active) return;
+          try {
+            child.stdin.write(abortFrame());
+          } catch {
+            // The pipe is already gone.
+          }
+          // A turn that ignores the abort must not hang the panel's Stop.
+          abortTimer = setTimeout(() => {
+            if (active && !exited) stopCli(child, plan);
+          }, ABORT_GRACE_MS);
+          abortTimer.unref?.();
+        },
+      };
     },
   };
 }

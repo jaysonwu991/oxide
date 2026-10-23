@@ -281,6 +281,19 @@ pub struct Runtime {
     pub steering_mode: QueueMode,
     pub follow_up_mode: QueueMode,
     pub cancel: Cancel,
+    /// How a finished turn is kept warm in the provider's prompt cache. `None`
+    /// for a subagent (its conversation is discarded) and for a one-shot run
+    /// that ends with the process.
+    pub cache_warm: Option<WarmContext>,
+}
+
+/// The configuration and folder a finished turn is replayed from while the
+/// reader is idle (see [`crate::cache_warmer`]).
+#[derive(Clone)]
+pub struct WarmContext {
+    pub config: Config,
+    pub cwd: std::path::PathBuf,
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -456,6 +469,7 @@ pub fn run_subagent(
         let sub_runtime = Runtime {
             session: None,
             follow_ups: Steering::new(),
+            cache_warm: None,
             ..runtime
         };
 
@@ -971,6 +985,9 @@ async fn run_loop(
                 let _ = retry_tx.send(AgentEvent::Text(text));
             }
         };
+        // This request writes the provider-side cache entry itself, so a warm
+        // replay waiting on the previous entry is redundant now.
+        crate::cache_warmer::cancel();
         let turn = {
             let mut hooks = StreamHooks {
                 text: &mut on_text,
@@ -1556,8 +1573,10 @@ async fn run_loop(
                     let canonical_name = canonical;
                     if matches!(canonical_name, "write" | "edit") && !output.is_error {
                         if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
-                            if let Some(diagnostics) =
-                                runtime.lsp.diagnostics(&cwd, Path::new(path)).await
+                            if let Some(diagnostics) = runtime
+                                .lsp
+                                .diagnostics_if_running(&cwd, Path::new(path))
+                                .await
                             {
                                 output.text.push_str("\n\n");
                                 output.text.push_str(&diagnostics);
@@ -1769,6 +1788,22 @@ fn finish(
         record(&runtime.session, depth, &pending);
         messages.push(pending);
     }
+    // A model whose catalog publishes no cache lifetime is not warmed; the
+    // request would only be built to be thrown away.
+    if let Some(warm) = runtime
+        .cache_warm
+        .as_ref()
+        .filter(|warm| warm.config.prompt_cache_ttl().is_some())
+    {
+        let (request, tools) = warmer_inputs(&warm.config, runtime, &warm.cwd, &messages);
+        crate::cache_warmer::schedule(
+            &warm.config,
+            &warm.cwd,
+            request,
+            tools,
+            warm.session.clone(),
+        );
+    }
     let _ = tx.send(AgentEvent::Finished(messages));
 }
 
@@ -1836,6 +1871,27 @@ fn build_tool_specs(
         specs.push(session_title_spec());
     }
     specs
+}
+
+/// The request shape a finished turn will send again: the system prompt
+/// (without the one-off title offer or reminders), the conversation, and the
+/// tool list. The cache warmer replays it while the reader is idle.
+pub(crate) fn warmer_inputs(
+    config: &Config,
+    runtime: &Runtime,
+    cwd: &Path,
+    messages: &[Message],
+) -> (Vec<Message>, Vec<ToolSpec>) {
+    let mut system = config.compose_system_prompt();
+    system.push_str(&project_context(cwd, messages));
+    if let Some(notes) = runtime.mcp.instructions_section() {
+        system.push_str("\n\n");
+        system.push_str(&notes);
+    }
+    let mut request = vec![Message::system(system)];
+    request.extend(messages.iter().cloned());
+    let tools = build_tool_specs(config, runtime, 0, needs_session_title(runtime, 0));
+    (request, tools)
 }
 
 fn needs_session_title(runtime: &Runtime, depth: usize) -> bool {
@@ -3289,6 +3345,7 @@ async fn task_inner(
     let sub_runtime = Runtime {
         session: None,
         follow_ups: Steering::new(),
+        cache_warm: None,
         ..runtime.clone()
     };
     let handle = tokio::spawn(run_depth(
@@ -4086,6 +4143,7 @@ mod tests {
             steering_mode: QueueMode::OneAtATime,
             follow_up_mode: QueueMode::OneAtATime,
             cancel: Cancel::new(),
+            cache_warm: None,
         }
     }
 

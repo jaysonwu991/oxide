@@ -110,6 +110,15 @@ fn write_call_body(path: &str) -> String {
     ])
 }
 
+/// A model step that runs a shell command.
+fn bash_call_body(command: &str) -> String {
+    let arguments = json!({ "command": command }).to_string();
+    openai_sse(&[
+        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_0", "function": {"name": "bash", "arguments": arguments}}]}, "finish_reason": null}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ])
+}
+
 fn answer_body(text: &str) -> String {
     openai_sse(&[
         json!({"choices": [{"delta": {"content": text}, "finish_reason": null}]}),
@@ -440,9 +449,9 @@ fn a_denial_message_reaches_the_model() {
 }
 
 /// A finished turn's change listing travels on the same channel as the run's own
-/// events, and behind them: a client draws a card for the turn it belongs to, so
-/// a listing that overtook the turn's last event (or the events of a prompt sent
-/// afterwards) could be painted against the wrong run.
+/// events, just ahead of `agent_end`: a client draws a card for the turn it
+/// belongs to, so the listing arrives while that run is still the one on screen
+/// and the turn's last frame is the end event.
 #[test]
 fn a_turn_change_listing_follows_the_run_that_produced_it() {
     let project = TempDir::new("project_changes");
@@ -456,44 +465,83 @@ fn a_turn_change_listing_follows_the_run_that_produced_it() {
     loop {
         let event = rpc.event();
         types.push(event["type"].as_str().unwrap_or("?").to_string());
-        if event["type"] != "turn_changes" {
-            continue;
+        if event["type"] == "turn_changes" {
+            // The listing names the file the turn wrote, against a baseline a
+            // client can read that file's left side from.
+            assert!(
+                event["changes"]["files"]
+                    .as_array()
+                    .is_some_and(|files| files.iter().any(|file| file["path"] == "changed.txt")),
+                "the listing names the file the turn wrote: {event}"
+            );
+            assert!(
+                event["baseline"]
+                    .as_str()
+                    .is_some_and(|base| !base.is_empty()),
+                "the listing carries the baseline: {event}"
+            );
+            // The folder the run was in travels with the listing: a client that
+            // has moved to another root since reads the file and the snapshot from it.
+            let named = std::fs::canonicalize(event["project"].as_str().unwrap_or_default())
+                .expect("the listing names the project");
+            assert_eq!(
+                named,
+                std::fs::canonicalize(project.path()).unwrap(),
+                "the listing names the run's own project: {event}"
+            );
         }
-        // The listing names the file the turn wrote, against a baseline a
-        // client can read that file's left side from.
-        assert!(
-            event["changes"]["files"]
-                .as_array()
-                .is_some_and(|files| files.iter().any(|file| file["path"] == "changed.txt")),
-            "the listing names the file the turn wrote: {event}"
-        );
-        assert!(
-            event["baseline"]
-                .as_str()
-                .is_some_and(|base| !base.is_empty()),
-            "the listing carries the baseline: {event}"
-        );
-        // The folder the run was in travels with the listing: a client that has
-        // moved to another root since reads the file and the snapshot from it.
-        let named = std::fs::canonicalize(event["project"].as_str().unwrap_or_default())
-            .expect("the listing names the project");
-        assert_eq!(
-            named,
-            std::fs::canonicalize(project.path()).unwrap(),
-            "the listing names the run's own project: {event}"
-        );
-        break;
+        if event["type"] == "agent_end" {
+            break;
+        }
     }
     assert_eq!(
         types.as_slice()[types.len().saturating_sub(2)..],
-        ["agent_end", "turn_changes"],
-        "the listing came behind the turn's own last event: {types:?}"
+        ["turn_changes", "agent_end"],
+        "the listing came ahead of the turn's end event: {types:?}"
     );
     assert_eq!(
         server.join().unwrap().len(),
         2,
         "both model steps were served"
     );
+}
+
+/// `abort` stops the running turn without ending the rpc process, so the next
+/// prompt is a new turn in the same session. The VS Code panel keeps one
+/// process per thread and relies on exactly this for its Stop button.
+#[test]
+fn an_abort_stops_the_turn_and_the_session_keeps_running() {
+    let project = TempDir::new("project_abort");
+    let config_home = TempDir::new("config_abort");
+    let (base_url, server) = serve(vec![bash_call_body("sleep 2"), answer_body("Again.")]);
+
+    let mut rpc = start(config_home.path(), project.path(), &base_url, false);
+    rpc.send(json!({"type": "prompt", "message": "run it"}));
+    loop {
+        let event = rpc.event();
+        match event["type"].as_str() {
+            Some("tool_call") => break,
+            Some("agent_end") => panic!("the turn ended before the tool ran: {event}"),
+            _ => {}
+        }
+    }
+    rpc.send(json!({"type": "abort"}));
+    let ended = drain_turn(&mut rpc, &mut Vec::new());
+    assert_eq!(ended.last().expect("an end event")["type"], "agent_end");
+    assert!(
+        rpc.child.try_wait().expect("the process state").is_none(),
+        "the process stays open for the next prompt"
+    );
+
+    rpc.send(json!({"type": "prompt", "message": "say it again"}));
+    let next = drain_turn(&mut rpc, &mut Vec::new());
+    assert!(
+        next.iter().any(|event| event["type"] == "message_update"
+            && event["assistantMessageEvent"]["delta"] == "Again."),
+        "the second prompt was served by the same process: {next:?}"
+    );
+    assert_eq!(next.last().expect("an end event")["type"], "agent_end");
+    assert_eq!(server.join().unwrap().len(), 2, "both prompts were served");
 }
 
 /// The extension sends the prompt as a request frame rather than through `-p`,

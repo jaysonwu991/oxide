@@ -146,6 +146,10 @@ pub enum RpcRequest {
     /// they were asked; an empty list is a dismissal, since the user closed the
     /// question without answering it.
     Question { id: u64, answers: Vec<Answer> },
+    /// Stop the turn that is running, if any, without ending the session: the
+    /// process stays open for the next prompt, which is what a client that
+    /// keeps one rpc process per thread does for its Stop button.
+    Abort,
     /// End the session.
     Quit,
 }
@@ -213,7 +217,8 @@ impl RpcRequest {
                     .and_then(Value::as_str)
                     .map(str::to_string),
             }),
-            "quit" | "abort" => Some(RpcRequest::Quit),
+            "abort" => Some(RpcRequest::Abort),
+            "quit" => Some(RpcRequest::Quit),
             "question" => Some(RpcRequest::Question {
                 id: value.get("id").and_then(Value::as_u64)?,
                 answers: value
@@ -409,7 +414,8 @@ pub async fn run_json(
 /// true) and receives a `steer_ack` carrying the same id, an
 /// `{"type":"approval","id":1,"decision":"once"}` answers a pending tool
 /// approval, a `{"type":"question","id":1,"answers":[...]}` answers a pending
-/// question, and `quit`/`abort` ends the session.
+/// question, `abort` stops the running turn without ending the session, and
+/// `quit` ends it.
 ///
 /// Everything written to stdout comes off one channel, in the order it was
 /// queued: the run's own events, the session header, and the change listing a
@@ -439,7 +445,11 @@ pub async fn run_rpc(
                 continue;
             };
             match RpcRequest::parse(&value) {
-                Some(request @ (RpcRequest::Prompt { .. } | RpcRequest::Steer { .. })) => {
+                Some(
+                    request @ (RpcRequest::Prompt { .. }
+                    | RpcRequest::Steer { .. }
+                    | RpcRequest::Abort),
+                ) => {
                     if prompts.send(request).is_err() {
                         break;
                     }
@@ -551,6 +561,11 @@ mod tests {
         );
 
         assert_eq!(
+            RpcRequest::parse(&json!({"type": "abort"})).unwrap(),
+            RpcRequest::Abort
+        );
+
+        assert_eq!(
             RpcRequest::parse(&json!({"type": "approval", "id": 3, "decision": "always"})).unwrap(),
             RpcRequest::Approval {
                 id: 3,
@@ -613,7 +628,7 @@ mod tests {
         );
         assert_eq!(
             RpcRequest::parse(&json!({"type": "abort"})),
-            Some(RpcRequest::Quit)
+            Some(RpcRequest::Abort)
         );
         // An approval without an id, a question without an id, and an unknown
         // type are ignored.

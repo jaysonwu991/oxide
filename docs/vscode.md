@@ -383,22 +383,26 @@ it.
 
 ## Agent turns
 
-Each turn is one process: `oxide --mode rpc` with the prompt written to stdin
+A thread is one process: `oxide --mode rpc`, with each prompt written to stdin
 as a request frame (`core/rpc.ts`), so the text never goes through argv or the
-CLI's positional `@file` expansion, and the pipe stays open for the one request
-the CLI has to send back mid-turn — a tool approval. Its stdout is framed by
-`drainLines` (compacted once per chunk) and each line parsed by `parseEvent`;
-the `session` header supplies the id reused for the next message with
-`--session <id>`, and `--continue` resumes the newest session. The turn ends
-with a `quit` frame when `agent_end` arrives, so the process exits on its own.
+CLI's positional `@file` expansion, and the pipe stays open for the requests the
+CLI has to send back mid-turn — a tool approval and a question. Its stdout is
+framed by `drainLines` (compacted once per chunk) and each line parsed by
+`parseEvent`. The next message in the same thread reuses the process, so the
+loaded config, ecosystem and toolchain are not read again for every turn; a
+process whose flags (model, agent, reasoning, tools, trust) or thread changed is
+replaced, and the replacement resumes the thread with `--session <id>` (the
+`session` header supplies the id) or `--continue`. A process left idle between
+turns is closed after ten minutes.
 
 - **Queue / stop** — a message sent while a turn runs is queued and started
   after it finishes, unless the saved choice is **Steer** (or
   `Ctrl+Shift+Enter`/`⌘⇧Enter` was used for that message), which injects it
   before the model's next step, and a queued message's own **Steer** button
-  moves just that one; **Stop** kills the process
-  (SIGTERM, then SIGKILL after 3 s). The session on disk is intact, so the next
-  message continues the thread.
+  moves just that one; **Stop** sends `abort`, which ends the turn while the
+  process stays open for the next message. A turn that ignores the abort is
+  stopped the hard way (SIGTERM, then SIGKILL after 3 s). The session on disk is
+  intact either way, so the next message continues the thread.
 - **Approvals** — with `oxide.askApprovals` on (the default) a turn starts with
   `--ask-approvals`, so a tool a permission rule holds comes back as an
   `approval_request` event instead of running. The turn waits: a card appears in

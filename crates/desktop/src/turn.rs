@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use oxide_core::agent::{AgentEvent, Approver, Cancel, Steering};
 use oxide_core::ask::Asker;
 use oxide_core::llm::ContentPart;
-use oxide_core::runner::{self, AgentRun};
+use oxide_core::runner::{self, AgentRun, TurnEnvironment};
 use oxide_core::session::{SessionLog, SessionSummary};
 use std::path::Path;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -19,6 +19,9 @@ use tokio::task::JoinHandle;
 /// front-end can abort it, and the steering queues so it can be nudged mid-run.
 pub struct Turn {
     pub session_id: Option<String>,
+    /// The MCP servers, plugin host and language servers this turn used, to be
+    /// handed to the next turn in the same project instead of built again.
+    pub environment: TurnEnvironment,
     /// The thread's summarized title, by the same rules the session store lists
     /// it under ([`oxide_core::title`]), so a front-end can name the running
     /// thread before the turn ends rather than only in the listing after it.
@@ -48,6 +51,7 @@ pub async fn start_turn(
     reasoning: Option<String>,
     agent: Option<String>,
     inline: Vec<ContentPart>,
+    environment: Option<TurnEnvironment>,
 ) -> Result<Turn> {
     let mut config = crate::manager::load_project_config_with(project, reasoning)
         .with_context(|| format!("loading configuration for {}", project.display()))?;
@@ -87,10 +91,18 @@ pub async fn start_turn(
         follow_ups: follow_ups.clone(),
         cancel: cancel.clone(),
     };
-    let handle = runner::spawn_agent(run, tx).await;
+    // The same project and the same MCP/hook/plugin configuration reuse the
+    // servers and language servers the previous turn left warm; anything that
+    // changed builds a fresh environment.
+    let environment = match environment {
+        Some(environment) if environment.suits(&run.config, project) => environment,
+        _ => TurnEnvironment::new(&run.config, project).await,
+    };
+    let handle = runner::spawn_agent_in(run, environment.clone(), tx).await;
     Ok(Turn {
         session_id,
         title,
+        environment,
         events: rx,
         handle,
         steering,

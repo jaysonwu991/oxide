@@ -1185,6 +1185,11 @@ pub struct Config {
     pub system_prompt: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// Whether `max_tokens` came from `config.json`, so the provider catalog's
+    /// own output limit can raise the conservative default without overriding
+    /// a cap the reader chose.
+    #[serde(skip)]
+    pub max_tokens_explicit: bool,
     /// An explicit override for the model's full input context window, separate
     /// from `max_tokens`, which caps only one response. `0` (the default)
     /// derives the window from the model and falls back to
@@ -1229,6 +1234,15 @@ pub struct Config {
     /// looked up yet.
     #[serde(skip)]
     pub catalog_windows: BTreeMap<String, BTreeMap<String, u64>>,
+    /// The most tokens one response may ask for, per provider, as the same
+    /// catalog publishes it. Empty for a provider whose catalog has not been
+    /// looked up yet.
+    #[serde(skip)]
+    pub catalog_output_limits: BTreeMap<String, BTreeMap<String, u64>>,
+    /// The short prompt-cache lifetime each model publishes, per provider, in
+    /// seconds. Only a model the catalog gives one is warmed between turns.
+    #[serde(skip)]
+    pub catalog_prompt_cache: BTreeMap<String, BTreeMap<String, u64>>,
     /// Whether a finished agent turn raises a desktop toast, and whether it
     /// plays the system alert sound.
     #[serde(skip)]
@@ -1261,6 +1275,12 @@ fn default_system_prompt() -> String {
 fn default_max_tokens() -> u32 {
     8192
 }
+
+/// The largest output a single request asks for. A provider's catalog may
+/// advertise far more (DeepSeek lists 384k), but a cap this size stays inside
+/// every provider's window and the client's own escalation ceiling. It is only
+/// the default: a `max_tokens` in `config.json` overrides it outright.
+const MAX_REQUEST_OUTPUT_TOKENS: u32 = 32_768;
 
 /// The window used when a model is in neither the built-in table nor a
 /// `modelContextWindows` override. Pi's `provider-composer` falls back to
@@ -1620,6 +1640,7 @@ impl Default for Config {
             model_catalog: Vec::new(),
             system_prompt: default_system_prompt(),
             max_tokens: default_max_tokens(),
+            max_tokens_explicit: false,
             context_window: 0,
             auto_approve: true,
             reasoning: Reasoning::default(),
@@ -1633,6 +1654,8 @@ impl Default for Config {
             prices: crate::pricing::defaults(),
             model_context_windows: BTreeMap::new(),
             catalog_windows: BTreeMap::new(),
+            catalog_output_limits: BTreeMap::new(),
+            catalog_prompt_cache: BTreeMap::new(),
             notify: crate::notify::NotifyConfig::default(),
             tool_filter: crate::cli::ToolFilter::default(),
             ephemeral: false,
@@ -1752,6 +1775,42 @@ impl Config {
             .catalog_windows
             .get(crate::catalog::provider_id(&self.provider)?)?;
         crate::catalog::window_for(models, &self.model)
+    }
+
+    /// How long the provider keeps this model's prompt cache, when its catalog
+    /// publishes a lifetime. `None` means the model is not warmed between turns.
+    pub fn prompt_cache_ttl(&self) -> Option<std::time::Duration> {
+        let models = self
+            .catalog_prompt_cache
+            .get(crate::catalog::provider_id(&self.provider)?)?;
+        let seconds = crate::catalog::window_for(models, &self.model)?;
+        Some(std::time::Duration::from_secs(seconds))
+    }
+
+    /// The output limit the active provider's catalog publishes for the model,
+    /// when it has been looked up. Pi reads the same figure from the same
+    /// catalog and defaults a response to it; Oxide keeps it as a ceiling on
+    /// the conservative [`default_max_tokens`].
+    pub fn catalog_max_tokens(&self) -> Option<u64> {
+        let models = self
+            .catalog_output_limits
+            .get(crate::catalog::provider_id(&self.provider)?)?;
+        crate::catalog::window_for(models, &self.model)
+    }
+
+    /// The `max_tokens` one request may ask for: the reader's own cap when they
+    /// set one, else the model's published output limit (bounded by
+    /// [`MAX_REQUEST_OUTPUT_TOKENS`]), else the conservative default. Without
+    /// this a model that can write 384k tokens in one answer was held to 8k,
+    /// so a long file write reached its limit, got retried with a doubled
+    /// budget, and could still arrive truncated.
+    pub fn max_output_tokens(&self) -> u32 {
+        if self.max_tokens_explicit {
+            return self.max_tokens;
+        }
+        self.catalog_max_tokens()
+            .map(|max| max.clamp(1, u64::from(MAX_REQUEST_OUTPUT_TOKENS)) as u32)
+            .unwrap_or(self.max_tokens)
     }
 
     pub fn config_path() -> PathBuf {
@@ -1885,6 +1944,9 @@ impl Config {
         config.prices = crate::pricing::load(cwd);
         config.model_context_windows = load_model_context_windows(cwd);
         config.catalog_windows = crate::catalog::windows();
+        config.catalog_output_limits = crate::catalog::output_limits();
+        config.catalog_prompt_cache = crate::catalog::prompt_cache();
+        config.max_tokens_explicit = explicit(&raw, "max_tokens");
         (config.steering_mode, config.follow_up_mode) = load_queue_modes(cwd);
         config.notify = crate::notify::load_config(cwd);
         if let Some(name) = agent {
@@ -2702,7 +2764,7 @@ impl Config {
             ));
         }
 
-        sections.push("# Filesystem access\nFile and shell tools may access all filesystem paths available to this process, including temporary files and other projects. Project trust controls loading local resources; it does not restrict tool access.".to_string());
+        sections.push("File and shell tools may access all filesystem paths available to this process, including other projects and temporary files. Project trust gates local resources, not tool access.".to_string());
         if let Some(section) = self.workspaces.section() {
             sections.push(section);
         }
@@ -2837,211 +2899,31 @@ impl Config {
         }
 
         sections.push(
-            "# Tool use\nWork in larger batches to avoid extra round trips. Read a whole file (or a \
-             wide `offset`/`limit`) once instead of re-reading the same path in small slices, and \
-             issue several independent `read`, `grep`, `find`, or `ls` calls in the same step. Use \
-             `grep` to locate a symbol or string, then read the surrounding lines. Once a search \
-             identifies likely files, inspect those results and act on them instead of repeatedly \
-             rephrasing the same repository-wide search. `grep` searches literal text by default: \
-             set `regex: true` for alternatives such as `Foo|Bar` or patterns such as `Foo.*Bar`. \
-             If a search finds nothing, check its mode, case and file glob before concluding code \
-             is absent; `*.ts` excludes `*.tsx`. Read the implementation and its related tests \
-             together before changing behavior, and run the smallest relevant test early instead \
-             of discovering a conflicting expectation after a long implementation. Only re-read \
-             a file after you or another tool (including a formatter) change it, after an edit \
-             mismatch, or when you need a region not previously returned. \
-             Before you edit a region, read it and copy `oldText` from \
-             that result — the `N|` line numbers and trailing whitespace are tolerated, but text \
-             that has moved on is not. Every replacement in one `edit` call belongs to its \
-             single top-level `path` and is matched against the original file, not the results \
-             of earlier replacements. Use separate calls for different files, omit no-op \
-             replacements, and merge overlapping changes. A failed batch writes nothing: \
-             re-read the correct file, correct the targets, and resend the entire batch. A \
-             closest-region hint is diagnostic context, not permission to replace unrelated text. \
-             Prefer the dedicated tools over shell equivalents: `read` to \
-             inspect a file, `grep` to find text, `find` to locate files, and `ls` to list a \
-             directory. Search the codebase with `grep`/`find`, never with a shell \
-             `grep -r`/`rg`/`find` from the repo root: the tools skip `.git/`, `target/`, \
-             `node_modules/` and `.venv/` and honor `.gitignore`; `grep` spreads its scan across \
-             threads, while a shell search reads every build artifact — and a `| grep -v` filter \
-             after it cannot give back the time already spent. Scope a shell search to one \
-             directory and reserve it for a command's own output (`git log | grep`); never sweep \
-             the whole filesystem with `find /`, or the home directory with `find ~`, which reads \
-             every unrelated project on the machine before the command times out. Keep each \
-             `bash` command focused on one task \
-             instead of chaining unrelated commands with `;` or `&&`. `read`, `ls`, `find`, and \
-             `grep` accept absolute paths within the allowed project roots, so use them directly \
-             for file inspection. `bash` already starts in the project root, so run a command \
-             directly instead of prefixing `cd <root> &&`. On Unix, `bash` runs a non-interactive \
-             Bash with pipefail: a failing test before `| tail` still fails the tool call. Shell \
-             functions such as `nvm` are not loaded. If the project's exact `.nvmrc` version is \
-             already installed under `~/.nvm/versions/node`, its bin directory is added to PATH \
-             automatically; verify with `node --version` and run the package manager directly \
-             instead of sourcing home-directory startup scripts. Before installing dependencies \
-             or enabling a package-manager shim, inspect the project's scripts, installed \
-             dependencies and available local binaries; reuse a compatible installed toolchain. \
-             Use `bash`'s `timeout` argument rather than assuming a shell `timeout` binary exists. \
-             Check an installed command's \
-             version and `--help` before guessing version-specific flags. For example, pass \
-             clone flags after `--` (`gh repo clone <repo> -- --depth 1`); inspect diff statistics \
-             with `git diff --stat <base>...HEAD`, since `gh pr diff` has no `--stat` flag. Pass `edit.edits` as a \
-             JSON array of objects with `oldText` and `newText`, never XML parameter markup. Create a file — including a scratch or \
-             verification script — with the `write` tool rather than a shell heredoc, and keep it \
-             inside the project: a script run from the temp directory resolves its relative imports \
-             against its own directory, not the working directory, so `require('./...')` fails the \
-             moment it runs. When a command can print a large \
-             payload, select just the fields you need (for example a `--jq`/`jq` filter) rather \
-             than piping it through `head`, which still fetches and renders everything. A `--jq` \
-             filter emitting `.[] | {...}` produces separate JSON values, not one JSON document: \
-             collect `[.[] | {...}]` when another program expects an array; do not pipe JSON lines \
-             to `python -m json.tool`. Stderr is a diagnostic stream, not a failure status: \
-             successful git operations can report progress there. Judge the exit status and \
-             actual result, and preserve useful diagnostics. A search with no matches is a search \
-             result, not proof the task failed; use the dedicated `grep` tool for that distinction."
-                .to_string(),
+            "# Tool use\nWork in larger batches to avoid extra round trips: read a whole file (or a wide `offset`/`limit`) once, and issue independent `read`, `grep`, `find` or `ls` calls in the same step. Locate with `grep` (a regular expression by default; set `literal: true` for plain text), then read around a hit. Once a search identifies likely files, act on them instead of repeatedly rephrasing the same repository-wide search. If a search finds nothing, check its case, path and glob before concluding the code is absent; `*.ts` excludes `*.tsx`. Read code and its related tests together, and run the smallest relevant test early. Re-read a file only after something changed it, an edit mismatch, or for a region not previously returned.\n\nBefore editing, read the region and copy `oldText` from that result: leading indentation is significant, while `N|` numbering and trailing whitespace are tolerated. Every replacement in one `edit` call targets its single top-level `path` and is matched against the original file, not earlier replacements. Use one call per file, drop no-op replacements, and merge overlapping changes. A failed batch writes nothing: re-read, correct the targets, and resend the batch; a closest-region hint is context, not permission to replace unrelated text.\n\nPrefer `read`, `grep`, `find` and `ls` over shell equivalents. Search with the tools, never with a shell `grep -r`/`rg`/`find` from the repo root: the tools honor `.gitignore` and skip `.git/`, `target/`, `node_modules/` and `.venv/`, and `grep` spreads its scan across threads, while a shell search reads every build artifact — a `| grep -v` filter afterwards cannot give back the time spent. Scope a shell search to one directory and use it only for a command's own output; never sweep the whole filesystem with `find /`, or the home directory with `find ~`. `read`, `ls`, `find` and `grep` accept absolute paths. `bash` already starts in the project root, so do not prefix `cd <root> &&`; keep each command to one task instead of chaining with `;` or `&&`.\n\nShell functions such as `nvm` are not loaded; a matching `.nvmrc` under `~/.nvm/versions/node` is added to PATH. Check a command's version and `--help` before guessing flags, and inspect project scripts and installed binaries before installing anything. Use `bash`'s `timeout` argument. Pass clone flags after `--`, use `git diff --stat <base>...HEAD`, and pass `edit.edits` as a JSON array of `{oldText,newText}` objects, never XML. Create a file, including a scratch script, with `write` inside the project: a script in the temp directory resolves its relative imports against its own directory. Select only the fields a command needs (for example `--jq`) instead of piping a large payload through `head`; wrap `.[] | {...}` in `[.[] | {...}]` for an array, and do not pipe JSON lines to `python -m json.tool`. Stderr is diagnostic even on success: judge the exit status and the result. A search with no matches is a result, not proof of failure.".to_string(),
         );
 
         sections.push(
-            "# Communication\nWrite explanations and analysis directly in your reply, never through \
-             `bash`, `echo`, `printf`, or a heredoc merely to display prose. Use short progress \
-             updates and a final summary proportional to the work: the outcome, meaningful changes, \
-             verification and remaining limitations. Avoid celebratory banners, repeated checkmark \
-             lists, unrequested summary/checklist files, and automatic agreement with the user. \
-             Use Markdown lists for separate items, with a blank line before and after the list; \
-             use task checkboxes only for actual tracked tasks. When a diagram clarifies a summary \
-             (architecture, a workflow, or relationships), use a fenced `mermaid` code block rather \
-             than ASCII art. Desktop and VS Code render it as a diagram; the terminal shows its \
-             source. Keep diagrams focused and include a short textual explanation so the summary \
-             is useful without a diagram renderer. A failed command is a failure to \
-             diagnose, not a success to celebrate. After a tool refusal, follow its suggested \
-             alternative instead of repeating the refused operation."
-                .to_string(),
+            "# Communication\nWrite prose in your reply, not through `bash`, `echo`, `printf` or a heredoc. Give short progress updates and a final summary proportional to the work: outcome, meaningful changes, verification and remaining limitations. Avoid banners, repeated checklist lists, unrequested summary files, and automatic agreement. Use Markdown lists with a blank line around them, and checkboxes only for tracked tasks. A diagram clarifying architecture, a workflow or relationships belongs in a fenced `mermaid` block (desktop and VS Code render it) with a short explanation. Diagnose a failed command instead of celebrating it; after a tool refusal, follow its suggested alternative.".to_string(),
         );
 
         sections.push(
-            "# API execution\nUse endpoints from the user's request, the loaded skill, or the \
-             service's current implementation verbatim, including the HTTP/HTTPS scheme and path; \
-             do not guess or silently upgrade them. Reuse a working project client or prior \
-             verified request instead of inventing a new integration. Before declaring a service unreachable, compare \
-             the attempted URL with that source and diagnose the actual connection or response. \
-             A failed connection to one URL does not establish that the whole service is unavailable. \
-             Generated scripts must exit nonzero on transport, HTTP, or application-level failures \
-             and print success only after checking the response, including per-item failures in \
-             HTTP 200 results. A shell exit code of zero or a printed success banner alone does not \
-             prove the remote operation succeeded. Use column names rather than guessed numeric \
-             offsets for tabular inputs; inspect headers, group counts and small samples instead \
-             of dumping full rows or payloads. Validate required payload fields before sending. \
-             For a continuation or batch, reuse recorded outcomes, exclude already successful items, \
-             and retry only failed or unprocessed items. Diagnose with read-only lookups or saved \
-             responses; never send a dummy create/update request to test whether an existing item \
-             exists. Reconcile requested, attempted, created, already-existing, and failed counts \
-             from actual responses before reporting totals. If asked to process the rest, preserve \
-             the original input order and scope instead of re-sorting or resending completed items."
-                .to_string(),
+            "# API execution\nUse endpoints from the request, the loaded skill, or the service's implementation verbatim, including the HTTP/HTTPS scheme and path; do not guess or upgrade them. Reuse a working client or a prior verified request. A failed connection to one URL does not prove the service is down: compare the attempted URL with its source and diagnose the response. Generated scripts must exit nonzero on transport, HTTP or application failures and print success only after checking the response, including per-item failures in HTTP 200 results; a zero exit code or success banner proves nothing. Use column names, not guessed offsets, and inspect headers, counts and small samples. Validate required fields, reuse recorded outcomes, exclude already successful items, retry only failed or unprocessed items, and diagnose with read-only lookups or saved responses; never send a dummy create/update request. Reconcile requested, attempted, created, existing and failed counts, and when asked to process the rest preserve the original input order and scope.".to_string(),
         );
 
         sections.push(
-            "# Definition of Done\nAn explicit instruction from the user outranks every check below: when \
-             they say a check is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't \
-             wait for the build\"), do what they asked and say plainly what you did not verify. Never \
-             treat that instruction as something to override, and do not run the check anyway to be \
-             safe. \
-             A task is not done until you have verified the outcome otherwise, and \
-             tool output is the only evidence — a command that failed, printed nothing, or was never \
-             run is not proof. After each state-changing action, confirm the result before \
-             reporting success, and re-read what you changed. This applies to every kind of work, \
-             not just code: an edit is on disk and the build/tests/lint pass; a pull request's CI \
-             and mergeability are checked (`gh pr checks <url>`, `gh pr view <url> --json \
-             state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`) and pending checks \
-             are waited for; a comment, review, or ticket reply is read back to confirm it landed \
-             in the right place; a release, deployment, migration, or published artifact is \
-             queried for its status; and any task with a known verifier is run through it. Run a \
-             verifier once and read its whole result — re-running the same build or test on \
-             unchanged files is slow and adds nothing. For verbose verifiers, preserve the full \
-             output with `2>&1 | tee <project-log-path>` and inspect that log with `grep`/`read`; \
-             filtering through `grep` or keeping only a short `tail` can discard the failure and \
-             force an unnecessary rerun. \
-             Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the \
-             annotation\") from what you assume, and say plainly when you could not confirm \
-             something. Do not end a turn by announcing work you have not done (for example, \
-             \"Let me create a summary:\"). Do the announced work in this turn, or state the concrete \
-             blocker and the outcome reached. Do not claim a change is applied, a fix works, a PR is ready, a reply is \
-             posted, or a release is out without the output that shows it. A code change made in \
-             response to a pull request or review is delivered only once it is committed and \
-             pushed to the branch under review — fix and push the code before you reply in the \
-             thread, and confirm the new commit before you summarize."
-                .to_string(),
+            "# Definition of Done\nAn explicit instruction from the user outranks every check below: if they say one is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't wait for the build\"), do what they asked and say plainly what you did not verify; do not run the check anyway. Otherwise a task is not done until tool output shows the outcome, and a command that failed, printed nothing or never ran is not proof. Confirm each state-changing action before claiming success. This applies to work that is not just code: an edit is on disk and the build/tests/lint pass; a pull request's CI and mergeability are checked (`gh pr checks <url>`, `gh pr view <url> --json state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`) and pending checks waited for; a comment, review or ticket reply is read back; a release, deployment, migration or published artifact is queried; and any task with a verifier is run through it. Run a verifier once and read the whole result; keep verbose output with `2>&1 | tee <project-log-path>` and inspect the log, since a filter or short `tail` can discard the failure. Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the annotation\") from what you assume, and say what you could not confirm. Do not end a turn by announcing work you have not done (\"Let me create a summary:\"): do it now or state the concrete blocker. Do not claim a change is applied, a fix works, a PR is ready, a reply is posted or a release is out without output showing it. A code change answering a pull request or review is delivered only once it is committed and pushed to the branch under review: fix, push and confirm the new commit before replying.".to_string(),
         );
 
         sections.push(
-            "# Scope\nKeep every change scoped to what was asked. Before you commit, run \
-             `git status` and `git diff --staged` and stage only the paths your work touched with \
-             explicit `git add <path>` — never blanket-stage with `git add -A`, `git add --all`, \
-             `git add .`, or `git commit -a`/`-am` in a tree that may hold unrelated edits. Inspect \
-             changes without modifying the index: do not use `git add -N .` followed by \
-             `git reset` just to obtain a diff summary; preserve the user's existing staging. Leave \
-             local-only and generated files out of commits and pull requests: \
-             `.claude/settings.local.json`, `.idea/`, `.vscode/`, `.DS_Store`, editor state, build \
-             output, and unrelated lockfile churn. Do not revert someone else's unrelated changes \
-             without asking, but exclude them. Before you open or update a pull request, review its \
-             file list (`git diff --name-only <base>...HEAD`, `gh pr diff --name-only`, or \
-             `gh pr view <url> --json files`) and drop anything unrelated it picked up."
-                .to_string(),
+            "# Scope\nKeep every change scoped to the request. Before committing, run `git status` and `git diff --staged` and stage only the paths your work touched with explicit `git add <path>`; never blanket-stage with `git add -A`, `git add --all`, `git add .`, or `git commit -a`/`-am` in a tree that may hold unrelated edits. Do not use `git add -N .` then `git reset` for a diff summary, and preserve the user's existing staging. Leave local-only and generated files out: `.claude/settings.local.json`, `.idea/`, `.vscode/`, `.DS_Store`, editor state, build output and unrelated lockfiles. Do not revert someone else's changes without asking, but exclude them. Before opening or updating a pull request, review its file list (`git diff --name-only <base>...HEAD`, `gh pr diff --name-only`, `gh pr view <url> --json files`) and drop anything unrelated.".to_string(),
         );
 
         sections.push(
-            "# Authenticated URLs\nTreat a URL behind a sign-in as an authenticated resource, not a public web page. Route it to a configured MCP server first when one owns the service; otherwise use the service's official authenticated CLI instead of `webfetch`. For an AWS Console URL, preserve the account/profile and region and use the matching `aws` read command; confirm an uncertain account with `aws sts get-caller-identity`, and refresh an expired IAM Identity Center session with `aws sso login`. Do not treat a web fetch's redirect, 401, 403, or 404 as proof that the private resource does not exist."
-                .to_string(),
+            "# Authenticated URLs\nTreat a URL behind a sign-in as an authenticated resource, not a public page. Route it to a configured MCP server first when one owns the service; otherwise use the service's official authenticated CLI instead of `webfetch`. For an AWS Console URL, preserve the account/profile and region and use the matching `aws` read command; confirm an uncertain account with `aws sts get-caller-identity`, and refresh an expired IAM Identity Center session with `aws sso login`. A fetch's redirect, 401, 403, or 404 is not proof that a private resource does not exist.".to_string(),
         );
 
         sections.push(
-            "# GitHub and GitLab\nWork with every GitHub and GitLab URL through their CLIs \
-             (`gh` and `glab`) rather than `webfetch`: repository files, commits, checks and \
-             ordinary pages may be private too, and an unauthenticated fetch often disguises that \
-             as a 404. The CLIs authenticate and return structured data. Use \
-             `gh pr view <url-or-number> --comments` / `glab mr view` to read an item, `gh pr diff` / \
-             `glab mr diff` for its changes, `gh pr checks` for CI, and `gh pr comment` / \
-             `glab mr note` for a new top-level comment. Reserve `webfetch` for public pages \
-             that have no CLI equivalent.\nReply to code review comments inside their existing \
-             threads instead of \
-             posting one general comment: list them with `gh api repos/{owner}/{repo}/pulls/<n>/comments` \
-             and answer one with \
-             `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>` \
-             (`gh pr comment` is only for a new top-level comment). Select just the fields you need \
-             and format API output for a person to read — one line per item, not minified JSON. Fix \
-             and push the code before you reply: commit the change and `git push` it to the branch \
-             under review first, so a reply never claims a comment is addressed while the branch \
-             still has the old code.\nNever \
-             commit to or push the repository's default branch. Determine it first with \
-             `git symbolic-ref --short refs/remotes/origin/HEAD` or \
-             `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name` (fall back to \
-             `main`/`master` only when neither is set): branch protection rejects a direct push \
-             and you would have to undo the commit. When you are asked to raise a pull request \
-             while on the default branch, create a feature branch first, commit there, push that \
-             branch, and open the PR from it. Confirm the current branch with \
-             `git branch --show-current` before committing or pushing; never try a default-branch \
-             push to discover whether protection exists. If you already committed on the default \
-             branch, create a feature branch at that commit rather than resetting or rewriting \
-             history as a recovery step. Supply `gh pr create --head <branch> --base <default>` \
-             explicitly: a single-branch clone may push successfully without storing a remote-tracking \
-             ref, so do not repeatedly push or change its fetch configuration to satisfy PR inference. \
-             Write multiline PR text to a project-local scratch file and pass `--body-file`, then remove \
-             only that scratch file after creation.\nAny summary about a pull or merge request — one \
-             you opened, updated, checked, or replied to — names it with a link the user can \
-             click (`[#123 title](https://github.com/owner/repo/pull/123)`, the URL `gh pr create` \
-             printed or `gh pr view <number> --json url` reports; `glab` reports the same for a \
-             merge request), never as a bare `#123`: the desktop app and the VS Code panel open a \
-             Markdown link in the browser and a terminal links the printed URL, while a number \
-             on its own leaves the user nothing to open.\nName a commit the same way — \
-             `[<short sha>](<url>)` — in a report, a reply to a review comment or any other \
-             summary: the URL is the one the forge reports for that commit \
-             (`gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url` on GitHub), never a \
-             template filled in by hand, since a GitLab project answers its own \
-             `https://gitlab.com/owner/repo/-/commit/<sha>` on whatever domain it lives on and \
-             not a `github.com/commit/` path. A hash written on its own is not turned into a \
-             link by the forge, so a reply that says which commit addressed a comment carries \
-             that link and never the hash alone."
-                .to_string(),
+            "# GitHub and GitLab\nUse `gh` and `glab` for every GitHub and GitLab URL instead of `webfetch`: repository files, commits, checks and pages may be private, and an unauthenticated fetch can disguise that as a 404. Read an item with `gh pr view <url-or-number> --comments` / `glab mr view`, diff it with `gh pr diff` / `glab mr diff`, check CI with `gh pr checks`, and use `gh pr comment` / `glab mr note` for a new top-level comment. Reserve `webfetch` for public pages with no CLI equivalent.\n\nReply to code review comments inside their existing threads: list them with `gh api repos/{owner}/{repo}/pulls/<n>/comments` and answer one through `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>`. Select only the fields you need and format API output one line per item. Fix and push the code before replying.\n\nNever commit to or push the default branch. Determine it with `git symbolic-ref --short refs/remotes/origin/HEAD` or `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name` (fall back to `main`/`master` only when neither is set). To raise a pull request from the default branch, create a feature branch, commit and push there, and open the PR from it. Confirm the branch with `git branch --show-current` first; if you already committed on the default branch, branch at that commit rather than rewriting history. Pass `--head <branch> --base <default>` to `gh pr create`, since a single-branch clone may push without a remote-tracking ref. Write multiline PR text to a project-local scratch file for `--body-file`, then remove only that file.\n\nA summary about a pull or merge request names it with a link the user can click (`[#123 title](https://github.com/owner/repo/pull/123)`, the URL `gh pr create` prints or `gh pr view <number> --json url` reports), never as a bare `#123`. Name a commit the same way — `[<short sha>](<url>)` — in a report, a reply to a review comment or any other summary: use the URL the forge reports (`gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url`; a GitLab project answers its own `https://gitlab.com/owner/repo/-/commit/<sha>` on whatever domain it lives on, not a `github.com/commit/` path), never the hash alone.".to_string(),
         );
 
         if self.compaction.enabled {
@@ -3412,6 +3294,44 @@ mod tests {
         };
         assert_eq!(no_catalog.catalog_window(), None);
         assert_eq!(no_catalog.context_window(), 128_000);
+    }
+
+    #[test]
+    fn a_response_budget_defaults_to_the_models_published_output_limit() {
+        let mut config = Config {
+            provider: "deepseek".to_string(),
+            model: "deepseek-flash".to_string(),
+            ..Config::default()
+        };
+        // Nothing remembered yet: the conservative default stands.
+        assert_eq!(config.max_output_tokens(), 8_192);
+
+        config.catalog_output_limits.insert(
+            "deepseek".to_string(),
+            BTreeMap::from([("deepseek-flash".to_string(), 384_000)]),
+        );
+        // A model that can write more than the default is not held to 8k, but
+        // stays inside the request ceiling.
+        assert_eq!(config.max_output_tokens(), 32_768);
+
+        config
+            .catalog_output_limits
+            .get_mut("deepseek")
+            .unwrap()
+            .insert("deepseek-flash".to_string(), 4_096);
+        // A model with a smaller published limit is held to it.
+        assert_eq!(config.max_output_tokens(), 4_096);
+
+        config
+            .catalog_output_limits
+            .get_mut("deepseek")
+            .unwrap()
+            .insert("deepseek-flash".to_string(), u64::from(u32::MAX) + 1);
+        assert_eq!(config.max_output_tokens(), 32_768);
+
+        // A `max_tokens` the reader configured is theirs, never raised.
+        config.max_tokens_explicit = true;
+        assert_eq!(config.max_output_tokens(), 8_192);
     }
 
     #[test]

@@ -54,10 +54,10 @@ const URL_ENV: &str = "OXIDE_MODEL_CATALOG_URL";
 /// connection for minutes, long enough for a slow network.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The shape a remembered entry is written with. Entries written before the
-/// reasoning metadata was kept carry `0`, so a launch re-reads the provider's
-/// catalog instead of trusting an ETag that would answer `304` forever.
-const STORE_VERSION: u32 = 2;
+/// The shape a remembered entry is written with. Older entries lack reasoning
+/// or output/cache metadata, so re-read the full catalog instead of accepting
+/// an ETag that would leave those fields missing after a `304`.
+const STORE_VERSION: u32 = 3;
 
 /// Two oxide processes — a terminal and the desktop app — can write the file at
 /// the same time, so the read that merges one process's answer into it and the
@@ -66,14 +66,21 @@ const STORE_VERSION: u32 = 2;
 /// threads within one of them.
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 
-/// One model as the catalog publishes it. The window and the reasoning
-/// metadata are what the resolution needs; the rest of the entry changes shape
-/// with Pi's catalog rather than with anything Oxide reads.
+/// Model metadata used to resolve context, output and reasoning limits,
+/// and the lifetime of a provider prompt-cache entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogModel {
     #[serde(default)]
     pub context_window: u64,
+    /// The most tokens the model can produce in one response (`maxTokens` in
+    /// the catalog Pi publishes), or `0` when it does not say.
+    #[serde(default)]
+    pub max_tokens: u64,
+    /// How long the provider keeps a prompt-cache entry, when it publishes
+    /// that (`promptCache`). A model with none is never warmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<PromptCache>,
     /// Whether the model reasons at all, which is what makes an effort level
     /// selectable where the provider's own listing carries no effort metadata.
     #[serde(default)]
@@ -116,6 +123,16 @@ impl CatalogModel {
     }
 }
 
+/// The prompt-cache lifetimes a provider publishes, in seconds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCache {
+    #[serde(default)]
+    pub short: u64,
+    #[serde(default)]
+    pub long: u64,
+}
+
 /// One provider's catalog: the models, the validator the next lookup
 /// revalidates with, and when it was last checked.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +165,29 @@ impl CatalogEntry {
             .iter()
             .filter(|(_, model)| model.context_window > 0)
             .map(|(id, model)| (id.clone(), model.context_window))
+            .collect()
+    }
+
+    /// The output limits alone, in the same shape as [`windows`](Self::windows)
+    /// so the model-name resolution is shared.
+    pub fn output_limits(&self) -> Models {
+        self.models
+            .iter()
+            .filter(|(_, model)| model.max_tokens > 0)
+            .map(|(id, model)| (id.clone(), model.max_tokens))
+            .collect()
+    }
+
+    /// The short prompt-cache lifetime alone, in the same shape as
+    /// [`windows`](Self::windows). A model whose catalog carries no
+    /// `promptCache` is left out, so it is never warmed.
+    pub fn prompt_cache(&self) -> Models {
+        self.models
+            .iter()
+            .filter_map(|(id, model)| {
+                let seconds = model.prompt_cache.as_ref()?.short;
+                (seconds > 0).then(|| (id.clone(), seconds))
+            })
             .collect()
     }
 }
@@ -218,6 +258,32 @@ pub fn windows() -> ModelsByProvider {
         .providers
         .into_iter()
         .map(|(provider, entry)| (provider, entry.windows()))
+        .filter(|(_, models)| !models.is_empty())
+        .collect()
+}
+
+/// The same, for the output limit each model accepts in one response.
+pub fn output_limits() -> ModelsByProvider {
+    let Some(path) = path() else {
+        return BTreeMap::new();
+    };
+    load(&path)
+        .providers
+        .into_iter()
+        .map(|(provider, entry)| (provider, entry.output_limits()))
+        .filter(|(_, models)| !models.is_empty())
+        .collect()
+}
+
+/// The same, for the short prompt-cache lifetime each model publishes.
+pub fn prompt_cache() -> ModelsByProvider {
+    let Some(path) = path() else {
+        return BTreeMap::new();
+    };
+    load(&path)
+        .providers
+        .into_iter()
+        .map(|(provider, entry)| (provider, entry.prompt_cache()))
         .filter(|(_, models)| !models.is_empty())
         .collect()
 }
@@ -548,6 +614,13 @@ fn parse_catalog(value: &serde_json::Value) -> BTreeMap<String, CatalogModel> {
             .get("contextWindow")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
+        let max_tokens = object
+            .get("maxTokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let prompt_cache = object
+            .get("promptCache")
+            .and_then(|value| serde_json::from_value::<PromptCache>(value.clone()).ok());
         let reasoning = object
             .get("reasoning")
             .and_then(serde_json::Value::as_bool)
@@ -564,6 +637,8 @@ fn parse_catalog(value: &serde_json::Value) -> BTreeMap<String, CatalogModel> {
             id.to_string(),
             CatalogModel {
                 context_window: window,
+                max_tokens,
+                prompt_cache,
                 reasoning,
                 thinking_level_map,
             },
@@ -683,13 +758,24 @@ mod tests {
     }
 
     fn entry_models(entries: &[(&str, u64)]) -> BTreeMap<String, CatalogModel> {
+        entry_models_with_limits(
+            &entries
+                .iter()
+                .map(|(id, window)| (*id, *window, 0))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn entry_models_with_limits(entries: &[(&str, u64, u64)]) -> BTreeMap<String, CatalogModel> {
         entries
             .iter()
-            .map(|(id, window)| {
+            .map(|(id, window, max_tokens)| {
                 (
                     id.to_string(),
                     CatalogModel {
                         context_window: *window,
+                        max_tokens: *max_tokens,
+                        prompt_cache: None,
                         ..CatalogModel::default()
                     },
                 )
@@ -726,9 +812,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             parse_catalog(&under_ids),
-            entry_models(&[
-                ("deepseek-flash", 1_000_000),
-                ("deepseek-v4-pro", 1_000_000)
+            entry_models_with_limits(&[
+                ("deepseek-flash", 1_000_000, 384_000),
+                ("deepseek-v4-pro", 1_000_000, 0)
             ])
         );
 
@@ -766,6 +852,29 @@ mod tests {
             .len(),
             0
         );
+    }
+
+    #[test]
+    fn a_catalog_answer_carries_each_models_output_limit() {
+        let answer: serde_json::Value = serde_json::from_str(
+            r#"{
+                "deepseek-flash": {"id": "deepseek-flash", "contextWindow": 1000000, "maxTokens": 384000},
+                "deepseek-v4-pro": {"id": "deepseek-v4-pro", "contextWindow": 1000000}
+            }"#,
+        )
+        .unwrap();
+        let entry = CatalogEntry {
+            models: parse_catalog(&answer),
+            ..CatalogEntry::default()
+        };
+        let limits = entry.output_limits();
+        assert_eq!(window_for(&limits, "deepseek-flash"), Some(384_000));
+        // A model the catalog gave no limit is left out of the map rather than
+        // answered with a zero that a request would then ask for.
+        assert_eq!(window_for(&limits, "deepseek-v4-pro"), None);
+        // The window and the output limit share one entry without crowding
+        // each other out.
+        assert_eq!(entry.windows().len(), 2);
     }
 
     #[test]
@@ -1101,18 +1210,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_catalog_written_before_the_reasoning_metadata_is_read_again() {
+    async fn a_catalog_written_before_output_and_cache_metadata_is_read_again() {
         let _env = crate::env_lock::hold();
         let dir = temp_dir("upgrade");
         let path = dir.join(FILE_NAME);
         std::env::set_var(FILE_ENV, &path);
-        // What an older release remembered: the windows, an ETag, no shape.
+        // Version 2 remembered reasoning and windows, but no output/cache limits.
         write(
             &path,
             "deepseek",
             &CatalogEntry {
                 checked_at: now_secs(),
-                version: 0,
+                version: 2,
                 etag: Some("\"old\"".into()),
                 models: entry_models(&[("deepseek-flash", 1_000_000)]),
             },
@@ -1121,6 +1230,7 @@ mod tests {
         assert!(read(&path, "deepseek").unwrap().is_stale());
 
         let body = r#"{"deepseek-flash":{"id":"deepseek-flash","contextWindow":1000000,"reasoning":true,
+            "maxTokens":384000,"promptCache":{"short":300},
             "thinkingLevelMap":{"low":"low","high":"high","max":"max"}}}"#;
         let server = TestServer::start(vec![Response::new(200, body, &[], &[])]);
         std::env::set_var(URL_ENV, server.url());
@@ -1131,6 +1241,15 @@ mod tests {
         assert_eq!(server.requests()[0].header("if-none-match"), None);
         assert_eq!(entry.version, STORE_VERSION);
         assert!(entry.models["deepseek-flash"].reasoning);
+        assert_eq!(entry.models["deepseek-flash"].max_tokens, 384_000);
+        assert_eq!(
+            entry.models["deepseek-flash"]
+                .prompt_cache
+                .as_ref()
+                .unwrap()
+                .short,
+            300
+        );
         assert!(!entry.is_stale());
 
         std::env::remove_var(URL_ENV);
@@ -1150,7 +1269,7 @@ mod tests {
             "openai",
             &CatalogEntry {
                 checked_at: now_secs(),
-                version: 0,
+                version: 2,
                 etag: Some("\"old\"".into()),
                 models: entry_models(&[("gpt-5", 400_000)]),
             },

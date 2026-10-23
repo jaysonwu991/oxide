@@ -1773,6 +1773,7 @@ fn handle_key(
                 steering_mode: config.steering_mode,
                 follow_up_mode: config.follow_up_mode,
                 cancel: crate::agent::Cancel::new(),
+                cache_warm: None,
             };
             tokio::spawn(async move {
                 if subtask {
@@ -1784,6 +1785,17 @@ fn handle_key(
                     if let Some(name) = command_agent {
                         config.active_agent = config.ecosystem.agent(&name).cloned();
                     }
+                    let mut runtime = runtime;
+                    // Keep this conversation's prompt cache warm between turns,
+                    // the way the desktop harness and rpc mode do.
+                    runtime.cache_warm = Some(crate::agent::WarmContext {
+                        config: config.clone(),
+                        cwd: cwd.clone(),
+                        session: runtime
+                            .session
+                            .as_ref()
+                            .map(|session| session.id().to_string()),
+                    });
                     agent::run(config, cwd, history, tx, runtime).await;
                 }
             });
