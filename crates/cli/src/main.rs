@@ -1238,7 +1238,7 @@ async fn run() -> Result<()> {
     } else if let Some(reference) = &cli.fork {
         let source = SessionLog::open_ref(&cwd, reference)?;
         let messages = source.messages()?;
-        Some(SessionLog::fork(&cwd, &messages)?)
+        Some(source.fork_context(&cwd, messages.len())?)
     } else if cli.continue_session {
         Some(SessionLog::latest(&cwd).context("no previous session found for this project")?)
     } else {

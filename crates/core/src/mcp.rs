@@ -4,13 +4,14 @@ use crate::mcp_oauth::OAuthState;
 use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -145,17 +146,22 @@ struct McpServerHandle {
 pub struct McpRegistry {
     configured: Vec<McpServer>,
     servers: RwLock<Vec<Arc<McpServerHandle>>>,
-    load_guard: Mutex<()>,
+    load_guards: BTreeMap<String, Mutex<()>>,
+    discovery: OnceCell<Vec<String>>,
 }
 
 impl McpRegistry {
-    /// Creates a registry without starting any configured servers. Servers are
-    /// connected only when the model selects them through `mcp_load`.
+    /// Creates a registry without starting processes or contacting servers.
+    /// A session starts discovery in the background without exposing schemas.
     pub fn new(servers: &[McpServer]) -> Self {
         Self {
             configured: servers.to_vec(),
             servers: RwLock::new(Vec::new()),
-            load_guard: Mutex::new(()),
+            load_guards: servers
+                .iter()
+                .map(|s| (s.name.clone(), Mutex::new(())))
+                .collect(),
+            discovery: OnceCell::new(),
         }
     }
 
@@ -188,8 +194,8 @@ impl McpRegistry {
     }
 
     pub async fn load(&self, name: &str) -> Result<String> {
-        let _guard = self.load_guard.lock().await;
         let server = self.resolve_enabled(name)?;
+        let _guard = self.load_guards[&server.name].lock().await;
         let name = server.name.clone();
         if self
             .servers
@@ -228,7 +234,7 @@ impl McpRegistry {
                 tools,
             }));
         let mut message = format!(
-            "loaded MCP server `{name}` with {count} tool(s); use its `{name}__*` tools now"
+            "loaded MCP server `{name}` with {count} deferred tool(s); use tool_search to discover and declare the tools you need"
         );
         if let Some(instructions) = &instructions {
             message.push_str(&format!("\n\nServer instructions:\n{instructions}"));
@@ -236,10 +242,120 @@ impl McpRegistry {
         Ok(message)
     }
 
+    pub fn start_discovery(self: &Arc<Self>) {
+        if self.configured_servers().is_empty() || self.discovery.initialized() {
+            return;
+        }
+        let registry = Arc::clone(self);
+        tokio::spawn(async move {
+            registry.discover().await;
+        });
+    }
+
+    /// Concurrent discovery is shared by turns and searches. Failed servers
+    /// are reported alongside usable matches, never treated as absent tools.
+    pub async fn discover(self: &Arc<Self>) -> &Vec<String> {
+        self.discovery
+            .get_or_init(|| async {
+                let mut loads = tokio::task::JoinSet::new();
+                for (name, _) in self.configured_servers() {
+                    let registry = Arc::clone(self);
+                    loads.spawn(async move {
+                        registry
+                            .load(&name)
+                            .await
+                            .err()
+                            .map(|e| format!("{name}: {e:#}"))
+                    });
+                }
+                let mut errors = Vec::new();
+                while let Some(result) = loads.join_next().await {
+                    match result {
+                        Ok(Some(error)) => errors.push(error),
+                        Err(error) => errors.push(format!("MCP discovery: {error}")),
+                        _ => {}
+                    }
+                }
+                errors.sort();
+                errors
+            })
+            .await
+    }
+
+    pub fn discovery_errors(&self) -> Vec<String> {
+        let servers = self.servers.read().unwrap_or_else(|p| p.into_inner());
+        self.discovery
+            .get()
+            .into_iter()
+            .flatten()
+            .filter(|error| {
+                !servers
+                    .iter()
+                    .any(|server| error.starts_with(&format!("{}:", server.name)))
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn search_tools(
+        &self,
+        query: &str,
+        limit: usize,
+        active: &BTreeSet<String>,
+        permitted: impl Fn(&str) -> bool,
+    ) -> Vec<ToolSpec> {
+        let servers = self.servers.read().unwrap_or_else(|p| p.into_inner());
+        let mut candidates = Vec::new();
+        for server in servers.iter() {
+            for tool in &server.tools {
+                if active.contains(&tool.exposed) || !permitted(&tool.exposed) {
+                    continue;
+                }
+                let spec = ToolSpec {
+                    kind: "function",
+                    function: FunctionSpec {
+                        name: tool.exposed.clone(),
+                        description: tool.description.clone(),
+                        parameters: tool.schema.clone(),
+                    },
+                };
+                let document = crate::tool_search::document(
+                    &spec,
+                    &format!(
+                        "{} {}",
+                        server.name,
+                        server.instructions.as_deref().unwrap_or("")
+                    ),
+                );
+                candidates.push((spec, document));
+            }
+        }
+        // Connection completion order must not decide ties.
+        candidates.sort_by(|a, b| a.0.function.name.cmp(&b.0.function.name));
+        let documents: Vec<&str> = candidates.iter().map(|(_, text)| text.as_str()).collect();
+        crate::tool_search::rank(query, &documents, limit)
+            .into_iter()
+            .map(|index| candidates[index].0.clone())
+            .collect()
+    }
+
     /// The instructions the loaded servers ship in their `initialize` result, as
     /// the system-prompt section that carries them. `None` while no loaded server
     /// provides any.
     pub fn instructions_section(&self) -> Option<String> {
+        self.instructions_matching(|_| true)
+    }
+
+    pub fn selected_instructions(&self, active: &BTreeSet<String>) -> Option<String> {
+        self.instructions_matching(|server| {
+            server
+                .tools
+                .iter()
+                .any(|tool| active.contains(&tool.exposed))
+        })
+    }
+
+    fn instructions_matching(&self, include: impl Fn(&McpServerHandle) -> bool) -> Option<String> {
         let mut section = String::new();
         for server in self
             .servers
@@ -247,6 +363,9 @@ impl McpRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
         {
+            if !include(server) {
+                continue;
+            }
             let Some(instructions) = &server.instructions else {
                 continue;
             };
@@ -268,22 +387,34 @@ impl McpRegistry {
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
+        self.specs_matching(|_| true)
+    }
+
+    pub fn declared_specs(&self, active: &BTreeSet<String>) -> Vec<ToolSpec> {
+        self.specs_matching(|name| active.contains(name))
+    }
+
+    fn specs_matching(&self, include: impl Fn(&str) -> bool) -> Vec<ToolSpec> {
         self.servers
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .flat_map(|server| {
-                server.tools.iter().map(|tool| ToolSpec {
-                    kind: "function",
-                    function: FunctionSpec {
-                        name: tool.exposed.clone(),
-                        description: format!(
-                            "[mcp:{}; {}] {}",
-                            server.name, server.source, tool.description
-                        ),
-                        parameters: tool.schema.clone(),
-                    },
-                })
+                server
+                    .tools
+                    .iter()
+                    .filter(|tool| include(&tool.exposed))
+                    .map(|tool| ToolSpec {
+                        kind: "function",
+                        function: FunctionSpec {
+                            name: tool.exposed.clone(),
+                            description: format!(
+                                "[mcp:{}; {}] {}",
+                                server.name, server.source, tool.description
+                            ),
+                            parameters: tool.schema.clone(),
+                        },
+                    })
             })
             .collect()
     }
@@ -673,12 +804,24 @@ impl McpConnection {
     }
 
     async fn list_tools(&mut self) -> Result<Vec<RawTool>> {
-        let result = self.request("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let mut tools = Vec::new();
+        let mut params = json!({});
+        let mut cursors = BTreeSet::new();
+        loop {
+            let result = self.request("tools/list", params).await?;
+            let page = result
+                .get("tools")
+                .and_then(Value::as_array)
+                .context("MCP tools/list response has no tools array")?;
+            tools.extend(page.iter().cloned());
+            let Some(cursor) = result.get("nextCursor").and_then(Value::as_str) else {
+                break;
+            };
+            if !cursors.insert(cursor.to_string()) {
+                bail!("MCP tools/list returned a repeated pagination cursor");
+            }
+            params = json!({"cursor":cursor});
+        }
         Ok(tools
             .into_iter()
             .filter_map(|tool| {

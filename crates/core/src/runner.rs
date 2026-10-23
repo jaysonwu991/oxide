@@ -202,6 +202,7 @@ pub async fn spawn_agent_in(
     let approver = approve.unwrap_or_else(|| default_approver(config.auto_approve));
     let runtime = Runtime {
         mcp: environment.mcp,
+        selected_mcp_tools: Default::default(),
         plugins: environment.plugins,
         session: session.map(Arc::new),
         snapshots: Snapshots::open(&cwd).ok().map(Arc::new),

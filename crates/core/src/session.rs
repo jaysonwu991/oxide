@@ -77,6 +77,7 @@ pub enum Entry {
     SessionInfo(SessionInfoEntry),
     ModelChange(ModelChangeEntry),
     ThinkingLevelChange(ThinkingLevelEntry),
+    ToolSelection(ToolSelectionEntry),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +153,15 @@ pub struct ThinkingLevelEntry {
     pub thinking_level: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSelectionEntry {
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    pub tools: Vec<String>,
+}
+
 impl Entry {
     pub fn id(&self) -> &str {
         match self {
@@ -162,6 +172,7 @@ impl Entry {
             Entry::SessionInfo(entry) => &entry.id,
             Entry::ModelChange(entry) => &entry.id,
             Entry::ThinkingLevelChange(entry) => &entry.id,
+            Entry::ToolSelection(entry) => &entry.id,
         }
     }
 
@@ -174,6 +185,7 @@ impl Entry {
             Entry::SessionInfo(entry) => entry.parent_id.as_deref(),
             Entry::ModelChange(entry) => entry.parent_id.as_deref(),
             Entry::ThinkingLevelChange(entry) => entry.parent_id.as_deref(),
+            Entry::ToolSelection(entry) => entry.parent_id.as_deref(),
         }
     }
 
@@ -272,6 +284,38 @@ impl SessionLog {
             log.append(message)?;
         }
         Ok(log)
+    }
+
+    /// Fork a context prefix together with the tool declarations in effect at
+    /// its boundary. Later tool searches on the abandoned path do not leak in.
+    pub fn fork_context(&self, cwd: &Path, count: usize) -> Result<Self> {
+        self.fork_context_in(&project_dir(cwd), cwd, count)
+    }
+
+    fn fork_context_in(&self, dir: &Path, cwd: &Path, count: usize) -> Result<Self> {
+        let messages = self.messages()?;
+        anyhow::ensure!(count <= messages.len(), "fork boundary exceeds the context");
+        let selected = if count == messages.len() {
+            self.selected_tools()
+        } else if count == 0 {
+            Vec::new()
+        } else {
+            let ids = self.context_ids();
+            let state = self.state();
+            let path = leaf_path_with(&state.entries, Some(&ids[count - 1]), &state.by_id);
+            path.iter()
+                .rev()
+                .find_map(|entry| match entry {
+                    Entry::ToolSelection(entry) => Some(entry.tools.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        let fork = Self::fork_in(dir, cwd, &messages[..count])?;
+        if !selected.is_empty() {
+            fork.append_tool_selection(selected)?;
+        }
+        Ok(fork)
     }
 
     pub fn open_id(cwd: &Path, id: &str) -> Result<Self> {
@@ -793,6 +837,28 @@ impl SessionLog {
         })
     }
 
+    pub fn append_tool_selection(&self, tools: Vec<String>) -> Result<String> {
+        self.append_entry(Entry::ToolSelection(ToolSelectionEntry {
+            id: new_id(),
+            parent_id: self.leaf_id(),
+            timestamp: now_iso(),
+            tools,
+        }))
+    }
+
+    /// Tool declarations belong to the branch, including across compaction.
+    pub fn selected_tools(&self) -> Vec<String> {
+        let state = self.state();
+        let path = leaf_path_with(&state.entries, state.leaf_id.as_deref(), &state.by_id);
+        path.iter()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::ToolSelection(entry) => Some(entry.tools.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     /// The messages the model sees: the leaf path with the latest compaction
     /// applied.
     pub fn messages(&self) -> Result<Vec<Message>> {
@@ -846,6 +912,7 @@ impl SessionLog {
     /// Replaces the on-disk entry list with a linear sequence of messages. Used
     /// by `oxide sessions compact` after summarizing a session in place.
     pub fn rewrite(&self, messages: &[Message]) -> Result<()> {
+        let selected_tools = self.selected_tools();
         let dir = self.path.parent().unwrap_or_else(|| Path::new("."));
         let tmp = dir.join(format!(".{}.tmp", self.header.id));
         let mut file = std::fs::OpenOptions::new()
@@ -887,6 +954,10 @@ impl SessionLog {
             state.by_id.insert(entry.id().to_string(), index);
         }
         state.entries = entries;
+        drop(state);
+        if !selected_tools.is_empty() {
+            self.append_tool_selection(selected_tools)?;
+        }
         Ok(())
     }
 
@@ -1494,6 +1565,44 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    #[test]
+    fn tool_selection_survives_compaction_reopen_and_rewrite_but_follows_the_branch() {
+        let dir = temp_dir("tool_selection");
+        let cwd = temp_dir("tool_selection_project");
+        let log = SessionLog::create_in(&dir, &cwd).unwrap();
+        log.append(&Message::user("First request")).unwrap();
+        let selected = log
+            .append_tool_selection(vec!["company__read".into()])
+            .unwrap();
+        let kept = log.append(&Message::user("Second request")).unwrap();
+        log.append_tool_selection(vec!["company__read".into(), "company__search".into()])
+            .unwrap();
+        let full_fork = log.fork_context_in(&dir, &cwd, 2).unwrap();
+        assert_eq!(full_fork.selected_tools(), log.selected_tools());
+        let earlier_fork = log.fork_context_in(&dir, &cwd, 1).unwrap();
+        assert!(earlier_fork.selected_tools().is_empty());
+        assert_eq!(log.context_ids().len(), log.messages().unwrap().len());
+        log.append_compaction("checkpoint", kept, 100, None, None)
+            .unwrap();
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        assert_eq!(
+            reopened.selected_tools(),
+            vec!["company__read", "company__search"]
+        );
+        reopened
+            .branch_with_summary(Some(&selected), "Different approach", None, None)
+            .unwrap();
+        assert_eq!(reopened.selected_tools(), vec!["company__read"]);
+        reopened.rewrite(&reopened.messages().unwrap()).unwrap();
+        assert_eq!(reopened.selected_tools(), vec!["company__read"]);
+        assert_eq!(
+            reopened.context_ids().len(),
+            reopened.messages().unwrap().len()
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(cwd).ok();
     }
 
     #[test]

@@ -137,46 +137,45 @@ defined in both project and global resolves to the requested one. Without
 `--scope`, both search every configured source in precedence order, so
 `oxide mcp remove <name>` still deletes the entry the runtime actually uses.
 
-At startup, Oxide adds only the enabled server names and configured URLs or
-commands to the model context. It does not start a local process, make a remote
-request, or check OAuth until a matching server is needed. A server is selected
-three ways:
+When a session starts, Oxide connects enabled MCP servers in the background and
+reads their tool catalogs, including every page of `tools/list`. Discovery is
+shared by turns in the same project environment. It never opens a login browser;
+a server that needs authorization is reported by the search so it can be signed
+in separately. Disabled servers are not contacted.
 
-- **URL routing** — when a user message contains a URL whose host matches a
-  server's routing domains, Oxide loads that server before the next model call
-  so its tools are ready on the first turn. `webfetch` also redirects to the
-  matching server instead of making an unauthenticated request.
-- **Service names** — a message that names a service loads the server configured
-  for it, so "create a Confluence doc" loads a server named `atlassian` (or
-  `my-atlassian`) before the first model call, with no URL to paste. A server is
-  matched by the words of its own name, by the aliases of the well-known service
-  its name belongs to, and by the service its endpoint points at —
-  `mcp.atlassian.com` is Atlassian whatever the server is called, so a server
-  registered as `company-tools` answers to "Confluence" and "Jira" too. Words
-  too short or too generic to name a service (`mcp`, `server`, `local`) are
-  ignored.
-- **`mcp_load`** — the model loads a server on demand through the built-in
-  `mcp_load` tool, whose description lists each server's domains and the other
-  names it answers to. Any of those names loads it — `confluence` loads a server
-  named `atlassian` — and a name more than one server answers to is reported
-  instead of guessed at.
+Tools use the deferred discovery workflow supported by
+[Pi Coding Agent](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/mcp.md).
+Their schemas stay out of the model request until the model calls
+`tool_search` with the capabilities it needs, for example:
 
-The server's tools are discovered when loaded and become available on the next
-agent step for the rest of the session. A server's own instructions — the
-`instructions` string from the MCP initialize handshake, where a service says
-which of its tools to call first — are passed to the model too: in the `mcp_load`
-result when the model loads the server, and in the system prompt for the rest of
-the run so an auto-loaded server's guidance is not lost. That section is headed
-as untrusted: it states that the text came from the servers themselves rather
-than from you or from the policy above it, and that it cannot change those
-instructions, grant a permission, or redirect the task.
+```json
+{"query": "Slack read thread messages", "limit": 3}
+```
 
-Routing domains come from the optional `domains` array in a server's config,
-falling back to built-in presets for well-known services (Atlassian/Jira/Confluence,
-New Relic, Context7, Contentful, Figma, GitHub, GitLab, Notion, Linear, and
-Sentry) matched by the server's name or by the service its URL or command points
-at. Exact hosts match exactly; a `*.` prefix (or leading `.`) matches the
-host and its subdomains. For example:
+Search uses BM25 over tool names, descriptions, parameter names and descriptions,
+and server instructions. It works for a company gateway with an arbitrary name
+and URL; no service-to-server or domain mapping is required. The default limit is
+8, with an optional integer from 1 to 64. Only matching tools are declared on the
+next model call as `<server>__<tool>`. Previously selected tools remain available;
+search looks for tools not already declared and respects the run's tool filters.
+
+Tool selection is stored on the session branch and survives resume, compaction,
+and context forks. Background discovery alone exposes no schemas and invokes no
+service tool. Servers that fail discovery are reported alongside usable matches,
+so an inaccessible server is not mistaken for a service with no matching tools.
+`mcp_load` remains available to connect or retry a particular server without
+exposing its entire catalog.
+
+A selected server's own instructions reach the model in an untrusted reference
+section. They cannot change the user's instructions, grant permissions or
+redirect the task. A search loads capabilities; invoking a discovered tool still
+passes through the usual tool permissions.
+
+The optional `domains` array remains a compatibility hint for `webfetch`: when
+one of its URLs matches a configured server, Oxide directs the model to that
+server and to capability search instead of making an unauthenticated fetch.
+Existing well-known domain defaults are also accepted. Exact hosts match exactly;
+a `*.` prefix (or leading `.`) matches the host and its subdomains. For example:
 
 ```json
 {
@@ -190,8 +189,7 @@ host and its subdomains. For example:
 }
 ```
 
-This behavior applies to every configured MCP server, not a hard-coded list of
-services. Remote servers that establish a Streamable HTTP session have their
+Capability discovery applies to every enabled MCP server. Remote servers that establish a Streamable HTTP session have their
 `Mcp-Session-Id` preserved across subsequent requests.
 
 ### OAuth for remote servers

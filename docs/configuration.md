@@ -645,6 +645,12 @@ updates the previous checkpoint instead of writing a fresh one, and a
 summarization response is capped at a fraction of `reserveTokens` so it cannot
 spend the whole response budget.
 
+If the full request reaches the limit while history is below `keepRecentTokens`,
+automatic compaction keeps the latest user turn and summarizes the earlier turns.
+Prompt and tool-schema overhead remains in the context estimate after compaction.
+When a gateway reports a smaller backend window, Oxide remembers that limit on
+the session branch and attempts compaction followed by one retry.
+
 Settings live under `compaction` in `settings.json` (global) or
 `.oxide/settings.json` (project):
 
