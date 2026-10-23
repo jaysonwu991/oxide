@@ -83,6 +83,33 @@ const BASH_MODULE_PATH_HINT: &str = "[a relative import could not be resolved: N
 directory. Check the specifier and that the file it names exists at that path, then run it \
 again.]";
 
+/// Appended to a failed shell command whose output shows the request never
+/// completed over the network. `gh`, `curl` and `git` report a TLS handshake
+/// timeout, a reset or a DNS lookup failure this way, and the command itself is
+/// fine, so the hint asks for the same command again rather than sending the
+/// run looking for a repository, authentication or syntax problem that is not
+/// there.
+const BASH_NETWORK_HINT: &str = "[hint: the command failed on a network request, not on the \
+ command itself. That is usually transient — run the same command again before changing \
+ approach, and report the failure only if the retry fails too.]";
+
+/// Whether a failed command's output shows a transport-level failure rather
+/// than an answer from the service.
+fn transient_network_failure(output: &str) -> bool {
+    const SIGNALS: &[&str] = &[
+        "tls handshake timeout",
+        "tls: handshake failure",
+        "i/o timeout",
+        "connection reset by peer",
+        "network is unreachable",
+        "temporary failure in name resolution",
+        "could not resolve host",
+        "eof occurred in violation of protocol",
+    ];
+    let output = output.to_ascii_lowercase();
+    SIGNALS.iter().any(|signal| output.contains(signal))
+}
+
 /// Whether a failed command's output shows a relative module specifier that
 /// could not be found. Absolute specifiers (a genuinely missing dependency) are
 /// excluded, since the fix there is not a path inside the project.
@@ -558,7 +585,7 @@ pub async fn execute_with_scope(
                     "mcp_load requires a `server` string, for example {{\"server\":\"github\"}}"
                 )),
             },
-            "bash" => bash(cwd, &args, progress).await,
+            "bash" => bash_with_network_retry(cwd, &args, progress).await,
             "webfetch" => webfetch_guarded(&args, mcp).await.map(ToolOutput::text),
             "read" | "write" | "edit" | "ls" | "find" | "grep" => {
                 let cwd = cwd.to_path_buf();
@@ -3180,12 +3207,15 @@ fn is_build_command(command: &str) -> bool {
 /// Refuses the recursive shell-grep pattern that most often turns a narrow
 /// code search into a walk through dependency and build-output trees. The
 /// dedicated grep tool applies the repository's ignore rules, bounds its
-/// results, and is the right place for content searches.
+/// results, and is the right place for a repository-wide content search.
 ///
-/// This intentionally permits non-recursive grep over explicit files and
-/// grep used as a pipe filter. It also inspects every shell segment so a
-/// leading `cd`, environment assignment, or pipeline cannot hide the grep.
-fn uses_recursive_shell_grep(command: &str) -> bool {
+/// This intentionally permits non-recursive grep over explicit files, grep
+/// used as a pipe filter, and a recursive grep whose operands are all named
+/// files (`grep -rn needle README.md docs/guide.md`): walking named files
+/// cannot reach a build-output or dependency tree, so refusing it only costs
+/// the run a step. It also inspects every shell segment so a leading `cd`,
+/// environment assignment, or pipeline cannot hide the grep.
+fn uses_recursive_shell_grep(command: &str, cwd: &Path) -> bool {
     shell_segments(command).into_iter().any(|segment| {
         let words: Vec<&str> = segment.split_whitespace().collect();
         let Some(grep_index) = shell_command_index(&words)
@@ -3194,56 +3224,304 @@ fn uses_recursive_shell_grep(command: &str) -> bool {
             return false;
         };
 
+        let mut recursive = false;
+        let mut saw_pattern = false;
+        let mut operands: Vec<&str> = Vec::new();
+        let mut literal = false;
         let mut arguments = words[grep_index + 1..].iter();
         while let Some(word) = arguments.next() {
-            if *word == "--" {
-                return false;
-            }
-            if matches!(*word, "--recursive" | "--dereference-recursive") {
-                return true;
-            }
-            if matches!(
-                *word,
-                "--regexp"
-                    | "--file"
-                    | "--after-context"
-                    | "--before-context"
-                    | "--context"
-                    | "--max-count"
-                    | "--label"
-                    | "--exclude"
-                    | "--include"
-                    | "--exclude-dir"
-                    | "--binary-files"
-                    | "--directories"
-                    | "--devices"
-            ) {
-                arguments.next();
-                continue;
-            }
-            if let Some(flags) = word.strip_prefix('-') {
-                if !flags.starts_with('-') {
-                    let mut flags = flags.chars().peekable();
-                    while let Some(flag) = flags.next() {
-                        if flag == 'r' || flag == 'R' {
-                            return true;
-                        }
-                        if matches!(flag, 'e' | 'f' | 'A' | 'B' | 'C' | 'm' | 'd' | 'D') {
-                            if flags.peek().is_none() {
-                                arguments.next();
+            if !literal {
+                if *word == "--" {
+                    literal = true;
+                    continue;
+                }
+                if matches!(*word, "--recursive" | "--dereference-recursive") {
+                    recursive = true;
+                    continue;
+                }
+                if matches!(*word, "--regexp" | "--file") {
+                    saw_pattern = true;
+                    arguments.next();
+                    continue;
+                }
+                if matches!(
+                    *word,
+                    "--after-context"
+                        | "--before-context"
+                        | "--context"
+                        | "--max-count"
+                        | "--label"
+                        | "--exclude"
+                        | "--include"
+                        | "--exclude-dir"
+                        | "--binary-files"
+                        | "--directories"
+                        | "--devices"
+                ) {
+                    arguments.next();
+                    continue;
+                }
+                if let Some(flags) = word.strip_prefix('-') {
+                    if !flags.starts_with('-') {
+                        let mut flags = flags.chars().peekable();
+                        while let Some(flag) = flags.next() {
+                            if flag == 'r' || flag == 'R' {
+                                recursive = true;
                             }
-                            break;
+                            if matches!(flag, 'e' | 'f') {
+                                saw_pattern = true;
+                                if flags.peek().is_none() {
+                                    arguments.next();
+                                }
+                                break;
+                            }
+                            if matches!(flag, 'A' | 'B' | 'C' | 'm' | 'd' | 'D') {
+                                if flags.peek().is_none() {
+                                    arguments.next();
+                                }
+                                break;
+                            }
                         }
                     }
+                    continue;
                 }
-                continue;
             }
-            // The first positional argument is the pattern; options cannot
-            // follow it in the portable grep syntax Oxide should generate.
-            return false;
+            // The first positional argument is the pattern unless an option
+            // already supplied one; everything after it is a search operand.
+            if saw_pattern {
+                operands.push(word);
+            } else {
+                saw_pattern = true;
+            }
         }
-        false
+
+        recursive && recursive_grep_sweeps(&operands, cwd)
     })
+}
+
+/// Whether a recursive grep could walk a directory rather than the files it
+/// names: no operand at all, a glob or a folder, or a path this run cannot
+/// resolve to a file (which a later `cd` may still turn into a tree).
+fn recursive_grep_sweeps(operands: &[&str], cwd: &Path) -> bool {
+    operands.is_empty()
+        || operands.iter().any(|operand| {
+            let operand = operand.trim_matches(['\'', '"']);
+            operand.is_empty()
+                || operand.ends_with('/')
+                || operand.chars().any(|ch| matches!(ch, '*' | '?' | '['))
+                || !cwd.join(operand).is_file()
+        })
+}
+
+/// A pipeline that only reads over the network: a read command from `gh`, a
+/// GET-shaped `curl`, or `git ls-remote`, followed by text filters. A transport
+/// failure on one of these is safe to retry, since running it again cannot
+/// repeat a change the first attempt did not make.
+fn read_only_network_pipeline(command: &str) -> bool {
+    if writes_a_file(command) {
+        return false;
+    }
+    let command = strip_redirections(command);
+    let mut segments = shell_segments(&command)
+        .into_iter()
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty());
+    let Some(first) = segments.next() else {
+        return false;
+    };
+    network_read_command(first) && segments.all(text_filter_command)
+}
+
+/// Whether the command sends its output into a file. Redirecting stdout makes
+/// a read a write whatever it runs, so such a command is never retried; a
+/// discard (`2>/dev/null`, `2>&1`) and an input redirect (`< file`) are not.
+fn writes_a_file(command: &str) -> bool {
+    for word in command.split_whitespace() {
+        let trimmed = word.trim_start_matches(|ch: char| ch.is_ascii_digit());
+        let target = if let Some(target) = trimmed.strip_prefix('>') {
+            target
+        } else if let Some(target) = trimmed.strip_prefix("&>") {
+            target
+        } else {
+            continue;
+        };
+        if target.starts_with('&') {
+            continue;
+        }
+        if target.is_empty() || target != "/dev/null" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Removes redirection tokens (`2>&1`, `>/dev/null`) so a shell separator
+/// inside one does not split the pipeline at the wrong place.
+fn strip_redirections(command: &str) -> String {
+    command
+        .split_whitespace()
+        .filter(|word| {
+            let word = word.trim_start_matches(|ch: char| ch.is_ascii_digit());
+            !(word.starts_with('>') || word.starts_with('<') || word.starts_with("&>"))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn network_read_command(segment: &str) -> bool {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    let Some(index) = shell_command_index(&words) else {
+        return false;
+    };
+    let args = &words[index + 1..];
+    match shell_word_name(words[index]) {
+        "gh" => gh_reads(args),
+        "curl" => curl_reads(args),
+        "git" => git_reads(args),
+        _ => false,
+    }
+}
+
+fn text_filter_command(segment: &str) -> bool {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    shell_command_index(&words)
+        .map(|index| {
+            matches!(
+                shell_word_name(words[index]),
+                "head"
+                    | "tail"
+                    | "grep"
+                    | "egrep"
+                    | "fgrep"
+                    | "rg"
+                    | "cat"
+                    | "jq"
+                    | "wc"
+                    | "sort"
+                    | "uniq"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn gh_reads(args: &[&str]) -> bool {
+    let Some(at) = args.iter().position(|word| !word.starts_with('-')) else {
+        return false;
+    };
+    let rest = &args[at + 1..];
+    match args[at] {
+        "api" => !gh_api_mutates(rest),
+        "search" => true,
+        "pr" => matches!(
+            rest.first().copied(),
+            Some("view" | "list" | "diff" | "checks" | "status")
+        ),
+        "issue" | "run" | "release" | "repo" => {
+            matches!(rest.first().copied(), Some("view" | "list"))
+        }
+        "auth" => matches!(rest.first().copied(), Some("status")),
+        _ => false,
+    }
+}
+
+/// Whether a `gh api` call names a change rather than a read. A field flag
+/// makes the request a POST even when no method is given, so it counts.
+fn gh_api_mutates(args: &[&str]) -> bool {
+    let mut words = args.iter().copied();
+    while let Some(word) = words.next() {
+        if matches!(word, "-f" | "--field" | "-F" | "--raw-field" | "--input")
+            || word.starts_with("--field=")
+            || word.starts_with("--raw-field=")
+            || word.starts_with("--input=")
+            || (!word.starts_with("--") && (word.starts_with("-f") || word.starts_with("-F")))
+        {
+            return true;
+        }
+        if let Some(method) = word
+            .strip_prefix("--method=")
+            .or_else(|| word.strip_prefix("-X").filter(|value| !value.is_empty()))
+        {
+            return !method_reads(method);
+        }
+        if matches!(word, "-X" | "--method") {
+            return !words.next().is_some_and(method_reads);
+        }
+    }
+    false
+}
+
+fn curl_reads(args: &[&str]) -> bool {
+    let mut words = args.iter().copied();
+    while let Some(word) = words.next() {
+        if !word.starts_with('-') || word == "-" {
+            continue;
+        }
+        if let Some(long) = word.strip_prefix("--") {
+            let (name, value) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            match name {
+                "request" => {
+                    if !method_reads(value.or_else(|| words.next()).unwrap_or("")) {
+                        return false;
+                    }
+                }
+                "data" | "data-raw" | "data-binary" | "data-urlencode" | "data-ascii" | "form"
+                | "form-string" | "upload-file" | "json" | "output" | "output-dir"
+                | "remote-name" | "remote-name-all" | "post301" | "post302" | "post303" => {
+                    return false;
+                }
+                _ => {}
+            }
+            continue;
+        }
+        let mut flags = word.trim_start_matches('-').chars().peekable();
+        while let Some(flag) = flags.next() {
+            match flag {
+                'd' | 'F' | 'T' | 'o' | 'O' => return false,
+                'X' => {
+                    let inline: String = flags.by_ref().collect();
+                    let method = if inline.is_empty() {
+                        words.next().unwrap_or("")
+                    } else {
+                        &inline
+                    };
+                    if !method_reads(method) {
+                        return false;
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    true
+}
+
+fn git_reads(args: &[&str]) -> bool {
+    let mut words = args.iter().copied();
+    while let Some(word) = words.next() {
+        if matches!(
+            word,
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env"
+        ) {
+            words.next();
+            continue;
+        }
+        if word.starts_with('-') {
+            continue;
+        }
+        return word == "ls-remote";
+    }
+    false
+}
+
+fn method_reads(method: &str) -> bool {
+    matches!(
+        method.trim().to_ascii_uppercase().as_str(),
+        "" | "GET" | "HEAD"
+    )
 }
 
 /// Splits commands only at shell separators outside quotes. Treating a quoted
@@ -3431,9 +3709,37 @@ fn augment_path(inherited: &std::ffi::OsStr, home: &Path) -> OsString {
     std::env::join_paths(paths).unwrap_or_else(|_| inherited.to_os_string())
 }
 
+/// Runs a shell command, trying a read-only network fetch a second time when
+/// the first attempt failed on the transport. A TLS handshake timeout, a reset
+/// or a DNS failure usually clears on its own, and re-running something that
+/// only reads cannot repeat a change the first attempt did not make. Anything
+/// else is returned as it is, with the retry hint `bash_failure_hint` appends.
+async fn bash_with_network_retry(
+    cwd: &Path,
+    args: &Value,
+    progress: &Progress,
+) -> Result<ToolOutput> {
+    let first = bash(cwd, args, progress).await?;
+    let command = args
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if first.is_error
+        && transient_network_failure(&first.text)
+        && read_only_network_pipeline(command)
+    {
+        let mut retried = bash(cwd, args, progress).await?;
+        retried
+            .text
+            .push_str(" (retried once after a network failure)");
+        return Ok(retried);
+    }
+    Ok(first)
+}
+
 async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutput> {
     let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
-    if uses_recursive_shell_grep(command) {
+    if uses_recursive_shell_grep(command, cwd) {
         anyhow::bail!(
             "recursive shell grep refused; call the `grep` tool directly with `pattern` and \
              optional `path`, `glob`, and `limit` instead. The tool uses ripgrep when \
@@ -3576,6 +3882,8 @@ fn bash_failure_hint(output: &str) -> Option<&'static str> {
         && output.contains("did not match any packages")
     {
         Some("[hint: the package may be outside this Cargo workspace. Run Cargo with `--manifest-path <package-directory>/Cargo.toml` instead of selecting it with `-p`.]")
+    } else if transient_network_failure(output) {
+        Some(BASH_NETWORK_HINT)
     } else {
         None
     }
@@ -6538,6 +6846,18 @@ mod tests {
         )
         .unwrap()
         .contains("--manifest-path"));
+        // A transport failure is the network, not the command, and the retry
+        // is what usually fixes it.
+        assert!(bash_failure_hint(
+            "Get \"https://api.github.com/repos/x/y/contents/docs\": net/http: TLS handshake timeout"
+        )
+        .unwrap()
+        .contains("run the same command again"));
+        assert!(bash_failure_hint(
+            "fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com"
+        )
+        .unwrap()
+        .contains("usually transient"));
         assert!(bash_failure_hint("error: test failed").is_none());
     }
 
@@ -6583,6 +6903,116 @@ mod tests {
         )
         .await;
         assert!(unpiped.is_error, "{}", unpiped.text);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_marks_a_transport_failure_as_worth_retrying() {
+        // The shape `gh` prints for a TLS handshake timeout: the run should try
+        // the same command again rather than looking for a repository or
+        // authentication problem.
+        let output = execute(
+            &call(
+                "bash",
+                json!({
+                    "command": "echo 'Get \"https://api.github.com/repos/x/y\": net/http: TLS handshake timeout' >&2; exit 1"
+                }),
+            ),
+            Path::new("."),
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+
+        assert!(output.is_error, "{}", output.text);
+        assert!(
+            output.text.contains("failed on a network request"),
+            "{}",
+            output.text
+        );
+        assert!(
+            output.text.contains("run the same command again"),
+            "{}",
+            output.text
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_retries_a_read_only_fetch_that_failed_on_the_network() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("oxide_net_retry_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        // A `git` that fails the first call on the transport and answers the
+        // second, so the retry is observable as two calls.
+        let script = dir.join("git");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ndir=$(dirname \"$0\")\nprintf 'call\\n' >> \"$dir/calls\"\n\
+             if [ -f \"$dir/state\" ]; then echo 'abc123 HEAD'; exit 0; fi\n\
+             : > \"$dir/state\"\n\
+             echo 'fatal: unable to access https://github.com/x/y.git/: net/http: TLS handshake timeout' >&2\n\
+             exit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let command = format!("PATH=\"{}\":$PATH git ls-remote origin", dir.display());
+        let output = execute(
+            &call("bash", json!({ "command": command })),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+
+        assert!(!output.is_error, "{}", output.text);
+        assert!(output.text.contains("abc123 HEAD"), "{}", output.text);
+        assert!(
+            output.text.contains("retried once after a network failure"),
+            "{}",
+            output.text
+        );
+        let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(), 2, "{calls}");
+
+        // The shape the run actually lost a step to: a `gh api` read piped
+        // through `head`, with the error merged into the output.
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            "#!/bin/sh\ndir=$(dirname \"$0\")\nprintf 'call\\n' >> \"$dir/gh-calls\"\n\
+             if [ -f \"$dir/gh-state\" ]; then printf 'accounts.md\\nusage.md\\n'; exit 0; fi\n\
+             : > \"$dir/gh-state\"\n\
+             echo 'Get \"https://api.github.com/repos/earendil-works/pi/contents\": net/http: TLS handshake timeout' >&2\n\
+             exit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let command = format!(
+            "PATH=\"{}\":$PATH gh api repos/earendil-works/pi/contents --jq '.[].name' 2>&1 | head -60",
+            dir.display()
+        );
+        let output = execute(
+            &call("bash", json!({ "command": command })),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(!output.is_error, "{}", output.text);
+        assert!(output.text.contains("accounts.md"), "{}", output.text);
+        assert!(
+            output.text.contains("retried once after a network failure"),
+            "{}",
+            output.text
+        );
+        let gh_calls = std::fs::read_to_string(dir.join("gh-calls")).unwrap();
+        assert_eq!(gh_calls.lines().count(), 2, "{gh_calls}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]
@@ -6780,37 +7210,133 @@ mod tests {
 
     #[test]
     fn recursive_shell_grep_is_refused_without_blocking_file_filters() {
+        let root = Path::new(".");
         assert!(uses_recursive_shell_grep(
-            r#"grep -rn "faqsItemId" /Users/example/Projects/falcon 2>/dev/null | head -20"#
+            r#"grep -rn "faqsItemId" /Users/example/Projects/falcon 2>/dev/null | head -20"#,
+            root
         ));
         assert!(uses_recursive_shell_grep(
-            "cd jobs && /usr/bin/grep --recursive needle data"
+            "cd jobs && /usr/bin/grep --recursive needle data",
+            root
         ));
-        assert!(uses_recursive_shell_grep("LC_ALL=C grep -Rl needle ."));
         assert!(uses_recursive_shell_grep(
-            "env LC_ALL=C command /usr/bin/grep -rn needle ."
+            "LC_ALL=C grep -Rl needle .",
+            root
         ));
-        assert!(uses_recursive_shell_grep("sudo -u root grep -rn needle ."));
         assert!(uses_recursive_shell_grep(
-            "grep --regexp -retry --recursive ."
+            "env LC_ALL=C command /usr/bin/grep -rn needle .",
+            root
         ));
-        assert!(uses_recursive_shell_grep("grep -efoo -R ."));
         assert!(uses_recursive_shell_grep(
-            "grep --dereference-recursive needle ."
+            "sudo -u root grep -rn needle .",
+            root
+        ));
+        assert!(uses_recursive_shell_grep(
+            "grep --regexp -retry --recursive .",
+            root
+        ));
+        assert!(uses_recursive_shell_grep("grep -efoo -R .", root));
+        assert!(uses_recursive_shell_grep(
+            "grep --dereference-recursive needle .",
+            root
         ));
 
-        assert!(!uses_recursive_shell_grep("grep needle config.json"));
-        assert!(!uses_recursive_shell_grep("printf '%s' value | grep value"));
-        assert!(!uses_recursive_shell_grep("echo grep -r"));
-        assert!(!uses_recursive_shell_grep("printf '%s\\n' grep -r"));
-        assert!(!uses_recursive_shell_grep("echo 'example | grep -r .'"));
-        assert!(!uses_recursive_shell_grep("git log --grep latest"));
-        assert!(!uses_recursive_shell_grep("grep -- '-r' config.json"));
-        assert!(!uses_recursive_shell_grep("grep -e -retry config.json"));
-        assert!(!uses_recursive_shell_grep("grep -e-r config.json"));
-        assert!(!uses_recursive_shell_grep("grep -f -rules.txt config.json"));
+        assert!(!uses_recursive_shell_grep("grep needle config.json", root));
         assert!(!uses_recursive_shell_grep(
-            "grep --regexp -retry config.json"
+            "printf '%s' value | grep value",
+            root
+        ));
+        assert!(!uses_recursive_shell_grep("echo grep -r", root));
+        assert!(!uses_recursive_shell_grep("printf '%s\\n' grep -r", root));
+        assert!(!uses_recursive_shell_grep(
+            "echo 'example | grep -r .'",
+            root
+        ));
+        assert!(!uses_recursive_shell_grep("git log --grep latest", root));
+        assert!(!uses_recursive_shell_grep("grep -- '-r' config.json", root));
+        assert!(!uses_recursive_shell_grep(
+            "grep -e -retry config.json",
+            root
+        ));
+        assert!(!uses_recursive_shell_grep("grep -e-r config.json", root));
+        assert!(!uses_recursive_shell_grep(
+            "grep -f -rules.txt config.json",
+            root
+        ));
+        assert!(!uses_recursive_shell_grep(
+            "grep --regexp -retry config.json",
+            root
+        ));
+    }
+
+    #[test]
+    fn only_a_read_only_network_fetch_is_retried_after_a_transport_failure() {
+        assert!(read_only_network_pipeline(
+            "gh api repos/earendil-works/pi/contents/docs --jq '.[].name' 2>&1 | head -60"
+        ));
+        assert!(read_only_network_pipeline(
+            "gh pr view 42 --comments | tail -20"
+        ));
+        assert!(read_only_network_pipeline(
+            "curl https://example.com/docs.md | head -5"
+        ));
+        assert!(read_only_network_pipeline("git ls-remote origin"));
+
+        // Anything that names a change, writes a file, or is not a fetch is
+        // left to the retry hint rather than run twice.
+        assert!(!read_only_network_pipeline(
+            "gh api -X POST repos/x/y/issues"
+        ));
+        assert!(!read_only_network_pipeline(
+            "gh api repos/x/y/issues -f title=fix"
+        ));
+        assert!(!read_only_network_pipeline(
+            "gh api --method=POST repos/x/y/issues"
+        ));
+        assert!(!read_only_network_pipeline("gh pr comment 42 --body hi"));
+        assert!(!read_only_network_pipeline(
+            "curl -X DELETE https://example.com/item"
+        ));
+        assert!(!read_only_network_pipeline(
+            "curl -o out.html https://example.com"
+        ));
+        assert!(!read_only_network_pipeline(
+            "curl --json '{}' https://example.com"
+        ));
+        assert!(!read_only_network_pipeline("git push origin main"));
+        assert!(!read_only_network_pipeline("cargo test 2>&1 | tail -5"));
+        assert!(!read_only_network_pipeline(
+            "gh api repos/x/y && rm -rf build"
+        ));
+        // A redirect into a file makes the command a write.
+        assert!(!read_only_network_pipeline("gh api repos/x/y > issue.json"));
+        assert!(!read_only_network_pipeline(
+            "gh api repos/x/y 2> err.log | head -5"
+        ));
+        assert!(read_only_network_pipeline(
+            "gh api repos/x/y 2>/dev/null | head -5"
+        ));
+    }
+
+    #[test]
+    fn recursive_grep_over_named_files_is_not_a_directory_sweep() {
+        let root = Path::new(".");
+        // A recursive grep over files named one by one cannot reach a build
+        // tree, so it runs instead of costing the run a step.
+        assert!(!uses_recursive_shell_grep(
+            "grep -rn \"providers\" Cargo.toml src/lib.rs | head -40",
+            root
+        ));
+        assert!(!uses_recursive_shell_grep(
+            "grep -rn -e needle Cargo.toml",
+            root
+        ));
+        assert!(uses_recursive_shell_grep("grep -rn needle src", root));
+        assert!(uses_recursive_shell_grep("grep -rn needle '*.rs'", root));
+        assert!(uses_recursive_shell_grep("grep -rn needle", root));
+        assert!(uses_recursive_shell_grep(
+            "grep -rn needle Cargo.toml missing-dir",
+            root
         ));
     }
 
@@ -6831,6 +7357,47 @@ mod tests {
         assert!(output.text.contains("recursive shell grep refused"));
         assert!(output.text.contains("call the `grep` tool directly"));
         assert!(output.text.contains("uses ripgrep when available"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_runs_a_recursive_grep_scoped_to_named_files() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_grep_named_files_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("api.md"), "the providers table\n").unwrap();
+        std::fs::write(dir.join("features.md"), "provider counts and providers\n").unwrap();
+
+        let output = execute(
+            &call(
+                "bash",
+                json!({ "command": "grep -rn \"providers\" api.md features.md | head -40" }),
+            ),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+
+        assert!(!output.is_error, "{}", output.text);
+        assert!(output.text.contains("api.md:1:the providers table"));
+        assert!(output
+            .text
+            .contains("features.md:1:provider counts and providers"));
+
+        let sweep = execute(
+            &call(
+                "bash",
+                json!({ "command": "grep -rn providers . | head -5" }),
+            ),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(sweep.is_error);
+        assert!(sweep.text.contains("recursive shell grep refused"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
