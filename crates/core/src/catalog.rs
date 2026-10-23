@@ -252,13 +252,14 @@ pub fn window_for(models: &Models, model: &str) -> Option<u64> {
 /// carries no `effort` metadata.
 pub fn reasoning_for(provider: &str, model: &str) -> Option<ModelReasoning> {
     let entry = cached(provider)?;
-    let (_, model) = matching_entry(&entry.models, model, |model| model.reasoning)?;
+    let (_, model) = matching_entry(&entry.models, model, |_| true)?;
     model.reasoning_levels()
 }
 
 /// The entry an id names, under the same spellings [`window_for`] accepts and
-/// filtered by `usable`, so a catalog value with no meaning for a caller (a
-/// zero window, a model that does not reason) does not shadow one that does.
+/// filtered by `usable`, so a zero window does not shadow a usable one.
+/// Reasoning callers keep non-reasoning entries eligible: they rule out levels
+/// inherited from a shorter model name.
 fn matching_entry<'a, V>(
     models: &'a BTreeMap<String, V>,
     model: &str,
@@ -266,8 +267,13 @@ fn matching_entry<'a, V>(
 ) -> Option<(&'a String, &'a V)> {
     let model = model.trim();
     let exact = models
-        .iter()
-        .find(|(id, value)| usable(value) && id.eq_ignore_ascii_case(model));
+        .get_key_value(model)
+        .filter(|(_, value)| usable(value))
+        .or_else(|| {
+            models
+                .iter()
+                .find(|(id, value)| usable(value) && id.eq_ignore_ascii_case(model))
+        });
     if let Some(entry) = exact {
         return Some(entry);
     }
@@ -284,7 +290,8 @@ fn matching_entry<'a, V>(
     }
     // The table's rule, over the keys with their prefixes off: the longest key
     // the requested model still begins with.
-    let candidates = model_candidates(model);
+    let basename = lowered.rsplit('/').next().unwrap_or(&lowered);
+    let candidates = [lowered.as_str(), basename, stripped];
     let dated = models
         .iter()
         .filter(|(id, value)| {
@@ -305,23 +312,6 @@ fn matching_entry<'a, V>(
         .iter()
         .filter(|(id, value)| usable(value) && dated_from(stripped, crate::config::vendorless(id)))
         .min_by_key(|(id, _)| id.len())
-}
-
-/// The spellings of a model id a table key may match: the id itself, the part
-/// after the last `/`, and the part after any leading vendor/region prefixes
-/// (`us.anthropic.claude-…`). Lowercased, in match order.
-fn model_candidates(model: &str) -> Vec<String> {
-    let normalized = model.trim().to_ascii_lowercase();
-    let mut candidates = vec![normalized.clone()];
-    let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
-    if basename != normalized {
-        candidates.push(basename.to_string());
-    }
-    let stripped = crate::config::vendorless(&normalized);
-    if stripped != basename && stripped != normalized {
-        candidates.push(stripped.to_string());
-    }
-    candidates
 }
 
 /// Whether `candidate` begins with `key`, ASCII case aside. Byte length decides
@@ -419,13 +409,12 @@ pub async fn refresh(provider: &str) -> Result<CatalogEntry> {
 fn keep_remembered(path: &Path, id: &str, stored: Option<&CatalogEntry>) -> Result<CatalogEntry> {
     let mut entry = stored.cloned().unwrap_or_default();
     entry.checked_at = now_secs();
-    // A catalog that was never remembered (a `404`, the provider answered for
-    // no longer) is current as an empty answer. An older entry is left with its
-    // own version so the next launch asks again without a validator, rather
-    // than trusting an answer that predates the metadata this release reads.
-    if stored.is_none() {
-        entry.version = STORE_VERSION;
+    // Keep the retry cooldown even when migration fails, but discard the old
+    // validator so the next attempt fetches the missing metadata in full.
+    if entry.version != STORE_VERSION {
+        entry.etag = None;
     }
+    entry.version = STORE_VERSION;
     write(path, id, &entry)?;
     Ok(entry)
 }
@@ -457,8 +446,8 @@ pub fn launch_providers(active: &str) -> Vec<String> {
 }
 
 /// The look a launch makes in the background: every catalog old enough to be
-/// looked up again is refreshed, and the windows are answered only when one of
-/// those lookups changed them. `None` covers both halves of the usual case —
+/// looked up again is refreshed, and the windows are answered when a lookup
+/// changed a model's window or reasoning metadata. `None` covers the usual case —
 /// the lookups are off, or nothing was stale — and a front-end has nothing to
 /// repaint for a catalog it already read through
 /// [`crate::config::Config::load`].
@@ -466,7 +455,8 @@ pub async fn refresh_launch(providers: &[String], cwd: Option<&Path>) -> Option<
     if !enabled_in(cwd) {
         return None;
     }
-    let remembered = windows();
+    let path = path()?;
+    let remembered = load(&path);
     let mut looked_up = false;
     for provider in providers {
         if matches!(refresh_if_stale(provider, cwd).await, Ok(Some(_))) {
@@ -476,8 +466,26 @@ pub async fn refresh_launch(providers: &[String], cwd: Option<&Path>) -> Option<
     if !looked_up {
         return None;
     }
-    let refreshed = windows();
-    (refreshed != remembered).then_some(refreshed)
+    let refreshed = load(&path);
+    let changed = refreshed
+        .providers
+        .iter()
+        .map(|(id, entry)| (id, &entry.models))
+        .ne(remembered
+            .providers
+            .iter()
+            .map(|(id, entry)| (id, &entry.models)));
+    if !changed {
+        return None;
+    }
+    Some(
+        refreshed
+            .providers
+            .into_iter()
+            .map(|(provider, entry)| (provider, entry.windows()))
+            .filter(|(_, models)| !models.is_empty())
+            .collect(),
+    )
 }
 
 /// Whether a launch should look the catalogs up at all. `modelCatalog` in a
@@ -811,7 +819,11 @@ mod tests {
         let dir = temp_dir("reasoning");
         let path = dir.join(FILE_NAME);
         let value: serde_json::Value = serde_json::from_str(
-            r#"{"claude-haiku-4-5": {"id": "claude-haiku-4-5", "contextWindow": 200000, "reasoning": true}}"#,
+            r#"{
+                "claude-haiku-4-5": {"id": "claude-haiku-4-5", "contextWindow": 200000, "reasoning": true},
+                "gpt-5": {"id": "gpt-5", "contextWindow": 400000, "reasoning": true},
+                "gpt-5-chat": {"id": "gpt-5-chat", "contextWindow": 128000, "reasoning": false}
+            }"#,
         )
         .unwrap();
         write(
@@ -839,6 +851,15 @@ mod tests {
         // remembered catalog answers nothing.
         assert_eq!(reasoning_for("anthropic", "claude-unknown"), None);
         assert_eq!(reasoning_for("openai", "claude-haiku-4-5"), None);
+        assert!(reasoning_for("anthropic", "gpt-5").is_some());
+        for model in [
+            "gpt-5-chat",
+            "GPT-5-CHAT",
+            "openai/gpt-5-chat",
+            "gpt-5-chat-20261001",
+        ] {
+            assert_eq!(reasoning_for("anthropic", model), None, "{model}");
+        }
 
         std::env::remove_var(FILE_ENV);
         std::fs::remove_dir_all(&dir).ok();
@@ -1119,6 +1140,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_migration_waits_before_retrying_without_the_old_validator() {
+        let _env = crate::env_lock::hold();
+        let dir = temp_dir("upgrade-failure");
+        let path = dir.join(FILE_NAME);
+        std::env::set_var(FILE_ENV, &path);
+        write(
+            &path,
+            "openai",
+            &CatalogEntry {
+                checked_at: now_secs(),
+                version: 0,
+                etag: Some("\"old\"".into()),
+                models: entry_models(&[("gpt-5", 400_000)]),
+            },
+        )
+        .unwrap();
+        let body = r#"{"gpt-5":{"id":"gpt-5","contextWindow":400000,"reasoning":true}}"#;
+        let server = TestServer::start(vec![
+            Response::new(500, "", &[], &[]),
+            Response::new(200, body, &[], &[]),
+        ]);
+        std::env::set_var(URL_ENV, server.url());
+
+        assert!(refresh_if_stale("openai", None).await.is_err());
+        let mut kept = read(&path, "openai").unwrap();
+        assert_eq!(kept.models["gpt-5"].context_window, 400_000);
+        assert!(!kept.is_stale());
+        assert!(kept.etag.is_none());
+        assert!(refresh_if_stale("openai", None).await.unwrap().is_none());
+        assert_eq!(server.requests().len(), 1);
+
+        kept.checked_at = now_secs() - REFRESH_AFTER_SECS;
+        write(&path, "openai", &kept).unwrap();
+        let updated = refresh_if_stale("openai", None).await.unwrap().unwrap();
+        assert!(updated.models["gpt-5"].reasoning);
+        assert_eq!(server.requests()[1].header("if-none-match"), None);
+
+        std::env::remove_var(URL_ENV);
+        std::env::remove_var(FILE_ENV);
+        server.stop();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn a_catalog_that_is_gone_is_remembered_as_gone() {
         let _env = crate::env_lock::hold();
         let dir = temp_dir("missing");
@@ -1380,6 +1445,15 @@ mod tests {
         let server = TestServer::start(vec![
             Response::new(200, body, &[], &[]),
             Response::new(200, body, &[], &[]),
+            Response::new(
+                200,
+                &body.replace(
+                    "\"contextWindow\":1000000",
+                    "\"contextWindow\":1000000,\"reasoning\":true",
+                ),
+                &[],
+                &[],
+            ),
         ]);
         std::env::set_var(URL_ENV, server.url());
 
@@ -1409,6 +1483,16 @@ mod tests {
             .await
             .is_none());
         assert_eq!(server.requests().len(), 2);
+
+        let mut entry = read(&path, "deepseek").unwrap();
+        entry.checked_at = 0;
+        write(&path, "deepseek", &entry).unwrap();
+        let reasoning_only = refresh_launch(&["deepseek".to_string()], None)
+            .await
+            .expect("reasoning metadata changed with no change to the windows");
+        assert_eq!(reasoning_only, refreshed);
+        assert!(reasoning_for("deepseek", "deepseek-flash").is_some());
+        assert_eq!(server.requests().len(), 3);
 
         // The lookups off is no request at all, stale catalog or not.
         std::env::set_var(ENV_NAME, "false");
