@@ -5,8 +5,10 @@ subject to.
 
 Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`,
 `find`, `ls`, and `webfetch`. Agent-level tools: `task`, `skill`, `command`,
-`memory`, `diagnostics`, and `ask`. `mcp_load` reveals a configured server on
-demand; its tools then appear as `<server>__<tool>`.
+`memory`, `diagnostics`, `ask`, and `tool_search`. Enabled MCP servers connect
+in the background; `tool_search` discovers capabilities and declares only the
+matching `<server>__<tool>` schemas on the next model call. `mcp_load` connects or
+retries a particular server while keeping its catalog deferred.
 
 | Tool | Parameters |
 | --- | --- |
@@ -18,6 +20,8 @@ demand; its tools then appear as `<server>__<tool>`.
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
+| `tool_search` | `query`, `limit?` (default 8, maximum 64) |
+| `mcp_load` | `server` |
 
 ## Behavior
 

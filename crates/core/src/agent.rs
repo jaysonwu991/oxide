@@ -286,6 +286,7 @@ impl Cancel {
 #[derive(Clone)]
 pub struct Runtime {
     pub mcp: Arc<McpRegistry>,
+    pub selected_mcp_tools: Arc<Mutex<BTreeSet<String>>>,
     pub plugins: Arc<PluginHost>,
     pub session: Option<Arc<SessionLog>>,
     pub snapshots: Option<Arc<Snapshots>>,
@@ -488,6 +489,7 @@ pub fn run_subagent(
         sub.active_agent = Some(agent);
         let sub_runtime = Runtime {
             session: None,
+            selected_mcp_tools: Default::default(),
             follow_ups: Steering::new(),
             cache_warm: None,
             ..runtime
@@ -707,13 +709,39 @@ async fn run_loop(
         });
     let mut overflow_error: Option<String> = None;
     let mut recovered_overflow = false;
-    runtime
-        .cancel
-        .until(auto_load_mcp_for_user_text(
-            &runtime,
-            messages.iter().filter(|m| m.role == "user"),
-        ))
-        .await;
+    {
+        let mut selected = runtime
+            .selected_mcp_tools
+            .lock()
+            .expect("tool selection poisoned");
+        if let Some(log) = &runtime.session {
+            selected.extend(log.selected_tools());
+        }
+        // Older logs have no selection entry; restore tools actually used.
+        selected.extend(
+            messages
+                .iter()
+                .filter_map(|m| m.tool_calls.as_ref())
+                .flatten()
+                .filter(|call| call.function.name.contains("__"))
+                .map(|call| call.function.name.clone()),
+        );
+    }
+    runtime.mcp.start_discovery();
+    if !runtime
+        .selected_mcp_tools
+        .lock()
+        .expect("tool selection poisoned")
+        .is_empty()
+    {
+        runtime
+            .cancel
+            .until(tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                runtime.mcp.discover(),
+            ))
+            .await;
+    }
 
     // Set once a file edit succeeds and cleared when a later tool call could
     // confirm it. If a run tries to finish while an edit is unconfirmed, the
@@ -784,13 +812,6 @@ async fn run_loop(
                     record_usage(&runtime.session, depth, &held, held_usage);
                     held_is_tail = false;
                 }
-                runtime
-                    .cancel
-                    .until(auto_load_mcp_for_user_text(
-                        &runtime,
-                        std::iter::once(&steered),
-                    ))
-                    .await;
                 let _ = tx.send(AgentEvent::Steered {
                     message: steered.clone(),
                     label,
@@ -808,12 +829,11 @@ async fn run_loop(
         // model window, replace older turns with a summary and keep the recent
         // tokens verbatim. The record is stored on the session branch.
         if depth == 0 && compaction_budget.enabled {
+            let history_tokens = crate::compact::estimate_tokens(&messages) as u64;
             let growth =
                 crate::compact::estimate_tokens(&messages[measured_at.min(messages.len())..])
                     as u64;
-            let current = context_tokens
-                .saturating_add(growth)
-                .max(crate::compact::estimate_tokens(&messages) as u64);
+            let current = context_tokens.saturating_add(growth).max(history_tokens);
             if overflow_error.is_some()
                 || crate::compact::needs_compaction(current, context_window, compaction_budget)
             {
@@ -824,7 +844,7 @@ async fn run_loop(
                             &config,
                             &messages,
                             &[],
-                            compaction_budget,
+                            compaction_budget.for_request(&messages),
                             current,
                             None,
                         ))
@@ -877,6 +897,11 @@ async fn run_loop(
                                 read_files: compaction.details.read_files.clone(),
                                 modified_files: compaction.details.modified_files.clone(),
                             });
+                            // Summarizing history does not remove the system
+                            // prompt or tool schemas from the next request.
+                            context_tokens = current.saturating_sub(history_tokens)
+                                + crate::compact::estimate_tokens(&messages) as u64;
+                            measured_at = messages.len();
                             if let Some(usage) = compaction.usage {
                                 let _ = tx.send(AgentEvent::Usage {
                                     input: usage.input,
@@ -884,9 +909,7 @@ async fn run_loop(
                                     cache_read: usage.cache_read,
                                     cache_write: usage.cache_write,
                                     cost: usage.cost,
-                                    context_tokens: Some(
-                                        crate::compact::estimate_tokens(&messages) as u64,
-                                    ),
+                                    context_tokens: Some(context_tokens),
                                 });
                             }
                             // The held summary is deliberately not in the log,
@@ -896,8 +919,6 @@ async fn run_loop(
                                 messages.push(held.clone());
                                 held_is_tail = true;
                             }
-                            context_tokens = 0;
-                            measured_at = 0;
                             overflow_error = None;
                         }
                         Ok(None) => {}
@@ -949,7 +970,12 @@ async fn run_loop(
         // A loaded server's own instructions only reach the model here: one the
         // model loads itself says what it needs in its tool result, while an
         // auto-loaded server is never loaded by the model at all.
-        if let Some(notes) = runtime.mcp.instructions_section() {
+        if let Some(notes) = runtime.mcp.selected_instructions(
+            &runtime
+                .selected_mcp_tools
+                .lock()
+                .expect("tool selection poisoned"),
+        ) {
             system.push_str("\n\n");
             system.push_str(&notes);
         }
@@ -1902,38 +1928,6 @@ fn finish(
     let _ = tx.send(AgentEvent::Finished(messages));
 }
 
-/// Loads every configured server a user message names — by URL host or by
-/// service name — before the first model call, so URL-driven and service-named
-/// requests hit the right tools on the first turn instead of burning a round
-/// trip on `mcp_load` or leaving the model to ask the user for a URL.
-async fn auto_load_mcp_for_user_text<'a>(
-    runtime: &Runtime,
-    messages: impl IntoIterator<Item = &'a Message>,
-) {
-    let mut names = Vec::new();
-    for message in messages {
-        let text = message
-            .content
-            .as_ref()
-            .map(|content| content.display())
-            .unwrap_or_default();
-        for name in runtime.mcp.servers_for_text(&text) {
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
-    if names.is_empty() {
-        return;
-    }
-    let mut loads = tokio::task::JoinSet::new();
-    for name in names {
-        let mcp = Arc::clone(&runtime.mcp);
-        loads.spawn(async move { mcp.load(&name).await });
-    }
-    while loads.join_next().await.is_some() {}
-}
-
 fn build_tool_specs(
     config: &Config,
     runtime: &Runtime,
@@ -1941,6 +1935,14 @@ fn build_tool_specs(
     offer_session_title: bool,
 ) -> Vec<ToolSpec> {
     let mut specs = tools::specs(&runtime.mcp);
+    specs.extend(
+        runtime.mcp.declared_specs(
+            &runtime
+                .selected_mcp_tools
+                .lock()
+                .expect("tool selection poisoned"),
+        ),
+    );
     if depth < MAX_TASK_DEPTH
         && config
             .ecosystem
@@ -1979,7 +1981,12 @@ pub(crate) fn warmer_inputs(
 ) -> (Vec<Message>, Vec<ToolSpec>) {
     let mut system = config.compose_system_prompt();
     system.push_str(&project_context(cwd, messages));
-    if let Some(notes) = runtime.mcp.instructions_section() {
+    if let Some(notes) = runtime.mcp.selected_instructions(
+        &runtime
+            .selected_mcp_tools
+            .lock()
+            .expect("tool selection poisoned"),
+    ) {
         system.push_str("\n\n");
         system.push_str(&notes);
     }
@@ -3243,6 +3250,81 @@ fn mutation_invalidates_verifier(canonical_name: &str, output: &str) -> bool {
     mutation_invalidates_verifier_result(canonical_name, output, output.starts_with("error:"))
 }
 
+async fn search_mcp_tools(
+    config: &Config,
+    runtime: &Runtime,
+    arguments: &str,
+    depth: usize,
+) -> Result<String> {
+    let args: Value = serde_json::from_str(arguments).context("invalid tool_search arguments")?;
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .filter(|q| !q.trim().is_empty())
+        .context("tool_search requires a non-empty query")?;
+    let limit = match args.get("limit") {
+        None => 8,
+        Some(value) => value
+            .as_u64()
+            .filter(|n| *n > 0 && *n <= 64)
+            .context("tool_search limit must be an integer between 1 and 64")?
+            as usize,
+    };
+    runtime.mcp.discover().await;
+    let errors = runtime.mcp.discovery_errors();
+    let mut selected = runtime
+        .selected_mcp_tools
+        .lock()
+        .expect("tool selection poisoned")
+        .clone();
+    let matches = runtime
+        .mcp
+        .search_tools(query, limit, &selected, |name| tool_enabled(config, name));
+    selected.extend(matches.iter().map(|tool| tool.function.name.clone()));
+    if !matches.is_empty() {
+        if depth == 0 {
+            if let Some(log) = &runtime.session {
+                log.append_tool_selection(selected.iter().cloned().collect())
+                    .context("saving deferred tool selection")?;
+            }
+        }
+        *runtime
+            .selected_mcp_tools
+            .lock()
+            .expect("tool selection poisoned") = selected;
+    }
+    let mut text = if matches.is_empty() {
+        "No matching undeclared tools found. Previously discovered tools remain available."
+            .to_string()
+    } else {
+        let mut text = format!(
+            "Loaded {} tool(s). They are available from your next call:",
+            matches.len()
+        );
+        for tool in matches {
+            let description = tool.function.description.lines().next().unwrap_or("");
+            text.push_str(&format!(
+                "\n- {}: {}",
+                tool.function.name,
+                description.chars().take(300).collect::<String>()
+            ));
+        }
+        text
+    };
+    if !errors.is_empty() {
+        text.push_str(
+            "\n\nSome MCP servers could not be discovered. Their tools have not been searched:",
+        );
+        for error in errors {
+            text.push_str(&format!(
+                "\n- {}",
+                error.chars().take(1000).collect::<String>()
+            ));
+        }
+    }
+    Ok(text)
+}
+
 async fn dispatch(
     config: &Config,
     cwd: &Path,
@@ -3257,6 +3339,15 @@ async fn dispatch(
     }
     if !tool_enabled(config, &call.function.name) {
         return tools::ToolOutput::error(format!("tool `{}` is disabled", call.function.name));
+    }
+    if runtime.mcp.is_tool(&call.function.name)
+        && !runtime
+            .selected_mcp_tools
+            .lock()
+            .expect("tool selection poisoned")
+            .contains(&call.function.name)
+    {
+        return tools::ToolOutput::error("This MCP tool is deferred. Use tool_search to discover and declare it before calling it.");
     }
     runtime
         .cancel
@@ -3288,6 +3379,12 @@ async fn dispatch(
                 ),
                 "memory" => legacy_tool_output(memory(config, &call.function.arguments)),
                 "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
+                "tool_search" => {
+                    match search_mcp_tools(config, runtime, &call.function.arguments, depth).await {
+                        Ok(text) => tools::ToolOutput::text(text),
+                        Err(error) => tools::ToolOutput::error(format!("{error:#}")),
+                    }
+                }
                 _ => tools::execute(call, cwd, &runtime.mcp, progress).await,
             }
         })
@@ -3451,6 +3548,7 @@ async fn task_inner(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let sub_runtime = Runtime {
         session: None,
+        selected_mcp_tools: Default::default(),
         follow_ups: Steering::new(),
         cache_warm: None,
         ..runtime.clone()
@@ -4239,6 +4337,7 @@ mod tests {
     async fn test_runtime() -> Runtime {
         Runtime {
             mcp: Arc::new(McpRegistry::new(&[])),
+            selected_mcp_tools: Default::default(),
             plugins: Arc::new(PluginHost::spawn(&[], &std::env::temp_dir()).await),
             session: None,
             snapshots: None,
@@ -4959,10 +5058,6 @@ mod tests {
             base_url: format!("http://{addr}"),
             api_key: "sk-test".into(),
             context_window: 200_000,
-            compaction: crate::compact::CompactionConfig {
-                keep_recent_tokens: 100,
-                ..Default::default()
-            },
             ..Config::default()
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4972,16 +5067,30 @@ mod tests {
         assert!(requests[1].contains("NEW_REQUEST"));
         assert!(!requests[1].contains("OLD_HISTORY"));
         let mut compacted = false;
+        let mut compacted_context = None;
         while let Ok(event) = rx.try_recv() {
             if let AgentEvent::Compaction { tokens_before, .. } = event {
                 assert!(tokens_before >= 190_000);
                 compacted = true;
+            }
+            if let AgentEvent::Usage {
+                context_tokens: Some(tokens),
+                ..
+            } = event
+            {
+                compacted_context.get_or_insert(tokens);
             }
         }
         assert!(
             compacted,
             "recorded provider usage must outweigh the small text estimate"
         );
+        let context = compacted_context.expect("compaction reports the new request size");
+        assert!(
+            context > 180_000,
+            "fixed prompt overhead must remain counted"
+        );
+        assert!(context < 190_000, "summarized history must reclaim space");
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -5028,10 +5137,6 @@ mod tests {
                 base_url: format!("http://{addr}"),
                 api_key: "sk-test".into(),
                 context_window: 1_050_000,
-                compaction: crate::compact::CompactionConfig {
-                    keep_recent_tokens: 100,
-                    ..Default::default()
-                },
                 ..Config::default()
             };
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5633,11 +5738,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A user message that names a service loads that server before the first
-    /// model call, so the request carries its tools and its own instructions
-    /// even though the message names no URL.
+    /// A generic gateway's catalog is discovered independently of its name;
+    /// only searched capabilities are declared on the following model call.
     #[tokio::test]
-    async fn a_named_service_loads_its_server_before_the_first_step() {
+    async fn a_generic_gateway_defers_schemas_until_capability_search() {
         if !matches!(
             std::process::Command::new("python3")
                 .arg("--version")
@@ -5659,9 +5763,13 @@ for line in sys.stdin:
     msg = json.loads(line)
     method = msg.get("method")
     if method == "initialize":
-        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "atlassian", "version": "0"}, "instructions": "Call find_spaces before creating a page"}})
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "gateway", "version": "0"}, "instructions": "Read the complete thread before summarizing feedback"}})
     elif method == "tools/list":
-        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": [{"name": "find_spaces", "description": "List Confluence spaces", "inputSchema": {"type": "object"}}]}})
+        if msg.get("params", {}).get("cursor") == "second":
+            result = {"tools": [{"name": "read_thread", "description": "Read a private Slack thread by channel and timestamp", "inputSchema": {"type": "object", "properties": {"channel": {"type": "string"}, "timestamp": {"type": "string"}}}}]}
+        else:
+            result = {"tools": [{"name": "query_database", "description": "Run SQL against a database", "inputSchema": {"type": "object", "properties": {"sql": {"type": "string"}}}}], "nextCursor": "second"}
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": result})
     elif method == "tools/call":
         send({"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [{"type": "text", "text": "PERSONAL"}]}})
 "#;
@@ -5672,7 +5780,15 @@ for line in sys.stdin:
         let script = dir.join("mock_mcp.py");
         std::fs::write(&script, INSTRUCTING_SERVER).unwrap();
 
-        let (addr, server) = sse_server(vec![answer_body("Created the page.")]).await;
+        let (addr, server) = sse_server(vec![
+            tool_call_body("tool_search", r#"{"query":"Slack read thread", "limit":1}"#),
+            tool_call_body(
+                "company-tools__read_thread",
+                r#"{"channel":"C123", "timestamp":"123.456"}"#,
+            ),
+            answer_body("Read the feedback."),
+        ])
+        .await;
         let mut config = Config {
             provider: "deepseek".into(),
             model: "deepseek-flash".into(),
@@ -5682,7 +5798,7 @@ for line in sys.stdin:
             ..Config::default()
         };
         config.ecosystem.mcp = vec![crate::ecosystem::McpServer {
-            name: "atlassian".into(),
+            name: "company-tools".into(),
             enabled: true,
             kind: crate::ecosystem::McpKind::Local {
                 command: vec!["python3".into(), script.display().to_string()],
@@ -5691,20 +5807,30 @@ for line in sys.stdin:
             },
             domains: vec![],
         }];
+        let mut unavailable = config.ecosystem.mcp[0].clone();
+        unavailable.name = "unavailable-gateway".into();
+        unavailable.kind = crate::ecosystem::McpKind::Local {
+            command: vec![dir.join("missing-server").display().to_string()],
+            environment: Default::default(),
+            cwd: None,
+        };
+        let mut disabled = unavailable.clone();
+        disabled.name = "disabled-gateway".into();
+        disabled.enabled = false;
+        config.ecosystem.mcp.extend([unavailable, disabled]);
         let mut runtime = test_runtime().await;
         runtime.mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        log.set_name("Review private feedback").unwrap();
+        let user =
+            Message::user("Read the feedback in https://acme.slack.com/archives/C123/p123456");
+        log.append(&user).unwrap();
+        runtime.session = Some(Arc::clone(&log));
+        let shared = runtime.clone();
+        let config_copy = config.clone();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
-        run(
-            config,
-            dir.clone(),
-            vec![Message::user(
-                "Create a Confluence doc in my personal space",
-            )],
-            tx,
-            runtime,
-        )
-        .await;
+        run(config, dir.clone(), vec![user], tx, runtime).await;
 
         let mut errors = Vec::new();
         while let Ok(event) = rx.try_recv() {
@@ -5715,17 +5841,40 @@ for line in sys.stdin:
         assert!(errors.is_empty(), "{errors:?}");
 
         let requests = server.await.unwrap();
-        assert_eq!(requests.len(), 1);
-        assert!(
-            requests[0].contains("atlassian__find_spaces"),
-            "{}",
-            requests[0]
-        );
-        assert!(
-            requests[0].contains("Call find_spaces before creating a page"),
-            "{}",
-            requests[0]
-        );
+        assert_eq!(requests.len(), 3);
+        let request_tools = |request: &str| {
+            let body: Value = serde_json::from_str(
+                request
+                    .split_once("\r\n\r\n")
+                    .map_or(request, |(_, body)| body),
+            )
+            .unwrap();
+            body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(request_tools(&requests[0]).contains(&"tool_search".into()));
+        assert!(!request_tools(&requests[0]).contains(&"company-tools__read_thread".into()));
+        assert!(request_tools(&requests[1]).contains(&"company-tools__read_thread".into()));
+        assert!(!request_tools(&requests[1]).contains(&"company-tools__query_database".into()));
+        assert!(requests[2].contains("PERSONAL"));
+        assert!(requests[1].contains("unavailable-gateway"));
+        assert!(!requests[1].contains("disabled-gateway"));
+        assert!(requests[1].contains("Their tools have not been searched"));
+
+        assert_eq!(log.selected_tools(), vec!["company-tools__read_thread"]);
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.selected_tools(), log.selected_tools());
+        let again = search_mcp_tools(&config_copy, &shared, r#"{"query":"Slack read thread"}"#, 0)
+            .await
+            .unwrap();
+        assert!(!again.contains("\n- company-tools__read_thread:"));
+        let invalid =
+            search_mcp_tools(&config_copy, &shared, r#"{"query":"Slack", "limit":0}"#, 0).await;
+        assert!(invalid.is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -69,6 +69,37 @@ pub struct Budget {
     pub keep_recent_tokens: u64,
 }
 
+impl Budget {
+    /// Under request pressure, a fixed prompt or tool catalog can fill the
+    /// window before history reaches keepRecentTokens. Still leave room to
+    /// summarize older work, without sacrificing the latest user turn.
+    pub(crate) fn for_request(self, messages: &[Message]) -> Self {
+        let history = estimate_tokens(messages) as u64;
+        if history > self.keep_recent_tokens {
+            return self;
+        }
+        let Some(start) = messages.iter().rposition(|message| message.role == "user") else {
+            return self;
+        };
+        // A checkpoint followed only by the current turn has no older turn
+        // left to remove. Re-summarizing it on every step cannot reclaim the
+        // space occupied by the fixed prompt.
+        if !messages[..start].iter().any(|message| {
+            message.role == "user"
+                && !message
+                    .display()
+                    .is_some_and(|text| text.starts_with("[conversation summary]\n"))
+        }) {
+            return self;
+        }
+        let latest_turn = estimate_tokens(&messages[start..]) as u64;
+        Self {
+            keep_recent_tokens: self.keep_recent_tokens.min(latest_turn),
+            ..self
+        }
+    }
+}
+
 impl CompactionConfig {
     /// Resolves the ordinary settings against a `provider/model` override.
     pub fn resolve(&self, provider: &str, model: &str) -> Budget {
@@ -916,6 +947,59 @@ mod tests {
                 ..budget
             }
         ));
+    }
+
+    #[test]
+    fn request_pressure_can_compact_history_below_the_recent_budget() {
+        let messages = vec![
+            Message::user("old work ".repeat(1000)),
+            Message::assistant("Done", vec![]),
+            Message::user("LATEST_REQUEST"),
+            tool_call("read", "read", r#"{"path":"src/a.rs"}"#),
+            Message::tool("read", "LATEST_RESULT"),
+        ];
+        let budget = CompactionConfig::default().resolve("portkey", "alias");
+        assert!(prepare(&messages, &[], budget, 198_325).is_none());
+        let adjusted = budget.for_request(&messages);
+        let preparation = prepare(&messages, &[], adjusted, 198_325).unwrap();
+        assert_eq!(preparation.first_kept, 2);
+        assert_eq!(preparation.tokens_before, 198_325);
+        assert_eq!(
+            messages[preparation.first_kept].display().unwrap(),
+            "LATEST_REQUEST"
+        );
+        assert_eq!(messages.last().unwrap().display().unwrap(), "LATEST_RESULT");
+    }
+
+    #[test]
+    fn request_budget_preserves_a_latest_turn_larger_than_half_the_history() {
+        let messages = vec![
+            Message::user("Earlier task"),
+            Message::assistant("Done", vec![]),
+            Message::user("Latest request ".repeat(1000)),
+        ];
+        let budget = CompactionConfig::default().resolve("portkey", "alias");
+        let preparation = prepare(&messages, &[], budget.for_request(&messages), 198_325).unwrap();
+        assert_eq!(preparation.first_kept, 2);
+        assert!(prepare(
+            &messages[2..],
+            &[],
+            budget.for_request(&messages[2..]),
+            198_325
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn request_pressure_does_not_repeatedly_summarize_the_same_checkpoint() {
+        let messages = vec![
+            Message::user("[conversation summary]\nEarlier work"),
+            Message::user("Latest request"),
+            Message::assistant("Current progress", vec![]),
+        ];
+        let budget = CompactionConfig::default().resolve("portkey", "alias");
+        assert_eq!(budget.for_request(&messages), budget);
+        assert!(prepare(&messages, &[], budget.for_request(&messages), 190_000).is_none());
     }
 
     #[test]

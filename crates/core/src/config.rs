@@ -2901,12 +2901,14 @@ impl Config {
 
         if !self.ecosystem.mcp.is_empty() {
             let mut list = String::from(
-                "# MCP servers\nRoute requests to the matching MCP server: a server whose URL or \
-                 service name the message mentions is loaded before your first step, so for any \
-                 other request that belongs to a configured service, call mcp_load for that server \
-                 first and use its tools instead of webfetch, so authenticated documents, tickets, \
-                 and other resources stay accessible. Never ask the user for an identifier a \
-                 configured server can discover itself — a cloud, space, project, board or channel \
+                "# MCP servers\nEnabled MCP servers connect in the background; their tool schemas \
+                 remain deferred. Always call tool_search to discover MCP capabilities by task, \
+                 service, or resource before fetching a private URL or concluding that access is \
+                 unavailable. Discovery searches tool names, descriptions, parameter descriptions \
+                 and server instructions, including generic company gateways; no domain mapping \
+                 is required. Only matching tools are declared on the next model call. Use those \
+                 authenticated tools instead of webfetch, curl or wget. Never ask the user for an identifier \
+                 a configured server can discover itself — a cloud, space, project, board or channel \
                  id, or a URL — because its tools can resolve it.",
             );
             for server in &self.ecosystem.mcp {
@@ -2961,7 +2963,7 @@ impl Config {
         );
 
         sections.push(
-            "# Authenticated URLs\nTreat a URL behind a sign-in as an authenticated resource, not a public page. Route it to a configured MCP server first when one owns the service; otherwise use the service's official authenticated CLI instead of `webfetch`. For an AWS Console URL, preserve the account/profile and region and use the matching `aws` read command; confirm an uncertain account with `aws sts get-caller-identity`, and refresh an expired IAM Identity Center session with `aws sso login`. A fetch's redirect, 401, 403, or 404 is not proof that a private resource does not exist.".to_string(),
+            "# Authenticated URLs\nTreat a URL behind a sign-in as an authenticated resource, not a public page. Route it to a configured MCP server first when one owns the service; otherwise use the service's official authenticated CLI instead of `webfetch`. This also applies to `curl` and `wget`: do not use an unauthenticated shell fetch to bypass service routing. For an AWS Console URL, preserve the account/profile and region and use the matching `aws` read command; confirm an uncertain account with `aws sts get-caller-identity`, and refresh an expired IAM Identity Center session with `aws sso login`. A fetch's redirect, 401, 403, or 404 is not proof that a private resource does not exist.".to_string(),
         );
 
         sections.push(
@@ -3166,6 +3168,10 @@ mod tests {
             "{authenticated}"
         );
         assert!(authenticated.contains("aws sso login"), "{authenticated}");
+        assert!(
+            authenticated.contains("`curl` and `wget`"),
+            "{authenticated}"
+        );
         assert!(
             authenticated.contains("401, 403, or 404"),
             "{authenticated}"
@@ -3962,8 +3968,8 @@ mod tests {
         });
 
         let prompt = config.compose_system_prompt();
-        assert!(prompt.contains("Route requests to the matching MCP server"));
-        assert!(prompt.contains("call mcp_load for that"));
+        assert!(prompt.contains("Enabled MCP servers connect in the background"));
+        assert!(prompt.contains("Always call tool_search"));
         assert!(prompt.contains("Never ask the user for an identifier"));
         assert!(prompt.contains("instead of webfetch"));
         assert!(prompt.contains("documents — docs.example.com"));

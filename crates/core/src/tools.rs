@@ -416,6 +416,14 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
     ];
     let configured = mcp.configured_servers();
     if !configured.is_empty() {
+        specs.push(spec(
+            "tool_search",
+            "Search deferred MCP tool metadata with BM25 and declare matching tools for your next call. Always use tool_search for MCP tool discovery, including private links and services behind generic company gateways. Search by capability, service, or task; no domain mapping is needed. Previously discovered tools remain available.",
+            json!({"type":"object","properties":{
+                "query":{"type":"string","description":"Required capabilities, service, or task"},
+                "limit":{"type":"integer","minimum":1,"maximum":64,"description":"Maximum matches; default 8"}
+            },"required":["query"]}),
+        ));
         // A server may be asked for by a service it answers to as well as by its
         // own name, so the schema lists both and `mcp_load` resolves either.
         let mut names: Vec<String> = configured.iter().map(|(name, _)| name.clone()).collect();
@@ -458,7 +466,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         specs.push(spec(
             "mcp_load",
             &format!(
-                "Load one configured MCP server on demand and reveal its tools. A server the message names by URL or by service is already loaded before your first step, so use this when the request needs a configured service the message does not name — a document, ticket or other URL identifies it too. Route by URL host first: if a pasted link's domain matches a server's listed domains, call mcp_load for that server instead of webfetch. A server may be named by a service it answers to as well as by its own name. Configured servers: {sources}"
+                "Connect or retry one configured MCP server. Tools remain deferred: use tool_search to discover and declare the capabilities you need. A server may be named by a service it answers to as well as by its own name. Configured servers: {sources}"
             ),
             json!({
                 "type": "object",
@@ -473,7 +481,6 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
             }),
         ));
     }
-    specs.extend(mcp.tool_specs());
     specs
 }
 
@@ -578,9 +585,9 @@ pub async fn execute_with_scope(
                 }
             }
             other => Err(anyhow::anyhow!(
-                "unknown tool `{other}`. For an MCP tool, call `mcp_load` with its configured \
-                 server name first, then use the exact tool name and schema returned by the \
-                 catalog. Do not guess tool names or resource IDs"
+                "unknown tool `{other}`. For an MCP tool, use `tool_search` to discover its \
+                 capabilities, or `mcp_load` to retry a connection. Then use the exact tool name \
+                 and schema declared on the next step. Do not guess tool names or resource IDs"
             )),
         }
     };

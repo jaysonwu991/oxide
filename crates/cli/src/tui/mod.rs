@@ -1295,7 +1295,10 @@ fn handle_key(
                 if app.busy {
                     return;
                 }
-                match SessionLog::fork(cwd, &app.history) {
+                match session.as_ref().map_or_else(
+                    || SessionLog::fork(cwd, &app.history),
+                    |source| source.fork_context(cwd, app.history.len()),
+                ) {
                     Ok(log) => {
                         app.items.push(ChatItem::Info(format!(
                             "cloned session into {} ({} messages)",
@@ -1759,6 +1762,7 @@ fn handle_key(
             let approve = approvals.approver(&cwd, tx.clone(), app.steering.clone());
             let runtime = Runtime {
                 mcp: Arc::clone(mcp),
+                selected_mcp_tools: Default::default(),
                 plugins: Arc::clone(plugins),
                 session: session.clone().map(Arc::new),
                 snapshots: snapshots.cloned(),
@@ -3089,7 +3093,10 @@ fn fork_session(
         return;
     };
     let abandoned = app.history[cut..].to_vec();
-    match SessionLog::fork(cwd, &app.history[..cut]) {
+    match session.as_ref().map_or_else(
+        || SessionLog::fork(cwd, &app.history[..cut]),
+        |source| source.fork_context(cwd, cut),
+    ) {
         Ok(log) => {
             app.history.truncate(cut);
             *session = Some(log);
