@@ -11,11 +11,20 @@ page is the detail behind it, and the task-by-task guides live in
   TUI, `/connect` and `/logout` manage provider credentials.
 - Desktop app (`oxide-desktop`, an Electron window over the same Rust engine) that
   manages multiple projects
-  and shows the shared session store, using the same configuration as the CLI
-  (see [desktop.md](desktop.md)).
+  and shows the shared session store, using the same configuration as the CLI —
+  with chat tabs, a draft that follows the tab it was typed in, and a run that
+  keeps going while the reader opens another conversation (see
+  [desktop.md](desktop.md)).
 - VS Code extension (`editors/vscode`) that drives the same `oxide` binary from
   a chat panel in the activity bar, with editor actions for the selection and
   the CLI's own sessions and configuration (see [vscode.md](vscode.md)).
+- Interface language: British English (the default) or Simplified Chinese, chosen
+  once for the terminal, the desktop app and the panel through the shared
+  `language` setting, `--language`, `OXIDE_LANG`, `oxide language` or
+  `/language` (see [Language](configuration.md#language)).
+- Mermaid diagrams: a fenced `mermaid` block in a reply renders as a diagram in
+  the desktop app and the VS Code panel, following the theme, with its source one
+  click away. The terminal keeps the fence as readable code.
 
 ## Models and providers
 
@@ -144,6 +153,12 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   `-c`/`--continue`, `-r`/`--resume` (browse past sessions), and
   `--fork <path|id>`, plus TUI commands `/new`, `/session`, `/name`, `/model`,
   `/reasoning`, `/export`, `/reload`, and `/hotkeys`.
+- Git worktrees: a conversation can run in its own `git worktree` — made by
+  `--worktree`, `oxide worktree create`, the desktop app's checkout picker or the
+  panel's **Worktrees** listing — so a task edits a copy of the project on an
+  `oxide/<name>` branch while the folder you have open stays as it was, and the
+  chat can be handed between the local folder and its checkout without losing its
+  history (see [Git worktrees](cli.md#git-worktrees)).
 - Session branching: `/tree` lists user messages and `/tree <n>` branches the
   current session in place (summarizing the abandoned path), `/fork <n>`
   branches a new session from one, and `/clone` duplicates the current session.
@@ -167,9 +182,10 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   `... (<lines> more lines, Ctrl+O to expand)` affordance below a head preview
   and a `... (<lines> earlier lines, Ctrl+O to expand)` one above a shell
   result's tail, `read` results preview the file contents, file edits show a
-  colored line-numbered diff, user and assistant turns render their label inline
-  with the message text, and the system prompt nudges the model to batch reads
-  instead of re-reading the same paths.
+  colored line-numbered diff, user and assistant turns are named by a mark alone
+  (`❯` and `◆` in the speaker's color, drawn inline before the text, since Pi's
+  transcript names no speaker), and the system prompt nudges the model to batch
+  reads instead of re-reading the same paths.
 - Visible work in progress: reasoning streams into the transcript as a muted
   italic `✦ Thinking` block that closes with `✦ Thought for 1.4s`, so work done
   before the answer is no longer invisible. Ctrl+T collapses reasoning blocks to

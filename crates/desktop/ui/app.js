@@ -1,6 +1,7 @@
 // Oxide desktop front-end. The window is Electron's own renderer and the page
-// is sandboxed against it: the project/session/config stores it reads are the
-// CLI's, reached through the app's commands rather than the filesystem.
+// has no Node of its own (`nodeIntegration` off): the project/session/config
+// stores it reads are the CLI's, reached through the app's commands rather than
+// the filesystem.
 //
 // A command is performed by name: one packet carries the name and the arguments,
 // and its answer carries that command's own value or the reason it failed.
@@ -765,7 +766,7 @@ function setUsage({
 /// reported, and the spend — marked ` (sub)` for a provider whose credential is
 /// a plan rather than a metered key, where the price table's number is what the
 /// plan would have billed. Every segment is left out instead of drawn as a zero,
-/// and the context reading is the ring on the row above rather than a second word
+/// and the context reading is the ring beside them rather than a second word
 /// here. The totals are the same ones that ring is measured from, so what the
 /// chat spent and the fraction of its window that took can never disagree.
 function paintUsage() {
@@ -1818,8 +1819,8 @@ async function selectProject(project) {
   renderProjectsTree(); // Update tree view instead of dropdown
   resetTranscript();
   // The folder moved, so the composer's own top row has to be read again rather
-  // than carried over from the folder being left. The context reading is painted
-  // with the rest of the row by the reset, and again when the folder's own window
+  // than carried over from the folder being left. The context ring is painted
+  // beside the totals by the same read, and again when the folder's own window
   // arrives.
   loadGit();
   await Promise.all([loadInfo(), loadSessions(), loadTheme(), loadWorktrees()]);
@@ -2017,7 +2018,7 @@ function updateChips() {
 /// tooltip, since with nothing open it reads as the action it is. The marker it
 /// wears in that state is its own (`unset`): the sheet's `.empty` is the app's
 /// placeholder class, which centers whatever wears it — and this chip sits on the
-/// composer's top row, whose remaining auto margin belongs to the context ring.
+/// composer's top row, where the two controls are the folder and the checkout.
 function updateProjectChip() {
   const open = Boolean(state.project);
   const placeholder = t("composer.chooseProject", "Choose a project");
@@ -2070,10 +2071,10 @@ async function loadGit() {
   if (!el("details-panel").hidden || reviewState?.card.repository) refreshProjectDetails();
 }
 
-/// The composer's own top row, above the message box: the branch the folder is on
-/// and the context reading the row ends with — an arc filled to the percent the
-/// thread's totals come to, with that percent spelled out inside it and the tokens
-/// and the window behind it in its tooltip. Nothing but the folder chip is shown
+/// The composer's own top row, above the message box: the folder's chip, the
+/// branch it is on and the checkout the next turn runs in. The totals and the
+/// context reading are the box's own row, beside the action that sends.
+/// Nothing but the folder chip is shown
 /// before a folder is open, since there is no turn to place and no window to
 /// measure: the row then says the one thing the reader can act on.
 function paintComposerFacts() {

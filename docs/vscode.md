@@ -58,9 +58,16 @@ editors/vscode/
   media/
     main.js           dependency-free webview renderer (Markdown, diffs, …)
     style.css         themed styles (VS Code CSS variables)
+    diagrams.js       the shared Mermaid renderer, copied from shared/ at build time
+    diagrams.css      its styles, also copied from shared/
+    vendor/           the pinned Mermaid bundle and its licence, copied at build
     oxide.svg         container and view icon: the desktop app's mark
     icon.png          extension icon: a copy of the desktop app's app icon
 ```
+
+`shared/diagrams.js`, `shared/diagrams.css` and their lifecycle checks are the
+repository's own, and `scripts/prepare-diagrams.mjs` is what puts them beside
+this package's page (and the desktop app's) before TypeScript compiles.
 
 The extension host owns all the state; the webview is a dumb renderer that
 applies the view messages produced in `core/protocol.ts`. That module imports
@@ -97,9 +104,11 @@ and for resuming one, whose tooltips — and `aria-label`s, the names a screen
 reader reads out — say **New chat** and **Session history**; the model is the
 footer's first chip rather than a second line under the title, and the
 composer's **Attach**, **Stop** and **Send** are icons too, so the only text in
-the chrome is the phase and the numbers. The phase
-appears while a turn runs (with the elapsed timer) and goes when it does, rather
-than sitting in the toolbar as an idle dot. A turn that finishes while the panel
+the chrome is the phase and the numbers. The phase line
+appears only while there is one to read that the corner cannot say — queued
+messages, an idle note — since a running turn's phase moves into the Stop
+button's tooltip and `Working for 12s` is a line at the end of the transcript
+rather than a dot in the toolbar. A turn that finishes while the panel
 is hidden raises a toast naming the thread by that same title; it takes the
 panel's own `oxide.notifyOnFinish` and the shared `notifyOnComplete` the
 terminal's `/notify` writes, so turning notifications off in one silences the
@@ -165,9 +174,15 @@ desktop's, so the two can only drift together.
 `core/config.ts` resolves the same `<platform config dir>/Oxide` directory the
 CLI uses (falling back to the pre-migration lowercase directory), so a provider
 connected with the terminal's `/connect` is immediately usable in the panel. For
-most of that directory the extension is a reader: the model, agent, reasoning
-and tools are VS Code settings (`oxide.*`) that become `--model` / `--agent` / …
-flags, and the CLI applies them to its own config.
+most of that directory the extension is a reader. The model and the reasoning
+level are the shared selection: the composer's model and thinking chips write
+`config.json` through `oxide select --model` / `oxide select --reasoning`, the
+same call the terminal's `/model` and Shift+Tab make, so the panel and the
+terminal never name different ones. What the panel does keep of its own —
+`oxide.agent`, `oxide.tools`, `oxide.excludeTools`, `oxide.projectTrust` and
+`oxide.additionalArguments` — becomes `--agent`, `--tools`, `--exclude-tools`,
+`--approve`/`--no-approve` and extra argv for the child process, which the CLI
+applies to its own config for that run.
 
 Trust is not one of those settings any more. The panel's **Project access**
 dialog writes the same `trust.json` the terminal's `/trust` and the desktop app
@@ -196,8 +211,8 @@ The composer answers `/mcp` itself, the way the terminal does: the message is no
 model but opens the panel's own **MCP servers** listing — not a `showQuickPick`, which
 takes over the window, hides the transcript the listing is about, and cannot be
 answered while a turn streams. It is the listing that belongs near the composer
-where it was typed: the same standalone card used for session history, moved to
-the other end of the panel, with its own scrollbar once a project has more
+where it was typed: a standalone card above the composer, on the same edge the
+session listing opens on, with its own scrollbar once a project has more
 servers than fit.
 Every server is a row carrying the state the core reported (`Connected`, `Needs
 auth`, `Needs trust`, `Disabled`, `Error`) and a line naming its transport, the
@@ -241,9 +256,9 @@ History** and `/session` in the composer reach the same listing — the listing 
 than in a QuickPick. The command is the button's own control under another name,
 while `/session` typed in the composer opens the listing (or repaints it if it is
 already up) rather than closing it: a command that names the history should not
-answer by taking it away. It hangs from the header rather than from the composer
-the way the MCP servers listing does: it is about the thread the header names, and
-its first row is about leaving it.
+answer by taking it away. It opens above the composer, the edge `/session` was
+typed on — and the same edge the MCP listing uses, since the two are one card —
+while the thread's title stays readable in the header above the transcript.
 
 Its first two rows are the way out of the thread the panel has open. **New
 chat** closes it and puts the panel back on the new-chat page it starts on —
@@ -341,7 +356,7 @@ listed and whether the head carries a search box (`count`, `search`, and the
 `query` that composed them), a note for an empty or failed listing, and rows
 where each row carries the action it posts back (`mcpToggle` with the server's
 name, `mcpRefresh`, `openSession` with `new`, `continue` or a session id,
-`sessionDelete` and `sessionDeleteConfirm` for a thread's trash button,
+`sessionPin` and `sessionArchive` for a thread's pin and archive buttons,
 `dialogClose`) — and the controller holds the open one, so both panes paint the
 same dialog and a pane that attaches afterwards is sent it again. A row also
 carries what it is (`kind`: `action` for the listing's own ways out, `thread` for
@@ -356,12 +371,12 @@ to say which thread is which. `kind: "sessions"` is also the only state the
 header's own button has to agree with, since it is that listing which puts the
 button's `aria-expanded` up.
 
-Nothing about where it opens is left to the renderer either: the MCP list is
-pinned to the footer, above the composer it was asked for in, the session
-history to the header that names the thread it lists, and the webview only
+Nothing about where it opens is left to the renderer either: both listings are
+pinned to the footer, above the composer they were asked for in, while the turn's
+undo confirmation is the one that hangs from the header, and the webview only
 carries that as a class. A
-row's button carries the glyph it is painted as (`icon: "power"`,
-`icon: "trash"`) and the words it would otherwise show, which become its
+row's button carries the glyph it is painted as (`icon: "power"`, `"pin"`,
+`"archive"`, `"plus"` or `"close"`) and the words it would otherwise show, which become its
 tooltip and its name for a screen reader. The webview only builds the rows and
 posts the clicked one's action back as a `dialogAction`; it decides nothing about
 what a click means, the same way a footer chip posts the control id it carries.
@@ -537,13 +552,16 @@ and `core/footer.ts` turns it plus the transcript's usage into a `FooterState` �
 and the webview only paints it, so the footer reads the same in both panes and
 is unit tested without a webview.
 
-It is arranged the way the composer is used, from the top down: the chips that
-describe the next turn, the bar on the composer's own top edge, and the composer
-itself. The bar carries the branch, the usage readout and the gauge that draws the
-same reading, and nothing to press: the settings this panel holds are the editor's,
-and the chips in the toolbar below are where they are reached. Nothing is left
-under the box — the line that was there carried the readout the bar now holds
-beside its gauge.
+It is arranged the way the composer is used, from the top down: the bar on the
+composer's own top edge, and the composer itself, whose toolbar carries the chips
+that describe the next turn and the reading beside them. The bar carries the
+branch and the checkout the chat runs in — the one control on it — because both
+are facts about the folder rather than about the message; the settings this panel
+holds are the chips in the toolbar below, and nothing is left
+under the box: the usage line that used to sit there is the tooltip of the
+percentage and the gauge the toolbar now carries. While a turn is running the
+bar steps aside (`body.running` hides it, as the desktop app's does), so the box
+keeps the room the corner action and the phase need.
 
 - **Controls** — four icon-only buttons for model, reasoning, agent and project
   access. Each keeps its complete current value and action in its tooltip and
@@ -596,13 +614,20 @@ beside its gauge.
   as the wider of the two in a narrow side bar as much as a wide one. The branch
     is the row's flexible cell, so a long one is cut with an ellipsis rather than
   wrapped.
-- **Composer** — the message box: the attachment strip, the textarea and the
-  toolbar inside one bordered block. It starts two rows tall (`rows="2"`) and
-  grows with the message up to 200px, where it scrolls instead.
-- **Toolbar** — the **Attach** icon (the file picker), the live phase with an
-  elapsed timer while a turn runs, and the corner action, which swaps rather
+- **Composer** — the message box: the attachment strip, the box itself and the
+  toolbar inside one bordered block. The box is one rendered `contenteditable`
+  surface (`#input`) rather than a textarea beside a preview: the Markdown is
+  painted in it as it is typed (`installMarkdownInput`, the editor the desktop
+  app's composer uses too). The sheet gives it two lines to open in
+  (`min-height: calc(2lh + 12px)`) and a 200px cap, past which it scrolls.
+- **Toolbar** — the **Attach** icon (the file picker), the phase while there is
+  one worth a line (an idle panel says nothing rather than sitting on a dot; a
+  running turn's phase moves into the Stop button's tooltip so the row stays one
+  line), the chips, the usage reading and the corner action, which swaps rather
   than sitting beside a second button: **Stop** while a turn runs with nothing
-  to say, **Send** the moment the box holds something. The corner button does
+  to say, **Send** the moment the box holds something. The elapsed time is a line
+  of its own at the end of the transcript — `Working for 12s` while the turn
+  runs, `Worked for 12s` once it settles. The corner button does
   not move as the box is typed into; an attachment is something to send too,
   while a context chip on its own is not.
 - **Queue / Steer** — how a message typed while a turn runs is delivered, and
@@ -613,8 +638,8 @@ beside its gauge.
   once without changing it, and the corner button's tooltip always names what
   `Enter` will do. The choice is toggled from a queued message's own menu (`Use
   Steer for new messages` / `Use Queue for new messages`), which saves the
-  `oxide.followUpBehavior` setting. What is waiting is listed above the textarea
-  in the composer: a row per queued message, named by its first line, with a
+  `oxide.followUpBehavior` setting. What is waiting is listed above the message
+  box in the composer: a row per queued message, named by its first line, with a
   **Steer** button that moves that one into the running response, a **Delete**
   button, and a **More** menu carrying `Move up`, `Move down`, `Edit` (back into
   the box, which has to be empty for it) and the delivery toggle. The rows can
@@ -625,11 +650,11 @@ beside its gauge.
   worktree's or submodule's `gitdir:` pointer is followed to the real HEAD. It is
   painted on the bar above the box, the way the desktop app shows it.
 - **Gauge** — the last request's prompt tokens over the context window, amber
-  past 70% and red past 90% (the terminal's thresholds), painted beside the
-  branch on the bar above the box.
-- **Usage** — the percent of the window the thread has used, painted on the bar
-  beside the gauge that draws the same reading, the way the desktop app paints its
-  context ring beside its own totals; the line itself —
+  past 70% and red past 90% (the terminal's thresholds), painted in the
+  composer's own toolbar beside the percentage it draws.
+- **Usage** — the percent of the window the thread has used, painted in the
+  composer's toolbar beside the gauge that draws the same reading, the way the
+  desktop app paints its context ring beside its own totals; the line itself —
   `↑input · ↓output · RcacheRead · WcacheWrite · CHhit% · $cost · ctx %/window
   (auto)`, matching the terminal's footer segments — is its tooltip and the name a
   screen reader reads. The counts are
@@ -911,10 +936,11 @@ Events consumed: `session`, `thinking`, `thinking_done`, `message_update`
 `agent_end`. `thinking_done` marks the end of a model step (its `ThoughtDone`
 counterpart), so a later step's output does not merge into, and a retry cannot
 discard, a previous step's committed reply. `turn_changes` carries the folder
-that run was in, the files it changed and the revision it started from; the CLI
-writes it behind that run's `agent_end` on the same channel — the listing can
-neither overtake the turn it belongs to nor the events of a prompt sent after it
-— so the card lands where the turn ended.
+that run was in, the files it changed, the revision it started from, and the
+state the turn left (`after`, which the card's own Undo hands back to `oxide
+changes undo --after`); the CLI writes it *ahead of* that run's `agent_end` on
+the same channel — so the listing lands while the run it describes is still the
+one on screen, and the turn's last frame is still `agent_end`.
 
 The transcript is a list of items (`user`, `assistant`, `thinking`, `tool`,
 `notice`). The view applies small deltas: `push` a new item, `remove` a
@@ -1211,11 +1237,20 @@ says so too, so the offer is never the only thing the reader has to go on.
 
 ## Rendering
 
-The composer keeps Markdown source editable and renders a live **Markdown preview**
-below it. Collapse the preview with its heading; clearing or sending the source hides
-it. **Up** in an empty composer recalls the last prompt from the current chat,
+There is no Markdown preview beside the composer: the box is the rendered view,
+with the source painted as formatted text where it is typed. **Up** in an empty
+composer recalls the last prompt from the current chat,
 including resumed chats. Existing drafts and open completion menus keep their normal
 keyboard behavior. Recall restores text only, so attachments can be selected again.
+
+Fenced `mermaid` blocks in a reply render as diagrams once their closing fence
+arrives, including in a replayed thread. Each diagram follows the panel's own
+colours and offers its source and a fullscreen view; an invalid diagram keeps its
+text visible, and the user's own messages keep the fence as code. The renderer is
+`shared/diagrams.js` and `shared/diagrams.css`, copied into `media/` by
+`scripts/prepare-diagrams.mjs` (`pnpm run compile` runs it first) together with
+the pinned, self-contained Mermaid browser bundle under `media/vendor/` — no CDN
+and no network at run time, loaded on the first diagram.
 
 `media/main.js` renders the transcript in the webview; it is adapted from the
 desktop app (`crates/desktop/ui/app.js`), so a reply reads the same in both.

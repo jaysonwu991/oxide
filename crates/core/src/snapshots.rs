@@ -124,7 +124,7 @@ impl Snapshots {
     /// recorded in the shadow repo so a front-end can list the files the run
     /// changes — including ones no tool call named, like a formatter's or a
     /// shell command's — and put them back. `None` when the project must not be
-    /// snapshotted (see [`snapshot_scope_is_safe`]), which is a run without a
+    /// snapshotted (see `snapshot_scope_is_safe`), which is a run without a
     /// change listing rather than a failed run. A project that is not a git
     /// clone is snapshotted all the same.
     pub fn baseline(cwd: &Path) -> Option<(Snapshots, String)> {

@@ -44,7 +44,7 @@ variable, which overrides the file. Behavior settings live in `config.json`
 (global); `defaultProjectTrust` and `hideThinkingBlock` come from the global
 `settings.json`, while `compaction`, `modelPrices`, `modelContextWindows`,
 `modelCatalog`, `steeringMode`, `followUpMode`, `notifyOnComplete`, `notifySound`,
-`cacheWarming` and `checkForUpdates` are read from it with the project
+`cacheWarming`, `checkForUpdates` and `language` are read from it with the project
 `.oxide/settings.json` winning per key.
 
 Installed plugin packages (see [Plugins and hooks](#plugins-and-hooks)) load
@@ -85,6 +85,7 @@ oxide mcp get filesystem
 # stdio server: name, then the command and its arguments
 oxide mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /path/to/dir
 oxide mcp add --env SOME_TOKEN=secret filesystem npx -y server-filesystem /tmp
+oxide mcp add --cwd /path/to/work server npx -y some-server   # the server's working directory
 
 # HTTP server
 oxide mcp add --transport http remote https://example.com/mcp \
@@ -93,6 +94,11 @@ oxide mcp add --transport http remote https://example.com/mcp \
 # with explicit routing domains (repeatable or comma-separated)
 oxide mcp add --transport http docs https://mcp.example.com \
   --domains docs.example.com --domains '*.example.com'
+
+# a pre-registered OAuth client, instead of dynamic registration
+oxide mcp add --transport http remote https://example.com/mcp \
+  --oauth-client-id <id> --oauth-client-secret <secret> \
+  --oauth-scope read --callback-port 43117 --redirect-uri http://127.0.0.1:43117/callback
 
 # store in the global file instead of the project
 oxide mcp add --scope global --transport http remote https://example.com/mcp
@@ -329,9 +335,11 @@ Add a remote (HTTP) server:
   `A-Za-z0-9_-` are replaced with `_`.
 - **Remove** a server with `oxide mcp remove <name>`, or by deleting its entry
   (or the file).
-- Enabled servers start lazily when first needed (a URL, a service name, or
-  `mcp_load`). A server that fails to start or list tools is logged to stderr and
-  skipped.
+- Enabled servers are discovered when a session's first turn starts: every
+  configured server is contacted concurrently in the background and its tool
+  catalog read, while the schemas stay deferred until `tool_search` declares
+  them. A server that fails to connect or list is reported beside the usable
+  matches (in the search result and in `/mcp`) rather than silently skipped.
 - Restart Oxide after editing.
 
 ## Subagents
@@ -402,14 +410,15 @@ Focus: $ARGUMENTS
   conversation.
 - Built-in commands: `/help`, `/hotkeys`, `/exit`, `/new`, `/session`,
   `/tree`, `/fork`, `/clone`, `/name`, `/status`, `/model`, `/reasoning`,
-  `/theme`, `/trust`, `/export`, `/reload`, `/init`, `/connect`, `/logout`,
-  `/models`, `/mcp`, `/plugins`, `/marketplaces`, `/notify`, `/permissions`,
-  `/usage`, `/spend`, `/updates`, `/undo`, `/redo`, `/compact`, `/attach`,
-  `/copy [all]`, and a skill by its own name (`/rust-conventions`, whose other
-  spelling is `/skill:<name>`). Shared with the desktop app and the VS Code
-  panel through `crate::commands`: `/help`, `/mcp`, `/model`, `/reasoning`,
-  `/permissions`, `/trust`, `/session`, `/new`, `/usage`, `/attach`, `/connect`
-  and `/logout` — and `/theme` in the desktop app, `/agent` in the panel — while
+  `/theme`, `/language`, `/trust`, `/export`, `/reload`, `/init`, `/connect`,
+  `/logout`, `/models`, `/mcp`, `/plugins`, `/marketplaces`, `/notify`,
+  `/permissions`, `/usage`, `/spend`, `/updates`, `/undo`, `/redo`, `/compact`,
+  `/attach`, `/copy [all]`, and a skill by its own name (`/rust-conventions`,
+  whose other spelling is `/skill:<name>`). Shared with the desktop app and the
+  VS Code panel through `crate::commands`: `/help`, `/mcp`, `/model`,
+  `/reasoning`, `/permissions`, `/trust`, `/session`, `/new`, `/usage`,
+  `/attach`, `/language`, `/connect` and `/logout` — and `/theme` in the desktop
+  app, `/agent` in the panel — while
   the rest are the terminal's own. The catalog holds one spelling per command, so
   `/help` and the autocomplete list each name once and a word that is not one —
   `/mcps` for `/mcp`, `/login` for `/connect` — is an ordinary message rather
@@ -1147,9 +1156,10 @@ For the complete keyboard guide, see
 
 Sessions use Pi's on-disk format: an append-only JSONL tree whose first line is
 a `session` header and whose remaining lines are `message`, `compaction`,
-`branch_summary`, `session_info`, `model_change`, and `thinking_level_change`
-entries linked by `id`/`parentId`. The last entry is the active leaf, and the
-model sees the leaf path with the latest compaction applied.
+`branch_summary`, `session_info`, `model_change`, `thinking_level_change` and
+`tool_selection` entries linked by `id`/`parentId` (the last records the MCP
+tools a `tool_search` declared on that branch). The last entry is the active
+leaf, and the model sees the leaf path with the latest compaction applied.
 
 ## Context compaction
 
@@ -1587,8 +1597,11 @@ rather than counted, and a mode-only change is listed with nothing to count.
 Two front-ends draw it: the desktop app paints a card per finished turn (with
 **Review** and **Undo**) and the VS Code panel opens a file in VS Code's own diff
 editor. A client on the RPC channel gets the same listing as a `turn_changes`
-frame — `{project, baseline, changes}`, written after the turn's own last event
-— and draws whatever it likes from it. The terminal is not one of them: its
+frame — `{project, baseline, after, changes}`, written after the turn's own last
+event but *ahead of* `agent_end` — and draws whatever it likes from it. `after`
+is the state the turn left, which is what its own Undo hands back to `changes
+undo --after` so a restore the work tree has moved past is refused rather than
+taking a later edit with it. The terminal is not one of them: its
 `/undo` and `/redo` restore the shadow snapshot, but a finished turn leaves no
 change card in the transcript.
 
@@ -1627,20 +1640,51 @@ oxide --worktree=fix-login "fix the login form"
 oxide --worktree "add a retry to the uploader"   # named after the prompt
 ```
 
+`create` takes four more options, and two subcommands move a chat and name a
+checkout:
+
+```sh
+oxide worktree create spike --base origin/main          # start from a ref, not HEAD
+oxide worktree create scratch --detached                # HEAD detached until a branch is named
+oxide worktree create review --copy-changes             # carry staged, unstaged and untracked work
+oxide worktree create review --source ../other-checkout # read that checkout's HEAD and changes
+oxide worktree branch scratch spike-branch              # give a detached checkout a branch
+oxide worktree handoff <session-id> --source <folder>   # move a chat from its checkout to Local
+oxide worktree handoff <session-id> --source <folder> --to-worktree   # ... and back into it
+```
+
 - The run's folder is the checkout: the agent's tools, its session, its shadow
   snapshot and its change listing all belong to it, so a turn in a worktree
   touches nothing in the folder you have open.
 - `--worktree` makes the checkout when it is not there yet and reopens it when it
   is, so the second run with the same name continues where the first left off.
   Without a name, one is taken from the prompt's first words
-  (`write-a-greeting`), and a name that is taken gets the next free one.
-- A worktree is made from `HEAD` unless `--base <ref>` names another commit or
-  branch.
+  (`write-a-greeting`), and a name that is already taken gets the next free one
+  (`write-a-greeting-2`) — which is what a `create` with no name does as well,
+  while a name that was asked for is refused rather than quietly swapped for
+  another.
+- `--worktree` starts from `HEAD`: the root flag names only the worktree. `oxide
+  worktree create --base <ref>` is where another commit or branch is chosen, and
+  `--detached` leaves `HEAD` detached until `worktree branch` names one.
+- `--copy-changes` carries staged, unstaged and untracked work into the new
+  checkout, and a copy that fails rolls the new checkout back. Every checkout
+  made this way also copies the ignored setup files a repository-root
+  `.worktreeinclude` matches — an ignored `AGENTS.override.md` among them —
+  while a symlink in the source is skipped rather than followed and a file the
+  destination already has is never overwritten.
+- `handoff` moves a chat between the local folder and its managed checkout, with
+  its staged and unstaged edits, untracked files and branch: the chat keeps its
+  id, history, name and usage, a later move back reuses the same checkout, the
+  destination must be clean, and both checkouts are restored if the move fails
+  (recovery refs stay under `refs/oxide/handoffs/`).
 - `remove` deletes the checkout and leaves its branch in the repository: the
   commits are the work that was started there. Making a worktree with that name
   again resumes the branch rather than starting over.
   Git refuses removal when the checkout has uncommitted or untracked files;
   commit, stash or move that work before removing it.
+- The desktop app and the panel refuse creating, switching, removing and handing
+off while a turn runs, since a chat's files are the ones a checkout move would
+take with it; the CLI commands themselves act on the repository they are given.
 - Checkouts live under the config directory (`worktrees/<project>/<name>/`)
   rather than beside the project, so they never appear in the project's own
   `git status` or in a diff you are reading.
@@ -1649,11 +1693,12 @@ oxide --worktree "add a retry to the uploader"   # named after the prompt
   covers the checkouts made from it. A worktree directory needs a git repository
   with at least one commit; a plain folder has nothing to branch from and says
   so.
-- `--json` prints the listing, or the one checkout `create`/`remove` acted on —
-  `{name, branch, path, project, created_at}` — which is how a front-end that
-  cannot link `oxide-core` draws the same store. The desktop app's composer and
-  the VS Code panel's **Oxide: Worktrees…** both read it, and a worktree made in
-  any of the three is listed by the others.
+- `--json` prints the listing, or the one checkout `create`/`remove`/`branch`
+  acted on — `{name, branch, path, project, created_at}` — while `handoff`
+  answers with `{"cwd": …}`, the folder the chat now runs in. That is how
+  a front-end that cannot link `oxide-core` draws the same store. The desktop
+  app's composer and the VS Code panel's **Oxide: Worktrees…** both read it, and
+  a worktree made in any of the three is listed by the others.
 
 ## Data locations and reset
 
@@ -1675,7 +1720,7 @@ Runtime state lives under the platform Oxide config directory:
   or a directory that is neither a git work tree nor project-sized
 - `memory/` — persistent memory entries
 - `trust.json` — saved project trust decisions
-- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, `hideThinkingBlock`, `notifyOnComplete`, `notifySound`, `cacheWarming`, and `checkForUpdates`
+- `settings.json` — global settings such as `defaultProjectTrust`, `compaction`, `modelPrices`, `modelContextWindows`, `modelCatalog`, `hideThinkingBlock`, `notifyOnComplete`, `notifySound`, `cacheWarming`, `checkForUpdates`, `language`, `steeringMode`, and `followUpMode`
 - `updates.json` — the newest release of each component the last launch found, so the "update available" notice needs no network wait (override with `OXIDE_UPDATES_FILE`)
 - `themes/<name>.json` — custom TUI themes
 - `plugins/` — installed plugin packages, marketplaces, and plugin state

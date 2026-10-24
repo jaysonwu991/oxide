@@ -61,11 +61,13 @@ see [docs/vscode.md](vscode.md)) is a separate pnpm package that drives the
 ```
 crates/desktop/
   src/              the engine (Rust): the harness the window starts
-    lib.rs          the library it is built from: at, git, manager, turn, update
+    lib.rs          the library it is built from: at, git, manager, repository,
+                    turn, update
     manager.rs      project registry + session aggregation
     turn.rs         starts an agent turn against a project
     at.rs           the `@path` walk the composer completes from
     git.rs          the branch the composer's own bar reads, out of .git/HEAD
+    repository.rs   the uncommitted changes the dock lists and a file's two sides
     commands.rs     the `oxide_invoke` dispatcher, and the update path
     approval.rs     interactive approve/deny broker
     ask.rs          a skill's question broker
@@ -89,11 +91,17 @@ crates/desktop/
   tsconfig.json     the window's TypeScript config (`electron/` → `electron/dist`)
   check-app.mjs     front-end check (stubbed DOM and bridge)
   check-shell.mjs   shell check (command/event contract, window, menu, bundle)
+  check-markdown-input.mjs
+                    optional: both composers' editor in a real Chromium
+  check-transcript-scroll.mjs
+                    optional: both transcripts' follow-the-newest-line
+                    controller against Chromium's real layout
 ```
 
 The engine has no window dependency at all: it links `oxide-core` and the crates
 around it, and nothing of Electron's. `src/lib.rs` (the `at`, `git`, `manager`,
-`turn` and `update` modules) is what its unit tests cover, while `commands.rs`,
+`repository`, `turn` and `update` modules) is what its unit tests cover, while
+`commands.rs`,
 `approval.rs`, `ask.rs`, `bridge.rs` and `main.rs` are declared by `main.rs`, so
 their tests run with `cargo test` from `crates/desktop` — which is what
 `.github/workflows/ci.yml` runs on each platform, beside the window's own type
@@ -127,9 +135,12 @@ asks for it by command name — so the window needs no capability grant and no
 allow-list beyond that bridge. Only the calls that are the operating system's
 belong to the window rather than to the engine: the folder chooser
 (`pick_folder`, answered by Electron's own panel, which no child process can
-draw) and a link to open (`open_url`, answered by the window once the platform's
+draw), a link to open (`open_url`, answered by the window once the platform's
 handler has started or refused to — a browser that would not run is reported to
-the page rather than written to a console nobody is reading), and the relaunch
+the page rather than written to a console nobody is reading), the interface
+language the menu bar is drawn in (`set_native_language`, which the window takes
+for its own strings and answers without forwarding, since a menu is a native
+object the engine cannot repaint), and the relaunch
 that runs an installed release, which the engine asks for and the window performs
 since the engine is the half that knows whether a turn is running. The menu
 bar is the window's own for the same reason (see below).
@@ -161,20 +172,26 @@ requests unanswerable.
 
 The menu bar is the window's own: `installMenu` builds it with
 `Menu.buildFromTemplate` from the platform's own roles (`about`, `quit`,
-`hideOthers`, `undo`/`copy`/`paste`, `minimize`/`zoom`/`close`) plus the one item
-the app answers itself — **Check for Updates…**, which sends the page the
+`hideOthers`, `undo`/`copy`/`paste`, `minimize`/`zoom`/`close`) plus the items
+the app answers itself: **Check for Updates…**, which sends the page the
 `check-updates` event and so ends at the same dialog the sidebar's own button
-opens. macOS is the only platform that gets one; everywhere else the window is
-the app, as it was before. `check-shell.mjs` reads the menu back out of
-`electron/main.ts` and holds its shape: the roles, the one `click` being the
-update check, and that item sitting after **About**.
+opens, and the **File** menu's **New Tab** (`⌘T`/`Ctrl+T`) and **Close Tab**
+(`⌘W`/`Ctrl+W`), which go to the page as its `chat-tab` event rather than
+inventing a second tab model. macOS is the only platform that gets one;
+everywhere else the window is the app, as it was before. `check-shell.mjs` reads
+the menu back out of `electron/main.ts` and holds its shape: the roles, those
+clicks, and the update check sitting after **About**.
 
-The window is 1200×800 and opens centered, with 820×560 as its floor (`MIN_SIZE`
+The window restores to 1200×800, opens filling the screen — the way Codex's own
+window does, maximized rather than kiosk-fullscreen so the menu bar and traffic
+lights stay where the reader expects them — and never shrinks below 820×560
+(`MIN_SIZE`
 in `electron/main.ts`, kept as the window's own `minWidth`/`minHeight`) — the size
 below which a transcript, its tool cards and the composer stop being usable. No
 resize handler measures anything for it: Electron clamps the window itself. The
 window is shown once its first frame is there (`show: false` until
-`ready-to-show`) rather than as a white rectangle while the transcript is built,
+`ready-to-show`, which maximizes and then shows it)
+rather than as a white rectangle while the transcript is built,
 and it takes the press that activates it as a press in the window
 (`acceptFirstMouse: true`), so the first click on a control in a window that is
 not yet key is not spent on making it key.
@@ -221,9 +238,9 @@ The regions, top to bottom:
   project to start in — a folder is never picked for the reader, and with no
   project at all the same button offers the Add-project dialog; the **Projects**
   tree, and a footer pinned
-  to the bottom with the two controls that belong to the window rather than to a
-  message: the theme and the check for updates, an icon button each (a
-  half-filled circle, and the same refresh arrow the
+  to the bottom with the three controls that belong to the window rather than to
+  a message: the theme, the interface language and the check for updates, an
+  icon button each (a half-filled circle, a globe, and the same refresh arrow the
   extension's own check carries). The tree groups each project's sessions
   under it. Project options and **New task**, and a stored thread's pin and
   archive actions, appear when their row is hovered or holds keyboard focus,
@@ -231,8 +248,10 @@ The regions, top to bottom:
   on the row, since the shortcuts dialog is where that list is written down.
   A thread's hover card pairs its title with device and age, then names its
   project and current Git branch; a project's options card contains its pin,
-  task count, home-shortened path and **Edit project**, with removal kept inside
-  that edit dialog rather than added as another card row.
+  task count, home-shortened path and, for a project that was added through the
+  app, **Edit project** — whose dialog is also where it is removed — while a
+  discovered folder, which has no registry entry to edit, carries **Remove
+  project** on the card itself.
   Each row permanently reserves the actions' room, so revealing them does not
   move or reflow its title; that padding also keeps the controls off the text,
   so a press meant for a name is a press on the name rather than on the button
@@ -292,8 +311,10 @@ The regions, top to bottom:
   stays the text it looks like instead of offering a fold that does nothing, and
   `write`/`edit` results get a colored diff.
 - **Composer** — a floating rounded box holding the message and what goes with it:
-  Markdown source stays editable, with a live **Markdown preview** below it that
-  can be collapsed. An empty box hides the preview; **Up** in an empty box recalls
+  one rendered Markdown surface rather than a source-and-preview pair —
+  formatting is painted in the box as it is typed (`installMarkdownInput`, the
+  same editor the VS Code panel's composer uses), so the words stay editable
+  exactly where they are written. **Up** in an empty box recalls
   the last prompt from this chat, including a resumed chat, without restoring attachments.
   Completion menus take priority over recall. The box holds
   the attachment strip, the message box itself and the icon row of chips, with a
@@ -303,10 +324,11 @@ The regions, top to bottom:
   each side), so its edges stand where the box's own text column does and the box
   reads as the wider of the two in a narrow window as much as a wide one. It
   names where the turn will run: the
-  folder's chip, the branch that folder is on, the checkout the next turn runs in
-  at the row's other end, and the context reading held against
-  its end of the row — and nothing else, since the window's settings stay in the
-  sidebar's foot and the box's own row. There is no readout for
+  folder's chip, the branch that folder is on, and the checkout the next turn
+  runs in at the row's other end — and nothing else, since the window's settings
+  stay in the sidebar's foot and the box's own row, and what the chat has spent
+  belongs beside the context it is measured against, in that row. There is no
+  readout for
   the machine the turn runs on: a folder on
   this computer is the one environment the app has, so a fact saying so would be a
   constant rather than a fact about the folder. The branch is read out of the
@@ -321,54 +343,51 @@ The regions, top to bottom:
   — and when the reader comes back to the window, since a branch switched in a
   terminal is theirs to see here. The branch is the one fact that gives way when
   the bar runs out of room: it is the name that can be arbitrarily long, so it is
-  cut with an ellipsis while the folder and the context reading keep the room they
-  need, and the bar stays one line whatever the
-  folder's own names are. The end of that bar is the context reading: a ring
-  filled to the percent of the window the thread's last request used, with that
-  percent spelled out beside the arc — it is one reading rather than two, which is
-  why the totals line does not spell out `ctx` as well — and the tokens the
-  request took and the window itself in its tooltip and accessible name. The arc
-  escalates through the terminal's own thresholds — its dim tone on its own, the
-  theme's amber past 70% of the window and its error colour past 90% — and an
-    empty ring means a thread that has spent nothing yet, since the numbers behind
-  it are this conversation's rather than the window's ([Usage](#usage)). What the
-  chat has spent ends the bar beside that reading, laid out the way the terminal
-  footer lays its own line out — the two are one group, and the totals are what
-  take the row's own auto margin — so a reader comparing the context a thread is
-  using against what it has cost finds both in the same place. Beyond that the bar
-  is the folder's chip, the checkout and the folder's facts: the checkout is the
+  cut with an ellipsis while the folder chip keeps the room it
+  needs, and the bar stays one line whatever the
+  folder's own names are. The checkout is the
   one fact there that opens a picker (a worktree is picked, not read), so it is a
   button wearing the fact's own text — the glyph with the checkout's name beside
   it while a thread writes to a copy, in the accent so the row says which copy at
   a glance, and the glyph alone otherwise — while every other setting stays where
-  it was — the theme and the release check in
+  it was — the theme, the language and the release check in
   the sidebar's foot, the rest in the box's own row — rather than being gathered
-  onto the bar as well. The
+  onto the bar as well. While the thread on screen is the one a turn is running
+  in (`body.running`), the bar steps aside so the box keeps the room its phase
+  and Stop need, and it is back once the run ends. The
   box's own row is icon-first, the
   way the VS Code panel's is: the attach paperclip, the model, the thinking
   level and the trust shield lead, then — after a rule of its own — the app's own
   dialogs as icon buttons in the extension's own style: a plug that opens
   **Connect**, a padlock for the saved tool approvals, and a
   circled `?` for the shortcut help, each with the words in its tooltip and its
-  `aria-label`. The project chip is the one control on that bar that keeps
-  its words on the face of it whether or not a project is chosen — **Choose a project** while none is open, else the
+  `aria-label`. The project chip is one of the bar's two controls, and the one
+  that keeps its words on the face of it whether or not a project is chosen — **Choose a project** while none is open, else the
   folder's name, accented in the first case the way the model picker marks the row
   in use — because with nothing open it is how a first thread starts rather than a
   value to look up (see
     [Multiple projects](#multiple-projects-cross-repo)); with nothing open it is
-  also all there is on the bar, since the branch and the reading go away with the
+  also all there is on the bar, since the branch goes away with the
   folder, and it wears a marker of its own (`unset`)
   rather than the sheet's `.empty`, whose `margin: auto` centers the placeholders
-  it belongs to.
-    The box's own bottom row ends with the one readout the box has to give: the
-  status — an icon rather than a sentence, a dot while there is nothing to report,
-  the spinner while a turn runs and the warning triangle a failure wears, in the
-  theme's error colour, with the words beside it only when there are words to read
-  (`Ready` is the icon's own tooltip, which is what the terminal's footer says by
-  saying nothing). What the chat has spent is not this row's any more: the row
-  belongs to the turn and the controls that send, while the totals read out the
-  chat and stand beside the context reading they are measured against, on the bar
-  above the box ([Usage](#usage)). A long failure is cut with an
+  it belongs to. The box's own bottom row is where the chat's own reading sits:
+  the status first — in words, shown only while there is something to report (a
+  refusal, a failure in the theme's error colour, a note about the folder) and
+  hidden while a turn runs, whose phase the corner button carries in its tooltip
+  and its own spinning ring, with the words repeated in its `aria-description`,
+  and whose idle tooltip is `Ready`, since a row saying so says nothing — then
+  the model and thinking chips, then what the chat has
+  spent laid out the way the terminal footer lays its own line out, and the
+  context ring closing that group, with the one action that sends or stops the
+  turn after it. The ring
+  is filled to the percent of the window the thread's last request used, with
+  that percent spelled out beside the arc — it is one reading rather than two,
+  which is why the totals spell out no `ctx` — and the tokens the request took and
+  the window itself in its tooltip and accessible name. The arc
+  escalates through the terminal's own thresholds — its dim tone on its own, the
+  theme's amber past 70% of the window and its error colour past 90% — and an
+  empty ring means a thread that has spent nothing yet ([Usage](#usage)). A long
+  failure is cut with an
   ellipsis rather than allowed to push the controls off the row.
   The controls the extension's own row carries come first and in
   its order, and the glyphs the two front-ends share — the paperclip, the `+`,
@@ -390,17 +409,23 @@ The regions, top to bottom:
   saved Queue/Steer choice, and what is queued waits in the box above the text
   (see [Queue and Steer](#queue-and-steer)). Every
   control is wired to a plain `click` — each button, native radio/checkbox,
-  sidebar/list row, change card, and attachment thumbnail — and no control is
-  revealed by hovering it: a `:hover` rule in this window is a highlight (a
+  sidebar/list row, change card, and attachment thumbnail — and a `:hover` rule
+  in this window is a highlight (a
   background, a colour, a brightness), never the reason a control is there —
   and a hovered rule changes only how a control looks, never the box it sits in,
-  since one that moves under the pointer moves out from under the press. Nor is
-  anything invisible left where a press lands: nothing in this sheet is drawn
-  at `opacity: 0`, no rule lets a press through what is drawn with
+  since one that moves under the pointer moves out from under the press. The one
+  thing quiet at rest is what a project or thread row carries — a project's
+  options and **New task**, a thread's pin and archive — which Codex's own tree
+  keeps out of sight until the row is hovered or holds keyboard focus; those
+  rules only paint (an `opacity` and a `pointer-events`), the row paints an inert
+  fade beneath the controls when they appear so the title itself never moves, and
+  nothing else in the sheet is hidden that way. Nor is
+  anything invisible left where a press lands: outside those row actions nothing
+  is drawn at `opacity: 0`, no rule lets a press through what is drawn with
   `pointer-events`, and the `[hidden]` an overlay or popover carries keeps its
   `!important`, so a dialog the app has put away cannot be painted back over
   the window by a later rule. `crates/desktop/check-app.mjs` reads each of those
-  out of the sheet. The
+  out of the sheet, the row-action exception among them. The
   window's engine owns focus, pointer, keyboard, and activation semantics, and
   page-control activation stays native: while an editor owns focus — including
   one Chromium ended just before the press, remembered from its `focusout` — a
@@ -419,13 +444,14 @@ The regions, top to bottom:
   supplies one on the next task only when the window withheld it, so a control
   answers exactly once. A
   control inside another stops its click from reaching the row around it, so a
-  thread's ✕ removes the thread rather than selecting the row and a chip's ✕
+  thread row's pin or archive button acts on that thread rather than selecting
+  the row, and a chip's ✕
   removes the chip rather than opening the picture — and a thumbnail's picture
   is undraggable (`-webkit-user-drag: none` in the stylesheet as well), so the
   gesture on it stays the click that opens the preview instead of starting the
   drag the engine withholds it for. The
   status and
-  token/cost usage sit just below it. The **Attach** paperclip (or a pasted
+  token/cost usage sit in the box's own row, beside the controls. The **Attach** paperclip (or a pasted
   clipboard image) attaches images, PDFs and text files, shown above the input as
   thumbnails that open a
   full preview when clicked (or focused and opened with Enter/Space) — the
@@ -471,13 +497,13 @@ cd crates/desktop
 pnpm install     # once: Electron, TypeScript and electron-builder
 
 pnpm start       # `cargo build`, then `tsc`, then the window
-pnpm run build   # compile the window only (`tsc -p tsconfig.json`)
+pnpm run build   # copy the diagram renderer, then compile the window (`tsc -p tsconfig.json`)
 pnpm run check   # type check the window, writing nothing
 pnpm run dist    # both halves in release, packaged into the platform's installer
 ```
 
-`pnpm start` compiles the engine with `cargo build` first, compiles the window,
-and runs Electron on this crate. The window finds the engine it starts in this
+`pnpm start` copies the diagram renderer, compiles the engine with `cargo
+build`, compiles the window, and runs Electron on this crate. The window finds the engine it starts in this
 order: `OXIDE_DESKTOP_HARNESS` when a developer points it at one, the copy
 carried in the bundle (`Resources/harness/oxide-desktop`, or
 `Resources/harness/oxide-desktop.exe` on Windows) when the app is packaged, and
@@ -550,8 +576,8 @@ no stub can: that the listings the composer opens are attached to the composer
 (inside `.composer-wrap`, above the bar on the box's top edge) instead of floating
 over the window, that each header button is an icon with a title, and that the
 composer's own top row is a bar above the box rather than its first line — one
-narrower than the box, carrying the folder's chip and the folder's facts and
-nothing to press.
+narrower than the box, carrying the folder's chip and the folder's facts, whose
+only two buttons are the folder chip and the checkout picker.
 
 `check-shell.mjs` joins the two halves the stubs separate, reading the sources
 rather than a hand-kept list: every `invoke("…")` in `app.js` has an arm in
@@ -576,8 +602,8 @@ pnpm lockfile and no npm one, the settings `pnpm-workspace.yaml` has to carry fo
 this package's dependencies, `@types/node` declared here rather than borrowed,
 and the `nodenext` resolution TypeScript 7 asks for) and the two workflows that
 build the app installing that same tree with the pnpm the package names, the menu
-bar and its one
-click, the artifact names in
+bar and the clicks the app answers itself (the update check and the File menu's
+two tab items), the artifact names in
 `electron-builder.yml` against the ones
 `oxide_core::updates::Component::Desktop` resolves and the engine carried into
 every bundle the build makes, the installer (each kind of installation replaced
@@ -587,6 +613,13 @@ the Cargo manifest and `package.json` report, and the migration's own end:
 nothing of the shell the app replaced is left in the crate (no Electrobun or
 Hutch config, no devkit, no bun lockfile), and the generated parts of the crate
 are the ones its `.gitignore` keeps out.
+
+Two more checks need a browser rather than a stub, so they are run by hand and
+not by CI: `node crates/desktop/check-markdown-input.mjs <chrome>` compiles both
+front-ends' `installMarkdownInput` into a page and drives them in a real
+Chromium, and `check-transcript-scroll.mjs` does the same for the two
+transcripts' follow-the-newest-line controller — the arithmetic that a stub can
+only model. Both take the path to a Chromium or `chrome-headless-shell` binary.
 
 ## Sharing configuration with the CLI
 
@@ -696,14 +729,18 @@ there is no folder to pick at all — as the sidebar's **+ New Chat** does when
 nothing is open, which otherwise just starts a thread in the open project. With
 no project at all the home state says to add one with the project chip.
 
-A folder is never switched out from under a running turn. The turn belongs to
-the engine's process and its run id is the thread it is in, so the next Queue or
-Steer would be sent to the run of a project the chip no longer names.
-`selectProject` refuses while one runs (`busyRefusal`, the answer starting a new
-thread already gives) and reports the refusal, and every caller that would go on
-to open something honors it: the picker's rows, the sidebar's project rows, and
-resuming a thread that lives in another project — which would otherwise open a
-session in the folder the window is not in.
+A running turn keeps the folder it started in: its run id is that folder's
+thread, so switching the window to another project parks the run's transcript
+and its change cards under the thread it is writing, rather than stopping the
+turn or letting the reader's next message be steered into a run whose reply has
+nowhere to land. The header's strip names the running thread with an **Open**
+affordance back to it, the sidebar's row for it keeps its spinner, and a message
+typed into another thread's transcript is refused with
+`A turn is running in “<title>”; open it to queue or steer, or stop it.` and
+kept in the box. Archiving that thread is refused wherever the reader is, and
+so are the actions that would move the files under the run — creating, switching,
+removing or handing off a worktree, restarting the app. A run's own output paints only
+while the thread on screen is its own.
 
 A draft survives the folder it was waiting for: text typed and files attached
 before anything was open are still in the composer once a row of the picker is
@@ -711,15 +748,19 @@ taken, since that pick is the last step of the message rather than a move
 somewhere else (`selectProject` only clears the attachments when a project is
 already open, where the chips were meant for the folder being left).
 
-Removing a project from **Edit project** hides its sidebar row and keeps its
-sessions, whether it was added or discovered. Stored session rows offer Pin/Unpin
-and Archive. Pin/archive preferences live in `desktop/sessions.json`, shared with
+Removing a project hides its sidebar row and keeps its sessions, whether it was
+added or discovered — through **Edit project** for a project the app registered,
+and through the **Remove project** row a discovered folder's own card carries.
+Stored session rows offer Pin/Unpin
+and **Archive**. Pin/archive preferences live in `desktop/sessions.json`, shared with
 the extension through the CLI; the first write preserves preferences from older
 `desktop/projects.json` registries. Archived threads are excluded from the tree,
-recents and session picker. A thread owned by a running turn cannot be archived.
-The archive notice explains that its log stays on disk: run
-`oxide sessions delete <id>` from the project folder for permanent deletion, or
-`oxide sessions unarchive <id>` to restore it. There is no GUI session deletion.
+recents and session picker. A thread owned by a running turn cannot be archived
+(`A turn is running; stop it before archiving this thread.`), and the archive
+notice is a toast with an **Undo** row that calls `unarchive_session`, so a
+thread put away by mistake is one click from the tree again. There is no GUI
+session deletion: `oxide sessions delete <id>` is the permanent one, and the
+confirm that removes a project names it.
 
 A run is told about those projects, not just the one it starts in: the shared
 core reads the same `desktop/projects.json` into the `# Workspaces` section of
@@ -735,9 +776,9 @@ from the terminal is told the same thing.
 
 ## Agent turns
 
-`turn::start_turn(project, prompt, session, approve, ask, reasoning, inline,
-environment)` loads the project's config, resolves the session (`new` / `latest`
-/ an id), appends the user message through
+`turn::start_turn(project, prompt, session, approve, ask, reasoning, agent, inline,
+environment, controls)` loads the project's config, resolves the session (`new` /
+`latest` / an id), appends the user message through
 `oxide_core::runner::begin_session`, and spawns the shared agent loop with
 `runner::spawn_agent_in`, returning a stream of `AgentEvent`s plus the run's
 `Steering` handles and its cooperative `Cancel` flag. The engine keeps a
@@ -840,7 +881,7 @@ event channel serializes events with
   ends while another thread is on screen files its change card under the thread
   it changed, which paints it when that thread is opened, rather than dropping a
   listing about files that really are on disk; the thread a turn is running in
-  is refused the ✕ wherever the reader is, since the run appends to its file as
+  cannot be archived wherever the reader is, since the run appends to its file as
   it works.
 - **Notification** — a finished turn raises the same desktop toast the TUI does
   (`oxide_core::notify`, gated by the shared `notifyOnComplete` and
@@ -868,18 +909,19 @@ rows show paths and counts; directory names are dimmer than filenames, and a
 binary file is named as such. **Show N more files** reveals the rest and
 **Show less** folds them back. File rows open the selected file in the Changes
 pane, keeping the transcript compact. The header does not collapse the card.
-- **Review** — opens the turn over the whole window: its files on the left, and
-on the right the selected file's two sides — the state the run found, read out
+- **Review** — opens the turn in the **Changes** pane docked beside the
+transcript, the same pane the dock's own Changes row opens: a scope selector
+(**Last turn** / **Uncommitted**), the turn's `+`/`−` totals and a refresh
+button in its head, and one row per file below them. A row opens in place, into
+that file's two sides — the state the run found, read out
 of the snapshot at the card's own baseline, against what is on disk now, aligned
 by `oxide_core::diff::lines` with the number each line holds on the side it sits
 on and long unchanged stretches folded behind their count. A file that is not
 text on either side reads as **Binary file — no text diff.**, the same verdict
 the card's row carries (a NUL makes a file binary even when its bytes are valid
 UTF-8), a side that is not there reads as empty, and one that could not be read
-is reported as a failure rather than as an unchanged file. Its head carries the
-file count and the arrows' own hint beside two chevron buttons that walk the
-files and a close button — the same glyph the extension's own review head
-carries — while the arrow keys do the same and <kbd>Esc</kbd> closes it.
+is reported as a failure rather than as an unchanged file. The arrow keys walk
+the files and <kbd>Esc</kbd> closes the pane from its ✕ or the same key.
 - **Undo** — asks to confirm and then calls `undo_turn(project, baseline)`,
 which puts the project back to the run's own baseline
 (`oxide_core::snapshots::Snapshots::restore`): files the run created are
@@ -937,10 +979,12 @@ The composer's own chips expose the same controls the CLI has:
   overlay. `Shift+Tab` and `Ctrl+R` still walk the levels, the bare `/reasoning`
   opens the same picker, and `/reasoning <level>` applies one directly.
 
-Reasoning is sent per turn as a `--reasoning`-equivalent override; `start_turn`
-passes it to `Config::load`, so it doesn't rewrite the stored config — which is
-why the picker is a choice about the turns this window sends rather than a
-setting it saves. `off` is a request rather than a promise: a model that always
+Reasoning is sent per turn as a `--reasoning`-equivalent override, handed to
+`Config::load`, *and* every pick or `Shift+Tab`/`Ctrl+R` cycle saves the level
+through `set_reasoning` into the shared `config.json` — the same key the
+terminal's `Shift+Tab` and `/reasoning` write — so the choice this picker makes
+is the one the next launch of any front-end starts on. `off` is a request rather
+than a promise: a model that always
 thinks — GLM 5.3 and later, which the client asks for its lowest effort instead
 of for none at all — still reasons at that level, which is why the row asks for
 no thinking rather than offering an answer without any.
@@ -948,21 +992,22 @@ no thinking rather than offering an answer without any.
 ## Usage
 
 Opening a session restores its cumulative `usage_totals()` (input/output tokens
-and cost); live turns update the footer from each `usage` event, including a
+and cost); live turns update the composer's totals from each `usage` event, including a
 rough context percentage using `config.context_window()`. The percentage is
 worked out where the totals are painted rather than where the event arrived: the
 run's `prompt` count travels with its thread and the window is the one in force on
 screen, so a turn in another folder counts its own tokens while the reader is
 looking at a project with a window of its own, and its gauge is its own again when
-the strip brings its thread back. The same percentage is drawn at the end of the
-composer's own top row, the bar above the box: an arc filled to it with the percent
+the strip brings its thread back. The same percentage is drawn by the ring at the
+end of the composer's own bottom row, beside the totals it is measured
+against: an arc filled to it with the percent
 spelled out beside it — the fraction of the window that took is this one reading
 rather than a second word among the totals beside it, which is why the totals line
 spells out no `ctx` — in the colour of the level (the theme's dim, amber past 70%,
 error past 90%), with the tokens and the window in its tooltip, and the totals
 themselves laid out to its left ([Usage](#usage)).
 
-The totals line, in the bar above the box, is the terminal footer's own line,
+The totals line, in the box's own bottom row, is the terminal footer's own line,
 segment for segment and in its order: the tokens the chat has spent, the cache it read and wrote, the hit rate
 the provider reported, and the spend — marked ` (sub)` for a provider whose
 credential is a plan rather than a metered key, where the price table's number is
@@ -1050,6 +1095,8 @@ would land in a conversation nobody is reading.
 | `Shift+Tab` / `Ctrl+R` | Cycle reasoning (the thinking chip opens the level picker) |
 | `Ctrl+K` | Model picker |
 | `Ctrl+/` | Shortcut help |
+| `⌘T`/`Ctrl+T`, `⌘W`/`Ctrl+W` | Open another chat tab, close the one on screen |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Walk the open tabs |
 | `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the thread standing at that place in the Projects tree |
 | `Escape` | Close any dialog; a question is dismissed, which the agent is told rather than left waiting |
 | Click outside a dialog | The same as closing it: the backdrop answers through the dialog's own Close, Cancel or Dismiss, so its teardown is the one either way. The two dialogs whose buttons are the decision — a tool's approval, a folder's trust question — are not dismissed this way, since a stray press must not be an answer |
@@ -1064,7 +1111,7 @@ mirrors. A name the app itself owns is performed here — the built-ins the cata
 names the desktop app for, each with the one spelling the catalog declares: `/mcp`
 opens the **MCP servers** dialog, `/session` the **Sessions** dialog, and
 `/model`, `/theme`, `/permissions`, `/trust`, `/connect`, `/new`, `/reasoning`,
-`/usage` and `/help` open or run what the
+`/usage`, `/language`, `/logout`, `/attach` and `/help` open or run what the
 composer's own buttons do, while a built-in another front-end owns (`/agent` is
 the VS Code panel's) is not a row at all. A project command, a prompt template
 and a skill are sent on as a normal message, so the CLI's own resolution handles
@@ -1300,10 +1347,12 @@ from). One command produces this platform's installer:
 
 ```sh
 cd crates/desktop
-pnpm run dist   # tsc, then cargo build --release, then electron-builder
+pnpm run dist   # diagrams, tsc, cargo build --release, then electron-builder
 ```
 
-That script is three steps: `tsc -p tsconfig.json` compiles the window,
+That script has four steps: `node ../../scripts/prepare-diagrams.mjs desktop`
+copies the shared diagram renderer and Mermaid's browser bundle into `ui/`,
+`tsc -p tsconfig.json` compiles the window,
 `cargo build --release` compiles the engine, and
 `electron-builder --config electron-builder.yml` packages the two into one app —
 Electron's own files (`electron/dist/**`, `ui/**`, `package.json`) with the engine

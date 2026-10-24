@@ -62,14 +62,15 @@ Oxide also reads the Claude Code layout, so existing configurations work as-is:
 
 Slash commands are expanded from the ecosystem and also include built-ins:
 `/help`, `/hotkeys`, `/exit`, `/new`, `/session`, `/tree`, `/fork`, `/clone`,
-`/name`, `/status`, `/model`, `/reasoning`, `/theme`, `/trust`, `/export`,
-`/reload`, `/init`, `/connect`, `/logout`, `/models`, `/mcp`, `/plugins`,
-`/marketplaces`, `/notify`, `/permissions`, `/usage`, `/spend`, `/updates`,
-`/undo`, `/redo`, `/compact`, `/attach`, `/copy [all]`, and a skill by its own
-name (`/rust-conventions`, whose other spelling is `/skill:<name>`). The names
-the desktop app and the VS Code panel also perform (`/mcp`, `/model`,
+`/name`, `/status`, `/model`, `/reasoning`, `/theme`, `/language`, `/trust`,
+`/export`, `/reload`, `/init`, `/connect`, `/logout`, `/models`, `/mcp`,
+`/plugins`, `/marketplaces`, `/notify`, `/permissions`, `/usage`, `/spend`,
+`/updates`, `/undo`, `/redo`, `/compact`, `/attach`, `/copy [all]`, and a skill
+by its own name (`/rust-conventions`, whose other spelling is `/skill:<name>`).
+The names the desktop app and the VS Code panel also perform (`/mcp`, `/model`,
 `/reasoning`, `/permissions`, `/trust`, `/session`, `/new`, `/usage`, `/attach`,
-`/connect` and `/logout` — `/theme` in the desktop app, `/agent` in the panel)
+`/language`, `/connect` and `/logout` — `/theme` in the desktop app, `/agent` in
+the panel)
 are declared once in `crate::commands`, so each front-end lists the commands it
 actually answers.
 Each command has exactly one spelling: a name the catalog does not declare is a

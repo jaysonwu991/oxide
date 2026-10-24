@@ -6,7 +6,7 @@ VS Code. The extension runs your installed `oxide` binary as a subprocess
 `settings.json`, project trust, sessions, `AGENTS.md`, agents, skills, plugins
 and MCP servers as the terminal and the desktop app — nothing is reconfigured.
 
-- **Chat panel**: streaming replies rendered as Markdown, `✦ Thinking`
+- **Chat panel**: streaming replies rendered as Markdown, reasoning
   blocks, tool cards with file diffs, token/cost usage, and a composer that
   offers the same explicit **Queue** / **Steer** choice as the desktop while a
   turn runs. It is contributed twice — an **Oxide**
@@ -25,17 +25,21 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
   shows a thumbnail (or its size), can be removed with ✕, and the message box
   starts two rows tall and grows as you type.
 - **Footer** around the composer, matching the terminal's: icon controls for
-  model, reasoning, agent and project access inside its toolbar, and under it
-  the git branch, the context gauge (amber past 70%, red past
-  90%) and the context percentage. Focus or hover that percentage for the full
+  model, reasoning, agent and project access inside its toolbar, and on the bar
+  on the composer's top edge the git branch and the checkout the chat runs in.
+  Beside the send action the toolbar carries the context percentage and the
+  gauge that draws it (amber past 70%, red past
+  90%). Focus or hover that percentage for the full
   accessible usage description: `↑`/`↓` tokens, `R`/`W` cache tokens, `CH` hit
   rate, `$cost` and `ctx %/window`, with an `(auto)` marker when auto-compaction is on.
-  A live elapsed timer appears in the composer's toolbar while a turn runs.
+  A running turn's elapsed time is a line of its own at the end of the
+  transcript (`Working for 12s`, then `Worked for 12s`).
 - **Editor actions**: explain, fix, or ask about a selection; attach a file,
   a selection, or an image to the chat.
 - **Sessions**: continue the project's latest session, or pick one from the
   CLI's own list with **Oxide: Session History** or `/session` in the message
-  box — the list opens in the panel, hanging under the header, not a native
+  box — the list opens in the panel, above the composer it was asked for in
+  rather than as a native
   picker, with **New chat** as its first row to close the thread on screen and
   go back to the new-chat page.
 - **`@path` in a message**: `@src/main.rs` attaches the file's text; an image or
@@ -86,12 +90,13 @@ door, if you would rather use the picker there.
    message.
 4. The four icons in the composer toolbar are the next turn's settings: model,
    reasoning level, subagent and project access. Their complete values remain
-   in tooltips. Session history stays in the header's history button. Under the
-   composer the branch and context gauge stay compact; focus or hover the
-   context percentage for the terminal footer's complete usage details.
+   in tooltips. Session history stays in the header's history button. The branch
+   and the checkout the chat runs in are on the bar on the composer's top edge,
+   and the context percentage with its gauge sits beside the send action; focus
+   or hover the percentage for the terminal footer's complete usage details.
 5. `/mcp` in the message box opens the MCP server list
    above the composer it was typed in, and `/session`
-   the project's threads under the header — both
+   the project's threads on that same edge — both
    inside the panel, with a server's power switch or
    the thread a row names acting where it was asked (the same lists **Oxide:
    MCP Servers…** and **Oxide: Session History** open from the palette). The
@@ -136,9 +141,9 @@ door, if you would rather use the picker there.
 | **Oxide: Open Terminal (TUI)** | Run the interactive `oxide` TUI in a terminal, for `/connect` and `/models`. |
 | **Oxide: Connect Provider…** | Draw the CLI's provider table and connect one, the way the terminal's `/connect` does: the key is typed into VS Code's password box, written to the CLI's own `oxide login` on stdin, and stored where every front-end reads it. `/connect` in the message box opens the same dialog, and `/logout` lists the providers a credential can be forgotten from. |
 | **Oxide: MCP Servers…** | List the MCP servers this project loads and connect or disconnect them; typing `/mcp` in the composer opens the same list above the composer. |
-| **Oxide: Check for Updates...** | Report the newest oxide CLI release and offer to install it, by running the CLI's own `oxide update --check --json` and then `oxide update` if you take it. The extension itself updates from the Marketplace. |
-| **Oxide: Show Output Channel** | The command line, prompt, stderr and event log of each turn. |
-| **Oxide: Set Model…**, **Set Agent…**, **Set Reasoning Effort…**, **Set Project Trust…** | Write the matching workspace setting; the footer's chips are the same actions. |
+| **Oxide: Check for Updates...** | Check the extension's own `extension-v*` release train through the installed CLI (`oxide update --check --json --component extension --current <version>`), note a newer CLI release in the same dialog, and offer the release's `.vsix`: taking it downloads the file, verifies its digest and hands it to VS Code, then offers **Restart Window** because the window still runs the code that was replaced. A CLI too old to know the flag is offered its own `oxide update` instead. |
+| **Oxide: Show Output Channel** | The command line, working directory, prompt, stderr, update notices and errors of each run — not a per-event log. |
+| **Oxide: Set Model…**, **Set Agent…**, **Set Reasoning Effort…**, **Set Project Trust…** | The footer's chips are the same actions. **Set Model** and **Set Reasoning Effort** save the choice in the shared `config.json` through `oxide select`, **Set Project Trust** saves it in `trust.json` through `oxide trust set`, and only **Set Agent** writes a workspace setting (`oxide.agent`). |
 
 ## Settings
 
@@ -152,7 +157,7 @@ door, if you would rather use the picker there.
 | `oxide.tools` | *(empty)* | `--tools` allowlist, e.g. `read,grep,find,ls` for a read-only run. |
 | `oxide.excludeTools` | *(empty)* | `--exclude-tools` denylist. |
 | `oxide.additionalArguments` | `[]` | Extra argv appended to every invocation. |
-| `oxide.showThinking` | `true` | Show `✦ Thinking` blocks. |
+| `oxide.showThinking` | `true` | Show the reply's reasoning blocks. |
 | `oxide.autoContext` | `true` | Track the file you are editing as a chip in the composer, sent with the next message as context. The chip follows the file and the lines selected in it, and both are read when the message goes, so unsaved edits are included and a selection sends just the lines it names; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. |
 | `oxide.askApprovals` | `true` | `--ask-approvals`: ask in the transcript before running a tool a permission rule gates. **Always allow** is remembered per project in the shared `approvals.json`. Off passes `--no-ask-approvals`. Either flag is passed explicitly, so this setting decides for panel runs (the shared `settings.json` key still decides for the terminal). |
 | `oxide.followUpBehavior` | `queue` | How a message typed while a turn runs is delivered: `queue` waits for the current response and becomes the next turn, `steer` injects it before the model's next step. `Enter` and **Send** follow it, `Ctrl+Shift+Enter` (`⌘⇧Enter`) sends the other way once, and a queued message's own menu toggles it. |
@@ -162,7 +167,9 @@ door, if you would rather use the picker there.
 
 - One turn at a time per window; a message sent while a turn runs is either
   queued as the next turn after the current response or steers it, and is shown in the transcript.
-  **Stop** terminates the process — the session on disk
+  **Stop** sends the CLI's own `abort` frame, so the turn stops while the
+  process stays open for the next message (a turn that ignores it is killed
+  after three seconds); the session on disk
   keeps everything up to that point, so the next message continues the thread.
 - The two chat panes are the same conversation: either can be used, both stream
   a turn, and **Oxide: Open Chat** raises whichever one is on screen. VS Code can
@@ -183,8 +190,9 @@ door, if you would rather use the picker there.
   `--ask-questions`, so a question reaches you instead of the model guessing, and
   an unanswered card is settled when the run ends.
 - An image or PDF attached from the clipboard is written to a private OS
-  temporary directory (`os.tmpdir()`), because the CLI takes attachment *paths*
-  (`--image`); the directory is removed when the window closes. Files picked or
+  temporary directory (`os.tmpdir()`), because a rpc prompt frame carries
+  attachments as paths (its `images` list) rather than as bytes; the directory is
+  removed when the window closes. Files picked or
   dropped from the explorer are passed where they already are, so nothing is
   copied for them. At most eight attachments ride on one message, and one of a
   type neither the panel nor the CLI has a use for is refused with a notice.

@@ -11,8 +11,7 @@
 
 # Oxide
 
-A native Rust AI coding agent with a terminal UI, an Electron desktop app,
-and a
+A native Rust AI coding agent with a terminal UI, an Electron desktop app, and a
 VS Code extension. Oxide streams from OpenAI-compatible and Anthropic models,
 runs a tool-using agent loop against your project, and understands its own
 `.oxide/` configuration layout out of the box, with Claude Code configuration
@@ -21,11 +20,10 @@ support for compatibility.
 ## Highlights
 
 - **Three front-ends, one core** — a ratatui terminal UI, an Electron desktop
-  app
-  (`crates/desktop`) whose window drives the same Rust engine, and a VS Code
-  extension
-  (`editors/vscode`), all sharing the
-  same configuration, sessions, trust decisions, and MCP servers.
+  app (`crates/desktop`) whose window drives the same Rust engine, and a VS Code
+  extension (`editors/vscode`), all sharing the same configuration, sessions,
+  trust decisions, and MCP servers. All three draw the interface in British
+  English or Simplified Chinese from one shared setting.
 - **Providers** — 35 built-in providers behind one table: every OpenAI-compatible
   endpoint (OpenAI, DeepSeek, Groq, Mistral, xAI, OpenRouter, Z.AI/GLM, …), the
   Anthropic Messages API, Gemini and Vertex AI, Amazon Bedrock, Azure OpenAI,

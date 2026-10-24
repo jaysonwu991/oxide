@@ -15,7 +15,8 @@
 /// the calls that are the window's because the operating system is: the folder
 /// chooser and the browser a link opens in, which are both answered here, since
 /// a native panel and the platform's own handler are things no child process
-/// can be reached through, and the relaunch that runs an installed release, which
+/// can be reached through, the interface language a native menu is drawn in,
+/// and the relaunch that runs an installed release, which
 /// the harness asks for because it is the half that knows whether a turn is
 /// running.
 ///

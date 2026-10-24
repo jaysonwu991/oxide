@@ -1200,7 +1200,7 @@ pub struct Config {
     /// An explicit override for the model's full input context window, separate
     /// from `max_tokens`, which caps only one response. `0` (the default)
     /// derives the window from the model and falls back to
-    /// [`default_context_window`].
+    /// `default_context_window`.
     #[serde(default)]
     pub context_window: u64,
     #[serde(default = "default_true")]
@@ -1766,7 +1766,7 @@ impl Config {
     /// and compaction threshold. `OXIDE_CONTEXT_LIMIT` overrides it, then an
     /// explicit `context_window`, then a `modelContextWindows` override, then
     /// the provider's remembered catalog window, then the built-in table, then
-    /// the [`default_context_window`] fallback. Keep the window at least as
+    /// the `default_context_window` fallback. Keep the window at least as
     /// large as the response cap for compatibility with older configurations
     /// that used `max_tokens` to raise the window.
     pub fn context_window(&self) -> u64 {
@@ -1816,7 +1816,7 @@ impl Config {
 
     /// The output limit the active provider's catalog publishes for the model,
     /// when it has been looked up. This supplies the default request budget,
-    /// bounded by [`MAX_REQUEST_OUTPUT_TOKENS`].
+    /// bounded by `MAX_REQUEST_OUTPUT_TOKENS`.
     pub fn catalog_max_tokens(&self) -> Option<u64> {
         let models = self.catalog_output_limits.get(crate::catalog::provider_id(
             crate::catalog::metadata_provider(&self.provider, &self.model),
@@ -1826,7 +1826,7 @@ impl Config {
 
     /// The `max_tokens` one request may ask for: the reader's own cap when they
     /// set one, else the model's published output limit (bounded by
-    /// [`MAX_REQUEST_OUTPUT_TOKENS`]), else the conservative default. Without
+    /// `MAX_REQUEST_OUTPUT_TOKENS`), else the conservative default. Without
     /// this a model that can write 384k tokens in one answer was held to 8k,
     /// so a long file write reached its limit, got retried with a doubled
     /// budget, and could still arrive truncated.

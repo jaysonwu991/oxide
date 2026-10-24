@@ -925,10 +925,10 @@ body.running .composer { border-radius: var(--radius); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The context reading at the row's end: a ring filled to the percent of the
-   window the thread's last request used, with that percent inside it, escalating
-   the way the terminal footer's own percentage and the panel's gauge do — its
-   dim tone, amber past 70%, the error color past 90%. */
+/* The context reading at the end of the box's own row: a ring filled to the
+   percent of the window the thread's last request used, with that percent inside
+   it, escalating the way the terminal footer's own percentage and the panel's
+   gauge do — its dim tone, amber past 70%, the error color past 90%. */
 .context-ring {
   display: inline-flex;
   position: relative;
@@ -1092,11 +1092,12 @@ body.running .composer { border-radius: var(--radius); }
    a control that moves under the pointer — so a squeezed row gives up the words
    of its status first, which is what the weight above decides. */
 .composer-right > button { flex: none; }
-/* The window's own status: the readout the box's row ends with, before the
-   controls that send. It is chrome about the turn rather than a word from the
+/* The window's own status: the readout the box's row opens with, ahead of the
+   chips and the controls that send. It is chrome about the turn rather than a
+   word from the
    conversation, so it wears the window's dim tone — as do the totals, which read
-   out the chat rather than the turn and stand beside the context reading on the
-   bar above the box. */
+   out the chat rather than the turn and stand in that same row beside the context
+   reading. */
 .status {
   display: inline-flex;
   align-items: center;
@@ -1210,7 +1211,8 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
    mark the active row: a shield is a shield whichever decision is saved, so the
    color is what says which one it is. */
 .chip.active { color: var(--accent); border-color: var(--accent); }
-/* The project chip is the one control on the composer's top row: it names where
+/* The project chip is one of the two controls on the composer's top row: it
+   names where
    the message goes rather than what it was sent with, so it keeps its words and
    takes the accent while no project is open — it is then the app's way into a
    first thread. The marker is the chip's own rather than the sheet's `.empty`,

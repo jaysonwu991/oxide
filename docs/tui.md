@@ -39,10 +39,13 @@ the Portkey spend bar appear when present and enabled.
 
 The message box names what the message will carry: one row per pending
 attachment above the text, indented one column and named by the file it came
-from (`• /tmp/shot.png`) — the `@path` references and `/attach` entries the run
-will read, with the ones past four folded into a `• N more` row so a long list
+from (`• /tmp/shot.png`) — the parts a paste attached and the ones a queued
+message brought back when it was pulled into the box (`/attach` lists and edits
+them) — with the ones past four folded into a `• N more` row so a long list
 cannot push the box off the screen, and a part with no file of its own named by
-what it is (`• image (png)`). `Ctrl+V` is the other way in: it inserts the
+what it is (`• image (png)`). An `@path` reference is not one of those rows: it
+is resolved when the message is sent, and named on the transcript line the
+message becomes. `Ctrl+V` is the other way in: it inserts the
 clipboard's own text — a copied file's path, a clipboard image's scratch path, or
 plain text — and the model reads that path. The transcript line the message
 becomes names the attachments the same way.
@@ -101,7 +104,7 @@ skills.
 | `@` | Open file/folder path autocomplete to add a file to the prompt. |
 | Tab | Complete the selected slash-command (including fixed arguments such as `/notify sound on`) or `@path` suggestion. |
 | Up / Down | Move through the suggestion list, or recall input history when it is closed. |
-| Shift+Tab | Cycle the thinking level: `auto` → the model's own levels when its listing advertised them, else `off` → `minimal` → `low` → `medium` → `high` → `xhigh` → `max`. |
+| Shift+Tab / Ctrl+R | Cycle the thinking level through the levels the active model advertises: `auto`, then those levels, wrapping around. A model whose provider listing and remembered pi.dev entry give it none has no selector, so the key does nothing. |
 | Ctrl+O | Expand or collapse tool-output details, and compaction/branch summaries. |
 | Ctrl+T | Show or hide reasoning (`✦ Thinking`) blocks. |
 | Ctrl+V | Paste the clipboard into the message box the way Pi does: the path a copied file names (one per line for a multi-select copy), the scratch path a clipboard image is written to, or plain clipboard text. The model reads the path, so a pasted image arrives through its file rather than as a pending attachment. A file this app may not read is written out as the pasteboard's own picture instead, so the inserted path still points at something the run can read; where the pasteboard carries none, macOS gates the Desktop, Documents and Downloads folders behind a per-app grant. |
