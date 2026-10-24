@@ -45,6 +45,15 @@ batch is rejected without writing anything, including the replacements that
 matched. The error names the failures and tells the agent to re-read the correct
 file and resend the corrected batch. CLI, Extension and Desktop share these rules.
 
+A `write` or `edit` that would introduce a U+FFFD replacement character into
+text that had none is refused, because that character is what a decoder emits
+for bytes that are not valid UTF-8 and what a multi-byte character becomes when
+truncated on the way through a model. Nothing is written, and the error asks for
+the replacement again with the real characters; a file that already contains
+the character may keep it, so an encoding fixture or a rewrite that preserves a
+decoder's output still lands. Deliberate U+FFFD content can be written with
+`bash`.
+
 `read`, `ls`, `find`, and `grep` accept absolute paths, so they can inspect files
 outside the project without a shell; `ls` marks directories with a trailing `/`
 and renders symlink targets as `name -> target`. `find` and `grep` respect
@@ -63,7 +72,10 @@ pane lists and not `oxide` itself.
 readable plain text (`format: "text"`), or returns the raw body
 (`format: "html"`); the converter is dependency-free and handles headings,
 paragraphs, lists, tables, links, images, inline and fenced code, blockquotes,
-and HTML entities.
+and HTML entities. A refused fetch says so: a 401 or 403 reports that the site
+refused an automated fetch and points at the service's authenticated CLI or a
+configured MCP server instead of a retry, and a 429 reports rate limiting
+rather than a missing page.
 
 `bash` runs the command through a shell with stdin closed and its output
 captured, in a terminal of its own rather than the front-end's — a session on
@@ -96,7 +108,10 @@ change something is left alone. The recursive-search guard refuses a
 recursive `grep` that could
 walk a directory — no operand, a glob, a folder, or a path that is not a file —
 and steers it to the `grep` tool, which applies the repository's ignore rules
-and bounds its results; a recursive search scoped to files named one by one
+and bounds its results; when the command spells out its pattern, path and
+`--include` filter, the refusal restates them as the equivalent `grep` call, so
+the step is recoverable without translating the shell command by hand. A
+recursive search scoped to files named one by one
 (`grep -rn needle README.md docs/guide.md`) is not a directory sweep and runs
 as written. It also recognizes option arguments, so a pattern such as
 `grep -e -retry file` is not mistaken for a recursive flag.
