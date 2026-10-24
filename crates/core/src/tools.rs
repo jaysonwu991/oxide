@@ -1086,11 +1086,8 @@ fn line_chunks(line: &str) -> Vec<&str> {
     chunks
 }
 
-/// U+FFFD is what a decoder emits for bytes that are not valid UTF-8, and what
-/// a multi-byte character becomes when it is truncated on the way through a
-/// model. It is never the character a caller meant to write, so a call that
-/// adds one where the target has none is refused rather than silently
-/// corrupting the file — a reader would otherwise only find it on the next read.
+/// Reject increases in U+FFFD as likely encoding corruption while allowing
+/// existing replacement characters to survive a rewrite.
 const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
 
 /// How many U+FFFD characters `after` adds over `before`.
@@ -1116,19 +1113,19 @@ fn write(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     )?;
 
     let full = resolve(cwd, path);
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
     let previous = std::fs::read_to_string(&full).unwrap_or_default();
     let introduced = introduced_replacement_characters(&previous, content);
     if introduced > 0 {
         anyhow::bail!(
             "write refused: `content` adds {introduced} U+FFFD replacement character(s) and \
-             {path} has none. That character marks text that was truncated or decoded from \
-             invalid UTF-8, so it cannot be the intended content; resend `content` with the real \
+             increases the count in {path}. That character marks text that was truncated or decoded from \
+             invalid UTF-8 and may indicate corruption; resend `content` with the real \
              characters. A file whose content is deliberately U+FFFD can be written with `bash`."
         );
+    }
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
     std::fs::write(&full, content).with_context(|| format!("writing {}", full.display()))?;
     let output = ToolOutput::text(format!("wrote {} bytes", content.len()));
@@ -1715,9 +1712,9 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
                     if introduced > 0 {
                         failures.push(format!(
                             "edits[{index}].newText adds {introduced} U+FFFD replacement \
-                             character(s) where the text it replaces has none. That character marks \
-                             text that was truncated or decoded from invalid UTF-8, so it cannot be \
-                             the intended replacement; re-read {path} and resend the block with \
+                             character(s) beyond the count in the text it replaces. That character marks \
+                             text that was truncated or decoded from invalid UTF-8 and may indicate \
+                             corruption; re-read {path} and resend the block with \
                              the real characters."
                         ));
                         continue;
@@ -3014,15 +3011,11 @@ fn github_line_range(fragment: Option<&str>) -> Option<String> {
     }
 }
 
-/// A failed fetch, with the reason a retry will not help spelled out: a 401 or
-/// 403 usually means the site refuses automated fetches rather than that the
-/// page is missing, and a 429 means waiting, not retrying immediately.
+/// Give recovery guidance without inferring why a server denied access.
 fn fetch_status_error(status: reqwest::StatusCode) -> anyhow::Error {
     let hint = match status.as_u16() {
-        401 | 403 => {
-            " — the site refused an automated fetch; use the service's authenticated CLI or a \
-             configured MCP server instead of retrying"
-        }
+        401 => " — authentication is required; use the service's authenticated CLI or a configured MCP server",
+        403 => " — the site denied access to this fetch; authentication, permissions, or automated-fetch restrictions may apply; use the service's authenticated CLI or a configured MCP server instead of retrying unchanged",
         429 => " — the site is rate limiting this client; wait before retrying",
         _ => "",
     };
@@ -3265,42 +3258,103 @@ struct ShellGrep {
     /// A `--include` file-name filter, which maps to the tool's `glob`.
     glob: Option<String>,
     recursive: bool,
+    restatable: bool,
+    fixed: bool,
 }
 
 impl ShellGrep {
-    /// The grep-tool call that searches what this command searched, so the
-    /// refusal costs one step instead of a translation. A path that was quoted
-    /// and split on its own whitespace is left out rather than restated wrong.
+    /// Only offer a call when its pattern, scope and matching mode can be
+    /// represented without evaluating the shell or dropping search operands.
     fn equivalent_call(&self) -> Option<String> {
-        let pattern = self.pattern.as_ref()?;
+        if !self.restatable || self.operands.len() > 1 {
+            return None;
+        }
+        let pattern = literal_grep_word(self.pattern.as_ref()?)?;
         let mut call = serde_json::Map::new();
         call.insert("pattern".to_string(), json!(pattern));
-        if let Some(path) = self.operands.first().filter(|path| balanced(path)) {
-            call.insert("path".to_string(), json!(path.trim_matches(['\'', '"'])));
+        if let Some(path) = self.operands.first() {
+            call.insert("path".to_string(), json!(literal_grep_word(path)?));
         }
         if let Some(glob) = &self.glob {
-            call.insert("glob".to_string(), json!(glob));
+            call.insert("glob".to_string(), json!(literal_grep_word(glob)?));
+        }
+        if self.fixed {
+            call.insert("literal".to_string(), json!(true));
+        } else if pattern.contains([
+            '\\', '[', ']', '^', '$', '.', '*', '+', '?', '(', ')', '{', '}', '|',
+        ]) {
+            // BRE/ERE and the tool's regex dialect do not always agree.
+            return None;
         }
         Some(Value::Object(call).to_string())
     }
 }
 
-/// Whether a shell word's own quotes are closed, so it can be restated as one
-/// value. A word split out of a longer quoted string is not.
-fn balanced(word: &str) -> bool {
-    for quote in ['"', '\''] {
-        let count = word.matches(quote).count();
-        if count > 0 && (count % 2 != 0 || (word.starts_with(quote) && word.len() == 1)) {
-            return false;
+/// Keep quotes and escapes so decoding a suggestion never evaluates shell code.
+fn grep_shell_words(segment: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in segment.char_indices() {
+        if start.is_none() && !ch.is_whitespace() {
+            start = Some(index);
+        }
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+        } else {
+            match quote {
+                Some(open) if ch == open => quote = None,
+                Some(_) => {}
+                None if matches!(ch, '\'' | '"') => quote = Some(ch),
+                None if ch.is_whitespace() => {
+                    if let Some(start) = start.take() {
+                        words.push(&segment[start..index]);
+                    }
+                }
+                None => {}
+            }
         }
     }
-    true
+    if let Some(start) = start {
+        words.push(&segment[start..]);
+    }
+    words
+}
+
+/// Decode literal words only; expansions and redirects need the generic hint.
+fn literal_grep_word(word: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut quote = None;
+    let mut chars = word.chars();
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => result.push(ch),
+            (_, '$' | '`') => return None,
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, '*' | '?' | '[' | '~' | '{' | '}' | '<' | '>') => return None,
+            (_, '\\') => {
+                let next = chars.next()?;
+                if quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') {
+                    result.push('\\');
+                }
+                if next != '\n' {
+                    result.push(next);
+                }
+            }
+            _ => result.push(ch),
+        }
+    }
+    quote.is_none().then_some(result)
 }
 
 /// Reads one shell segment as a `grep` invocation, or `None` when the segment
 /// does not run grep.
 fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
-    let words: Vec<&str> = segment.split_whitespace().collect();
+    let words = grep_shell_words(segment);
     let grep_index = shell_command_index(&words)
         .filter(|index| matches!(shell_word_name(words[*index]), "grep" | "grep.exe"))?;
 
@@ -3309,6 +3363,8 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
         operands: Vec::new(),
         glob: None,
         recursive: false,
+        restatable: grep_index == 0,
+        fixed: false,
     };
     // Whether an option already supplied the pattern, so the next positional
     // argument is a search operand rather than the pattern.
@@ -3326,19 +3382,20 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                 continue;
             }
             if let Some(glob) = word.strip_prefix("--include=") {
+                grep.restatable &= grep.glob.is_none();
                 grep.glob = Some(glob.to_string());
                 continue;
             }
             if *word == "--include" {
+                grep.restatable &= grep.glob.is_none();
                 grep.glob = arguments.next().map(|glob| glob.to_string());
                 continue;
             }
             if matches!(*word, "--regexp" | "--file") {
+                grep.restatable &= !saw_pattern && *word == "--regexp";
                 saw_pattern = true;
                 if *word == "--regexp" {
-                    grep.pattern = arguments
-                        .next()
-                        .map(|value| read_pattern(value, &mut arguments));
+                    grep.pattern = arguments.next().map(|value| value.to_string());
                 } else {
                     arguments.next();
                 }
@@ -3357,6 +3414,7 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                     | "--directories"
                     | "--devices"
             ) {
+                grep.restatable = false;
                 arguments.next();
                 continue;
             }
@@ -3364,15 +3422,20 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                 if !flags.starts_with('-') {
                     let mut flags = flags.chars().peekable();
                     while let Some(flag) = flags.next() {
+                        if flag == 'F' {
+                            grep.fixed = true;
+                        }
+                        if !matches!(flag, 'r' | 'R' | 'n' | 'H' | 'h' | 'E' | 'F' | 'e') {
+                            grep.restatable = false;
+                        }
                         if flag == 'r' || flag == 'R' {
                             grep.recursive = true;
                         }
                         if matches!(flag, 'e' | 'f') {
+                            grep.restatable &= !saw_pattern && flag == 'e';
                             saw_pattern = true;
                             let value = if flags.peek().is_none() {
-                                arguments
-                                    .next()
-                                    .map(|value| read_pattern(value, &mut arguments))
+                                arguments.next().map(|value| value.to_string())
                             } else {
                                 Some(flags.collect::<String>())
                             };
@@ -3388,9 +3451,14 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                             break;
                         }
                     }
+                } else {
+                    grep.restatable = false;
                 }
                 continue;
             }
+        }
+        if word.starts_with(|ch: char| ch.is_ascii_digit()) && word.contains('>') {
+            continue;
         }
         // The first positional argument is the pattern unless an option
         // already supplied one; everything after it is a search operand.
@@ -3398,40 +3466,22 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
             grep.operands.push(word.to_string());
         } else {
             saw_pattern = true;
-            grep.pattern = Some(read_pattern(word, &mut arguments));
+            grep.pattern = Some(word.to_string());
         }
     }
     Some(grep)
-}
-
-/// Reads a pattern that may span whitespace inside quotes, so a restated call
-/// carries the whole pattern rather than its first word: `grep -rn "Definition
-/// of Done" src` is quoted in the shell, and splitting the segment on
-/// whitespace leaves `\"Definition`, `of` and `Done\"` as three tokens.
-fn read_pattern(first: &str, rest: &mut std::slice::Iter<'_, &str>) -> String {
-    let Some(quote) = first.chars().next().filter(|ch| matches!(ch, '"' | '\'')) else {
-        return first.to_string();
-    };
-    let quoted = |text: &str| text.starts_with(quote) && text.ends_with(quote) && text.len() > 1;
-    if quoted(first) {
-        return first.trim_matches(quote).to_string();
-    }
-    let mut pattern = first.to_string();
-    for word in rest.by_ref() {
-        pattern.push(' ');
-        pattern.push_str(word);
-        if word.ends_with(quote) {
-            break;
-        }
-    }
-    pattern.trim_matches(quote).to_string()
 }
 
 /// The first recursive grep in `command` that could walk a directory.
 fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
     shell_segments(command)
         .into_iter()
-        .filter_map(parse_shell_grep)
+        .enumerate()
+        .filter_map(|(index, segment)| {
+            let mut grep = parse_shell_grep(segment)?;
+            grep.restatable &= index == 0;
+            Some(grep)
+        })
         .find(|grep| grep.recursive && recursive_grep_sweeps(&grep.operands, cwd))
 }
 
@@ -8067,14 +8117,20 @@ mod tests {
     fn fetch_failures_explain_that_a_refusal_is_not_a_missing_page() {
         let forbidden = fetch_status_error(reqwest::StatusCode::FORBIDDEN).to_string();
         assert!(forbidden.contains("403"), "{forbidden}");
+        assert!(forbidden.contains("denied access"), "{forbidden}");
+
+        let unauthorized = fetch_status_error(reqwest::StatusCode::UNAUTHORIZED).to_string();
         assert!(
-            forbidden.contains("refused an automated fetch"),
-            "{forbidden}"
+            unauthorized.contains("authentication is required"),
+            "{unauthorized}"
         );
+        assert!(!unauthorized.contains("automated"), "{unauthorized}");
+        let limited = fetch_status_error(reqwest::StatusCode::TOO_MANY_REQUESTS).to_string();
+        assert!(limited.contains("wait before retrying"), "{limited}");
 
         let missing = fetch_status_error(reqwest::StatusCode::NOT_FOUND).to_string();
         assert!(missing.contains("404"), "{missing}");
-        assert!(!missing.contains("refused an automated fetch"), "{missing}");
+        assert!(!missing.contains("denied access"), "{missing}");
     }
 
     #[test]
@@ -8089,13 +8145,13 @@ mod tests {
         assert!(refusal.contains(r#""pattern":"needle""#), "{refusal}");
         assert!(refusal.contains(r#""path":"src""#), "{refusal}");
 
-        let grep = recursive_shell_grep("grep -rn todo . --include=*.rs", root).expect("a sweep");
+        let grep = recursive_shell_grep("grep -rn todo . --include='*.rs'", root).expect("a sweep");
         let call = grep.equivalent_call().expect("a restated call");
         assert!(call.contains(r#""glob":"*.rs""#), "{call}");
 
         // A quoted pattern spans shell words; the restated call carries it whole.
         let grep = recursive_shell_grep(
-            r#"grep -rn "Definition of Done" crates/core/src --include=*.rs"#,
+            r#"grep -rn "Definition of Done" crates/core/src --include='*.rs'"#,
             root,
         )
         .expect("a sweep");
@@ -8107,6 +8163,104 @@ mod tests {
         // without inventing a call.
         let grep = recursive_shell_grep("grep -rf patterns.txt src", root).expect("a sweep");
         assert!(grep.equivalent_call().is_none());
+    }
+
+    #[test]
+    fn recursive_grep_suggestions_preserve_literal_arguments() {
+        for (command, expected) in [
+            (
+                r#"grep -rn 'Definition  of Done' 'source files' --include='*.rs'"#,
+                json!({"pattern": "Definition  of Done", "path": "source files", "glob": "*.rs"}),
+            ),
+            (
+                r#"grep -rnF 'a.b' src"#,
+                json!({"pattern": "a.b", "path": "src", "literal": true}),
+            ),
+            (
+                r#"grep -rn "can't  stop" source\ files --include "*.rs""#,
+                json!({"pattern": "can't  stop", "path": "source files", "glob": "*.rs"}),
+            ),
+            (
+                r#"grep -rn '"quoted"' src"#,
+                json!({"pattern": "\"quoted\"", "path": "src"}),
+            ),
+        ] {
+            let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
+            let call = grep.equivalent_call().expect(command);
+            assert_eq!(
+                serde_json::from_str::<Value>(&call).unwrap(),
+                expected,
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn recursive_grep_keeps_generic_guidance_for_unrepresentable_searches() {
+        for command in [
+            "grep -rn needle src tests",
+            "grep -rn -e first -e second src",
+            "grep -rn -e first -f patterns.txt src",
+            "grep -rn -f patterns.txt -e second src",
+            "grep -rni needle src",
+            "grep -rnv needle src",
+            "grep -rn needle src --exclude-dir=generated",
+            "grep -rn needle src --include='*.rs' --include='*.ts'",
+            "cd elsewhere && grep -rn needle src",
+            r#"grep -rn "$PATTERN" src"#,
+            "grep -rn needle '$unterminated",
+            "grep -rn needle src*",
+            "grep -rn 'a.b' src",
+        ] {
+            let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
+            assert!(grep.equivalent_call().is_none(), "{command}");
+            assert!(recursive_shell_grep_refusal(&grep).contains("call the `grep` tool directly"));
+        }
+    }
+
+    #[test]
+    fn replacement_character_refusal_is_atomic_for_directories_and_edit_batches() {
+        let dir = std::env::temp_dir().join(format!("oxide_fffd_atomic_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        write(
+            &dir,
+            &json!({"path": "new/nested/a.md", "content": "\u{FFFD}"}),
+        )
+        .expect_err("refuse before creating parent directories");
+        assert!(!dir.join("new").exists());
+
+        let original = "first\r\nalready \u{FFFD}\r\n";
+        std::fs::write(dir.join("a.md"), original).unwrap();
+        let error = edit(
+            &dir,
+            &json!({"path": "a.md", "edits": [
+                {"oldText": "first", "newText": "changed"},
+                {"oldText": "already \u{FFFD}", "newText": "already \u{FFFD}\u{FFFD}"}
+            ]}),
+        )
+        .expect_err("one corrupt edit refuses the whole batch");
+        assert!(error.to_string().contains("beyond the count"), "{error}");
+        assert_eq!(std::fs::read_to_string(dir.join("a.md")).unwrap(), original);
+
+        write(
+            &dir,
+            &json!({"path": "a.md", "content": "\u{FFFD}\u{FFFD}"}),
+        )
+        .expect_err("an existing replacement character does not permit an increase");
+        assert_eq!(std::fs::read_to_string(dir.join("a.md")).unwrap(), original);
+        edit(
+            &dir,
+            &json!({"path": "a.md", "edits": [
+                {"oldText": "already \u{FFFD}", "newText": "kept \u{FFFD}"}
+            ]}),
+        )
+        .expect("preserving a replacement character is permitted");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.md")).unwrap(),
+            "first\r\nkept \u{FFFD}\r\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
