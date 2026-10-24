@@ -141,7 +141,7 @@ pub struct CatalogEntry {
     /// When the catalog was last looked up, in Unix seconds.
     #[serde(default)]
     pub checked_at: u64,
-    /// The shape this entry was written with (see [`STORE_VERSION`]).
+    /// The shape this entry was written with (see `STORE_VERSION`).
     #[serde(default)]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]

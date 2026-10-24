@@ -4088,7 +4088,7 @@ fn bash_failure_hint(output: &str) -> Option<&'static str> {
     if output.contains("grep: maximum repetition exceeds")
         || output.contains("grep: invalid repetition count")
     {
-        Some("[hint: this grep limits regex repetition counts. Use the `grep` tool with `pattern`, `path`, and `regex: true` for this search; its regex engine supports larger repetition counts.]")
+        Some("[hint: this grep limits regex repetition counts. Use the `grep` tool with `pattern` and `path` instead; its regex engine supports larger repetition counts.]")
     } else if output.contains("unexpected EOF while looking for matching") {
         Some("[hint: close the shell's quotes. Put literal search patterns in single quotes; backticks inside double quotes start command substitution.]")
     } else if output.contains("package ID specification")
@@ -4104,7 +4104,8 @@ fn bash_failure_hint(output: &str) -> Option<&'static str> {
 
 #[cfg(unix)]
 fn search_returned_no_matches(command: &str, text: &str) -> bool {
-    let Some(stages) = simple_search_pipeline(command) else {
+    let Some(stages) = simple_search_pipeline(command).or_else(|| compound_search_tail(command))
+    else {
         return false;
     };
     let Ok(statuses) = text
@@ -4221,6 +4222,122 @@ fn simple_search_pipeline(command: &str) -> Option<Vec<&str>> {
         return None;
     }
     Some(stages)
+}
+
+/// The stages of the last command in a `;`- or newline-separated script, when
+/// the script is nothing but plain commands.
+///
+/// A shell reports the exit status of its last command, so an earlier command
+/// in a script is invisible to the status this tool reads: a script that ends
+/// in a search which matched nothing is the empty result a lone search is, and
+/// the last pipeline's own stage statuses are the evidence. Anything that could
+/// make the last command something other than what was written — a comment, a
+/// heredoc, a subshell, an expansion, `&&`/`||`, or an earlier command that
+/// ends the shell (`exit`, `exec`, `return`, `set`, `trap`, `eval`, `source`)
+/// — keeps the ordinary failure behavior.
+#[cfg(unix)]
+fn compound_search_tail(command: &str) -> Option<Vec<&str>> {
+    let command = command.trim();
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut previous = None;
+    let mut chars = command.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
+        if escaped {
+            escaped = false;
+            previous = Some(ch);
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            previous = Some(ch);
+            continue;
+        }
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some('\'') => {}
+            Some(_) if ch == '$' || ch == '`' => return None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            // A redirection's `&` (`2>&1`, `&>out`) is not a control operator.
+            None if ch == '&'
+                && (previous == Some('>')
+                    || chars.peek().is_some_and(|(_, next)| *next == '>')) => {}
+            None if ch == ';' || ch == '\n' => {
+                segments.push(command[start..index].trim());
+                start = index + ch.len_utf8();
+            }
+            None if ch == '|' => {
+                if chars
+                    .peek()
+                    .is_some_and(|(_, next)| *next == '|' || *next == '&')
+                {
+                    return None;
+                }
+            }
+            None if matches!(
+                ch,
+                '&' | '\r' | '(' | ')' | '{' | '}' | '$' | '`' | '#' | '<'
+            ) =>
+            {
+                return None
+            }
+            None => {}
+        }
+        previous = Some(ch);
+    }
+    if quote.is_some() || escaped {
+        return None;
+    }
+    segments.push(command[start..].trim());
+    let mut segments: Vec<&str> = segments
+        .into_iter()
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let last = segments.pop()?;
+    if segments.iter().any(|segment| ends_the_shell(segment)) {
+        return None;
+    }
+    simple_search_pipeline(last)
+}
+
+/// Whether a segment could end the shell before the last command runs, which
+/// would make the last command's status the script's for a reason other than a
+/// search that matched nothing.
+#[cfg(unix)]
+fn ends_the_shell(segment: &str) -> bool {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    let mut index = 0;
+    while index < words.len() && shell_assignment(words[index]) {
+        index += 1;
+    }
+    for _ in 0..4 {
+        let Some(word) = words.get(index) else {
+            return false;
+        };
+        let name = shell_word_name(word);
+        if matches!(
+            name,
+            "exit" | "exec" | "return" | "set" | "trap" | "eval" | "source" | "." | "builtin"
+        ) {
+            return true;
+        }
+        if !matches!(name, "command" | "env" | "nohup" | "sudo") {
+            return false;
+        }
+        index += 1;
+        while index < words.len()
+            && (words[index].starts_with('-') || shell_assignment(words[index]))
+        {
+            index += 1;
+        }
+    }
+    false
 }
 
 #[cfg(unix)]
@@ -7003,6 +7120,11 @@ mod tests {
             "printf 'build succeeded\\n' | grep '^error' | head -40",
             "printf 'build succeeded\\n' | grep -v 'succeeded'",
             "cd . && printf 'build succeeded\\n' | grep '^error' | head -40",
+            // A script reports its last command's status, so a search that ends
+            // one is the empty result a lone search is.
+            "printf 'build succeeded\\n'; grep '^error' input.txt",
+            "printf 'a\\n' | head -1; printf 'build succeeded\\n' | grep '^error'",
+            "printf 'x\\n'\nprintf 'build succeeded\\n' | grep '^error' | head -40",
         ] {
             let out = execute(
                 &call("bash", json!({ "command": command })),
@@ -7026,6 +7148,16 @@ mod tests {
             "false && grep '^error' input.txt",
             "! printf x | grep x",
             "exit 1",
+            // A script whose last command is not a search, or whose text could
+            // hide which command ran last, keeps its ordinary failure.
+            "printf x; exit 1",
+            "printf x; set -e; grep '^error' input.txt",
+            "printf x; false && grep '^error' input.txt",
+            "printf x; false || exit 1; grep '^error' input.txt",
+            "printf x; grep '[' input.txt",
+            "printf x; grep '^error' input.txt # ; printf y",
+            "printf x; $CMD; grep '^error' input.txt",
+            "printf x; bash -c 'exit 7'",
         ] {
             let out = execute(
                 &call("bash", json!({ "command": command })),
@@ -7046,9 +7178,9 @@ mod tests {
 
     #[test]
     fn shell_errors_from_sessions_have_specific_recovery_hints() {
-        assert!(bash_failure_hint("grep: maximum repetition exceeds 255")
-            .unwrap()
-            .contains("`grep` tool"));
+        let repetition = bash_failure_hint("grep: maximum repetition exceeds 255").unwrap();
+        assert!(repetition.contains("`grep` tool"));
+        assert!(!repetition.contains("regex: true"), "{repetition}");
         assert!(
             bash_failure_hint("bash: unexpected EOF while looking for matching ``'")
                 .unwrap()

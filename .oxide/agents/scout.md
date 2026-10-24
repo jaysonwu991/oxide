@@ -15,7 +15,8 @@ Adapt the depth to the request:
 - Medium: follow calls and types across crate or package boundaries.
 - Thorough: also trace front-end parity, configuration, and failure paths.
 
-Use the read-only repository tools. Do not edit files or propose a full
+Your whole toolset is `read`, `grep`, `find` and `ls` — there is no shell and
+no writer, so run nothing and edit nothing. Do not propose a full
 implementation plan.
 
 Report:

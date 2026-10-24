@@ -85,12 +85,15 @@ painting its prompt over the interface that started it and reading the keys type
 there. The children that are not commands get the same treatment: an LSP server,
 an MCP server and the plugin host.
 
-On Unix, a simple shell search or pipeline whose only unsuccessful stages are
+On Unix, a shell search whose only unsuccessful stages are
 `grep`/`rg` returning 1 is a normal empty result. The output retains `[exit: 1]`
 and adds `search returned no matches`, while the tool's error flag stays clear.
-An unsuccessful producer, invalid regex, or failed leading `cd` still fails.
-Compound shell scripts without unambiguous pipeline evidence keep their normal
-failure behavior.
+That holds when the search is the last command of a `;`- or newline-separated
+script too, since a shell reports its last command's status: `git status; grep
+-q TODO notes.md` is an empty search rather than a failed command. An
+unsuccessful producer, invalid regex, a failed leading `cd`, or anything that
+could hide which command ran last (a comment, a heredoc, a subshell, an
+expansion, `&&`/`||`, or an earlier `exit`/`exec`/`set -e`) still fails.
 
 Shell failures caused by unsupported grep repetition counts, unclosed quotes,
 or selecting a package outside the current Cargo workspace carry a specific

@@ -54,9 +54,10 @@ appropriate; direct DeepSeek and Z.AI use their `thinking.type` object instead.
 A model whose provider listing advertised its own effort levels — or whose
 remembered pi.dev catalog publishes its reasoning support — narrows the set
 to those (see [the model's own levels](cli.md#the-models-own-levels)). In the TUI
-press Shift+Tab to cycle levels; `--reasoning` and `OXIDE_REASONING` set the
-starting level, and resuming a session restores the level recorded on it. See
-[Reasoning](cli.md#reasoning).
+press Shift+Tab or `Ctrl+R` to cycle levels; `--reasoning` and `OXIDE_REASONING`
+set the starting level for a run, and a resumed session uses that same shared
+choice — the level recorded in `config.json` — rather than a level saved on the
+thread. See [Reasoning](cli.md#reasoning).
 
 The shared agent instructions also scale investigation and verification to the
 selected effort. Lower levels keep preparation brief; medium favors focused
@@ -151,11 +152,14 @@ oxide reasoning [--json] [--refresh] [--model <MODEL>]
 oxide context [--json] [--model <MODEL>] # the window a run resolves, and the key facts
 oxide login <provider> [--key-stdin] [--model <MODEL>] [--base-url <URL>] [--json]
 oxide logout [provider] [--json]
+oxide select --model <MODEL> [--provider <PROVIDER>] | --reasoning <LEVEL>
+oxide language [show|set <en-GB|zh-CN>] [--json]
 oxide approvals list|clear [--project <dir>] [--json]
 oxide trust show|set <trusted|untrusted> [--project <dir>] [--json]
 oxide changes show <path> --baseline <rev> [--project <dir>]
 oxide changes undo --baseline <rev> [--after <rev>] [--project <dir>]
 oxide worktree list|create|remove [name] [--project <dir>] [--json]
+oxide worktree branch <name> <branch> | handoff <id> --source <dir> [--to-worktree]
 oxide clipboard --json
 ```
 
@@ -178,6 +182,7 @@ oxide clipboard --json
 | `-a, --approve` | Trust project-local resources for this run. |
 | `--no-approve` | Ignore project-local resources for this run. |
 | `--use-theme <NAME>` | TUI theme (`dark`, `light`, or a custom `.oxide/themes` file). |
+| `--language <TAG>` | Interface language for this run: `en-GB` (the default) or `zh-CN`, without writing the shared `language` setting. |
 | `--session <PATH\|ID>` | Use a specific session file or id. |
 | `-n, --name <NAME>` | Set the session display name at startup. |
 | `--no-session` | Ephemeral mode: do not save the session. |
@@ -579,7 +584,8 @@ Available slots: `accent`, `user`, `assistant`, `success`, `tool`, `error`,
 `thinking_low`, `thinking_medium`, `thinking_high`, `thinking_text`.
 
 Theme slots are semantic: `accent` marks focus and selections, `user` and
-`assistant` label speakers, `success` and `error` communicate outcomes, `tool`
+`assistant` color the speaker's mark (`❯` and `◆`), `success` and `error`
+communicate outcomes, `tool`
 marks active tool work, and `info`/`dim` render supporting text. The `tool_*_bg`
 slots fill the background behind a tool's header, output, and `Took`/`Elapsed`
 footer (pending while running, success or error once it settles). Selection rows
@@ -626,10 +632,12 @@ is what a script or a screenshot wants.
 
 Sessions use Pi's on-disk format: an append-only JSONL tree whose first line is a
 `session` header and whose remaining lines are `message`, `compaction`,
-`branch_summary`, `session_info`, `model_change`, and `thinking_level_change`
-entries linked by `id`/`parentId`. The last entry is the active leaf; the model
-sees the leaf path with the latest compaction applied. Branching moves the leaf
-back and appends a `branch_summary`, so in-file alternatives are preserved.
+`branch_summary`, `session_info`, `model_change`, `thinking_level_change`, and
+`tool_selection` entries (`tool_selection` records the MCP tools a
+`tool_search` declared) linked by `id`/`parentId`. The last entry is the active
+leaf; the model sees the leaf path with the latest compaction applied. Branching
+moves the leaf back and appends a `branch_summary`, so in-file alternatives are
+preserved.
 
 ### Context compaction
 
@@ -720,7 +728,8 @@ Runtime state lives under the platform Oxide config directory:
 - Portkey usage bar: `portkey-usage.json` (mode `0600`; see `OXIDE_USAGE_FILE`)
 - Settings: `settings.json` (e.g. `defaultProjectTrust`, `compaction`,
   `modelPrices`, `modelContextWindows`, `modelCatalog`, `steeringMode`,
-  `followUpMode`, `hideThinkingBlock`)
+  `followUpMode`, `hideThinkingBlock`, `notifyOnComplete`, `notifySound`,
+  `cacheWarming`, `checkForUpdates`, `language`)
 - Updates: `updates.json` (the newest release of each component the last launch
   found, so the launch notice needs no network wait; see `OXIDE_UPDATES_FILE`)
 - Themes: `themes/<name>.json`

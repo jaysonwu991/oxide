@@ -24,7 +24,9 @@ end of the turn — so a stream the client retries never prints a partial answer
 twice; `--mode json` still emits each delta as it arrives.
 
 `--mode rpc` reads one JSON request per line (`{"type":"prompt","message":…}`,
-`{"type":"approval","id":…,"decision":"once"|"always"|"deny"}`,
+`{"type":"steer","message":…}` or `{"type":"follow_up",…}` to add to the turn
+that is running, `{"type":"approval","id":…,"decision":"once"|"always"|"deny"}`,
+`{"type":"question","id":…,"answers":[…]}` (an empty list dismisses it),
 `{"type":"abort"}`, and `{"type":"quit"}`) and writes its events to stdout. The
 process serves any number of prompts, so a client can keep one per thread: the
 MCP servers, plugin host and language servers are started once and reused, and
@@ -99,4 +101,5 @@ oxide models --json         # normalized provider catalogs
 oxide context --json        # the window a run resolves for the active model
 oxide providers --json      # every provider, and which are stored or in use
 oxide login openai --json --key-stdin <key   # connect one (key on stdin)
+oxide language --json       # the interface language and the catalog it draws
 ```

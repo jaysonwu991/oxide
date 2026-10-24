@@ -910,9 +910,10 @@ export class Transcript {
         this.status = "Done";
         return [];
       // The files the turn changed, from the run's own shadow snapshot: the
-      // controller does not have to know about them. The CLI writes it behind
-      // that run's `agent_end` on the same channel, so the card lands at the end
-      // of the turn it belongs to.
+      // controller does not have to know about them. The CLI writes it ahead of
+      // that run's `agent_end` on the same channel — the card lands while the
+      // run it describes is still the one on screen, and `agent_end` stays the
+      // turn's last frame.
       case "turn_changes": {
         const changes = turnChanges(event);
         if (!changes) return [];

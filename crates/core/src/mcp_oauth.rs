@@ -107,7 +107,7 @@ impl OAuthState {
     /// hand, and is therefore only for a caller the user is waiting on — the
     /// `oxide mcp auth <name>` command. An agent run never calls this: it would
     /// open a browser and block a tool call on the loopback callback for up to
-    /// [`AUTHORIZE_TIMEOUT`] while a front-end owns the screen. A run asks
+    /// `AUTHORIZE_TIMEOUT` while a front-end owns the screen. A run asks
     /// [`Self::access_token_if_available`] instead, which refreshes silently and
     /// otherwise reports that authorization is needed.
     pub async fn ensure_authorized(&self) -> Result<()> {
