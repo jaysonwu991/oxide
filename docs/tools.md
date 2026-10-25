@@ -107,7 +107,7 @@ GET-shaped `curl`, and `git ls-remote`, optionally piped through a text filter,
 so a transport failure does not cost the run a step, while anything that could
 change something is left alone. The recursive-search guard refuses a
 recursive `grep` that could
-walk a directory — no operand, a glob, a folder, or a path that is not a file —
+walk a directory — no operand, a folder, an unresolved path, or an unverified glob —
 and steers it to the `grep` tool, which applies the repository's ignore rules
 and bounds its results; when the command spells out its pattern, path and
 `--include` filter as literal shell arguments, the refusal suggests a `grep` call
@@ -117,7 +117,14 @@ expansions, regex dialect differences and preceding commands keep the generic
 guidance rather than suggesting a search with different meaning. A
 recursive search scoped to files named one by one
 (`grep -rn needle README.md docs/guide.md`) is not a directory sweep and runs
-as written. It also recognizes option arguments, so a pattern such as
+as written. Simple unquoted filename globs such as `docs/*.md` also run when
+at least one file matches and every match is a regular file. A matched directory
+(including a symlink to one) keeps the guard active. Relative globs are verified
+only in the first shell segment, since an earlier command may change the working
+directory; absolute globs can be verified in later segments too. Globs in parent
+directories and shell expansions remain guarded. Wildcard matching uses an
+iterative scan to avoid exponential recursion on repeated `*` patterns.
+It also recognizes option arguments, so a pattern such as
 `grep -e -retry file` is not mistaken for a recursive flag.
 Repeated-build reminders are conditional: shell commands and other tools may
 have changed the inputs since the previous check.
