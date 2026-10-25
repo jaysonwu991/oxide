@@ -240,7 +240,13 @@ test("fullscreen zoom scales the image and stays inside its bounds", async () =>
   const viewport = descendants(dialog).find((node) => node.className === "diagram-viewport");
   const zoom = () => viewport.style.getPropertyValue("--diagram-zoom");
   const [zoomOut, level, zoomIn] = buttons(dialog);
-  const key = (value, extra = {}) => dialog.listeners.keydown({ key: value, preventDefault() {}, stopPropagation() {}, ...extra });
+  const key = (value, extra = {}) => {
+    let prevented = false;
+    let stopped = false;
+    dialog.listeners.keydown({ key: value, preventDefault() { prevented = true; }, stopPropagation() { stopped = true; }, ...extra });
+    assert.equal(stopped, true, `${value} must stay inside the modal`);
+    assert.equal(prevented, !extra.metaKey && !extra.ctrlKey && !extra.altKey);
+  };
 
   assert.equal(zoom(), "1");
   assert.equal(level.textContent, "100%");
@@ -264,9 +270,16 @@ test("fullscreen zoom scales the image and stays inside its bounds", async () =>
   assert.equal(zoom(), "1.25");
   key("-");
   assert.equal(zoom(), "1");
+  key("=");
+  assert.equal(zoom(), "1.25");
+  key("0");
   // A platform shortcut still belongs to the platform.
-  key("+", { metaKey: true });
-  assert.equal(zoom(), "1");
+  for (const modifier of ["metaKey", "ctrlKey", "altKey"]) {
+    for (const value of ["+", "=", "-", "0"]) {
+      key(value, { [modifier]: true });
+      assert.equal(zoom(), "1");
+    }
+  }
 
   // Reopening starts from the fitted size again.
   closeDialog(dialog);

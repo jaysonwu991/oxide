@@ -134,6 +134,7 @@
     dialog.append(header, viewport);
     dialog.onclick = (event) => { if (event.target === dialog) dialog.close(); };
     dialog.addEventListener("keydown", (event) => {
+      event.stopPropagation();
       // Keys that belong to the platform still reach it; the diagram keys do not
       // bubble into the transcript behind the modal.
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -141,7 +142,6 @@
         if (event.key === "-") { event.preventDefault(); apply(zoom / ZOOM_STEP); return; }
         if (event.key === "0") { event.preventDefault(); apply(1); return; }
       }
-      event.stopPropagation();
     });
     dialog.addEventListener("close", () => {
       dialog.remove();
