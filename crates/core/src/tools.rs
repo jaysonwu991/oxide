@@ -3179,14 +3179,26 @@ fn match_segments(pattern: &[&str], path: &[&str]) -> bool {
 }
 
 fn wildcard(pattern: &[char], text: &[char]) -> bool {
-    if pattern.is_empty() {
-        return text.is_empty();
+    let (mut p, mut t) = (0, 0);
+    let mut star = None;
+    let mut retry = 0;
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            p += 1;
+            retry = t;
+        } else if p < pattern.len() && (pattern[p] == '?' || pattern[p] == text[t]) {
+            p += 1;
+            t += 1;
+        } else if let Some(index) = star {
+            retry += 1;
+            t = retry;
+            p = index + 1;
+        } else {
+            return false;
+        }
     }
-    match pattern[0] {
-        '*' => wildcard(&pattern[1..], text) || (!text.is_empty() && wildcard(pattern, &text[1..])),
-        '?' => !text.is_empty() && wildcard(&pattern[1..], &text[1..]),
-        ch => !text.is_empty() && text[0] == ch && wildcard(&pattern[1..], &text[1..]),
-    }
+    pattern[p..].iter().all(|ch| *ch == '*')
 }
 
 fn bash_timeout_secs(args: &Value, command: &str) -> u64 {
@@ -3477,12 +3489,14 @@ fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
     shell_segments(command)
         .into_iter()
         .enumerate()
-        .filter_map(|(index, segment)| {
+        .find_map(|(index, segment)| {
             let mut grep = parse_shell_grep(segment)?;
             grep.restatable &= index == 0;
-            Some(grep)
+            let initial_segment =
+                index == 0 && shell_command_index(&grep_shell_words(segment)) == Some(0);
+            (grep.recursive && recursive_grep_sweeps(&grep.operands, cwd, initial_segment))
+                .then_some(grep)
         })
-        .find(|grep| grep.recursive && recursive_grep_sweeps(&grep.operands, cwd))
 }
 
 /// Refuses the recursive shell-grep pattern that most often turns a narrow
@@ -3516,16 +3530,63 @@ fn recursive_shell_grep_refusal(grep: &ShellGrep) -> String {
     message
 }
 
-/// Whether a recursive grep could walk a directory rather than the files it
-/// names: no operand at all, a glob or a folder, or a path this run cannot
-/// resolve to a file (which a later `cd` may still turn into a tree).
-fn recursive_grep_sweeps(operands: &[String], cwd: &Path) -> bool {
+/// Only expand a simple filename glob in a literal directory. Later shell
+/// segments may have changed cwd, so relative globs there remain conservative.
+fn grep_glob_names_files(operand: &str, cwd: &Path, initial_segment: bool) -> bool {
+    if operand.starts_with('~')
+        || operand.ends_with('/')
+        || operand.contains(['\'', '"', '\\', '$', '`', '[', '{', '}'])
+    {
+        return false;
+    }
+    let path = Path::new(operand);
+    if !initial_segment && !path.is_absolute() {
+        return false;
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let Some(pattern) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if parent.to_string_lossy().contains(['*', '?']) || !pattern.contains(['*', '?']) {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(cwd.join(parent)) else {
+        return false;
+    };
+    let pattern_chars: Vec<char> = pattern.chars().collect();
+    let mut matched = false;
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        if name.starts_with('.') && !pattern.starts_with('.') {
+            continue;
+        }
+        if wildcard(&pattern_chars, &name.chars().collect::<Vec<_>>()) {
+            if !entry.path().is_file() {
+                return false;
+            }
+            matched = true;
+        }
+    }
+    matched
+}
+
+fn recursive_grep_sweeps(operands: &[String], cwd: &Path, initial_segment: bool) -> bool {
     operands.is_empty()
         || operands.iter().any(|operand| {
+            if grep_glob_names_files(operand, cwd, initial_segment) {
+                return false;
+            }
             let operand = operand.trim_matches(['\'', '"']);
             operand.is_empty()
                 || operand.ends_with('/')
-                || operand.chars().any(|ch| matches!(ch, '*' | '?' | '['))
+                || operand.contains(['*', '?', '['])
                 || !cwd.join(operand).is_file()
         })
 }
@@ -7685,6 +7746,54 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn recursive_grep_allows_only_globs_that_expand_to_files() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_grep_globs_{}_RUNNER~1", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/guide.md"), "needle\n").unwrap();
+        std::fs::write(dir.join("docs/notes.md"), "needle\n").unwrap();
+        std::fs::create_dir_all(dir.join("docs/cache.md")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/.hidden.md")).unwrap();
+        for command in [
+            "grep -rn needle docs/guide.*",
+            "grep -rn needle docs/notes.??",
+        ] {
+            assert!(!uses_recursive_shell_grep(command, &dir), "{command}");
+        }
+        for command in [
+            "grep -rn needle docs/*.md",
+            "grep -rn needle docs/.*.md",
+            "grep -rn needle docs/missing*.md",
+            "grep -rn needle ~/docs/*.md",
+            "grep -rn needle ~user/docs/*.md",
+            "grep -rn needle docs/guide.*/",
+            "grep -rn needle 'docs/guide.*'",
+            "grep -rn needle docs/*/guide.md",
+            "grep -rn needle docs/**",
+            "cd elsewhere; grep -rn needle docs/guide.*",
+            "env -C elsewhere grep -rn needle docs/guide.*",
+            "grep -rn needle docs/guide.* docs/cache.md",
+        ] {
+            assert!(uses_recursive_shell_grep(command, &dir), "{command}");
+        }
+        std::fs::remove_dir(dir.join("docs/cache.md")).unwrap();
+        assert!(!uses_recursive_shell_grep(
+            "grep -rn needle docs/*.md",
+            &dir
+        ));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(".", dir.join("docs/link.md")).unwrap();
+            assert!(uses_recursive_shell_grep("grep -rn needle docs/*.md", &dir));
+            std::fs::remove_file(dir.join("docs/link.md")).unwrap();
+        }
+        let docs = dir.join("docs").to_string_lossy().replace('\\', "/");
+        let command = format!("ls; grep -rn needle {docs}/*.md");
+        assert!(!uses_recursive_shell_grep(&command, &dir), "{command}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn bash_redirects_recursive_grep_to_the_search_tool() {
         let output = execute(
@@ -7724,7 +7833,7 @@ mod tests {
         let output = execute(
             &call(
                 "bash",
-                json!({ "command": "grep -rn \"providers\" api.md features.md | head -40" }),
+                json!({ "command": "grep -rn \"providers\" *.md | head -40" }),
             ),
             &dir,
             &McpRegistry::default(),
@@ -8015,6 +8124,32 @@ mod tests {
         });
         assert_eq!(visited, 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn wildcard_matching_handles_backtracking_and_long_inputs() {
+        for (pattern, text, expected) in [
+            ("*a", "*ba", true),
+            ("*a*b", "aaac", false),
+            ("a**?c*", "abcc", true),
+            ("*您?", "啊您好", true),
+            ("?", "", false),
+            ("***", "", true),
+        ] {
+            assert_eq!(
+                wildcard(
+                    &pattern.chars().collect::<Vec<_>>(),
+                    &text.chars().collect::<Vec<_>>()
+                ),
+                expected,
+                "{pattern}: {text}"
+            );
+        }
+        assert!(!glob_match(
+            &format!("{}b", "*a".repeat(40)),
+            &"a".repeat(80)
+        ));
+        assert!(glob_match("*", &"a".repeat(100_000)));
     }
 
     #[test]
