@@ -12,8 +12,8 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
   turn runs. It is contributed twice — an **Oxide**
   icon in the activity bar and a **Chat** pane in the secondary side bar, the
   strip Copilot Chat lives in — and both panes show the same thread. Its icons
-  are the desktop app's: the cyan diamond mark and, in the Extensions view, the
-  desktop app icon.
+  are the desktop app's: the diamond split into a rust **Ox** half and a cyan
+  **IDE** half, and, in the Extensions view, the desktop app icon.
 - **Mermaid diagrams**: assistant replies render fenced `mermaid` blocks as themed
   diagrams, with source disclosure and a fullscreen view. Rendering uses a bundled
   local library; invalid diagrams show their source. The CLI keeps the same fences
