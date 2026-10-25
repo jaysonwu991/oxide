@@ -1343,9 +1343,17 @@ than offering to repeat it. The dialog's own button is the one to ask again with
 
 ## Packaging
 
-Icons are checked in (`icons/`: `icon.icns` for macOS, `icon.ico` for Windows,
-`icon.png` for Linux, and the `.png` sizes and `icon.iconset` they were made
-from). One command produces this platform's installer:
+The app's mark is a diamond cut into the two parts of its name: the left half is
+rust (`#d9643a`) — `Ox`, the language the harness is written in, rust being iron
+oxide — and the right half is cyan (`#5fd7ff`) — `IDE`, the tool it is used as, a
+code bracket either side of the caret-width seam between them, both held by the
+ink rim (`#2d2d3a`) inside a `#14141a` tile. `scripts/build-icons.py` defines
+that mark once and writes every icon from it: `icons/` (`icon.icns` for macOS,
+`icon.ico` for Windows, `icon.png` for Linux, and the `.png` sizes and
+`icon.iconset` they were made from) and the extension's `media/oxide.svg` and
+`media/icon.png`. The icons are checked in, so a checkout packages without the
+script; running it needs macOS, where `sips` and `iconutil` are. One command
+produces this platform's installer:
 
 ```sh
 cd crates/desktop

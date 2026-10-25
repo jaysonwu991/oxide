@@ -23,12 +23,18 @@ const icon = manifest.icon ?? "";
 const iconFile = path.join(root, icon);
 const mark = path.join(root, "media", "oxide.svg");
 
-/// The desktop app's mark: a cyan diamond with a dark rim, drawn as
-/// `rgb(95, 215, 255)` on `rgb(45, 45, 58)`. The container icon carries its own
-/// colours because VS Code draws a contributed icon as a plain background
-/// image, where `currentColor` in a standalone SVG is black — invisible on a
-/// dark side bar.
-const MARK_COLORS = ["#5fd7ff", "#2d2d3a"];
+/// The desktop app's mark: the diamond split into the two parts of the name — a
+/// rust `Ox` half (`#d9643a`, the language it is written in) and a cyan `IDE`
+/// half (`#5fd7ff`, the tool it is used as) — both held by the ink rim
+/// (`#2d2d3a`). The container icon carries its own colours because VS Code
+/// draws a contributed icon as a plain background image, where `currentColor`
+/// in a standalone SVG is black — invisible on a dark side bar.
+const MARK_COLORS = ["#5fd7ff", "#d9643a", "#2d2d3a"];
+
+/// The two halves are drawn as an ink shape behind each coloured one, so the
+/// mark is four polygons: two rims and one fill per half. A mark merged back
+/// into a single diamond would paint the same colours and lose the split.
+const MARK_SHAPES: Record<string, number> = { "#2d2d3a": 2, "#d9643a": 1, "#5fd7ff": 1 };
 
 /// The first bytes of a PNG, followed by the IHDR width and height the icon must
 /// have (square, at least the 128x128 VS Code asks for).
@@ -63,6 +69,10 @@ describe("brand assets", () => {
     assert.equal(svg.includes("currentcolor"), false, "the mark carries its own colours");
     for (const color of MARK_COLORS) {
       assert.ok(svg.includes(color), `the mark uses ${color}`);
+    }
+    for (const [color, count] of Object.entries(MARK_SHAPES)) {
+      const draws = svg.split(`fill="${color}"`).length - 1;
+      assert.equal(draws, count, `the mark draws ${color} ${count}×`);
     }
   });
 

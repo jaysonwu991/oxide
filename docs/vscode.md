@@ -61,7 +61,7 @@ editors/vscode/
     diagrams.js       the shared Mermaid renderer, copied from shared/ at build time
     diagrams.css      its styles, also copied from shared/
     vendor/           the pinned Mermaid bundle and its licence, copied at build
-    oxide.svg         container and view icon: the desktop app's mark
+    oxide.svg         container and view icon: the desktop app's two-tone mark
     icon.png          extension icon: a copy of the desktop app's app icon
 ```
 
@@ -154,20 +154,34 @@ closes the completion list or stops a turn.
 
 ## Brand assets
 
-Both icons are the desktop app's: `media/oxide.svg` redraws the mark inside
-`crates/desktop/icons/icon.png` — a cyan diamond (`#5fd7ff`) with a dark rim
-(`#2d2d3a`), at the same proportions relative to its box (the cyan diamond
-spans 62.5% of the canvas in both, the rim reaching 71.9% across the PNG and
-67.2% as the stroked path in the SVG) — and `media/icon.png` is the
-desktop's `128x128.png` byte for byte, which is what the Extensions view and the
-Marketplace listing show.
+Both icons are the desktop app's. The mark is the diamond the app has always
+worn, cut into the two parts of its name: the left half is rust (`#d9643a`) —
+`Ox`, the language the agent is written in, rust being iron oxide — and the
+right half is cyan (`#5fd7ff`) — `IDE`, the tool it is used as, a code bracket
+either side of a caret. The ink rim (`#2d2d3a`) holds both halves and the seam
+between them is a caret's width, so the halves read as brackets and the whole
+still reads as the diamond. `media/oxide.svg` redraws it on a 24-unit box — the
+fills span 62.5% of the box, the ink 71.875%, the seam 1.4 units — and
+`media/icon.png` is the desktop's `128x128.png` byte for byte, which is what the
+Extensions view and the Marketplace listing show.
+
+`scripts/build-icons.py` is where that mark is defined: it draws the tile and the
+mark once and writes every icon from them — the app's `icon.icns`, `icon.ico`,
+`.png` sizes and `icon.iconset`, and both files here — so the geometry, the
+colours and the proportions live in one place rather than in nine binaries. It
+runs on macOS, which is where the icon tools (`sips`, `iconutil`) are.
 
 The SVG carries those colours instead of `currentColor` on purpose: VS Code
 draws a contributed icon as a plain background image, and `currentColor` in a
 standalone SVG document resolves to black, so a tinted mark would vanish on a
-dark side bar. `test/brand.test.ts` keeps both files honest — it reads the
-manifest's `icon`, checks the PNG header, and compares the file against the
-desktop's, so the two can only drift together.
+dark side bar. Where the mark has to be one colour — a menu bar glyph, a printed
+header — the split survives as a difference of tone rather than of hue, the rust
+half the dimmer of the two, so the two parts are never dropped.
+
+`test/brand.test.ts` keeps both files honest — it reads the manifest's `icon`,
+checks the PNG header, holds the mark's three colours and the four shapes that
+carry them, and compares the file against the desktop's, so the two can only
+drift together.
 
 ## Sharing configuration with the CLI
 
