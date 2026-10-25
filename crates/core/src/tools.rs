@@ -3533,7 +3533,10 @@ fn recursive_shell_grep_refusal(grep: &ShellGrep) -> String {
 /// Only expand a simple filename glob in a literal directory. Later shell
 /// segments may have changed cwd, so relative globs there remain conservative.
 fn grep_glob_names_files(operand: &str, cwd: &Path, initial_segment: bool) -> bool {
-    if operand.ends_with('/') || operand.contains(['\'', '"', '\\', '$', '`', '[', '{', '}', '~']) {
+    if operand.starts_with('~')
+        || operand.ends_with('/')
+        || operand.contains(['\'', '"', '\\', '$', '`', '[', '{', '}'])
+    {
         return false;
     }
     let path = Path::new(operand);
@@ -7745,7 +7748,8 @@ mod tests {
 
     #[test]
     fn recursive_grep_allows_only_globs_that_expand_to_files() {
-        let dir = std::env::temp_dir().join(format!("oxide_grep_globs_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("oxide_grep_globs_{}_RUNNER~1", std::process::id()));
         std::fs::create_dir_all(dir.join("docs")).unwrap();
         std::fs::write(dir.join("docs/guide.md"), "needle\n").unwrap();
         std::fs::write(dir.join("docs/notes.md"), "needle\n").unwrap();
@@ -7761,6 +7765,8 @@ mod tests {
             "grep -rn needle docs/*.md",
             "grep -rn needle docs/.*.md",
             "grep -rn needle docs/missing*.md",
+            "grep -rn needle ~/docs/*.md",
+            "grep -rn needle ~user/docs/*.md",
             "grep -rn needle docs/guide.*/",
             "grep -rn needle 'docs/guide.*'",
             "grep -rn needle docs/*/guide.md",
@@ -7784,7 +7790,7 @@ mod tests {
         }
         let docs = dir.join("docs").to_string_lossy().replace('\\', "/");
         let command = format!("ls; grep -rn needle {docs}/*.md");
-        assert!(!uses_recursive_shell_grep(&command, &dir));
+        assert!(!uses_recursive_shell_grep(&command, &dir), "{command}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
