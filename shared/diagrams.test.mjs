@@ -9,7 +9,7 @@ function page(render = async (_id, source) => ({ svg: `<svg><text>${source}</tex
   const nodes = [];
   const events = [];
   class Element {
-    constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.hidden = false; nodes.push(this); }
+    constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.hidden = false; this.style = style(); nodes.push(this); }
     get isConnected() { return this === document.documentElement || Boolean(this.parent?.isConnected); }
     get textContent() { return this.ownText ?? this.children.map((node) => node.textContent).join(""); }
     set textContent(value) { this.ownText = value; }
@@ -88,9 +88,18 @@ function page(render = async (_id, source) => ({ svg: `<svg><text>${source}</tex
   }
   return { document, nodes, code, flush, calls, configurations, events, paint: context.OxideDiagrams.paint, light() { background = "rgb(255, 255, 255)"; } };
 }
+function style() {
+  const values = {};
+  return {
+    setProperty(key, value) { values[key] = value; },
+    getPropertyValue(key) { return values[key] ?? ""; },
+  };
+}
 const figures = (p) => p.nodes.filter((node) => node.className === "mermaid-diagram" && node.isConnected);
 const descendants = (node) => node.children.flatMap((child) => [child, ...descendants(child)]);
 const find = (node, tag) => descendants(node).find((child) => child.tag === tag);
+const buttons = (node) => descendants(node).filter((child) => child.tag === "button");
+const closeDialog = (dialog) => buttons(dialog).at(-1).onclick();
 
 test("renders complete assistant diagrams locally and preserves source", async () => {
   const p = page();
@@ -171,7 +180,7 @@ test("fullscreen closes on dismissal and restores keyboard focus", async () => {
   expand.onclick();
   const dialog = p.nodes.find((node) => node.tag === "dialog");
   assert.equal(dialog.open, true);
-  find(dialog, "button").onclick();
+  closeDialog(dialog);
   assert.equal(dialog.isConnected, false);
   assert.equal(p.document.activeElement, expand);
   expand.onclick();
@@ -220,8 +229,64 @@ test("streaming paints preserve fullscreen identity and repeated diagrams", asyn
   assert.equal(figures(p)[1], second);
   assert.equal(dialog.isConnected, true);
   assert.equal(dialog.open, true);
-  find(dialog, "button").onclick();
+  closeDialog(dialog);
   assert.equal(p.document.activeElement, find(first, "button"));
+});
+
+test("fullscreen zoom scales the image and stays inside its bounds", async () => {
+  const p = page(); p.code("flowchart LR; A --> B"); await p.flush();
+  find(figures(p)[0], "button").onclick();
+  const dialog = p.nodes.filter((node) => node.tag === "dialog" && node.isConnected).at(-1);
+  const viewport = descendants(dialog).find((node) => node.className === "diagram-viewport");
+  const zoom = () => viewport.style.getPropertyValue("--diagram-zoom");
+  const [zoomOut, level, zoomIn] = buttons(dialog);
+  const key = (value, extra = {}) => {
+    let prevented = false;
+    let stopped = false;
+    dialog.listeners.keydown({ key: value, preventDefault() { prevented = true; }, stopPropagation() { stopped = true; }, ...extra });
+    assert.equal(stopped, true, `${value} must stay inside the modal`);
+    assert.equal(prevented, !extra.metaKey && !extra.ctrlKey && !extra.altKey);
+  };
+
+  assert.equal(zoom(), "1");
+  assert.equal(level.textContent, "100%");
+  zoomIn.onclick();
+  assert.equal(zoom(), "1.25");
+  assert.equal(level.textContent, "125%");
+  zoomOut.onclick();
+  assert.equal(zoom(), "1");
+
+  // The controls stop at the bounds instead of running away.
+  while (!zoomIn.disabled) zoomIn.onclick();
+  assert.equal(zoom(), "3");
+  zoomIn.onclick();
+  assert.equal(zoom(), "3");
+  while (!zoomOut.disabled) zoomOut.onclick();
+  assert.equal(zoom(), "0.5");
+
+  key("0");
+  assert.equal(zoom(), "1");
+  key("+");
+  assert.equal(zoom(), "1.25");
+  key("-");
+  assert.equal(zoom(), "1");
+  key("=");
+  assert.equal(zoom(), "1.25");
+  key("0");
+  // A platform shortcut still belongs to the platform.
+  for (const modifier of ["metaKey", "ctrlKey", "altKey"]) {
+    for (const value of ["+", "=", "-", "0"]) {
+      key(value, { [modifier]: true });
+      assert.equal(zoom(), "1");
+    }
+  }
+
+  // Reopening starts from the fitted size again.
+  closeDialog(dialog);
+  find(figures(p)[0], "button").onclick();
+  const reopened = p.nodes.filter((node) => node.tag === "dialog" && node.isConnected).at(-1);
+  const reopenedViewport = descendants(reopened).find((node) => node.className === "diagram-viewport");
+  assert.equal(reopenedViewport.style.getPropertyValue("--diagram-zoom"), "1");
 });
 
 test("modal keys stop at the dialog while native defaults remain enabled", async () => {
