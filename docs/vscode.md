@@ -1245,8 +1245,10 @@ keyboard behavior. Recall restores text only, so attachments can be selected aga
 
 Fenced `mermaid` blocks in a reply render as diagrams once their closing fence
 arrives, including in a replayed thread. Each diagram follows the panel's own
-colours and offers its source and a fullscreen view; an invalid diagram keeps its
-text visible, and the user's own messages keep the fence as code. The renderer is
+colours and offers its source and a fullscreen view; the fullscreen view zooms
+with its own buttons or `+`, `-` and `0`, and `0` returns to the fitted size. An
+invalid diagram keeps its text visible, and the user's own messages keep the
+fence as code. The renderer is
 `shared/diagrams.js` and `shared/diagrams.css`, copied into `media/` by
 `scripts/prepare-diagrams.mjs` (`pnpm run compile` runs it first) together with
 the pinned, self-contained Mermaid browser bundle under `media/vendor/` — no CDN

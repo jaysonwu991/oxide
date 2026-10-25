@@ -1189,8 +1189,10 @@ output behind it, and `write`/`edit` results include a colored diff.
 
 Fenced `mermaid` blocks in assistant replies render as diagrams once their closing
 fence arrives, including in saved conversations. Each diagram follows the current
-theme and offers **Diagram source** and **View fullscreen**. Invalid diagrams keep
-their source visible. User messages, the composer, and the CLI retain the code.
+theme and offers **Diagram source** and **View fullscreen**; the fullscreen view
+zooms with its own buttons or `+`, `-` and `0`, and `0` returns to the fitted
+size. Invalid diagrams keep their source visible. User messages, the composer,
+and the CLI retain the code.
 
 The shared renderer lives in `shared/diagrams.js` and `shared/diagrams.css`.
 `scripts/prepare-diagrams.mjs` copies it and the pinned Mermaid browser bundle
