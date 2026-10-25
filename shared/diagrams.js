@@ -12,10 +12,15 @@
   let scheduled = false;
 
   const labels = {
-    en: { title: "Mermaid diagram", source: "Diagram source", loading: "Rendering diagram…", error: "Could not render diagram. The source is available below.", expand: "View fullscreen", close: "Close diagram" },
-    zh: { title: "Mermaid 图表", source: "图表源码", loading: "正在渲染图表…", error: "无法渲染图表。可在下方查看源码。", expand: "全屏查看", close: "关闭图表" },
+    en: { title: "Mermaid diagram", source: "Diagram source", loading: "Rendering diagram…", error: "Could not render diagram. The source is available below.", expand: "View fullscreen", close: "Close diagram", zoomIn: "Zoom in", zoomOut: "Zoom out", zoomReset: "Reset zoom", zoomLevel: "Zoom level" },
+    zh: { title: "Mermaid 图表", source: "图表源码", loading: "正在渲染图表…", error: "无法渲染图表。可在下方查看源码。", expand: "全屏查看", close: "关闭图表", zoomIn: "放大", zoomOut: "缩小", zoomReset: "重置缩放", zoomLevel: "缩放比例" },
   };
   const text = (key) => labels[document.documentElement.lang.startsWith("zh") ? "zh" : "en"][key];
+
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 3;
+  const ZOOM_STEP = 1.25;
+  const zoomTo = (value) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(value * 100) / 100));
 
   function theme() {
     const color = getComputedStyle(document.body).backgroundColor;
@@ -89,15 +94,55 @@
     title.textContent = text("title");
     const close = button(text("close"), "m6 6 12 12M6 18 18 6");
     close.onclick = () => dialog.close();
-    header.append(title, close);
     const viewport = document.createElement("div");
     viewport.className = "diagram-viewport";
     viewport.tabIndex = 0;
+
+    // A tall diagram is drawn at the viewport width, so the only way to read a
+    // dense one is to scale it. The level scales the image through a custom
+    // property, which keeps the scroll area authoritative.
+    let zoom = 1;
+    const zoomGroup = document.createElement("div");
+    zoomGroup.className = "diagram-zoom";
+    const zoomOut = button(text("zoomOut"), "M5 12h14");
+    const zoomIn = button(text("zoomIn"), "M12 5v14M5 12h14");
+    const level = document.createElement("button");
+    level.type = "button";
+    level.className = "diagram-zoom-level";
+    level.title = level.ariaLabel = text("zoomReset");
+    const announcement = document.createElement("span");
+    announcement.className = "diagram-sr-only";
+    announcement.setAttribute("aria-live", "polite");
+    const apply = (next) => {
+      zoom = zoomTo(next);
+      const percent = Math.round(zoom * 100);
+      viewport.style.setProperty("--diagram-zoom", String(zoom));
+      level.textContent = `${percent}%`;
+      zoomOut.disabled = zoom <= ZOOM_MIN;
+      zoomIn.disabled = zoom >= ZOOM_MAX;
+      announcement.textContent = `${text("zoomLevel")}: ${percent}%`;
+    };
+    zoomOut.onclick = () => apply(zoom / ZOOM_STEP);
+    zoomIn.onclick = () => apply(zoom * ZOOM_STEP);
+    level.onclick = () => apply(1);
+    zoomGroup.append(zoomOut, level, zoomIn, announcement);
+    apply(zoom);
+
+    header.append(title, zoomGroup, close);
     const image = record.image.cloneNode();
     viewport.append(image);
     dialog.append(header, viewport);
     dialog.onclick = (event) => { if (event.target === dialog) dialog.close(); };
-    dialog.addEventListener("keydown", (event) => event.stopPropagation());
+    dialog.addEventListener("keydown", (event) => {
+      // Keys that belong to the platform still reach it; the diagram keys do not
+      // bubble into the transcript behind the modal.
+      if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (event.key === "+" || event.key === "=") { event.preventDefault(); apply(zoom * ZOOM_STEP); return; }
+        if (event.key === "-") { event.preventDefault(); apply(zoom / ZOOM_STEP); return; }
+        if (event.key === "0") { event.preventDefault(); apply(1); return; }
+      }
+      event.stopPropagation();
+    });
     dialog.addEventListener("close", () => {
       dialog.remove();
       if (fullscreen?.dialog === dialog) fullscreen = undefined;
