@@ -7782,7 +7782,8 @@ mod tests {
             assert!(uses_recursive_shell_grep("grep -rn needle docs/*.md", &dir));
             std::fs::remove_file(dir.join("docs/link.md")).unwrap();
         }
-        let command = format!("ls; grep -rn needle {}/*.md", dir.join("docs").display());
+        let docs = dir.join("docs").to_string_lossy().replace('\\', "/");
+        let command = format!("ls; grep -rn needle {docs}/*.md");
         assert!(!uses_recursive_shell_grep(&command, &dir));
         std::fs::remove_dir_all(dir).unwrap();
     }
