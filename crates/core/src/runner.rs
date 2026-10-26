@@ -285,6 +285,50 @@ mod tests {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
+    fn resumed_follow_ups_keep_prior_requests_and_images() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_follow_up_context_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = SessionLog::create_in(&dir, &dir).unwrap();
+        let image = ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,c2NyZWVuc2hvdA==".into(),
+                detail: None,
+            },
+        };
+        let initial = Message::user_parts(
+            "Keep this file locally, don't commit and push it to remote",
+            vec![image],
+        );
+        log.append(&initial).unwrap();
+        log.append(&Message::assistant(
+            "I will inspect its tracking state.",
+            vec![],
+        ))
+        .unwrap();
+        let path = log.path().to_path_buf();
+        drop(log);
+
+        for prompt in ["Remove it from PR", "Seems need some refresh/updates"] {
+            let reopened = SessionLog::open(path.clone()).unwrap();
+            let (history, _) =
+                begin_session(&dir, Some(reopened), false, prompt, &[], &[]).unwrap();
+            assert_eq!(
+                serde_json::to_value(&history[0]).unwrap(),
+                serde_json::to_value(&initial).unwrap()
+            );
+            assert_eq!(history.last().unwrap().display().as_deref(), Some(prompt));
+        }
+        let messages = SessionLog::open(path).unwrap().messages().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[2].display().as_deref(), Some("Remove it from PR"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn an_environment_key_follows_the_project_and_its_servers() {
         use crate::ecosystem::{McpKind, McpServer};
 
