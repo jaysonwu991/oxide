@@ -2502,7 +2502,13 @@ impl VerificationState {
                             self.reviewed = true;
                         }
                     }
-                    if rule.checks.iter().any(|check| command.contains(check)) {
+                    // A status read that came back still-pending confirms
+                    // nothing yet: `gh pr checks` exits 8 while CI runs, which
+                    // `tools::bash` reports as a result rather than a failure,
+                    // so the rule has to stay pending until an outcome lands.
+                    if rule.checks.iter().any(|check| command.contains(check))
+                        && !reports_pending_checks(output)
+                    {
                         self.pending.remove(rule.key);
                     }
                 }
@@ -2610,6 +2616,13 @@ fn same_path(a: &str, b: &str) -> bool {
     let a = a.trim_end_matches('/');
     let b = b.trim_end_matches('/');
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
+}
+
+/// Whether a status read answered that the checks are still running, which is
+/// the note `tools::bash` appends to `gh pr checks`' documented pending exit.
+/// Such a read confirms no outcome, so it must not clear a pending rule.
+fn reports_pending_checks(output: &str) -> bool {
+    output.contains(tools::PENDING_CHECKS_NOTE)
 }
 
 /// Whether a tool result reports failure explicitly or by a non-zero shell
@@ -7106,6 +7119,38 @@ for line in sys.stdin:
         assert!(output_failed("error: nope"));
         assert!(output_failed("[exit: 1]"));
         assert!(!output_failed("[exit: 0]"));
+    }
+
+    /// `gh pr checks` exits 8 while CI runs, which `tools::bash` reports as a
+    /// result rather than a failure. That read is not the outcome the rule
+    /// waits for, so the pull request stays unconfirmed until one lands.
+    #[test]
+    fn a_still_pending_check_does_not_confirm_the_pull_request() {
+        let pending = format!("build\tpending\n[exit: 8] ({})", tools::PENDING_CHECKS_NOTE);
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "[exit: 0]",
+        );
+        state.record("bash", &json!({"command": "gh pr checks 42"}), &pending);
+        assert!(state.pending.contains("pull request"));
+        assert!(state.reminder().is_some());
+
+        // The same read once a check has reported clears it.
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "[exit: 0]",
+        );
+        state.record(
+            "bash",
+            &json!({"command": "gh pr checks 42"}),
+            "build\tpass\n[exit: 0]",
+        );
+        assert!(state.pending.is_empty());
+        assert!(state.reminder().is_none());
     }
 
     #[test]
