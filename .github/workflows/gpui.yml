@@ -1,0 +1,112 @@
+name: GPUI
+
+# Builds the GPUI app for macOS (arm64 and x64) and attaches the bundles to the
+# release its `gpui-v*` tag names. The app is one native binary, so what a
+# release carries is the `.app` bundle archived by
+# `crates/desktop-gpui/scripts/package-macos.sh` — the name
+# `oxide_core::updates::Component::Gpui::assets()` resolves, which is also what
+# the app's own updater downloads and unpacks over the copy it runs from.
+#
+# Only the release job holds `contents: write`; a build — including a
+# `workflow_dispatch` run that publishes nothing — holds a read-only token, as
+# the CLI, desktop and extension workflows do.
+#
+# GPUI compiles its Metal shaders at build time, and the Metal toolchain is no
+# longer part of Xcode's default install, so each macOS job downloads it before
+# building.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "gpui-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            name: macOS arm64
+            artifact: macos-arm64
+            arch: arm64
+
+          - platform: macos-15-intel
+            name: macOS x64
+            artifact: macos-x64
+            arch: x64
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
+
+      - name: Install the Metal toolchain
+        shell: bash
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      # The app's package is its own workspace, so its build lands in its own
+      # `target/`, which is what this caches.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: gpui-app
+          workspaces: crates/desktop-gpui
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/gpui-v')
+        shell: bash
+        run: ./scripts/set-version.sh "${GITHUB_REF_NAME}"
+
+      # One command produces this architecture's bundle: it compiles the app in
+      # release mode, assembles `Oxide GPUI.app` around it and archives it. A
+      # build that produces no archive fails the upload step below rather than
+      # shipping a release missing its asset.
+      - name: Package
+        shell: bash
+        run: crates/desktop-gpui/scripts/package-macos.sh --arch ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxide-gpui-${{ matrix.artifact }}
+          path: |
+            crates/desktop-gpui/artifacts/*.app.tar.gz
+            crates/desktop-gpui/artifacts/*.app.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/gpui-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: oxide-gpui-*
+          merge-multiple: true
+      # Keep the notes release-drafter already drafted for this tag; only create
+      # a release when none exists yet (for example a tag pushed by hand).
+      - name: Upload bundles and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft \
+              --title "Oxide GPUI ${GITHUB_REF_NAME#gpui-}" --generate-notes
+          fi
+          find release-assets -type f -print0 \
+            | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
+          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false

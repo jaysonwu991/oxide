@@ -29,6 +29,10 @@
 /crates/desktop/artifacts/
 /crates/desktop/target/
 
+# The GPUI app is its own workspace too: cargo output and a packaged bundle.
+/crates/desktop-gpui/target/
+/crates/desktop-gpui/artifacts/
+
 # Session dumps captured into the repo root
 /*.jsonl
 /sessions/

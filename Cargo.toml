@@ -11,6 +11,7 @@ members = [
 # the workspace depend on that step first.
 exclude = [
     "crates/desktop",
+    "crates/desktop-gpui",
 ]
 
 [workspace.package]

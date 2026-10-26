@@ -1,0 +1,36 @@
+[package]
+name = "oxide-desktop-gpui"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "GPUI front-end for the Oxide desktop app"
+
+# The second desktop front-end, built with Zed's GPUI rather than Electron. It is
+# its own package and its own workspace, the way `crates/desktop` is: GPUI is a
+# large graphical dependency the core workspace must not build, and the Electron
+# app keeps its own release train. Both share `oxide-core` (configuration,
+# sessions, turns) and the desktop harness's own project, session and completion
+# logic in `crates/desktop/src`, so the two windows see the same data.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+gpui = "0.2.2"
+oxide-core = { path = "../core" }
+oxide-desktop = { path = "../desktop" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+unicode-segmentation = "1"
+
+[[bin]]
+name = "oxide-desktop-gpui"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

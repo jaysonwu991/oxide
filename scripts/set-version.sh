@@ -12,13 +12,15 @@
 # `crates/desktop`).
 #
 # A tag may carry a component prefix so each component releases independently:
-# `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
-# and `extension-v1.2.3` for the VS Code extension (which is versioned in its
-# own `editors/vscode/package.json`). A bare `1.2.3` is also accepted.
+# `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the Electron app,
+# `gpui-v1.2.3` for the GPUI app, and `extension-v1.2.3` for the VS Code
+# extension (which is versioned in its own `editors/vscode/package.json`). A bare
+# `1.2.3` is also accepted.
 #
 # Usage: scripts/set-version.sh v1.2.3
 #        scripts/set-version.sh cli-v1.2.3
 #        scripts/set-version.sh desktop-v1.2.3
+#        scripts/set-version.sh gpui-v1.2.3
 #        scripts/set-version.sh extension-v1.2.3
 
 set -euo pipefail
@@ -34,6 +36,10 @@ component=""
 case "$version" in
   cli-*) version="${version#cli-}" ;;
   desktop-*) version="${version#desktop-}" ;;
+  gpui-*)
+    component="gpui"
+    version="${version#gpui-}"
+    ;;
   extension-*)
     component="vscode"
     version="${version#extension-}"
@@ -79,6 +85,32 @@ if component == "vscode":
     with open(manifest, "w", encoding="utf-8") as handle:
         handle.write(package)
     print(f"set extension version to {version}")
+    sys.exit(0)
+
+# crates/desktop-gpui/Cargo.toml: the GPUI app is its own workspace too, so it
+# reports the release's version in its own manifest — `update::VERSION` is that
+# number, and it is what a `gpui-v*` release is compared against.
+if component == "gpui":
+    manifest = f"{root}/crates/desktop-gpui/Cargo.toml"
+    with open(manifest, encoding="utf-8") as handle:
+        lines = handle.readlines()
+    in_section = False
+    patched = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped == "[package]"
+            continue
+        if in_section and re.match(r"^version\s*=", stripped):
+            indent = line[: len(line) - len(line.lstrip())]
+            lines[index] = f'{indent}version = "{version}"\n'
+            patched = True
+            break
+    if not patched:
+        sys.exit("error: could not find version in [package] of crates/desktop-gpui/Cargo.toml")
+    with open(manifest, "w", encoding="utf-8") as handle:
+        handle.writelines(lines)
+    print(f"set GPUI app version to {version}")
     sys.exit(0)
 
 # Cargo.toml: the `version` inside `[workspace.package]`.

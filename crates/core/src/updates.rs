@@ -30,10 +30,19 @@ pub enum Component {
     Cli,
     Desktop,
     Extension,
+    /// The GPUI front-end: a native window over the same core, released from
+    /// its own `gpui-v*` tag so it never has to ship in step with the Electron
+    /// app it sits beside.
+    Gpui,
 }
 
 impl Component {
-    pub const ALL: [Component; 3] = [Component::Cli, Component::Desktop, Component::Extension];
+    pub const ALL: [Component; 4] = [
+        Component::Cli,
+        Component::Desktop,
+        Component::Extension,
+        Component::Gpui,
+    ];
 
     /// The `--component` spelling, plus the names a front-end may call itself.
     pub fn parse(text: &str) -> Option<Self> {
@@ -41,6 +50,7 @@ impl Component {
             "cli" | "command-line" => Some(Self::Cli),
             "desktop" | "app" => Some(Self::Desktop),
             "extension" | "vscode" | "vs-code" | "editor" => Some(Self::Extension),
+            "gpui" | "gpui-app" | "desktop-gpui" => Some(Self::Gpui),
             _ => None,
         }
     }
@@ -50,6 +60,7 @@ impl Component {
             Self::Cli => "cli",
             Self::Desktop => "desktop",
             Self::Extension => "extension",
+            Self::Gpui => "gpui",
         }
     }
 
@@ -59,6 +70,7 @@ impl Component {
             Self::Cli => "the oxide CLI",
             Self::Desktop => "the Oxide desktop app",
             Self::Extension => "the Oxide extension for VS Code",
+            Self::Gpui => "the Oxide GPUI app",
         }
     }
 
@@ -81,6 +93,10 @@ impl Component {
                 Some(rest) => rest,
                 None => return false,
             },
+            Self::Gpui => match tag.strip_prefix("gpui-") {
+                Some(rest) => rest,
+                None => return false,
+            },
         };
         version
             .strip_prefix('v')
@@ -95,6 +111,7 @@ impl Component {
             Self::Cli => format!("v{version}"),
             Self::Desktop => format!("desktop-v{version}"),
             Self::Extension => format!("extension-v{version}"),
+            Self::Gpui => format!("gpui-v{version}"),
         }
     }
 
@@ -102,7 +119,7 @@ impl Component {
     /// (`desktop-v1.2.3`), the bare tag (`v1.2.3`) or a version on its own.
     pub fn normalize_tag(self, requested: &str) -> Result<String> {
         let trimmed = requested.trim();
-        let without_component = ["cli-", "desktop-", "extension-"]
+        let without_component = ["cli-", "desktop-", "extension-", "gpui-"]
             .iter()
             .find_map(|prefix| trimmed.strip_prefix(prefix))
             .unwrap_or(trimmed);
@@ -154,6 +171,16 @@ impl Component {
                 _ => Vec::new(),
             },
             Self::Extension => vec![format!("oxide-vscode-{version}.vsix")],
+            // The GPUI app is a native bundle rather than an Electron
+            // installer, so what a release carries is the bundle itself,
+            // archived by `crates/desktop-gpui/scripts/package-macos.sh` the
+            // way the app's updater unpacks it.
+            Self::Gpui => match platform {
+                "macos-arm64" | "macos-x64" => {
+                    vec![format!("Oxide-GPUI-{version}-{platform}.app.tar.gz")]
+                }
+                _ => Vec::new(),
+            },
         }
     }
 
@@ -552,7 +579,7 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 /// prefix (a running binary's `--version`) reads as itself.
 pub fn release_version(tag: &str) -> String {
     let tag = tag.trim();
-    let without_component = ["cli-", "desktop-", "extension-"]
+    let without_component = ["cli-", "desktop-", "extension-", "gpui-"]
         .iter()
         .find_map(|prefix| tag.strip_prefix(prefix))
         .unwrap_or(tag);
@@ -899,11 +926,14 @@ mod tests {
         assert!(Component::Cli.owns_tag("cli-v0.34.0"));
         assert!(Component::Desktop.owns_tag("desktop-v0.34.0"));
         assert!(Component::Extension.owns_tag("extension-v0.34.0"));
+        assert!(Component::Gpui.owns_tag("gpui-v0.34.0"));
         // A release of another component is not this one's, and neither is a
         // tag that names no version.
         assert!(!Component::Cli.owns_tag("desktop-v0.34.0"));
         assert!(!Component::Cli.owns_tag("extension-v0.34.0"));
         assert!(!Component::Desktop.owns_tag("v0.34.0"));
+        assert!(!Component::Gpui.owns_tag("desktop-v0.34.0"));
+        assert!(!Component::Desktop.owns_tag("gpui-v0.34.0"));
         assert!(!Component::Extension.owns_tag("desktop-v0.34.0"));
         assert!(!Component::Desktop.owns_tag("desktop-nightly"));
         assert!(!Component::Cli.owns_tag("vnext"));
@@ -932,6 +962,14 @@ mod tests {
             "desktop-v0.34.0"
         );
         assert_eq!(
+            Component::Gpui.normalize_tag("gpui-v0.34.0").unwrap(),
+            "gpui-v0.34.0"
+        );
+        assert_eq!(
+            Component::Gpui.normalize_tag("0.34.0").unwrap(),
+            "gpui-v0.34.0"
+        );
+        assert_eq!(
             Component::Desktop.normalize_tag("desktop-v0.34.0").unwrap(),
             "desktop-v0.34.0"
         );
@@ -952,6 +990,8 @@ mod tests {
         assert_eq!(Component::parse("desktop"), Some(Component::Desktop));
         assert_eq!(Component::parse(" Desktop "), Some(Component::Desktop));
         assert_eq!(Component::parse("extension"), Some(Component::Extension));
+        assert_eq!(Component::parse("gpui"), Some(Component::Gpui));
+        assert_eq!(Component::parse("desktop-gpui"), Some(Component::Gpui));
         assert_eq!(Component::parse("vscode"), Some(Component::Extension));
         assert_eq!(Component::parse("nightly"), None);
         // The one component that is not built per platform is the one a check
@@ -959,6 +999,7 @@ mod tests {
         assert!(Component::Cli.platform_specific());
         assert!(Component::Desktop.platform_specific());
         assert!(!Component::Extension.platform_specific());
+        assert!(Component::Gpui.platform_specific());
     }
 
     #[test]
