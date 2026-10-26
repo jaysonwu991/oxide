@@ -24,6 +24,8 @@ or middle-click a sidebar chat to open it in a tab. Closing a tab leaves its
 stored chat intact; an active response continues and remains reachable from its
 sidebar row and running-chat banner.
 
+The transcript is a vertical log: it never scrolls sideways (`overflow-x: hidden`, with each row able to shrink below what it holds), so a long path, a fenced block, a diff or a command's output scrolls inside the block that holds it instead of giving the log a horizontal bar over the composer.
+
 A rail beside the transcript shows one mark per user message. Hover or focus a
 mark to preview the exchange, then click or press Enter to jump to that message.
 Scrolling away from the bottom reveals a floating down-arrow button above the
@@ -277,7 +279,11 @@ The regions, top to bottom:
   opens the **Create project** dialog: pick one or more source folders and the
   **Project name** defaults to the first folder's basename (still editable), so
   creating a project never requires typing a name.
-- **Home** — what the transcript shows before a thread is in it. It follows
+- **Home** — what the transcript shows before a thread is in it. The mark above
+  the invitation is the app's own icon: the split diamond (`ICONS.mark`, the same
+  four polygons and colours `scripts/build-icons.py` rasterises) on the icon's
+  near-black tile, at the icon's own proportions — so the home state, the dock
+  and the extension's glyph cannot drift apart. It follows
   Codex's own habit of opening on something to do rather than on an empty box:
   with no project open it lists the newest threads across **every** project the
   sidebar knows, each under its summarized title and the folder it is in, and
@@ -401,11 +407,11 @@ The regions, top to bottom:
   looks the same whether the caret is in it or not, and the engine's own focus
   ring is suppressed with `outline: none`. One
   action sits on the right, which swaps rather than sitting beside a second
-  button: **Stop** while a turn runs and there is nothing to say and **Send** the
-  moment there is — and only **Stop** while that
-  turn is running in a thread this composer is not showing, since a message
-  typed here would be steered into a run whose reply belongs to the
-  conversation being read. The way a message is delivered is the composer's own
+  button: **Stop** while this thread's turn runs and there is nothing to say, and
+  **Send** (or **Queue**/**Steer**, by the saved choice) the moment there is. It
+  acts on the conversation in the composer, never on another one: a turn in
+  another thread has its own corner when the reader opens it, and this one stays
+  a Send — which sends. The way a message is delivered is the composer's own
   saved Queue/Steer choice, and what is queued waits in the box above the text
   (see [Queue and Steer](#queue-and-steer)). Every
   control is wired to a plain `click` — each button, native radio/checkbox,
@@ -729,18 +735,27 @@ there is no folder to pick at all — as the sidebar's **+ New Chat** does when
 nothing is open, which otherwise just starts a thread in the open project. With
 no project at all the home state says to add one with the project chip.
 
-A running turn keeps the folder it started in: its run id is that folder's
-thread, so switching the window to another project parks the run's transcript
-and its change cards under the thread it is writing, rather than stopping the
-turn or letting the reader's next message be steered into a run whose reply has
-nowhere to land. The header's strip names the running thread with an **Open**
-affordance back to it, the sidebar's row for it keeps its spinner, and a message
-typed into another thread's transcript is refused with
-`A turn is running in “<title>”; open it to queue or steer, or stop it.` and
-kept in the box. Archiving that thread is refused wherever the reader is, and
-so are the actions that would move the files under the run — creating, switching,
-removing or handing off a worktree, restarting the app. A run's own output paints only
-while the thread on screen is its own.
+A turn belongs to the thread it started in, and every thread keeps its own:
+its run, its queue, its totals, its change cards and its transcript, whether it
+is on screen or not (`threads` in `ui/app.js`, keyed by session id — or a draft
+key until the run reports the id it made). So the window can hold several turns
+at once. Switching to another project, opening another conversation or starting
+another chat leaves a running turn writing into its own record rather than
+stopping it or steering the reader's next message into a reply that has
+somewhere else to land; the composer in the thread being read acts on that
+thread, and sending there starts its own turn.
+
+What is not on screen is not out of reach. The header's strip names a turn
+running in another thread with an **Open** affordance back to it, and — once
+that turn ends while the reader is elsewhere — it names the thread the reply
+landed in until the reader opens it. The sidebar's row for a running thread keeps
+its spinner and is a way back on its own, and a card a turn files while the
+reader is away waits under the thread that changed those files. Archiving a
+thread a turn is running in is refused wherever the reader is, and so are the
+actions that would move the files under a run — removing its project, creating,
+switching, removing or handing off its worktree, restarting the app. A run's own
+output, its status and its clock paint into its own conversation, and what it
+has spent is drawn when its thread is opened.
 
 A draft survives the folder it was waiting for: text typed and files attached
 before anything was open are still in the composer once a row of the picker is
@@ -843,46 +858,35 @@ event channel serializes events with
   own **Steer** moves just that message rather than changing the choice a later
   one follows ([Queue and Steer](#queue-and-steer)).
 - **Reading another thread while a turn runs** — a turn belongs to the thread
-  it started in and to no other, and that is kept apart from the thread on
-  screen: the run's id and title live in `state.runSession` / `state.runTitle`
-  while `state.session` follows the transcript, so a stored thread opened from
-  the sidebar tree or the `/session` list while a turn is going — the review a
-  running turn used to block — can be read without taking the turn over. What is
-  left behind is parked rather than thrown away: the thread's transcript goes
-  off-screen whole, with its change cards, its totals and the folder it belongs
-  to, and coming back is a swap rather than a re-read of a store that is a step
-  behind. A message that has only just been sent is parked under the thread it
-  was composed in while the turn is still learning which thread that is — and
-  under no thread at all when it is starting a new one, which is what the park's
-  `pending` flag says `agent-start` finishes by re-keying it to the id the run
-  reports — so a reader who opens another conversation in that window loses
-  neither the bubble they sent nor the history they were reading. The header then
-  carries a strip naming the running thread (`A turn is running in
-  “<title>”`) and opening it again on the click, the sidebar's row for that
-  thread is marked with a spinner and is a way back to it on its own (a row
-  standing in for a thread the store has not written yet makes the window switch
-  to it rather than read a file that is not there, and is named by the title the
-  turn gave that thread — `state.heldThread`, kept with the thread's id rather
-  than on the run, which is what lets a parked thread opened again keep its
-  name), and the composer's corner
-  offers **Stop**
-  alone, since a message typed into another thread's transcript would be steered
-  into a run whose reply has nowhere here to land (Send says where the turn is
-  and keeps what was typed). Transcript events paint only while the thread on
-  screen is the run's own — a reply written into the transcript it was not
-  started in is the thing this split exists to prevent — while the window's own
-  status line is not the thread's and shows wherever the reader is. Which thread
-  the run takes over is the reader's place to decide and not the run's: a turn's
-  thread is adopted only while both the thread and the folder the message was
-  sent from are still the ones on screen, so a prompt that started a new thread
-  in one folder while the reader opened another — where there is no thread
-  either — is not adopted there, and the reader's own view is left alone. A turn
-  that
-  ends while another thread is on screen files its change card under the thread
-  it changed, which paints it when that thread is opened, rather than dropping a
-  listing about files that really are on disk; the thread a turn is running in
-  cannot be archived wherever the reader is, since the run appends to its file as
-  it works.
+  it started in and to no other. The window keeps one record per conversation
+  (`threads` in `ui/app.js`), keyed by session id or by a draft key until the
+  run reports the id it made, and each holds that thread's run, queue, totals,
+  change cards and transcript. `state` reads and writes through the thread being
+  painted — the one on screen, or the one a background turn's events are being
+  applied to — so several turns can be in flight at once and the composer's
+  corner always acts on the conversation in the composer. A stored thread opened
+  from the sidebar tree or the `/session` list while a turn is going — the review
+  a single-run window used to block — can be read *and written to*: a message
+  there starts its own turn rather than being steered into someone else's reply.
+  What is off screen is parked rather than thrown away: the thread's transcript
+  goes into its record whole, with its change cards and totals, and it goes on
+  being painted as the turn streams. Coming back — the header's strip, the
+  sidebar's row, the tree's stand-in row for a thread the store has not written
+  yet — is a swap rather than a re-read of a store that is a step behind, while a
+  thread holding no live or unread turn is read again from the store. The header
+  carries a strip naming a turn in another thread (`A turn is running in
+  “<title>”`) and, once it ends while the reader is elsewhere, the thread the
+  reply landed in (`A turn finished in “<title>”`) until it is opened. The
+  sidebar marks a running thread's row with a spinner wherever the reader is, and
+  a row standing in for a thread the store has not written switches the window to
+  it rather than read a file that is not there. A turn that ends while another
+  thread is on screen files its change card under the thread it changed, so the
+  listing paints when that thread is opened instead of being dropped; the thread
+  a turn is running in cannot be archived wherever the reader is, since the run
+  appends to its file as it works, and closing its tab leaves the turn running
+  and reachable from the strip and the sidebar. A run's own output, its clock and
+  its status paint into its own conversation, while the window's status line
+  stays the thread being read.
 - **Notification** — a finished turn raises the same desktop toast the TUI does
   (`oxide_core::notify`, gated by the shared `notifyOnComplete` and
   `notifySound` settings). `turn::notify_finished` names the thread by its
@@ -1081,9 +1085,12 @@ one into the running response, a **Delete** button, and a **More** menu carrying
 and the delivery toggle. The rows can be dragged into another order, and the
 list is up only while something is queued.
 
-A turn running in another thread is reached by opening it (the header names it),
-and a message typed here is refused rather than steered into a run whose reply
-would land in a conversation nobody is reading.
+A turn running in another thread is not this composer's business: the queue above
+the box is the thread on screen's own, the corner acts on that thread, and a
+message sent here starts a turn here — the other conversation keeps working, and
+the header's strip (or its sidebar row) is how the reader goes back to read it.
+A message queued in a thread keeps its place there even when the reader moves on:
+it starts that thread's next turn once the current one ends.
 
 ## Keyboard shortcuts
 

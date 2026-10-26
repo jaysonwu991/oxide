@@ -32,7 +32,11 @@ const MAX_TASK_DEPTH: usize = 2;
 /// messages even though every message is present in the conversation. Keep the
 /// contract in the core request so the TUI, RPC clients, desktop app and any
 /// future front-end all get the same cumulative semantics.
-const CUMULATIVE_INPUT_REMINDER: &str = "The user has added one or more messages while you were working. Treat those messages as cumulative with every earlier request unless the user explicitly says to cancel, replace, or supersede one. Before finishing, verify that you have addressed every still-applicable user message, not only the most recent one.";
+///
+/// It rides on the one request that carries the message it is about, rather
+/// than every request for the rest of the run: a model told on each step that
+/// the user has added messages goes looking for input it has already answered.
+const CUMULATIVE_INPUT_REMINDER: &str = "The user has added one or more messages while you were working. They are in this conversation, after the request that started the run; treat them as cumulative with every earlier request unless the user explicitly says to cancel, replace, or supersede one. Before finishing, verify that you have addressed every still-applicable user message, not only the most recent one.";
 
 pub type RunFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
@@ -774,11 +778,13 @@ async fn run_loop(
     // the top-of-loop poll does not immediately take the next one too: under
     // `one-at-a-time` only one queued message may precede a model call.
     let mut skip_steering_poll = false;
-    // Once the run accepts additional user input, later requests carry an
-    // explicit cumulative-input contract. The transcript already contains the
+    // A request that delivers user input the run accepted mid-flight carries
+    // an explicit cumulative-input contract. The transcript already contains the
     // messages themselves; this only prevents the newest from being mistaken
-    // for a replacement of unfinished earlier work.
-    let mut has_mid_run_input = false;
+    // for a replacement of unfinished earlier work. It is consumed by that one
+    // request, since the reminder is news about the step it arrives on and
+    // repeats as a phantom message on every step after it.
+    let mut mid_run_input_reminder = false;
     // A provider may return the metadata tool without the requested answer.
     // Offer it at most once per run so an invalid title or an unwritable log
     // cannot turn that fallback into an unbounded request loop.
@@ -801,7 +807,7 @@ async fn run_loop(
         }
         if !skip_steering_poll {
             for queued in runtime.steering.drain_labeled(runtime.steering_mode) {
-                has_mid_run_input = true;
+                mid_run_input_reminder = true;
                 let Queued {
                     message: steered,
                     label,
@@ -981,7 +987,7 @@ async fn run_loop(
         }
         request.push(Message::system(system));
         request.extend(messages.iter().cloned());
-        if has_mid_run_input {
+        if std::mem::take(&mut mid_run_input_reminder) {
             request.push(Message::system(CUMULATIVE_INPUT_REMINDER));
         }
         // A reminder makes this request the hidden nudge: it asks the model to
@@ -1363,7 +1369,7 @@ async fn run_loop(
                 finish(&runtime, &tx, messages, depth);
                 return;
             }
-            has_mid_run_input = true;
+            mid_run_input_reminder = true;
             for queued in steered {
                 let Queued { message, label } = queued;
                 let _ = tx.send(AgentEvent::Steered {
@@ -5617,6 +5623,49 @@ mod tests {
             }
         }
         assert_eq!(delivered, 3);
+    }
+
+    /// The cumulative-input reminder belongs to the request that carries the
+    /// message it is about. Repeating it on every later step read as input the
+    /// model could not find, and a run answered by narrating “the notices keep
+    /// saying new messages arrived” instead of doing the work.
+    #[tokio::test]
+    async fn the_cumulative_reminder_rides_only_on_the_request_it_arrives_with() {
+        let (addr, server) = sse_server(vec![bash_call_body("true"), answer_body("done")]).await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        runtime.steering.push(Message::user("STEER"));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("hi")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let bodies = server.await.unwrap();
+        assert_eq!(bodies.len(), 2, "the tool result is a second request");
+        assert!(bodies[0].contains("STEER"), "{}", bodies[0]);
+        assert!(
+            bodies[0].contains("not only the most recent one"),
+            "the request carrying the new message lost the contract: {}",
+            bodies[0]
+        );
+        assert!(
+            !bodies[1].contains("not only the most recent one")
+                && !bodies[1].contains("has added one or more messages"),
+            "a later request repeated the new-input notice: {}",
+            bodies[1]
+        );
     }
 
     /// A queued follow-up is not polled at the top of the loop: it enters at

@@ -82,7 +82,7 @@ input:focus, textarea:focus { outline: none; }
 /* Every icon the window draws is an inline SVG (`ICONS` in `app.js`), so a
    control's drawing does not depend on the machine's fonts. Each is sized here,
    beside the box it sits in, and the marks inside one are `currentColor`. */
-.welcome-mark svg { display: block; width: 26px; height: 26px; }
+.welcome-mark svg { display: block; width: 40px; height: 40px; }
 .label-mark svg { display: block; width: 10px; height: 10px; }
 .label-mark { display: inline-flex; color: var(--accent); }
 .project-item .icon svg { display: block; width: 15px; height: 15px; }
@@ -314,6 +314,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .run-time {
   flex: none;
+  min-width: 0;
   width: 100%;
   max-width: 780px;
   margin: 0 auto;
@@ -336,6 +337,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .conversation {
   flex: 1;
+  /* The transcript is a vertical log: a code block, a diff or a long token
+     scrolls inside its own box, so the log itself never grows a sideways
+     scrollbar — the bar that used to appear over the composer whenever a tool
+     card streamed a wide line. */
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 34px 22px 10px;
   display: flex;
@@ -343,11 +349,16 @@ body.resizing { cursor: col-resize; user-select: none; }
   gap: 22px;
 }
 
-/* The home mark. Its box is a block in a centred column, so it has to be
-   centred itself: left to the column it sat at the column's edge while the
-   title under it was centred. The tile is the app's own shape — the icon's
-   rounded square with the same diamond inside it — so the home state wears the
-   mark rather than a drawing that reads as stray. */
+/* Every row of that log is one column wide, so what a row holds that is wider
+   than the room — a fenced block, a diff, a command's output — scrolls inside
+   the block that holds it rather than widening the transcript. */
+.conversation > * { min-width: 0; }
+
+/* The home mark is the app's own icon: the near-black tile the dock shows with
+   the split diamond inside it, at the icon's own proportions — the mark fills
+   71.875% of a tile whose corner is 18.95% of its side. It is centred itself
+   because its box is a block in a centred column: left to the column it sat at
+   the column's edge while the title under it was centred. */
 .welcome { margin: auto; text-align: center; max-width: 560px; }
 .welcome-mark {
   width: 56px;
@@ -355,11 +366,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   margin: 0 auto 16px;
   display: grid;
   place-items: center;
-  color: var(--accent);
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 10px 24px rgba(0, 0, 0, 0.35);
+  background: #14141a;
+  border-radius: 19%;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
 }
 .welcome h1 { font-size: 24px; font-weight: 600; margin: 0 0 8px; }
 .welcome p { color: var(--dim); margin: 0 0 22px; word-break: break-all; }
@@ -410,7 +419,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .empty { color: var(--dim); margin: auto; }
 
-.msg { max-width: 780px; width: 100%; margin: 0 auto; }
+.msg { max-width: 780px; width: 100%; min-width: 0; margin: 0 auto; }
 /* A user's message hugs what was sent and ends on the reading column's right
    edge. Inheriting the generic message's `width: 100%` made even a two-word
    note or a single image into a broad empty slab; centring that percentage also
@@ -471,6 +480,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tool {
   max-width: 780px;
   width: 100%;
+  min-width: 0;
   margin: 0 auto;
   background: none;
   border: none;
@@ -507,7 +517,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   max-height: 5.4em;
   overflow: hidden;
   white-space: pre-wrap;
-  word-break: break-word;
+  /* A path, a hash or a base64 blob has no space to wrap at: break it rather
+     than let it push the card (and the transcript) wider than the column. */
+  overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
@@ -529,6 +541,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   flex: none;
   max-width: 780px;
   width: 100%;
+  min-width: 0;
   margin: 10px auto 0;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -713,6 +726,7 @@ button.details-row:hover { color: var(--accent); }
 .thinking {
   max-width: 780px;
   width: 100%;
+  min-width: 0;
   margin: 0 auto;
   color: var(--faint);
   font-style: italic;

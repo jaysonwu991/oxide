@@ -1084,13 +1084,13 @@ vm.runInThisContext(
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " showApproval, loadLanguage, openLanguage, switchLanguage, renderLanguageRows," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
-    " updateRunBanner, viewingRun, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
+    " updateRunBanner, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
     " loadGit, openProjectDetails, refreshProjectDetails, openRepositoryChanges, changeReviewScope," +
     " loadMcps, openSessions," +
     " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
-    " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkRun, restoreParked, captureChatTab," +
+    " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkThread, restoreThread, captureChatTab, threads, visibleThread, withThread, turnInThread, backgroundRun, openThreadRecord, threadForRunId," +
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
@@ -1311,20 +1311,21 @@ check(
   `${elementFor("projects-modal").hidden} / ${elementFor("project-list").outline()}`,
 );
 el("projects-modal").hidden = true;
-// A turn belongs to the folder it started in — its run id is that thread's — and
-// the window may move to another folder while it works: the run's thread is not
-// the one on screen any more, so its transcript is parked and painted on under
-// the strip's own name for it, while the reader gets the folder they picked.
+// A turn belongs to the thread it started in, and the window may move to another
+// folder while it works: that conversation keeps its own record and its own
+// transcript, which it goes on painting into, while the reader gets the folder
+// they picked with a composer and a queue of its own.
+app.state.project = projectRows[1].path;
 app.state.session = "6f3031b2beef";
-app.state.runSession = "6f3031b2beef";
-app.state.runProject = projectRows[1].path;
-app.state.runTitle = "Fix the sidebar";
-app.state.parked = null;
-app.state.pendingSends = [{
+const folderRun = app.visibleThread();
+folderRun.runProject = projectRows[1].path;
+folderRun.runTitle = "Fix the sidebar";
+folderRun.busy = true;
+folderRun.runId = 91;
+folderRun.elapsed = 0;
+folderRun.pendingSends = [{
   prompt: "queued while running",
   attachments: [],
-  project: projectRows[1].path,
-  session: "6f3031b2beef",
   showBubble: true,
 }];
 app.setBusy();
@@ -1336,28 +1337,33 @@ check(
   "opened another folder under a running turn without losing its thread",
   app.state.project === projectRows[0].path &&
     app.state.session === null &&
-    app.state.busy === true &&
-    app.state.runSession === "6f3031b2beef" &&
-    app.state.pendingSends[0]?.prompt === "queued while running" &&
-    app.state.parked?.session === "6f3031b2beef" &&
+    app.state.busy === false &&
+    app.turnInThread("6f3031b2beef") === true &&
+    app.state.pendingSends.length === 0 &&
     elementFor("details-panel").hidden === true &&
     elementFor("queue-list").hidden === true &&
     elementFor("run-banner").hidden === false &&
     elementFor("run-banner-text").textContent === "A turn is running in “Fix the sidebar”",
-  `${app.state.project} / ${app.state.session} / ${app.state.parked?.session} / ${elementFor("run-banner-text").textContent}`,
+  `${app.state.project} / ${app.state.session} / ${app.state.busy} / ${app.turnInThread("6f3031b2beef")} / ${app.state.pendingSends.length} / ${elementFor("details-panel").hidden} / ${elementFor("queue-list").hidden} / ${elementFor("run-banner").hidden} / ${elementFor("run-banner-text").textContent}`,
 );
-app.state.pendingSends = [];
-app.paintQueue();
+// The composer in the new folder is idle, so it sends rather than offering the
+// other thread's Stop: one corner per session, and this one has nothing running.
+check(
+  "offered Send in the folder whose own thread had no turn",
+  elementFor("send").hidden === false &&
+    elementFor("stop").hidden === true &&
+    !document.body.classList.contains("running"),
+  `${elementFor("send").hidden} / ${elementFor("stop").hidden} / ${document.body.className}`,
+);
 // A thread in another folder is the same switch by another door: opening it
-// leaves the run's own thread and folder alone, with the strip still saying
-// which thread it is in.
+// leaves the running thread alone, with the strip still saying which one it is.
 calls.length = 0;
 await app.selectSessionFromTree({ id: "fe0031b1", cwd: projectRows[0].path });
 check(
   "resumed another folder's thread under it too",
   app.state.project === projectRows[0].path &&
     app.state.session === "fe0031b1" &&
-    app.state.runSession === "6f3031b2beef" &&
+    app.turnInThread("6f3031b2beef") === true &&
     calls.some(([name]) => name === "session_messages") &&
     /A turn is running in “Fix the sidebar”/.test(elementFor("run-banner-text").textContent),
   `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
@@ -1372,29 +1378,26 @@ check(
   "went back to the run's own folder and thread from the strip",
   app.state.project === projectRows[1].path &&
     app.state.session === "6f3031b2beef" &&
-    app.state.parked === null &&
+    app.state.busy === true &&
     elementFor("run-banner").hidden === true &&
     elementFor("details-panel").hidden === false &&
     !calls.some(([name]) => name === "session_messages"),
-  `${app.state.project} / ${app.state.session} / ${app.state.parked} / ${JSON.stringify(calls.map(([name]) => name))}`,
+  `${app.state.project} / ${app.state.session} / ${elementFor("run-banner").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
-// A turn that ends while the reader is in another folder leaves its thread parked
-// with the folder that thread's work is in: the strip still names it — as one
-// whose turn has finished — and opening it takes the window back there rather
-// than leaving a transcript on screen that belongs to a folder it is not in.
-app.state.runSession = "6f3031b2beef";
-app.state.runProject = projectRows[1].path;
-app.state.runTitle = "Fix the sidebar";
-app.setBusy();
+// A turn that ends while the reader is elsewhere leaves its thread held with the
+// folder its work is in, and the strip keeps saying so — as one whose turn has
+// finished — so the reply that arrived in the meantime is not something the
+// reader has to notice on their own.
 await app.selectProject({ name: "oxide", path: projectRows[0].path });
-app.setIdle();
+folderRun.pendingSends = [];
+await emit("agent-end", { runId: 91, sessionId: "6f3031b2beef", project: projectRows[1].path });
+await nextTick();
 check(
   "offered a finished run's thread while the reader was in another folder",
-  app.state.parked?.session === "6f3031b2beef" &&
-    app.state.runProject === null &&
+  app.turnInThread("6f3031b2beef") === false &&
     elementFor("run-banner").hidden === false &&
     elementFor("run-banner-text").textContent === "A turn finished in “Fix the sidebar”",
-  `${app.state.parked?.session} / ${app.state.runProject} / ${elementFor("run-banner-text").textContent}`,
+  `${app.turnInThread("6f3031b2beef")} / ${elementFor("run-banner").hidden} / ${elementFor("run-banner-text").textContent}`,
 );
 // The thread is still one the window knows about, and one it knows the folder of:
 // a row standing in for it carries that folder rather than the one on screen, so
@@ -1413,17 +1416,15 @@ check(
   "went back to a finished run's own folder from the strip",
   app.state.project === projectRows[1].path &&
     app.state.session === "6f3031b2beef" &&
-    app.state.parked === null,
-  `${app.state.project} / ${app.state.session} / ${app.state.parked}`,
+    elementFor("run-banner").hidden === true,
+  `${app.state.project} / ${app.state.session} / ${elementFor("run-banner").hidden}`,
 );
 // A run still in flight is left alone by a thread opened in another folder: the
-// store is read for the thread the reader asked for, and the run's own waits.
+// store is read for the thread the reader asked for, and the run's own goes on.
 app.state.session = null;
-app.state.runSession = "6f3031b2beef";
-app.state.runProject = projectRows[1].path;
-app.state.runTitle = "Fix the sidebar";
-app.state.parked = null;
-app.setBusy();
+folderRun.busy = true;
+folderRun.runId = 92;
+folderRun.unread = false;
 await app.selectProject({ name: "oxide", path: projectRows[0].path });
 calls.length = 0;
 await app.selectSessionFromTree({ id: "fe0031b1", cwd: projectRows[0].path });
@@ -1431,15 +1432,16 @@ check(
   "resumed another folder's thread under it too",
   app.state.project === projectRows[0].path &&
     app.state.session === "fe0031b1" &&
-    app.state.runSession === "6f3031b2beef" &&
+    app.turnInThread("6f3031b2beef") === true &&
     calls.some(([name]) => name === "session_messages") &&
     /A turn is running in “Fix the sidebar”/.test(elementFor("run-banner-text").textContent),
-  `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
+  `${app.state.project} / ${app.state.session} / ${app.turnInThread("6f3031b2beef")} / ${elementFor("run-banner-text").textContent} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
-app.setIdle();
-app.state.runTitle = "";
-app.state.runProject = null;
-app.state.parked = null;
+folderRun.busy = false;
+folderRun.runId = null;
+folderRun.runTitle = "";
+folderRun.runProject = null;
+app.updateRunBanner();
 
 // The sidebar's head is the way into a thread, and it never picks a folder for
 // the reader: with nothing open it asks which one, with one open it starts the
@@ -1475,8 +1477,8 @@ check(
     !calls.some(([name]) => name === "project_info"),
   `${app.state.project} / ${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))}`,
 );
-app.setBusy();
 app.state.session = "6f3031b2beef";
+app.setBusy();
 calls.length = 0;
 await app.newChatFromSidebar();
 check(
@@ -1722,10 +1724,10 @@ app.setIdle();
 
 // A thread's own folder is where it is read back from and continued in, so a
 // thread in a worktree takes the window's next message with it.
-app.state.session = "6f3031b2beef";
+app.threads.delete("s:worktree-thread");
 calls.length = 0;
 await app.openSession({
-  id: "6f3031b2beef",
+  id: "worktree-thread",
   cwd: worktrees[0].path,
   project: projectRows[0].path,
   worktree: "fix-login-bug",
@@ -2305,7 +2307,6 @@ const windowGlyphs = {
   file: "M14 3H7a2 2 0 0 0-2 2v14",
   caret: "M5.5 8.6 12 14.8l6.5-6.2",
   check: "m5.6 8 1.5 1.5 3.5-3.5",
-  mark: "M12 2.4 21.6 12 12 21.6 2.4 12Z",
   plus: sharedGlyphs.new,
   close: sharedGlyphs.close,
   power: sharedGlyphs.power,
@@ -2317,6 +2318,40 @@ for (const [name, path] of Object.entries(windowGlyphs)) {
     String(app.ICONS[name]),
   );
 }
+// The mark is one drawing in every place it is worn: the same four polygons the
+// extension's glyph carries, at the same three colours, so the dock icon, the
+// home state and the panel cannot drift apart. Both coloured halves are pinned
+// beside the rim, since merging them back into one diamond would keep every
+// colour and lose the split that is the mark's whole idea.
+const brandMarkSvg = readFileSync(
+  new URL("../../editors/vscode/media/oxide.svg", import.meta.url),
+  "utf8",
+);
+const polygonsOf = (markup) =>
+  [...String(markup).matchAll(/<polygon points="([^"]+)" fill="([^"]+)"/g)]
+    .map((match) => `${(match[1].match(/-?[\d.]+/g) || []).map(Number).join(",")}|${match[2]}`)
+    .sort();
+const windowMark = polygonsOf(app.ICONS.mark);
+check(
+  "drew the app's mark the way the icons and the extension draw it",
+  windowMark.length === 4 && windowMark.join(" ") === polygonsOf(brandMarkSvg).join(" "),
+  `${windowMark.join(" ")} · ${polygonsOf(brandMarkSvg).join(" ")}`,
+);
+check(
+  "wore the mark's own colours rather than the accent",
+  ["#d9643a", "#5fd7ff", "#2d2d3a"].every((colour) => String(app.ICONS.mark).includes(colour)) &&
+    !/fill="currentColor"/.test(String(app.ICONS.mark)),
+  String(app.ICONS.mark),
+);
+// The home state wears the app's icon rather than an approximation of it: the
+// icon's near-black tile, its corner, and the mark at the share of the tile the
+// rasterised icon gives it.
+check(
+  "put the mark on the icon's own tile",
+  /\.welcome-mark \{[^}]*background: #14141a;[^}]*border-radius: 19%;[^}]*\}/.test(sheet) &&
+    /\.welcome-mark svg \{[^}]*width: 40px;[^}]*height: 40px;[^}]*\}/.test(sheet),
+  String(sheet.indexOf(".welcome-mark")),
+);
 // A control wears a drawing, never a character. These are the characters the
 // window's controls used to be typed as — a `✕` for a row's delete, a `📁` for a
 // project, a `✓` for a check — and a character is whatever shape and size the
@@ -2642,6 +2677,27 @@ const ruleFor = (selector) => {
 };
 const restingThumb = ruleFor("::-webkit-scrollbar-thumb");
 const shownThumb = ruleFor(".scrolling::-webkit-scrollbar-thumb");
+// The transcript is a vertical log. A tool card streaming a long path or a fenced
+// block must not give it a sideways scrollbar — the one that used to appear over
+// the composer whenever a call ran — so the log clips horizontally and each of
+// its rows may shrink below what it holds, leaving the scroll to the block that
+// holds the wide content.
+const transcriptRule = ruleFor(".conversation");
+check(
+  "kept the transcript from scrolling sideways",
+  /overflow-x:\s*hidden/.test(transcriptRule) && /overflow-y:\s*auto/.test(transcriptRule),
+  transcriptRule,
+);
+check(
+  "let every row of the log shrink below what it holds",
+  /\.conversation > \* \{[^}]*min-width:\s*0/.test(sheet),
+  String(sheet.indexOf(".conversation > *")),
+);
+check(
+  "broke a long token inside a tool's output rather than widening the card",
+  /\.tool pre \{[^}]*overflow-wrap:\s*anywhere/.test(sheet),
+  String(sheet.indexOf(".tool pre")),
+);
 const paints = (body) => /(^|;)\s*background(?:-color)?:\s*(?!transparent)\S/.test(body);
 check(
   "drew a scrollbar only while its box was being scrolled",
@@ -5212,6 +5268,9 @@ const reasoningRow = (level) => reasoningRows().find((row) => row.children[0].te
 const reasoningPickedBeforeOpening = app.state.reasoningPicked;
 elementFor("reasoning").focus();
 elementFor("reasoning").click();
+// A cold picker reads the model's own levels from the host before it opens, so
+// the rows arrive a task later rather than in the click.
+await nextTick();
 check(
   "opened a picker for the level instead of stepping through it",
   elementFor("reasoning-modal").hidden === false &&
@@ -5692,14 +5751,15 @@ check(
     buttonFor("stop").includes('class="stop-icon"'),
   `${elementFor("status").hidden} / ${elementFor("stop").title}`,
 );
+const runClockNode = () => elementFor("transcript").querySelector(".run-time");
 check(
   "showed the turn's total working time after its output",
-  elementFor("run-time").hidden === false &&
-    /id="run-time"[^>]*role="timer"/.test(shell) &&
-    elementFor("transcript").children.at(-1) === elementFor("run-time") &&
-    /^Working for \d+s$/.test(elementFor("run-time-text").textContent) &&
+  runClockNode()?.hidden === false &&
+    runClockNode().getAttribute("role") === "timer" &&
+    elementFor("transcript").children.at(-1) === runClockNode() &&
+    /^Working for \d+s$/.test(runClockNode().textContent) &&
     /\.run-time \{[^}]*max-width: 780px;[^}]*font-variant-numeric: tabular-nums;/.test(sheet),
-  `${elementFor("run-time").hidden} / ${elementFor("run-time-text").textContent}`,
+  `${runClockNode()?.hidden} / ${runClockNode()?.textContent} / ${[...elementFor("transcript").children].map((node) => node.className).join(",")} / ${app.state.runStartedAt} / ${app.visibleThread().runStartedAt} / ${app.visibleThread().clock ? "clock" : "noclock"}`,
 );
 elementFor("prompt").value = "keep going";
 app.updateSendState();
@@ -5736,10 +5796,17 @@ check(
 );
 check(
   "kept the completed turn's total working time",
-  elementFor("run-time").hidden === false &&
-    /^Worked for \d+s$/.test(elementFor("run-time-text").textContent),
-  `${elementFor("run-time").hidden} / ${elementFor("run-time-text").textContent}`,
+  runClockNode()?.hidden === false &&
+    /^Worked for \d+s$/.test(runClockNode().textContent),
+  `${runClockNode()?.hidden} / ${runClockNode()?.textContent}`,
 );
+app.setBusy();
+check(
+  "counted a second turn in the same thread from its own start",
+  runClockNode()?.hidden === false && /^Working for 0s$/.test(runClockNode().textContent),
+  runClockNode()?.textContent,
+);
+app.setIdle();
 app.setBusy();
 await emit("agent-event", { type: "error", message: "the model returned an empty response" });
 const failedTurnNotice = elementFor("transcript").querySelector(".run-error");
@@ -5751,7 +5818,7 @@ check(
     elementFor("transcript").children.includes(failedTurnNotice) &&
     app.state.statusLevel === "error" &&
     status() === failedTurnNotice.textContent &&
-    elementFor("transcript").children.at(-1) === elementFor("run-time"),
+    elementFor("transcript").children.at(-1) === runClockNode(),
   `${failedTurnNotice?.textContent} / ${status()}`,
 );
 app.setBusy();
@@ -6074,12 +6141,10 @@ check(
 // The context reading: the arc is filled to the percent the totals are measured
 // from — the newest request's own prompt over the window in force — the percent
 // is spelled out beside it, and the tokens behind both are in its tooltip.
-const beforeWindowCorrection = Object.fromEntries(["session", "runSession", "runProject", "parked", "contextWindow", "contextCorrection", "catalogWindow", "currentProvider", "currentModel", "changes"].map(key => [key, app.state[key]]));
+const beforeWindowCorrection = Object.fromEntries(["session", "contextWindow", "contextCorrection", "catalogWindow", "currentProvider", "currentModel", "changes"].map(key => [key, app.state[key]]));
 const beforeWindowInfo = projectInfo;
 projectInfo = { ...projectFacts(1050000), provider: "gateway", model: "A" };
-app.state.session = app.state.runSession = "backend-window-test";
-app.state.runProject = app.state.project;
-app.state.parked = null;
+app.state.session = "backend-window-test";
 app.state.contextCorrection = null;
 app.applyContextInfo(projectInfo);
 app.setUsage({ input: 190000, output: 0, cost: 0, prompt: 190000 });
@@ -6089,21 +6154,23 @@ check(
   app.state.contextWindow === 200000 && el("context-percent").textContent === "95%" && el("context-ring").dataset.level === "high",
   `${app.state.contextWindow} / ${el("context-percent").textContent}`,
 );
-app.parkRun();
-check("parked the thread's corrected context window with its transcript",
-  app.state.parked.contextWindow === 200000 && app.state.parked.contextCorrection.model === "A",
-  JSON.stringify(app.state.parked.contextCorrection));
+app.parkThread();
+const parkedWindow = app.threads.get("s:backend-window-test");
+check("kept the thread's corrected context window with its transcript",
+  parkedWindow.contextWindow === 200000 && parkedWindow.contextCorrection.model === "A",
+  JSON.stringify(parkedWindow.contextCorrection));
 app.state.session = "another-thread";
 app.state.contextCorrection = null;
+app.state.contextWindow = 0;
 app.applyContextInfo({ ...projectInfo, contextWindow: 128000 });
 app.handleEvent({ type: "context_window", tokens: 200000, provider: "gateway", model: "A" });
 check(
-  "kept a parked run's corrected window off the thread being read",
-  app.state.contextWindow === 128000 && app.state.parked.contextWindow === 200000,
-  `${app.state.contextWindow} / ${app.state.parked.contextWindow}`,
+  "kept another thread's corrected window off the thread being read",
+  app.state.contextWindow === 128000 && parkedWindow.contextWindow === 200000,
+  `${app.state.contextWindow} / ${parkedWindow.contextWindow}`,
 );
 app.state.session = "backend-window-test";
-app.restoreParked(app.state.session);
+app.restoreThread(parkedWindow);
 await app.loadInfo();
 await app.refreshContextWindow();
 check("preserved the restored correction through full and background info refreshes",
@@ -6119,12 +6186,12 @@ check("kept a corrected window through real tab navigation and its info reload",
   app.state.contextWindow === 200000 && el("context-percent").textContent === "95%",
   `${app.state.contextWindow} / ${el("context-percent").textContent}`);
 await app.closeChatTab(otherWindowTab.id);
-app.parkRun();
+app.parkThread();
 app.state.session = "model-change-test";
 projectInfo = { ...projectInfo, model: "B", contextWindow: 128000 };
 await app.loadInfo();
 app.state.session = "backend-window-test";
-app.restoreParked(app.state.session);
+app.restoreThread(parkedWindow);
 await app.loadInfo();
 check("ignored a parked correction after the selected model changed",
   app.state.contextWindow === 128000, String(app.state.contextWindow));
@@ -6429,10 +6496,9 @@ el("transcript").innerHTML = "";
 
 console.log("reading another thread while a turn runs");
 // A turn belongs to the thread it started in, and the reader may open another
-// conversation while it works: the run keeps its own thread and folder, and the
-// header says where it is rather than the transcript being swapped under it. The
-// strip is the way back, the sidebar's row for that thread says it is the one
-// working, and nothing of its reply lands in the transcript being read.
+// conversation — or send in it — while that one works: each thread keeps its own
+// run, queue, transcript and totals, so the corner button always acts on the
+// conversation in the composer rather than on whichever turn the window holds.
 check(
   "shipped the header's strip inside the topbar, over the thread's own title",
   shellAt('id="thread-title"') < shellAt('id="run-banner"') &&
@@ -6459,15 +6525,24 @@ app.state.projectName = "oxide";
 threads = [runningThread, readThread];
 await app.loadSessions();
 app.setIdle();
+// A clean slate for the scenario: every thread a previous check held is idle, so
+// the run ids and events below name this one thread and nothing else.
+for (const record of app.threads.values()) {
+  record.runId = null;
+  record.busy = false;
+  record.unread = false;
+}
 app.state.changes = [];
-app.state.parked = null;
+app.state.session = runningThread.id;
+app.threads.delete(`s:${runningThread.id}`);
 el("transcript").innerHTML = "";
-// The turn starts in a thread of its own, from the message the reader typed
-// there, and the reader opens another conversation while it works.
-app.state.session = null;
-app.state.sendView = { session: null, project: app.state.project };
+const runA = app.visibleThread();
+runA.runProject = "/home/dev/Projects/oxide";
+runA.runTitle = "Rename oxide update";
+runA.busy = true;
+runA.runId = 962;
 app.setBusy();
-await emit("agent-start", { runId: 62, sessionId: runningThread.id, title: "Rename oxide update" });
+await emit("agent-start", { runId: 962, sessionId: runningThread.id, title: "Rename oxide update" });
 const runningThreadEdit = app.startTool("edit", JSON.stringify({ path: "src/running.rs" }));
 app.finishTool(runningThreadEdit, "Updated src/running.rs.", {
   diff: { path: "src/running.rs", text: "+      1  running" },
@@ -6481,11 +6556,12 @@ await app.openSession(readThread);
 check(
   "said where the running turn is while another thread was on screen",
   app.state.session === readThread.id &&
-    app.state.runSession === runningThread.id &&
+    app.state.busy === false &&
+    app.turnInThread(runningThread.id) === true &&
     elementFor("run-banner").hidden === false &&
     elementFor("run-banner-text").textContent === "A turn is running in “Rename oxide update”" &&
     elementFor("run-banner").title === "Open “Rename oxide update”",
-  `${app.state.session} / ${app.state.runSession} / ${elementFor("run-banner").hidden} / ${elementFor("run-banner-text").textContent}`,
+  `${app.state.session} / ${app.state.busy} / ${elementFor("run-banner").hidden} / ${elementFor("run-banner-text").textContent}`,
 );
 check(
   "restored the full composer and hid another thread's live changes",
@@ -6532,23 +6608,20 @@ check(
 );
 // One conversation's reply is not painted into another's transcript, which is
 // what being able to read one while the other runs depends on.
-calls.length = 0;
-const provisionalRunTitle = app.state.runTitle;
-const provisionalParkedTitle = app.state.parked?.title;
-app.handleEvent({ type: "session_title", runId: 62, title: "Diagnose private GitHub links" });
+await emit("agent-event", { type: "session_title", runId: 962, title: "Diagnose private GitHub links" });
 check(
   "replaced the provisional title for a running thread",
-  app.state.runTitle === "Diagnose private GitHub links" &&
-    app.state.parked?.title === "Diagnose private GitHub links",
-  `${app.state.runTitle} / ${app.state.parked?.title}`,
+  runA.runTitle === "Diagnose private GitHub links" &&
+    elementFor("run-banner-text").textContent === "A turn is running in “Diagnose private GitHub links”",
+  `${runA.runTitle} / ${elementFor("run-banner-text").textContent}`,
 );
 // The rest of this scenario asserts the fixture's original label in notices;
 // put it back after isolating the metadata-event behavior above.
-app.state.runTitle = provisionalRunTitle;
-if (app.state.parked) app.state.parked.title = provisionalParkedTitle;
-app.handleEvent({
+runA.runTitle = "Rename oxide update";
+app.updateRunBanner();
+await emit("agent-event", {
   type: "message_update",
-  runId: 62,
+  runId: 962,
   assistantMessageEvent: { type: "text_delta", delta: "half a reply" },
 });
 check(
@@ -6556,35 +6629,52 @@ check(
   el("transcript").outline() === "",
   el("transcript").outline(),
 );
-// The window's own readout of the run is not the thread's: how the turn is doing
-// is said wherever the reader happens to be.
-app.handleEvent({ type: "compaction", runId: 62, summarized: 12 });
+// A background run's own reading is its thread's, not the window's: the status
+// line under the composer describes the conversation being read, so a step in
+// another one is not written there.
+await emit("agent-event", { type: "compaction", runId: 962, summarized: 12 });
 check(
-  "still said how the run was doing on the thread being read",
-  status() === "Compacted 12 earlier messages",
+  "left the window's status on the thread being read",
+  status() !== "Compacted 12 earlier messages",
   status(),
 );
-// The composer belongs to the thread on screen, so its corner offers Stop alone
-// while the run is elsewhere, and a message typed here is refused instead of
-// being steered into that run.
-elementFor("prompt").value = "carry on";
+// This is the point of one run per conversation: the composer in the thread on
+// screen sends, and that message is a turn of its own rather than a steer into
+// the other thread's run.
+elementFor("prompt").value = "carry on here";
 app.updateSendState();
 check(
-  "offered Stop alone in a thread the turn is not running in",
-  elementFor("send").hidden === true &&
-    elementFor("stop").hidden === false,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
+  "offered Send in a thread the other turn was not running in",
+  elementFor("send").hidden === false &&
+    elementFor("stop").hidden === true &&
+    elementFor("send").title === "Send (Enter)",
+  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / ${elementFor("send").title}`,
 );
+calls.length = 0;
+await app.stop();
+check(
+  "left the other thread's turn running when Stop was asked of this one",
+  !calls.some(([name]) => name === "cancel_run") && app.turnInThread(runningThread.id) === true,
+  JSON.stringify(calls.map(([name]) => name)),
+);
+const readRun = app.visibleThread();
 calls.length = 0;
 elementFor("send").onclick({ detail: 1 });
 await nextTick();
+const readRunId = readRun.runId;
 check(
-  "refused to steer a message typed into another thread's composer",
-  !calls.some(([name]) => name === "steer_run" || name === "send_prompt") &&
-    /^A turn is running in “Rename oxide update”/.test(status()) &&
-    elementFor("prompt").value === "carry on",
-  `${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
+  "sent in the thread on screen while another thread was working",
+  calls.some(([name]) => name === "send_prompt") &&
+    !calls.some(([name]) => name === "steer_run") &&
+    app.state.session === readThread.id &&
+    app.turnInThread(runningThread.id) === true,
+  `${JSON.stringify(calls.map(([name]) => name))} / ${app.state.session}`,
 );
+app.setIdle();
+runA.busy = true;
+runA.runId = 962;
+await emit("agent-start", { runId: readRunId, sessionId: readThread.id });
+await nextTick();
 // The header's strip is the way back: it opens the thread the run is in and hands
 // back the transcript it has been painting into all along, rather than reading a
 // store that is a step behind a reply still streaming into it.
@@ -6601,16 +6691,15 @@ check(
 );
 check(
   "handed the composer back to the thread the turn is in",
-  elementFor("send").hidden === false &&
-    elementFor("stop").hidden === true &&
-    document.body.classList.contains("running") &&
-    elementFor("live-changes").hidden === false,
+  elementFor("send").hidden === true &&
+    elementFor("stop").hidden === false &&
+    document.body.classList.contains("running"),
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / ${document.body.className}`,
 );
 calls.length = 0;
-app.handleEvent({
+await emit("agent-event", {
   type: "message_update",
-  runId: 62,
+  runId: 962,
   assistantMessageEvent: { type: "text_delta", delta: "the rest of the reply" },
 });
 check(
@@ -6623,17 +6712,17 @@ check(
 // counts belongs to the thread it is in: the footer under another conversation
 // keeps that conversation's own totals, and the run's wait with its thread.
 await app.openSession(readThread);
-app.handleEvent({
+await emit("agent-event", {
   type: "usage",
-  runId: 62,
+  runId: 962,
   usage: { input: 4000, output: 120, cacheRead: 0, cacheWrite: 0, cost: 0.02 },
 });
 check(
   "left the footer on the thread being read while the run counted its own",
   app.state.usage?.input !== 4000 &&
-    app.state.parked?.session === runningThread.id &&
-    app.state.parked.usage?.input === 4000,
-  `${app.state.usage?.input} / ${app.state.parked?.usage?.input}`,
+    runA.usage?.input === 4000 &&
+    !/↑4k/.test(el("usage").textContent),
+  `${app.state.usage?.input} / ${runA.usage?.input} / ${el("usage").textContent}`,
 );
 // A visit to a third thread mid-run drops the pointers into the transcript on
 // screen, which is not the run's own: the bubble its next delta extends is the
@@ -6641,9 +6730,9 @@ check(
 await app.openSession(existing[1]);
 el("run-banner").click();
 await nextTick();
-app.handleEvent({
+await emit("agent-event", {
   type: "message_update",
-  runId: 62,
+  runId: 962,
   assistantMessageEvent: { type: "text_delta", delta: " and no more" },
 });
 check(
@@ -6669,12 +6758,13 @@ check(
 // A turn that ends while the reader is elsewhere really did change those files,
 // so its card lands in the transcript the run has been painting into — kept for
 // the thread that changed them rather than dropped or shown under another
-// conversation's reply — and the strip goes on naming that thread, now as one
-// whose turn has finished.
+// conversation's reply — and the strip names that thread, now as one whose turn
+// has finished.
 await app.openSession(readThread);
 el("transcript").innerHTML = "";
+app.visibleThread().clock = null;
 await emit("agent-end", {
-  runId: 62,
+  runId: 962,
   sessionId: runningThread.id,
   project: "/home/dev/Projects/oxide",
   after: "turn-62",
@@ -6686,10 +6776,9 @@ await emit("agent-end", {
 });
 check(
   "kept a finished turn's card for the thread it was not shown on",
-  app.state.parked?.session === runningThread.id &&
-    el("transcript").outline() === "" &&
-    app.state.parked.node.querySelector(".turn-change-row")?.title.startsWith("src/turn.rs"),
-  `${app.state.parked?.session} / ${el("transcript").outline()} / ${app.state.parked?.node.outline()}`,
+  el("transcript").outline() === "" &&
+    runA.node?.querySelector(".turn-change-row")?.title.startsWith("src/turn.rs"),
+  `${el("transcript").outline()} / ${runA.node?.outline()}`,
 );
 check(
   "said a finished turn was waiting in the thread it belonged to",
@@ -6701,21 +6790,21 @@ await app.openSession(runningThread);
 await nextTick();
 check(
   "painted that card when the thread it belongs to was opened",
-  app.state.parked === null &&
-    el("transcript").querySelector(".turn-change-row")?.title.startsWith("src/turn.rs") &&
+  el("transcript").querySelector(".turn-change-row")?.title.startsWith("src/turn.rs") &&
     /half a reply/.test(el("transcript").outline()),
-  `${app.state.parked} / ${el("transcript").outline()}`,
+  `${elementFor("run-banner").hidden} / ${el("transcript").outline()}`,
 );
 // The thread a turn is writing to is not one the ✕ may take away, even while the
 // reader is looking at another conversation: the run appends to that file as it
 // works, which is why the delete is refused wherever the reader is.
-app.state.changes = [];
+runA.busy = true;
+runA.runId = 63;
 app.state.session = readThread.id;
-app.state.runSession = runningThread.id;
-app.setBusy();
-app.state.runId = 63;
+app.setIdle();
+runA.busy = true;
+runA.runId = 63;
 calls.length = 0;
-const removal = app.archiveSession(runningThread);
+const removal = app.archiveSession({ ...runningThread });
 await nextTick();
 check(
   "refused to archive the thread the turn is running in from another thread",
@@ -6725,323 +6814,71 @@ check(
     elementFor("confirm-modal").hidden === true,
   `${JSON.stringify(calls.map(([name]) => name))} / ${status()} / ${elementFor("confirm-modal").hidden}`,
 );
-// A run that did not refuse would have opened the dialog this answers, so the
-// thread is put back and the run goes on.
 if (elementFor("confirm-modal").hidden === false) elementFor("confirm-cancel").onclick();
 await removal;
-app.setIdle();
-// A run that starts while the reader is moving: the thread it reports is the one
-// the message that started it was composed in, so a reader who has opened another
-// conversation in the meantime keeps the one they opened — the run is in a thread
-// of its own, and the strip says so.
+runA.busy = false;
+runA.runId = null;
+// A run that starts while the reader is moving: the message is this thread's, so
+// the turn it creates stays here even after the reader opens another
+// conversation — the strip names it, and its reply waits in its own transcript.
 app.state.changes = [];
+app.state.session = readThread.id;
+app.setIdle();
 app.state.session = null;
-app.state.sendView = { session: null };
-app.setBusy();
-await app.openSession(readThread);
-await emit("agent-start", { runId: 63, sessionId: "cc33dd44", title: "A thread of its own" });
+app.activeChatTab().draftKey = undefined;
+el("transcript").innerHTML = "";
+elementFor("prompt").value = "start one here";
+const startedThread = app.visibleThread();
+await app.send(false);
+const startedRunId = startedThread.runId;
+await app.openSession(existing[1]);
+await emit("agent-start", { runId: startedRunId, sessionId: "cc33dd44", title: "A thread of its own" });
 check(
   "left the reader in the thread they had opened when a run started",
-  app.state.session === readThread.id &&
-    app.state.runSession === "cc33dd44" &&
+  app.state.session === existing[1].id &&
+    startedThread.key.startsWith("draft:") === false &&
+    startedThread.session === "cc33dd44" &&
     elementFor("run-banner-text").textContent === "A turn is running in “A thread of its own”",
-  `${app.state.session} / ${app.state.runSession} / ${elementFor("run-banner-text").textContent}`,
+  `${app.state.session} / ${elementFor("run-banner-text").textContent}`,
 );
-// The row standing in for that thread is a way back to it, the same as the
-// header's strip: the store has not written it, so the window switches to it
-// itself instead of reading a file that is not there — and what the run painted
-// while the reader was here is already in the transcript it is handed back.
-app.handleEvent({
+await emit("agent-event", {
   type: "message_update",
-  runId: 63,
+  runId: startedRunId,
   assistantMessageEvent: { type: "text_delta", delta: "a first step" },
 });
 check(
   "painted none of a run started elsewhere into the thread being read",
-  el("transcript").outline() === "",
-  el("transcript").outline(),
+  el("transcript").outline() === "" &&
+    /start one here/.test(startedThread.node?.outline() || "") &&
+    /a first step/.test(startedThread.node?.outline() || ""),
+  `${el("transcript").outline()} / ${startedThread.node?.outline()}`,
 );
-calls.length = 0;
+// The row standing in for that thread is a way back to it, the same as the
+// header's strip: it was started in the reader's own thread, so the store has not
+// listed it yet and the window switches to it itself.
 await app.renderProjectsTree();
-const heldRow = elementFor("projects-tree")
+const standIn = elementFor("projects-tree")
   .querySelectorAll(".session-item")
-  .find((row) => String(row.title).includes("a turn is running"));
-heldRow.click();
+  .find((row) => /A thread of its own/.test(row.outline()));
+calls.length = 0;
+standIn.onclick(press({ target: standIn }));
 await nextTick();
 check(
   "opened the running thread from its own row in the tree",
-  app.state.session === "cc33dd44" &&
-    calls.every(([name]) => name !== "session_messages") &&
+  !calls.some(([name]) => name === "session_messages") &&
     /a first step/.test(el("transcript").outline()) &&
-    elementFor("thread-title").textContent === "A thread of its own" &&
     elementFor("run-banner").hidden === true,
-  `${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))} / ${el("transcript").outline()} / ${elementFor("thread-title").textContent}`,
+  `${JSON.stringify(calls.map(([name]) => name))} / ${el("transcript").outline()}`,
 );
-// The turn is over, so nothing is running anywhere: the strip goes away with it.
 app.setIdle();
-check(
-  "put the strip away when the running turn ended",
-  elementFor("run-banner").hidden === true && app.state.runSession === null,
-  `${elementFor("run-banner").hidden} / ${app.state.runSession}`,
-);
-// A parked thread the ✕ takes away takes its transcript with it: the store has no
-// file behind it any more, so the strip that was the way back has nothing to
-// open and goes with it.
-app.state.session = runningThread.id;
-app.state.sendView = { session: readThread.id };
-app.state.runProject = "/home/dev/Projects/oxide";
-await emit("agent-start", { runId: 72, sessionId: runningThread.id, title: "Rename oxide update" });
-app.state.sendView = null;
-await app.openSession(readThread);
-// The turn ends while the reader is elsewhere, which is what leaves the thread
-// parked with a finished turn rather than a running one.
-app.setIdle();
-// A finished turn's thread is still one this window holds, so its rows go on
-// naming it by the title the turn gave it — the same name the strip gives it —
-// rather than falling back to its id. The store's own answer is narrowed to the
-// thread on screen, which is the moment that title is the only one such a thread
-// has.
-threads = [readThread];
-await app.loadSessions();
-await app.renderSessions();
-const parkedTree = elementFor("projects-tree").outline();
-check(
-  "named a finished turn's parked thread by the turn's own title",
-  parkedTree.includes("Rename oxide update") &&
-    !parkedTree.includes("bb22cc33") &&
-    elementFor("sessions-list").outline().includes("Rename oxide update"),
-  `${parkedTree} / ${elementFor("sessions-list").outline()}`.split("\n")[0],
-);
-calls.length = 0;
-const parkedRemoval = app.archiveSession(runningThread);
-await nextTick();
-await parkedRemoval;
-check(
-  "dropped a parked transcript when its thread was archived",
-  calls.some(([name]) => name === "archive_session") &&
-    app.state.parked === null &&
-    elementFor("run-banner").hidden === true,
-  `${JSON.stringify(calls.map(([name]) => name))} / ${app.state.parked} / ${elementFor("run-banner").hidden}`,
-);
-check("offered concise archive feedback", toastText() === "Chat archived");
-app.state.parked = null;
 app.state.changes = [];
-threads = existing;
-el("transcript").innerHTML = "";
 app.state.session = null;
-
-console.log("a turn that has not reported itself yet");
-// The message a turn is started from is on screen before the process tells the
-// window which thread it created, and the reader may open another conversation
-// inside that window. The thread they left is the run's own owner of what it has
-// painted whether or not it has a name yet, so it is parked with the run rather
-// than dropped when the transcript is rebuilt under it — and the composer is no
-// longer that thread's, since a message typed there would be steered into a run
-// whose reply belongs to a conversation that is not on screen.
-app.state.projects = [
-  { name: "oxide", path: "/home/dev/Projects/oxide", registered: true },
-  { name: "elsewhere", path: "/tmp/elsewhere", registered: true },
-];
-app.state.project = "/home/dev/Projects/oxide";
-app.state.projectName = "oxide";
-app.state.contextWindow = 128000;
-threads = existing;
-app.setIdle();
-app.state.parked = null;
-app.state.changes = [];
-app.state.session = readThread.id;
-el("transcript").innerHTML = "";
-elementFor("prompt").value = "keep going";
-calls.length = 0;
-await app.send(false);
-check(
-  "held the thread and folder a message was sent from while the turn starts",
-  app.state.sendView?.session === readThread.id &&
-    app.state.sendView?.project === "/home/dev/Projects/oxide" &&
-    app.state.runSession === null,
-  `${JSON.stringify(app.state.sendView)} / ${app.state.runSession}`,
-);
-// A stored thread in the same folder: leaving the starting turn's thread for it
-// is the read-only review, and the bubble the reader just typed is the run's.
-await app.openSession(existing[1]);
-check(
-  "parked the thread a message had just been sent from",
-  app.state.parked?.session === readThread.id &&
-    app.state.parked?.pending === true &&
-    /keep going/.test(app.state.parked.node.outline()) &&
-    el("transcript").outline() === "",
-  `${app.state.parked?.session} / ${app.state.parked?.pending} / ${app.state.parked?.node.outline()}`,
-);
-elementFor("prompt").value = "carry on";
-app.updateSendState();
-check(
-  "offered Stop alone while the turn had not named the thread it is in",
-  elementFor("send").hidden === true &&
-    elementFor("stop").hidden === false,
-  `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
-);
-calls.length = 0;
-elementFor("send").onclick({ detail: 1 });
-await nextTick();
-check(
-  "refused a message typed before the turn had named its thread",
-  !calls.some(([name]) => name === "steer_run" || name === "send_prompt") &&
-    status() === "A turn is running in “Fix the flaky test”; open it to queue or steer, or stop it." &&
-    elementFor("prompt").value === "carry on",
-  `${JSON.stringify(calls.map(([name]) => name))} / ${status()}`,
-);
-await emit("agent-start", { runId: 62, sessionId: readThread.id, title: "Fix the flaky test" });
-check(
-  "keyed the park to the thread the turn reported",
-  app.state.parked?.session === readThread.id &&
-    app.state.parked?.pending === false &&
-    app.state.session === existing[1].id &&
-    app.state.runSession === readThread.id,
-  `${app.state.parked?.session} / ${app.state.parked?.pending} / ${app.state.session} / ${app.state.runSession}`,
-);
-app.handleEvent({
-  type: "message_update",
-  runId: 62,
-  assistantMessageEvent: { type: "text_delta", delta: "still going" },
-});
-check(
-  "painted the reply into the thread the message was sent from",
-  /keep going/.test(app.state.parked.node.outline()) &&
-    /still going/.test(app.state.parked.node.outline()) &&
-    el("transcript").outline() === "",
-  `${app.state.parked.node.outline()} / ${el("transcript").outline()}`,
-);
-elementFor("prompt").value = "";
-calls.length = 0;
-el("run-banner").click();
-await nextTick();
-check(
-  "came back to the bubble it kept rather than the store's copy of the thread",
-  app.state.session === readThread.id &&
-    !calls.some(([name]) => name === "session_messages") &&
-    /keep going/.test(el("transcript").outline()) &&
-    /still going/.test(el("transcript").outline()),
-  `${app.state.session} / ${JSON.stringify(calls.map(([name]) => name))} / ${el("transcript").outline()}`,
-);
-// A message that starts a thread of its own has no id for the park to be keyed
-// by, so the park waits for the one the run reports and is keyed by it then:
-// what the reader left is the way back to a thread the store has not written.
-app.setIdle();
-app.state.parked = null;
-app.state.session = null;
-el("transcript").innerHTML = "";
-elementFor("prompt").value = "start one";
-await app.send(false);
-await app.openSession(readThread);
-await emit("agent-start", { runId: 63, sessionId: "cc33dd44", title: "A thread of its own" });
-check(
-  "keyed a park made before the run had an id to the id it created",
-  app.state.parked?.session === "cc33dd44" &&
-    app.state.parked?.pending === false &&
-    app.state.parked?.project === "/home/dev/Projects/oxide" &&
-    /start one/.test(app.state.parked.node.outline()) &&
-    app.state.session === readThread.id,
-  `${app.state.parked?.session} / ${app.state.parked?.pending} / ${app.state.parked?.project} / ${app.state.parked?.node.outline()} / ${app.state.session}`,
-);
-// A new thread of one folder and a new thread of another both have none, so the
-// folder is what tells them apart: a reader who moved to the other project before
-// the turn reported itself is not looking at the thread it created, and the strip
-// takes them to the one it is in rather than the one being read.
-app.setIdle();
-app.state.parked = null;
-app.state.session = null;
-app.state.project = "/home/dev/Projects/oxide";
-el("transcript").innerHTML = "";
-elementFor("prompt").value = "start one here";
-await app.send(false);
-await app.selectProject(app.state.projects[1]);
-check(
-  "moved to the other folder without taking the starting turn's thread",
-  app.state.project === "/tmp/elsewhere" && app.state.session === null,
-  `${app.state.project} / ${app.state.session}`,
-);
-await emit("agent-start", { runId: 64, sessionId: "dd44ee55", title: "A thread of its own" });
-check(
-  "did not adopt the thread a run created in the folder the reader left",
-  app.state.session === null &&
-    app.state.runSession === "dd44ee55" &&
-    elementFor("run-banner").hidden === false &&
-    elementFor("run-banner-text").textContent === "A turn is running in “A thread of its own”",
-  `${app.state.session} / ${app.state.runSession} / ${elementFor("run-banner").hidden} / ${elementFor("run-banner-text").textContent}`,
-);
-// A run counts its own tokens while the reader is in another folder, and what the
-// footer draws is a fraction of a window. The fraction is taken where the totals
-// are drawn — the folder they belong to — so the park carries the raw prompt
-// rather than a percentage of whichever window was open when the event arrived.
-app.state.contextWindow = 32000;
-app.handleEvent({
-  type: "usage",
-  runId: 64,
-  usage: { input: 30000, output: 40, cacheRead: 0, cacheWrite: 0, cost: 0.01 },
-});
-check(
-  "left the run's tokens waiting for its own thread and its own window",
-  app.state.parked?.usage?.prompt === 30000 &&
-    app.state.parked?.usage?.contextPct == null &&
-    app.state.usage?.input !== 30000,
-  `${JSON.stringify(app.state.parked?.usage)} / ${JSON.stringify(app.state.usage)}`,
-);
-// The strip takes the reader back to the run's own folder, whose window arrives
-// from that folder's own `project_info` — which the stub answers here the way a
-// real one does — so the parked totals are drawn against the window they belong
-// to rather than against the one the folder being read had. The tokens are the
-// thread's own: what it had spent when the turn started, plus the step that ran
-// while the reader was away, which is what the terminal footer counts.
-projectInfo = projectFacts(128000);
-calls.length = 0;
-el("run-banner").click();
-await nextTick();
-await nextTick();
-check(
-  "opened the run's own folder and drew its tokens against that window",
-  app.state.project === "/home/dev/Projects/oxide" &&
-    app.state.session === "dd44ee55" &&
-    /start one here/.test(el("transcript").outline()) &&
-    el("usage").textContent === "↑34k ↓160 $0.030" &&
-    el("context-percent").textContent === "23%",
-  `${app.state.project} / ${app.state.session} / ${el("transcript").outline()} / ${el("usage").textContent} / ${el("context-percent").textContent}`,
-);
-app.setIdle();
-app.state.parked = null;
-app.state.session = null;
+startedThread.busy = false;
+startedThread.runId = null;
+startedThread.unread = false;
 projectInfo = null;
 threads = existing;
 el("transcript").innerHTML = "";
-
-console.log("opening the thread a finished turn is parked in");
-// The header names that thread by the turn's own title too, which is what the
-// strip and the sidebar row call it: the store has not written it, so the title
-// the window held for it is the only name it has.
-app.state.projects = [{ name: "oxide", path: "/home/dev/Projects/oxide", registered: true }];
-app.state.project = "/home/dev/Projects/oxide";
-app.state.projectName = "oxide";
-app.state.session = readThread.id;
-app.state.sendView = { session: readThread.id };
-app.state.runProject = "/home/dev/Projects/oxide";
-await emit("agent-start", { runId: 71, sessionId: runningThread.id, title: "Rename oxide update" });
-await app.openSession(existing[1]);
-await app.loadSessions();
-app.setIdle();
-app.state.sendView = null;
-calls.length = 0;
-el("run-banner").click();
-await nextTick();
-check(
-  "named the thread the strip opened by the turn's own title",
-  app.state.session === runningThread.id &&
-    elementFor("thread-title").textContent === "Rename oxide update" &&
-    app.state.parked === null &&
-    !calls.some(([name]) => name === "session_messages"),
-  `${app.state.session} / ${elementFor("thread-title").textContent} / ${JSON.stringify(calls.map(([name]) => name))}`,
-);
-app.state.changes = [];
-el("transcript").innerHTML = "";
-app.state.session = null;
 
 console.log("a thread that is not stored yet");
 // `all_sessions` lists what is on disk, and a thread that was just started has
@@ -7414,7 +7251,6 @@ check(
   JSON.stringify(calls),
 );
 const pinnedThread = elementFor("projects-tree").children[0].children[1].children[0];
-app.state.parked = { session: "pin-me", project: removeTarget.path, title: "Pinned work" };
 calls.length = 0;
 pinnedThread.querySelector(".row-archive").click();
 await nextTick();
@@ -7423,7 +7259,6 @@ check(
   calls.some(([name, args]) => name === "archive_session" && args.id === "pin-me") &&
     !calls.some(([name]) => name === "delete_session") &&
     app.state.sessions.length === 0 &&
-    app.state.parked === null &&
     elementFor("projects-tree").querySelector(".project-empty")?.textContent === "No chats" &&
     elementFor("projects-tree").querySelectorAll(".recent-session-item").length === 0,
   JSON.stringify(calls),
@@ -8896,28 +8731,50 @@ await closeSecondTab.onclick({ stopPropagation() { tabCloseStopped = true; } });
 check("returned focus to the composer when the last extra tab closed", tabCloseStopped && document.activeElement === elementFor("prompt"));
 check("closing another tab kept the active chat", app.chatTabs.length === 1 && app.activeChatTab().id === firstTab && elementFor("prompt").value === "unfinished draft");
 
+// A response that started in a tab before its run named the thread is that
+// tab's own draft: switching away parks its transcript, the tab's own spinner
+// says it is still there, and the run goes on painting into it.
 app.state.session = null;
-app.state.busy = true;
-app.state.runSession = null;
-app.state.runProject = app.state.project;
-app.state.sendView = { session: null, project: app.state.project, tabId: firstTab };
-app.state.parked = null;
+app.activeChatTab().draftKey = undefined;
+const startingThread = app.visibleThread();
+startingThread.project = app.state.project;
+startingThread.busy = true;
+startingThread.runId = 9001;
 elementFor("transcript").replaceChildren(app.bubble("user", "A response starting in this tab"));
+app.setBusy();
 await app.newChatTab();
 const awayTab = app.activeChatTab().id;
 const pendingTabButton = elementFor("chat-tabs").children.find((row) => row.children[0].id === `chat-tab-${firstTab}`).children[0];
 check("marked a running response on its own tab", pendingTabButton.querySelectorAll(".spinner").length === 1 && pendingTabButton.title.endsWith(" · Running"));
 await app.newChatTab();
 await app.activateChatTab(awayTab);
-check("kept a pending new chat out of another blank tab", app.state.parked?.pending && !elementFor("transcript").outline().includes("A response starting in this tab"));
-await emit("agent-start", { sessionId: "tab-live", title: "Running in the first tab" });
-check("kept a starting response in its original tab", app.state.session === null && app.state.parked?.session === "tab-live" && app.chatTabs.find((tab) => tab.id === firstTab)?.session === "tab-live");
-app.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Reply while this tab is away" } });
+check("kept a pending new chat out of another blank tab", !elementFor("transcript").outline().includes("A response starting in this tab"));
+await emit("agent-start", { runId: 9001, sessionId: "tab-live", title: "Running in the first tab" });
+check(
+  "kept a starting response in its original tab",
+  app.state.session === null &&
+    app.threads.get("s:tab-live")?.busy === true &&
+    app.chatTabs.find((tab) => tab.id === firstTab)?.session === "tab-live",
+  `${app.state.session} / ${app.chatTabs.find((tab) => tab.id === firstTab)?.session} / ${app.threadForRunId(9001)?.key} / ${[...app.threads].map(([key, record]) => `${key}:${record.runId}:${record.busy}`).join(" ")}`,
+);
+await emit("agent-event", { type: "message_update", runId: 9001, assistantMessageEvent: { type: "text_delta", delta: "Reply while this tab is away" } });
+check(
+  "painted the reply into the tab that started it",
+  !elementFor("transcript").outline().includes("Reply while this tab is away") &&
+    /Reply while this tab is away/.test(app.threads.get("s:tab-live").node.outline()),
+  elementFor("transcript").outline(),
+);
 await app.activateChatTab(firstTab);
 check("restored the response streamed into an inactive tab", app.state.session === "tab-live" && elementFor("transcript").outline().includes("Reply while this tab is away"));
 await app.closeChatTab(firstTab);
-check("closing a running chat tab preserved its response", app.activeChatTab().id === awayTab && app.state.runSession === "tab-live" && app.state.parked?.session === "tab-live");
-app.setIdle();
+check(
+  "closing a running chat tab kept its response reachable",
+  app.activeChatTab().id === awayTab &&
+    app.turnInThread("tab-live") === true &&
+    app.backgroundRun()?.session === "tab-live",
+  `${app.activeChatTab().id} / ${app.backgroundRun()?.session}`,
+);
+await emit("agent-end", { runId: 9001, sessionId: "tab-live" });
 check("removed running markers when the turn ended", elementFor("chat-tabs").querySelectorAll(".spinner").length === 0);
 
 const readGate = {};
@@ -9101,15 +8958,26 @@ app.setIdle();
 calls.length = 0;
 let releasePrompt;
 sendPromptGate = new Promise((resolve) => { releasePrompt = resolve; });
-const startingPrompt = app.startPrompt("stop during setup", [], false, { project: "/tmp/oxide", session: null });
+app.state.project = "/tmp/oxide";
+const stopRunThread = app.visibleThread();
+const startingPrompt = app.startPrompt("stop during setup", [], false, stopRunThread);
 await nextTick();
 await app.stop();
-check("remembered Stop before the host supplied a run id", app.state.stopRequested && app.state.busy && projectCalls("cancel_run").length === 0);
+check(
+  "remembered Stop before the host supplied a run id",
+  app.state.stopRequested && app.state.busy && projectCalls("cancel_run").length === 0,
+  `${app.state.stopRequested} / ${app.state.busy} / ${JSON.stringify(calls.map(([name]) => name))}`,
+);
 releasePrompt();
 await startingPrompt;
-check("cancelled the reserved run as soon as its id arrived", projectCalls("cancel_run").at(-1)?.[1]?.runId === 62);
+check(
+  "cancelled the reserved run as soon as its id arrived",
+  stopRunThread.runId != null && projectCalls("cancel_run").at(-1)?.[1]?.runId === stopRunThread.runId,
+  `${stopRunThread.runId} / ${JSON.stringify(projectCalls("cancel_run"))}`,
+);
 sendPromptGate = null;
-await emit("agent-end", { runId: 62 });
+await emit("agent-end", { runId: stopRunThread.runId, sessionId: stopRunThread.session });
+await nextTick();
 check("ended a run stopped during startup", !app.state.busy);
 
 console.log("the bridge");
