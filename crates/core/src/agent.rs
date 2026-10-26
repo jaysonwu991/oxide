@@ -2502,7 +2502,13 @@ impl VerificationState {
                             self.reviewed = true;
                         }
                     }
-                    if rule.checks.iter().any(|check| command.contains(check)) {
+                    // A status read that came back still-pending confirms
+                    // nothing yet: `gh pr checks` exits 8 while CI runs, which
+                    // `tools::bash` reports as a result rather than a failure,
+                    // so the rule has to stay pending until an outcome lands.
+                    if rule.checks.iter().any(|check| command.contains(check))
+                        && !reports_pending_checks(output)
+                    {
                         self.pending.remove(rule.key);
                     }
                 }
@@ -2610,6 +2616,13 @@ fn same_path(a: &str, b: &str) -> bool {
     let a = a.trim_end_matches('/');
     let b = b.trim_end_matches('/');
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
+}
+
+/// Whether a status read answered that the checks are still running, which is
+/// the note `tools::bash` appends to `gh pr checks`' documented pending exit.
+/// Such a read confirms no outcome, so it must not clear a pending rule.
+fn reports_pending_checks(output: &str) -> bool {
+    output.contains(tools::PENDING_CHECKS_NOTE)
 }
 
 /// Whether a tool result reports failure explicitly or by a non-zero shell
@@ -4705,8 +4718,11 @@ mod tests {
 
     #[tokio::test]
     async fn portkey_turns_send_catalog_budget_and_persist_effort_choices() {
-        let (addr, server) =
-            sse_server(vec![answer_body("Completed"), answer_body("Completed")]).await;
+        let native_answer = openai_sse(&[
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Completed"}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}),
+        ]);
+        let (addr, server) = sse_server(vec![native_answer.clone(), native_answer]).await;
         let dir = std::env::temp_dir().join(format!("oxide_portkey_turn_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
@@ -4763,7 +4779,7 @@ mod tests {
             assert_eq!(body["max_tokens"], 32_768);
             assert_eq!(body["thinking"]["type"], "adaptive");
             assert_eq!(body["output_config"]["effort"], effort);
-            let system = body["messages"][0]["content"].to_string();
+            let system = body["system"].to_string();
             assert!(
                 system.contains(&format!("Effective reasoning effort: {effort}")),
                 "{system}"
@@ -7106,6 +7122,38 @@ for line in sys.stdin:
         assert!(output_failed("error: nope"));
         assert!(output_failed("[exit: 1]"));
         assert!(!output_failed("[exit: 0]"));
+    }
+
+    /// `gh pr checks` exits 8 while CI runs, which `tools::bash` reports as a
+    /// result rather than a failure. That read is not the outcome the rule
+    /// waits for, so the pull request stays unconfirmed until one lands.
+    #[test]
+    fn a_still_pending_check_does_not_confirm_the_pull_request() {
+        let pending = format!("build\tpending\n[exit: 8] ({})", tools::PENDING_CHECKS_NOTE);
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "[exit: 0]",
+        );
+        state.record("bash", &json!({"command": "gh pr checks 42"}), &pending);
+        assert!(state.pending.contains("pull request"));
+        assert!(state.reminder().is_some());
+
+        // The same read once a check has reported clears it.
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "[exit: 0]",
+        );
+        state.record(
+            "bash",
+            &json!({"command": "gh pr checks 42"}),
+            "build\tpass\n[exit: 0]",
+        );
+        assert!(state.pending.is_empty());
+        assert!(state.reminder().is_none());
     }
 
     #[test]

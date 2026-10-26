@@ -352,6 +352,8 @@ impl From<Usage> for ContextUsage {
 
 #[derive(Debug, Default)]
 pub struct AssistantTurn {
+    /// Provider-reported model identity, retained for gateway routing checks.
+    pub response_model: Option<String>,
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
     pub thinking: Vec<Value>,
@@ -396,6 +398,8 @@ pub fn set_thinking_signature(blocks: &mut [Value], signature: &str) {
 
 #[derive(Debug, Deserialize)]
 pub struct StreamChunk {
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub choices: Vec<StreamChoice>,
     #[serde(default)]

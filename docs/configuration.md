@@ -67,6 +67,11 @@ full request, and user instructions take precedence. This guides behavior; it
 does not impose a response-time limit. Each primary turn records its model and
 selected reasoning level in the session log across CLI, Desktop and VS Code.
 
+Opus 5 uses shorter scope and completion guidance: it already verifies its work,
+so the harness avoids adding a separate broad verification pass. The requested
+reasoning level is still honored. For adaptive Claude models, `off` explicitly
+sends `thinking.type = disabled`, since omitting the field can leave thinking on.
+
 ### max_tokens and context_window
 
 `max_tokens` caps the output of a single model turn, reasoning included. When a
@@ -467,6 +472,33 @@ fallbacks, see the full [Portkey configuration](cli.md#portkey) section. The
 [Portkey usage bar](cli.md#portkey-usage-bar) documents the `/spend` dialog and
 the `portkey-usage.json` file — the shared `/usage` reports this chat's tokens,
 cost and context window instead.
+
+Claude requests use Portkey's native `/messages` endpoint, retaining signed and
+redacted thinking blocks across tool calls. GPT and GLM keep `/chat/completions`;
+model discovery still uses the shared Portkey catalog. Both routes preserve the
+configured gateway URL, Config ID, credentials and session affinity headers.
+
+A Config ID can route unknown model names to a default model. Oxide rejects a
+provider-reported model ID that contradicts a known picker model, while accepting
+vendor/region prefixes, dated snapshots and deployment suffixes. Custom opaque
+aliases remain the gateway's responsibility. A mismatch names both model IDs
+and asks you to correct the Config ID or its routing rules; Oxide does not remove
+the Config ID or bypass the gateway policy. A fallback catalog lists known model
+names, not proof that your configured route serves each one.
+
+Run the opt-in compatibility probe through your existing credentials:
+
+```sh
+cargo run -p oxide-core --example model_check -- auto
+cargo run -p oxide-core --example model_check -- medium claude-opus-5
+```
+
+It checks a real structured lookup and result replay, recording returned model
+IDs, tokens and elapsed time as JSON lines. It uses synthetic data, three concurrent
+models at most, up to three tool-loop steps and a 90-second timeout per model.
+Transport retries can add HTTP requests; the reported request count includes them.
+It never changes saved settings. This is a transport smoke test, not a general
+coding-quality or latency guarantee; errors and substitutions fail the probe.
 
 ### Z.AI (GLM)
 

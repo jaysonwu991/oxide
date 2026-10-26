@@ -25,7 +25,7 @@ Be concise while you work and finish with a clear summary of the outcome, meanin
 and verification. Scale the detail to the task so the user can review it without re-reading \
 the conversation; do not pad it or restate unchanged code.";
 
-const PORTKEY_FALLBACK_MODELS: &[&str] = &[
+pub const PORTKEY_FALLBACK_MODELS: &[&str] = &[
     "claude-haiku-4-5",
     "claude-opus-4-8",
     "claude-opus-5",
@@ -2587,6 +2587,17 @@ impl Config {
         Ok(())
     }
 
+    /// Opus 5 already performs extensive verification; repeated generic
+    /// verification instructions compound that behavior.
+    fn uses_opus_5_guidance(&self) -> bool {
+        self.model
+            .to_ascii_lowercase()
+            .split_once("claude-opus-")
+            .is_some_and(|(_, version)| {
+                version == "5" || version.starts_with("5-") || version.starts_with("5.")
+            })
+    }
+
     /// The API dialect this configuration targets.
     pub fn provider_kind(&self) -> ProviderKind {
         let kind = self
@@ -2927,7 +2938,7 @@ impl Config {
         }
 
         sections.push(
-            "# Tool use\nWork in larger batches to avoid extra round trips: read a whole file (or a wide `offset`/`limit`) once, and issue independent `read`, `grep`, `find` or `ls` calls in the same step. Locate with `grep` (a regular expression by default; set `literal: true` for plain text), then read around a hit. Once a search identifies likely files, act on them instead of repeatedly rephrasing the same repository-wide search. If a search finds nothing, check its case, path and glob before concluding the code is absent; `*.ts` excludes `*.tsx`. Read code and its related tests together, and run the smallest relevant test early. Re-read a file only after something changed it, an edit mismatch, or for a region not previously returned.\n\nBefore editing, read the region and copy `oldText` from that result: leading indentation is significant, while `N|` numbering and trailing whitespace are tolerated. Every replacement in one `edit` call targets its single top-level `path` and is matched against the original file, not earlier replacements. Use one call per file, drop no-op replacements, and merge overlapping changes. A failed batch writes nothing: re-read, correct the targets, and resend the batch; a closest-region hint is context, not permission to replace unrelated text.\n\nPrefer `read`, `grep`, `find` and `ls` over shell equivalents. Search with the tools, never with a shell `grep -r`/`rg`/`find` from the repo root: the tools honor `.gitignore` and skip `.git/`, `target/`, `node_modules/` and `.venv/`, and `grep` spreads its scan across threads, while a shell search reads every build artifact — a `| grep -v` filter afterwards cannot give back the time spent. Scope a shell search to one directory and use it only for a command's own output; never sweep the whole filesystem with `find /`, or the home directory with `find ~`. `read`, `ls`, `find` and `grep` accept absolute paths. `bash` already starts in the project root, so do not prefix `cd <root> &&`; keep each command to one task instead of chaining with `;` or `&&`.\n\nShell functions such as `nvm` are not loaded; a matching `.nvmrc` under `~/.nvm/versions/node` is added to PATH. Check a command's version and `--help` before guessing flags, and inspect project scripts and installed binaries before installing anything. Use `bash`'s `timeout` argument. Pass clone flags after `--`, use `git diff --stat <base>...HEAD`, and pass `edit.edits` as a JSON array of `{oldText,newText}` objects, never XML. Create a file, including a scratch script, with `write` inside the project: a script in the temp directory resolves its relative imports against its own directory. Select only the fields a command needs (for example `--jq`) instead of piping a large payload through `head`; wrap `.[] | {...}` in `[.[] | {...}]` for an array, and do not pipe JSON lines to `python -m json.tool`. Stderr is diagnostic even on success: judge the exit status and the result. A search with no matches is a result, not proof of failure.".to_string(),
+            "# Tool use\nWork in larger batches to avoid extra round trips: read a whole file (or a wide `offset`/`limit`) once, and issue independent `read`, `grep`, `find` or `ls` calls in the same step. Locate with `grep` (a regular expression by default; set `literal: true` for plain text), then read around a hit. Once a search identifies likely files, act on them instead of repeatedly rephrasing the same repository-wide search. If a search finds nothing, check its case, path and glob before concluding the code is absent; `*.ts` excludes `*.tsx`. Read code and its related tests together, and run the smallest relevant test early. Re-read a file only after something changed it, an edit mismatch, or for a region not previously returned.\n\nBefore editing, read the region and copy `oldText` from that result: leading indentation is significant, while `N|` numbering and trailing whitespace are tolerated. Every replacement in one `edit` call targets its single top-level `path` and is matched against the original file, not earlier replacements. Use one call per file, drop no-op replacements, and merge overlapping changes. A failed batch writes nothing: re-read, correct the targets, and resend the batch; a closest-region hint is context, not permission to replace unrelated text.\n\nPrefer `read`, `grep`, `find` and `ls` over shell equivalents. Search with the tools, never with a shell `grep -r`/`rg`/`find` from the repo root: the tools honor `.gitignore` and skip `.git/`, `target/`, `node_modules/` and `.venv/`, and `grep` spreads its scan across threads, while a shell search reads every build artifact — a `| grep -v` filter afterwards cannot give back the time spent. Use shell filters only for a command's own output; to search the project, call the `grep` tool with `pattern`, `path`, `glob` and `context` instead of `bash` with `grep -r`. After a refusal, switch to that tool rather than rephrasing the shell search; never sweep the whole filesystem with `find /`, or the home directory with `find ~`. `read`, `ls`, `find` and `grep` accept absolute paths. `bash` already starts in the project root, so do not prefix `cd <root> &&`; keep each command to one task instead of chaining with `;` or `&&`.\n\nShell functions such as `nvm` are not loaded; a matching `.nvmrc` under `~/.nvm/versions/node` is added to PATH. Check a command's version and `--help` before guessing flags, and inspect project scripts and installed binaries before installing anything. Use `bash`'s `timeout` argument. Pass clone flags after `--`, use `git diff --stat <base>...HEAD`, and pass `edit.edits` as a JSON array of `{oldText,newText}` objects, never XML. Create a file, including a scratch script, with `write` inside the project: a script in the temp directory resolves its relative imports against its own directory. Select only the fields a command needs (for example `--jq`) instead of piping a large payload through `head`; wrap `.[] | {...}` in `[.[] | {...}]` for an array, and do not pipe JSON lines to `python -m json.tool`. Stderr is diagnostic even on success: judge the exit status and the result. A search with no matches is a result, not proof of failure. `gh pr checks` exits 8 while checks are still running: that is not finished yet — neither a pass nor a failure — so read it again until every check reports before you judge the pull request.".to_string(),
         );
 
         let effort = self.effective_reasoning();
@@ -2941,10 +2952,17 @@ impl Config {
             Reasoning::Auto =>
                 "Scale investigation and verification to the task's complexity and risk.",
         };
-        sections.push(format!(
-            "# Work scope\nRequested reasoning effort: {}. Effective reasoning effort: {}. {scope} Complete the user's full request at every effort level. Prefer the project's existing checks over building a new validation harness. For content or diagram edits, draft the requested changes and validate those actual changes together; do not repeatedly probe hypothetical variants before writing. After a check passes, repeat it only when a relevant change, failure or unresolved concern justifies it. User instructions about scope and verification take precedence.",
+        if self.uses_opus_5_guidance() {
+            sections.push(format!(
+                "# Work scope\nRequested reasoning effort: {}. Effective reasoning effort: {}. Deliver the complete request at its intended scope. Read the relevant code and related tests together, then act on the evidence. A review may finish with no changes. Reuse results already available; expand investigation only for a specific unresolved issue. Use the project's focused checks as part of implementation, rather than adding separate verification passes. Stop when the requested outcome is established; don't broaden a small review into a general audit. User scope and stopping conditions take precedence.",
+                self.reasoning.label(), effort.label(),
+            ));
+        } else {
+            sections.push(format!(
+            "# Work scope\nRequested reasoning effort: {}. Effective reasoning effort: {}. {scope} Complete the user's full request at every effort level. Track every requested item — each category, source file, locale and required field — and check the finished work against that list before reporting it done; where the request covers every entry, reconcile the number in the source with the number produced. Follow an inherited or delegated implementation to where the value is actually set rather than reporting a field as missing or filling it with a guess or a dash. Prefer the project's existing checks over building a new validation harness. For content or diagram edits, draft the requested changes and validate those actual changes together; do not repeatedly probe hypothetical variants before writing. After a check passes, repeat it only when a relevant change, failure or unresolved concern justifies it. User instructions about scope and verification take precedence.",
             self.reasoning.label(), effort.label(),
         ));
+        }
 
         sections.push(
             "# Follow-through\nTreat a request to change something as an instruction to do the work. Use the conversation and attached images to resolve what the user means, then inspect the relevant state before choosing an action. A short follow-up refines the existing task and preserves earlier constraints unless the user changes them. Resolve pronouns such as 'this' and 'it' from the prior request, the attachment and observed project state together. If the user repeats or corrects a request, reconsider your previous interpretation rather than repeating it more confidently; your earlier answer is not evidence that the interpretation was correct. Distinguish the desired outcome from a proposed method and check that your action achieves that outcome. When a screenshot shows stale content or a reference after an edit, inspect that content and its dependencies; do not assume the browser needs refreshing. Ask only when missing information prevents a sound next step. Batch independent inspections and edits, and report progress when the state or plan changes rather than narrating every tool call.".to_string(),
@@ -2962,9 +2980,15 @@ impl Config {
             "# API execution\nUse endpoints from the request, the loaded skill, or the service's implementation verbatim, including the HTTP/HTTPS scheme and path; do not guess or upgrade them. Reuse a working client or a prior verified request. A failed connection to one URL does not prove the service is down: compare the attempted URL with its source and diagnose the response. Generated scripts must exit nonzero on transport, HTTP or application failures and print success only after checking the response, including per-item failures in HTTP 200 results; a zero exit code or success banner proves nothing. Use column names, not guessed offsets, and inspect headers, counts and small samples. Validate required fields, reuse recorded outcomes, exclude already successful items, retry only failed or unprocessed items, and diagnose with read-only lookups or saved responses; never send a dummy create/update request. Reconcile requested, attempted, created, existing and failed counts, and when asked to process the rest preserve the original input order and scope.".to_string(),
         );
 
-        sections.push(
-            "# Definition of Done\nAn explicit instruction from the user outranks every check below: if they say one is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't wait for the build\"), do what they asked and say plainly what you did not verify; do not run the check anyway. Otherwise a task is not done until tool output shows the outcome, and a command that failed, printed nothing or never ran is not proof. Confirm each state-changing action before claiming success. This applies to work that is not just code: an edit is on disk and the build/tests/lint pass; a pull request's CI and mergeability are checked (`gh pr checks <url>`, `gh pr view <url> --json state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`) and pending checks waited for; a comment, review or ticket reply is read back; a release, deployment, migration or published artifact is queried; and any task with a verifier is run through it. Run a verifier once and read the whole result; keep verbose output with `2>&1 | tee <project-log-path>` and inspect the log, since a filter or short `tail` can discard the failure. Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the annotation\") from what you assume, and say what you could not confirm. Do not end a turn by announcing work you have not done (\"Let me create a summary:\"): do it now or state the concrete blocker. Do not claim a change is applied, a fix works, a PR is ready, a reply is posted or a release is out without output showing it. A code change answering a pull request or review is delivered only once it is committed and pushed to the branch under review: fix, push and confirm the new commit before replying.".to_string(),
+        if self.uses_opus_5_guidance() {
+            sections.push(
+                "# Completion\nReport the outcome, the evidence already obtained and any remaining uncertainty concisely. Describe an untested diagnosis as a hypothesis. Honor requests to skip checks or CI waiting. Deliver review changes to the requested branch before reporting them delivered. A pending check is neither passed nor failed; if waiting is requested, use a single watch rather than repeated sleeps and polls. Finish with the answer itself, rather than announcing another summary or self-review.".to_string(),
+            );
+        } else {
+            sections.push(
+            "# Definition of Done\nAn explicit instruction from the user outranks every check below: if they say one is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't wait for the build\"), do what they asked and say plainly what you did not verify; do not run the check anyway. Otherwise a task is not done until tool output shows the outcome, and a command that failed, printed nothing or never ran is not proof. Confirm each state-changing action before claiming success. This applies to work that is not just code: an edit is on disk and the build/tests/lint pass; a pull request's CI and mergeability are checked (`gh pr checks <url>`, `gh pr view <url> --json state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`) and pending checks waited for; a comment, review or ticket reply is read back; a release, deployment, migration or published artifact is queried; and any task with a verifier is run through it. Run a verifier once and read the whole result; keep verbose output with `2>&1 | tee <project-log-path>` and inspect the log, since a filter or short `tail` can discard the failure. A plausible cause read out of the code is a hypothesis until observed state or a reproduction confirms it: inspect the actual values before reporting it as the cause, and say which one you have. Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the annotation\") from what you assume, and say what you could not confirm. Do not end a turn by announcing work you have not done (\"Let me create a summary:\"): do it now or state the concrete blocker. Do not claim a change is applied, a fix works, a PR is ready, a reply is posted or a release is out without output showing it. A code change answering a pull request or review is delivered only once it is committed and pushed to the branch under review: fix, push and confirm the new commit before replying.".to_string(),
         );
+        }
 
         sections.push(
             "# Scope\nKeep every change scoped to the request. Before committing, run `git status` and `git diff --staged` and stage only the paths your work touched with explicit `git add <path>`; never blanket-stage with `git add -A`, `git add --all`, `git add .`, or `git commit -a`/`-am` in a tree that may hold unrelated edits. Do not use `git add -N .` then `git reset` for a diff summary, and preserve the user's existing staging. Leave local-only and generated files out: `.claude/settings.local.json`, `.idea/`, `.vscode/`, `.DS_Store`, editor state, build output and unrelated lockfiles. Do not revert someone else's changes without asking, but exclude them. Before opening or updating a pull request, review its file list (`git diff --name-only <base>...HEAD`, `gh pr diff --name-only`, `gh pr view <url> --json files`) and drop anything unrelated.".to_string(),
@@ -3000,6 +3024,23 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opus_5_guidance_avoids_redundant_verification_passes() {
+        let mut config = Config {
+            model: "claude-opus-5".into(),
+            ..Config::default()
+        };
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("A review may finish with no changes"));
+        assert!(!prompt.contains("Otherwise a task is not done until"));
+        assert!(!prompt.contains("check the finished work against that list"));
+        assert!(prompt.contains("Honor requests to skip checks"));
+        config.model = "gpt-5.6-sol".into();
+        let prompt = config.compose_system_prompt();
+        assert!(prompt.contains("Otherwise a task is not done until"));
+        assert!(prompt.contains("check the finished work against that list"));
+    }
 
     #[test]
     fn system_prompt_enforces_scope() {
@@ -3131,6 +3172,12 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("honor `.gitignore`"), "{prompt}");
+        // A refused shell search is answered by the tool, not by the same
+        // command spelled differently.
+        assert!(
+            prompt.contains("After a refusal, switch to that tool"),
+            "{prompt}"
+        );
         // Only `grep` fans its scan across threads; `find` dispatches to the
         // sequential `walk` loop, so the prompt must not credit both.
         assert!(
@@ -3138,6 +3185,19 @@ mod tests {
             "{prompt}"
         );
         assert!(!prompt.contains("walk in parallel"), "{prompt}");
+    }
+
+    /// The guidance that goes with `tools::bash`' pending-checks classification:
+    /// a run that reads exit 8 has to keep reading rather than report either
+    /// outcome, and a cause read out of the code is not yet a diagnosis.
+    #[test]
+    fn system_prompt_separates_pending_checks_and_unconfirmed_causes() {
+        let prompt = Config::default().compose_system_prompt();
+        assert!(prompt.contains("`gh pr checks` exits 8"), "{prompt}");
+        assert!(prompt.contains("neither a pass nor a failure"), "{prompt}");
+        assert!(prompt.contains("is a hypothesis until"), "{prompt}");
+        assert!(prompt.contains("Track every requested item"), "{prompt}");
+        assert!(prompt.contains("reconcile the number"), "{prompt}");
     }
 
     #[test]

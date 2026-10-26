@@ -56,6 +56,15 @@ const BUILD_BASH_TIMEOUT_SECS: u64 = 600;
 /// failing.
 #[cfg(unix)]
 const SIGPIPE_EXIT: i32 = 141;
+/// What `gh pr checks` documents for checks that are still running. It is not a
+/// failure: no check has reported a failure yet (that is its exit 1), so the
+/// answer is "come back later" rather than "CI is red".
+const GH_PENDING_EXIT: i32 = 8;
+
+/// Appended to a `gh pr checks` run that exited [`GH_PENDING_EXIT`]. A front-end
+/// and the run's own verification tracker both read it, so the words are shared
+/// rather than spelled out twice.
+pub(crate) const PENDING_CHECKS_NOTE: &str = "pull request checks are still pending, not failed";
 
 /// Appended to a shell command that ran past its timeout. The usual cause is an
 /// unbounded search that walked build output, so the message steers the retry
@@ -4172,7 +4181,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
             // without evidence of a closed reader their failures stay failures.
             let script = format!(
                 "{command}\n__oxide_pipeline_status=(\"$?\" \"${{PIPESTATUS[@]}}\")\n\
-                 if (( __oxide_pipeline_status[0] == {SIGPIPE_EXIT} || __oxide_pipeline_status[0] == 1 )); then\n\
+                 if (( __oxide_pipeline_status[0] == {SIGPIPE_EXIT} || __oxide_pipeline_status[0] == 1 || __oxide_pipeline_status[0] == {GH_PENDING_EXIT} )); then\n\
                  builtin printf '%s\\n' \"${{__oxide_pipeline_status[@]}}\" > \"$OXIDE_BASH_STATUS\"\n\
                  fi\n\
                  exit \"${{__oxide_pipeline_status[0]}}\""
@@ -4225,7 +4234,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     let pipeline_status = {
         if matches!(
             status.as_ref().and_then(std::process::ExitStatus::code),
-            Some(SIGPIPE_EXIT | 1)
+            Some(SIGPIPE_EXIT | 1 | GH_PENDING_EXIT)
         ) {
             let text = std::fs::read_to_string(&pipeline_status_path).unwrap_or_default();
             std::fs::remove_file(&pipeline_status_path).ok();
@@ -4253,7 +4262,16 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     #[cfg(not(unix))]
     let no_matches =
         exit == 1 && last_pipeline_is_search(command) && stderr.tail_text().trim().is_empty();
+    #[cfg(unix)]
+    let checks_pending = exit == GH_PENDING_EXIT && pending_pr_checks(command, &pipeline_status);
+    #[cfg(not(unix))]
+    let checks_pending = exit == GH_PENDING_EXIT && pending_pr_checks(command);
     let mut output = finish_bash_output(stdout, stderr, if reader_closed { 0 } else { exit })?;
+    if checks_pending {
+        output.push_str(" (");
+        output.push_str(PENDING_CHECKS_NOTE);
+        output.push(')');
+    }
     if reader_closed {
         output.push_str(" (a command in the pipeline stopped because its reader closed)");
     }
@@ -4271,7 +4289,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         }
     }
     Ok(ToolOutput {
-        is_error: exit != 0 && !reader_closed && !no_matches,
+        is_error: exit != 0 && !reader_closed && !no_matches && !checks_pending,
         ..ToolOutput::text(output)
     })
 }
@@ -4298,6 +4316,60 @@ fn bash_failure_hint(output: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// The stages of a `gh pr checks` run, optionally piped through text filters, or
+/// `None` for any other command. Only this shape can explain a
+/// [`GH_PENDING_EXIT`]; `8` from anything else is that command's own failure.
+fn gh_pr_checks_pipeline(command: &str) -> Option<Vec<&str>> {
+    let stages = simple_status_pipeline(command, GH_PENDING_EXIT)?;
+    let first = strip_redirections(stages[0]);
+    let words = grep_shell_words(&first);
+    let index = shell_command_index(&words)?;
+    let subcommand: Vec<&str> = words
+        .get(index + 1..index + 3)?
+        .iter()
+        .map(|word| word.trim_matches(['\'', '"']))
+        .collect();
+    (matches!(shell_word_name(words[index]), "gh" | "gh.exe")
+        && subcommand == ["pr", "checks"]
+        && stages[1..].iter().all(|stage| text_filter_command(stage)))
+    .then_some(stages)
+}
+
+/// Whether a [`GH_PENDING_EXIT`] came from `gh pr checks` itself. The pipeline's
+/// own statuses are the evidence, so an unrelated failing command or a filter
+/// that exited 8 cannot be reported as pending checks.
+#[cfg(unix)]
+fn pending_pr_checks(command: &str, text: &str) -> bool {
+    let Some(stages) = gh_pr_checks_pipeline(command) else {
+        return false;
+    };
+    let Ok(statuses) = text
+        .lines()
+        .map(str::parse::<i32>)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    statuses.len() == stages.len() + 1
+        && statuses[0] == GH_PENDING_EXIT
+        && statuses[1] == GH_PENDING_EXIT
+        && statuses[2..].iter().all(|status| *status == 0)
+}
+
+/// Windows has neither `pipefail` nor `PIPESTATUS`, so the process status is the
+/// last stage's own: only an unpiped `gh pr checks` can be read as pending, and
+/// an `8` out of a filter stays the failure it looks like. A Unix build compiles
+/// it for the test alone, so the rule no Unix run takes is still covered.
+#[cfg(any(not(unix), test))]
+fn unpiped_pr_checks(command: &str) -> bool {
+    gh_pr_checks_pipeline(command).is_some_and(|stages| stages.len() == 1)
+}
+
+#[cfg(not(unix))]
+fn pending_pr_checks(command: &str) -> bool {
+    unpiped_pr_checks(command)
 }
 
 #[cfg(unix)]
@@ -4351,6 +4423,17 @@ fn last_pipeline_is_search(command: &str) -> bool {
 
 #[cfg(unix)]
 fn simple_search_pipeline(command: &str) -> Option<Vec<&str>> {
+    simple_status_pipeline(command, 1)
+}
+
+/// The stages of a plain pipeline, or `None` for a command whose recorded
+/// statuses could not be matched to what was written.
+///
+/// `status` is the exit code being explained, because what is ambiguous depends
+/// on it: a failed leading `cd` exits 1 and records that one status, so for code
+/// 1 a lone command after a `cd` cannot be told from the command that never ran.
+/// Any other code cannot have come from the `cd`.
+fn simple_status_pipeline(command: &str, status: i32) -> Option<Vec<&str>> {
     let command = command.trim();
     let mut stages = Vec::new();
     let mut start = 0;
@@ -4414,9 +4497,9 @@ fn simple_search_pipeline(command: &str) -> Option<Vec<&str>> {
         return None;
     }
     stages.push(command[start..].trim());
-    // A failed leading `cd` has one status. Require a real pipeline so that
-    // its failure cannot be mistaken for the search that never executed.
-    if stages.iter().any(|stage| stage.is_empty()) || (changed_dir && stages.len() < 2) {
+    if stages.iter().any(|stage| stage.is_empty())
+        || (changed_dir && stages.len() < 2 && status == 1)
+    {
         return None;
     }
     Some(stages)
@@ -7372,6 +7455,101 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_checks_require_the_gh_command_and_its_pipeline_status() {
+        for command in [
+            "gh pr checks 252",
+            "cd . && gh pr checks 250 2>&1 | head -30",
+            "gh pr checks --json name,bucket",
+            "gh pr checks --watch",
+            "cd . && '/opt/bin/gh' pr checks 250",
+        ] {
+            let statuses = if command.contains('|') {
+                "8\n8\n0\n"
+            } else {
+                "8\n8\n"
+            };
+            assert!(pending_pr_checks(command, statuses), "{command}");
+        }
+        for (command, statuses) in [
+            ("other pr checks", "8\n8\n"),
+            ("echo 'gh pr checks'; exit 8", "8\n8\n"),
+            ("gh pr view 252", "8\n8\n"),
+            ("gh pr checks 252 | head", "8\n0\n8\n"),
+            ("gh pr checks 252 | head", "8\n8\n8\n"),
+            ("gh pr checks 252 | sh", "8\n8\n0\n"),
+            ("gh pr checks 252 && exit 8", "8\n8\n"),
+            ("gh pr checks 252", "1\n1\n"),
+            ("gh pr checks 252", "8\n"),
+            // A quoted subcommand is still the command; a different one is not.
+            ("gh pr diff 252", "8\n8\n"),
+            ("gh 252 pr checks", "8\n8\n"),
+            ("gh pr", "8\n8\n"),
+        ] {
+            assert!(
+                !pending_pr_checks(command, statuses),
+                "{command}: {statuses}"
+            );
+        }
+    }
+
+    /// Windows reports only the last stage's status, so a piped run keeps the
+    /// ordinary failure rather than being read as pending — the rule its
+    /// `pending_pr_checks` is, checked here so the branch no Unix build runs is
+    /// still covered.
+    #[test]
+    fn pending_checks_on_windows_require_an_unpiped_gh_command() {
+        assert!(unpiped_pr_checks("gh pr checks 252"));
+        assert!(unpiped_pr_checks("gh.exe pr checks --watch"));
+        assert!(!unpiped_pr_checks("gh pr checks 252 | head -30"));
+        assert!(!unpiped_pr_checks("gh pr view 252"));
+        assert!(!unpiped_pr_checks("echo 'gh pr checks'; exit 8"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_reports_pending_checks_without_masking_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("oxide_pending_checks_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            "#!/bin/sh\nprintf 'build\tpending\t0\n'\nexit \"${3:-8}\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (suffix, failed) in [
+            ("pr checks 8", false),
+            ("pr checks 8 2>&1 | head -30", false),
+            ("pr checks 1", true),
+            ("pr checks 4", true),
+            ("pr view 8", true),
+            ("pr checks 8 | sh -c 'cat; exit 8'", true),
+        ] {
+            let command = format!("cd . && '{}' {suffix}", gh.display());
+            let out = execute(
+                &call("bash", json!({"command": command})),
+                &dir,
+                &McpRegistry::default(),
+                &Progress::default(),
+            )
+            .await;
+            assert_eq!(out.is_error, failed, "{command}: {}", out.text);
+            assert_eq!(
+                out.text.contains(PENDING_CHECKS_NOTE),
+                !failed,
+                "{}",
+                out.text
+            );
+            if !failed {
+                assert!(out.text.contains("[exit: 8]"), "{}", out.text);
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

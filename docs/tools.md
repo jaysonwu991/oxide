@@ -95,6 +95,18 @@ unsuccessful producer, invalid regex, a failed leading `cd`, or anything that
 could hide which command ran last (a comment, a heredoc, a subshell, an
 expansion, `&&`/`||`, or an earlier `exit`/`exec`/`set -e`) still fails.
 
+`gh pr checks` exits 8 while its checks are still running, which is a documented
+state rather than a failure: no check has reported a failure yet (that is its
+exit 1). A `gh pr checks` run — on its own, or piped through text filters — that
+exits 8 keeps `[exit: 8]`, adds `pull request checks are still pending, not
+failed`, and leaves the tool's error flag clear, so the transcript shows a result
+instead of a red tool call while CI runs. On Unix the pipeline's own stage
+statuses have to agree, so an unrelated failing command or a filter that exited 8
+is still a failure; Windows has neither `pipefail` nor `PIPESTATUS`, so only an
+unpiped run is read this way. Because such a read confirms no outcome, it does
+not clear the pull-request entry in the run's Definition-of-Done tracking: the
+reminder still asks for the checks to be read again until they report.
+
 Shell failures caused by unsupported grep repetition counts, unclosed quotes,
 or selecting a package outside the current Cargo workspace carry a specific
 recovery hint, as does a command whose request never completed over the network
