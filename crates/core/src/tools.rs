@@ -3272,6 +3272,10 @@ struct ShellGrep {
     recursive: bool,
     restatable: bool,
     fixed: bool,
+    /// The directory the operands resolve against, when the command's own `cd`s
+    /// could be followed (`cd ~/crate && grep -rn needle src/app.rs`). `None`
+    /// leaves a relative operand as it was written.
+    base: Option<PathBuf>,
 }
 
 impl ShellGrep {
@@ -3285,7 +3289,16 @@ impl ShellGrep {
         let mut call = serde_json::Map::new();
         call.insert("pattern".to_string(), json!(pattern));
         if let Some(path) = self.operands.first() {
-            call.insert("path".to_string(), json!(literal_grep_word(path)?));
+            let path = literal_grep_word(path)?;
+            // The tool starts in the project root, so an operand written after a
+            // `cd` has to be named where the grep really searched.
+            let path = match &self.base {
+                Some(base) if Path::new(&path).is_relative() => {
+                    base.join(&path).to_string_lossy().into_owned()
+                }
+                _ => path,
+            };
+            call.insert("path".to_string(), json!(path));
         }
         if let Some(glob) = &self.glob {
             call.insert("glob".to_string(), json!(literal_grep_word(glob)?));
@@ -3377,6 +3390,7 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
         recursive: false,
         restatable: grep_index == 0,
         fixed: false,
+        base: None,
     };
     // Whether an option already supplied the pattern, so the next positional
     // argument is a search operand rather than the pattern.
@@ -3486,17 +3500,138 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
 
 /// The first recursive grep in `command` that could walk a directory.
 fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
+    let directories = segment_directories(command, cwd);
     shell_segments(command)
         .into_iter()
         .enumerate()
         .find_map(|(index, segment)| {
             let mut grep = parse_shell_grep(segment)?;
-            grep.restatable &= index == 0;
-            let initial_segment =
-                index == 0 && shell_command_index(&grep_shell_words(segment)) == Some(0);
-            (grep.recursive && recursive_grep_sweeps(&grep.operands, cwd, initial_segment))
-                .then_some(grep)
+            let here = shell_command_index(&grep_shell_words(segment)) == Some(0);
+            // A segment whose directory could be followed is judged against it,
+            // so a glob that expands to files there is a search of named files
+            // rather than a sweep. Anything else keeps the conservative rule: the
+            // grep tool starts in the project root, and this reader cannot say
+            // which directory the shell was in.
+            let (base, verified) = match directories.get(index).and_then(Option::as_deref) {
+                Some(base) => (base, true),
+                None => {
+                    grep.restatable &= index == 0;
+                    (cwd, here && index == 0)
+                }
+            };
+            if !grep.recursive || !recursive_grep_sweeps(&grep.operands, base, verified) {
+                return None;
+            }
+            // A relative operand is restated where the grep really searched, so
+            // only a directory the command moved to changes what it says.
+            grep.base = (verified && base != cwd).then(|| base.to_path_buf());
+            Some(grep)
         })
+}
+
+/// Whether a segment could change the shell's directory in a way this reader
+/// cannot follow, which makes its own and every later relative operand
+/// unverifiable.
+fn changes_directory_opaquely(segment: &str) -> bool {
+    if segment.contains(['(', ')', '{', '}', '`']) {
+        return true;
+    }
+    let words = grep_shell_words(segment);
+    let Some(first) = words
+        .iter()
+        .find(|word| !shell_assignment(word) && !word.starts_with(|ch: char| ch.is_ascii_digit()))
+    else {
+        return false;
+    };
+    matches!(
+        shell_word_name(first),
+        "pushd"
+            | "popd"
+            | "exec"
+            | "su"
+            | "sudo"
+            | "for"
+            | "while"
+            | "until"
+            | "case"
+            | "if"
+            | "do"
+            | "eval"
+            | "source"
+            | "."
+            | "env"
+            | "chroot"
+            | "chdir"
+    )
+}
+
+/// The directory each shell segment runs in, from the `cd`s written before it.
+/// `None` means the directory is no longer known, and the segment keeps the
+/// conservative rule.
+fn segment_directories(command: &str, cwd: &Path) -> Vec<Option<PathBuf>> {
+    let mut base = Some(cwd.to_path_buf());
+    let mut directories = Vec::new();
+    for segment in shell_segments(command) {
+        // A segment that could move itself — a subshell, `env -C`, `pushd` —
+        // cannot be placed, so its own operands keep the conservative rule.
+        directories.push(if changes_directory_opaquely(segment) {
+            None
+        } else {
+            base.clone()
+        });
+        base = match cd_target(segment) {
+            Some(Some(target)) => base
+                .as_deref()
+                .and_then(|base| resolved_directory(base, &target)),
+            Some(None) => None,
+            None if changes_directory_opaquely(segment) => None,
+            None => base,
+        };
+    }
+    directories
+}
+
+/// The directory a segment `cd`s to: `Some(Some(path))` for a literal target,
+/// `Some(None)` for a `cd` this reader cannot follow (`cd -`, an expansion), and
+/// `None` when the segment is not a `cd` at all.
+fn cd_target(segment: &str) -> Option<Option<String>> {
+    let words = grep_shell_words(segment);
+    let index = shell_command_index(&words)?;
+    if shell_word_name(words[index]) != "cd" {
+        return None;
+    }
+    let Some(target) = words.get(index + 1) else {
+        return Some(None);
+    };
+    if target.starts_with('-') {
+        return Some(None);
+    }
+    Some(decode_directory(target))
+}
+
+/// A `cd` target decoded as a literal path, with `~` kept as the marker it is
+/// so the resolution happens on this machine's home rather than the shell's.
+fn decode_directory(word: &str) -> Option<String> {
+    if let Some(rest) = word.strip_prefix('~') {
+        if !(rest.is_empty() || rest.starts_with('/')) {
+            return None;
+        }
+        return literal_grep_word(rest).map(|rest| format!("~{rest}"));
+    }
+    literal_grep_word(word)
+}
+
+/// The directory a `cd` lands in, when it can be resolved on this machine. A
+/// target that does not exist is not followed: the grep it precedes is then
+/// judged conservatively rather than against a guess.
+fn resolved_directory(base: &Path, target: &str) -> Option<PathBuf> {
+    let target = match target.strip_prefix('~') {
+        Some(rest) => dirs::home_dir()?.join(rest.trim_start_matches('/')),
+        None => base.join(target),
+    };
+    std::fs::canonicalize(target)
+        .ok()
+        .filter(|path| path.is_dir())
 }
 
 /// Refuses the recursive shell-grep pattern that most often turns a narrow
@@ -3530,9 +3665,10 @@ fn recursive_shell_grep_refusal(grep: &ShellGrep) -> String {
     message
 }
 
-/// Only expand a simple filename glob in a literal directory. Later shell
-/// segments may have changed cwd, so relative globs there remain conservative.
-fn grep_glob_names_files(operand: &str, cwd: &Path, initial_segment: bool) -> bool {
+/// Only expand a simple filename glob in a literal directory. Whether that
+/// directory is the project root or the one the command's own `cd` reached is
+/// the caller's to say.
+fn grep_glob_names_files(operand: &str, cwd: &Path) -> bool {
     if operand.starts_with('~')
         || operand.ends_with('/')
         || operand.contains(['\'', '"', '\\', '$', '`', '[', '{', '}'])
@@ -3540,9 +3676,6 @@ fn grep_glob_names_files(operand: &str, cwd: &Path, initial_segment: bool) -> bo
         return false;
     }
     let path = Path::new(operand);
-    if !initial_segment && !path.is_absolute() {
-        return false;
-    }
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -3577,10 +3710,10 @@ fn grep_glob_names_files(operand: &str, cwd: &Path, initial_segment: bool) -> bo
     matched
 }
 
-fn recursive_grep_sweeps(operands: &[String], cwd: &Path, initial_segment: bool) -> bool {
+fn recursive_grep_sweeps(operands: &[String], cwd: &Path, verified: bool) -> bool {
     operands.is_empty()
         || operands.iter().any(|operand| {
-            if grep_glob_names_files(operand, cwd, initial_segment) {
+            if verified && grep_glob_names_files(operand, cwd) {
                 return false;
             }
             let operand = operand.trim_matches(['\'', '"']);
@@ -7791,6 +7924,65 @@ mod tests {
         let docs = dir.join("docs").to_string_lossy().replace('\\', "/");
         let command = format!("ls; grep -rn needle {docs}/*.md");
         assert!(!uses_recursive_shell_grep(&command, &dir), "{command}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn recursive_grep_follows_the_directory_its_own_cd_reached() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_grep_cd_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let crate_dir = dir.join("crate");
+        std::fs::create_dir_all(crate_dir.join("src")).unwrap();
+        std::fs::write(crate_dir.join("src/app.rs"), "needle\n").unwrap();
+        std::fs::write(crate_dir.join("src/lib.rs"), "needle\n").unwrap();
+
+        // The operands resolve where the command's own `cd` landed, so a glob
+        // that expands to files there is a search of named files rather than a
+        // sweep of the project root the tool would otherwise start in.
+        for command in [
+            "cd crate && grep -rn needle src/app.rs src/lib.rs",
+            "cd crate && grep -rn needle src/*.rs",
+        ] {
+            assert!(!uses_recursive_shell_grep(command, &dir), "{command}");
+        }
+        // A directory operand is a sweep wherever the grep runs, and the call it
+        // suggests names the directory the `cd` reached.
+        let grep =
+            recursive_shell_grep("cd crate && grep -rn needle src | head", &dir).expect("a sweep");
+        let call = grep.equivalent_call().expect("a restated call");
+        let call: Value = serde_json::from_str(&call).unwrap();
+        assert_eq!(call["pattern"], json!("needle"));
+        assert_eq!(
+            call["path"],
+            json!(std::fs::canonicalize(crate_dir.join("src"))
+                .unwrap()
+                .to_string_lossy()
+                .into_owned())
+        );
+        // A `cd` this reader cannot follow leaves the conservative rule, since
+        // the operation's own directory is then only a guess.
+        for command in [
+            "cd missing && grep -rn needle src/*.rs",
+            "cd crate && cd nope && grep -rn needle src/*.rs",
+            "pushd crate; grep -rn needle src/*.rs",
+            "env -C crate grep -rn needle src/*.rs",
+        ] {
+            assert!(uses_recursive_shell_grep(command, &dir), "{command}");
+        }
+        // Each `cd` is followed in turn, so the second one's directory is the
+        // one the glob is checked against.
+        for command in [
+            "cd crate && cd .. && grep -rn needle crate/src/*.rs",
+            "cd crate && grep -rn needle ../crate/src/*.rs",
+        ] {
+            assert!(!uses_recursive_shell_grep(command, &dir), "{command}");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
