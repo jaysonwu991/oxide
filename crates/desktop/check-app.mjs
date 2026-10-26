@@ -2677,6 +2677,27 @@ const ruleFor = (selector) => {
 };
 const restingThumb = ruleFor("::-webkit-scrollbar-thumb");
 const shownThumb = ruleFor(".scrolling::-webkit-scrollbar-thumb");
+// The transcript is a vertical log. A tool card streaming a long path or a fenced
+// block must not give it a sideways scrollbar — the one that used to appear over
+// the composer whenever a call ran — so the log clips horizontally and each of
+// its rows may shrink below what it holds, leaving the scroll to the block that
+// holds the wide content.
+const transcriptRule = ruleFor(".conversation");
+check(
+  "kept the transcript from scrolling sideways",
+  /overflow-x:\s*hidden/.test(transcriptRule) && /overflow-y:\s*auto/.test(transcriptRule),
+  transcriptRule,
+);
+check(
+  "let every row of the log shrink below what it holds",
+  /\.conversation > \* \{[^}]*min-width:\s*0/.test(sheet),
+  String(sheet.indexOf(".conversation > *")),
+);
+check(
+  "broke a long token inside a tool's output rather than widening the card",
+  /\.tool pre \{[^}]*overflow-wrap:\s*anywhere/.test(sheet),
+  String(sheet.indexOf(".tool pre")),
+);
 const paints = (body) => /(^|;)\s*background(?:-color)?:\s*(?!transparent)\S/.test(body);
 check(
   "drew a scrollbar only while its box was being scrolled",

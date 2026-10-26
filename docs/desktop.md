@@ -24,6 +24,8 @@ or middle-click a sidebar chat to open it in a tab. Closing a tab leaves its
 stored chat intact; an active response continues and remains reachable from its
 sidebar row and running-chat banner.
 
+The transcript is a vertical log: it never scrolls sideways (`overflow-x: hidden`, with each row able to shrink below what it holds), so a long path, a fenced block, a diff or a command's output scrolls inside the block that holds it instead of giving the log a horizontal bar over the composer.
+
 A rail beside the transcript shows one mark per user message. Hover or focus a
 mark to preview the exchange, then click or press Enter to jump to that message.
 Scrolling away from the bottom reveals a floating down-arrow button above the
