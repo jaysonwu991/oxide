@@ -150,6 +150,25 @@ const STROKE_24 =
 const STROKE_16 =
   'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"';
 
+/// The app's own mark: the diamond cut into the two parts of its name — the
+/// left half rust (`Ox`, the language the harness is written in) and the right
+/// half cyan (`IDE`, the tool it is used as) — held by the ink rim and the
+/// caret-width seam between them. The colours are the mark's own rather than
+/// `currentColor`, so it reads the same on the home tile, in the sidebar's
+/// speaker line and on the dock: it is the drawing `scripts/build-icons.py`
+/// rasterises for the app's icons, described here once for the window.
+function brandMark() {
+  const half = (points, fill) => `<polygon points="${points}" fill="${fill}"/>`;
+  return (
+    '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+    half("3.375 12 11.3 4.075 11.3 19.925", "#2d2d3a") +
+    half("4.5 12 11.3 5.2 11.3 18.8", "#d9643a") +
+    half("12.7 4.075 20.625 12 12.7 19.925", "#2d2d3a") +
+    half("12.7 5.2 19.5 12 12.7 18.8", "#5fd7ff") +
+    "</svg>"
+  );
+}
+
 /// Sizing is the sheet's, next to the box each glyph is drawn in.
 const ICONS = {
   // A project's folder and a document the webview cannot paint: the two drawn
@@ -189,7 +208,7 @@ const ICONS = {
     '<path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
       '<path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
   ),
-  mark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.4 21.6 12 12 21.6 2.4 12Z" fill="currentColor"/></svg>',
+  mark: brandMark(),
   // The composer's own status badge: a dot for a window with nothing to report,
   // and the triangle a failure wears. Drawn here rather than shared with the
   // panel, which has no status badge of its own.
@@ -216,43 +235,32 @@ function savedFollowUpBehavior() {
   }
 }
 
+/// Every conversation this window is holding in memory: the one on screen and
+/// the ones a turn is still writing into. A record is keyed by its session id,
+/// or by a draft key until the run that started a thread reports the id it made,
+/// and it holds what belongs to that thread rather than to the window — its run,
+/// its queue, its totals, its change cards, and its transcript while it is off
+/// screen — so one thread's turn goes on painting into its own conversation
+/// while the reader reads another.
+const threads = new Map();
+let nextDraft = 1;
+// The thread a paint pass is writing into, when it is not the one on screen.
+let paintThread = null;
+
+/// The view fields the window itself owns: the thread it has open and where it
+/// runs. A background turn's paint pass reads its own thread's folder instead
+/// (see `paintingThread`), which is why they are not plain state.
+const view = { session: null, project: null, worktree: null };
+
 const state = {
   projects: [],
-  project: null,
   projectName: "",
-  session: null,
   sessions: [],
   sidebarProjectsExpanded: false,
   expandedSidebarProjects: new Set(),
-  busy: false,
-  runId: null,
-  stopRequested: false,
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
   followUpBehavior: savedFollowUpBehavior(),
-  // Messages rejected at the exact instant a run finishes. Their composed
-  // payloads start against the same session, in submission order, as each
-  // preceding turn ends — with the thread and folder they were typed in, since
-  // the window may have moved on to another one by the time they go.
-  pendingSends: [],
-  // The thread the running turn belongs to, held apart from the one on screen:
-  // the reader may open another thread to read while it works, and the run keeps
-  // its own — the sidebar row for it, the header's banner and the refusal to
-  // send anywhere else are all read from here.
-  runSession: null,
-  // The folder that turn is running in, which is not the one on screen once the
-  // reader has opened another project's thread: the composer refuses to send
-  // anywhere else, and the way back to the run's thread is resolved against it.
-  runProject: null,
-  // The thread the message that started the running turn was composed in, and
-  // `null` while no send is in flight. The run's own `agent-start` compares it
-  // with the thread on screen: a reader who has opened another conversation in
-  // the meantime is reading that one, and the run's output belongs to the thread
-  // they left.
-  sendView: null,
-  // What the running turn titled itself: the only name the thread it is in has
-  // until the sidebar's own listing carries it.
-  runTitle: "",
   // The title this window gave the one thread it holds that the store has not
   // listed, with that thread's id. A run names the thread it is in from the
   // message that started it, and the same thread may be parked and opened again
@@ -270,11 +278,8 @@ const state = {
   reasoningLevels: null,
   supportsReasoning: null,
   reasoningIdentity: "",
-  contextWindow: 0,
   catalogWindow: 0,
   currentProvider: "",
-  contextCorrection: null,
-  contextLimits: [],
   // Whether the credential is a plan rather than a metered key, which the usage
   // line marks ` (sub)` the way the terminal footer does.
   subscription: false,
@@ -283,11 +288,6 @@ const state = {
   // the idle placeholder, so the badge is the icon alone.
   statusText: "",
   statusLevel: "info",
-  runError: "",
-  runStartedAt: 0,
-  runElapsed: 0,
-  runClockProject: null,
-  runClockSession: null,
   // The repository the row names: what `git_info` answered for the folder on
   // screen, read when the folder changes, when a turn ends and when the reader
   // comes back to the window.
@@ -297,7 +297,6 @@ const state = {
   // conversation's work stays out of the folder the reader has open; `null` is
   // that folder itself.
   worktrees: [],
-  worktree: null,
   worktreesError: null,
   providers: [],
   // The provider the connect dialog has selected, kept by name rather than by
@@ -308,16 +307,7 @@ const state = {
   pendingApproval: null,
   pendingQuestion: null,
   trust: null,
-  // What the composer's usage line is showing, which is the open thread's own
-  // totals rather than the window's: a run in another thread carries them while
-  // its thread is parked (see `parkRun`).
-  usage: null,
-  currentAssistant: null,
-  tools: [],
-  // One repository listing feeds every summary and the repository review.
-  repositoryChanges: null,
   detailsOpen: true,
-  currentThinking: null,
   attachments: [],
   mcps: null,
   // Why the last read of the servers or of the threads failed, kept until the
@@ -337,16 +327,180 @@ const state = {
   currentModel: "",
   // The languages the picker offers, as the core last answered with them.
   languages: [],
-  // One card per finished turn that changed something, in the order the turns
-  // ran, so a review opened from an older card still reads its own files.
-  changes: [],
-  // The thread a turn is running in while the reader is reading another one: its
-  // transcript leaves the screen with the run — the nodes painted so far, the
-  // cards of its finished turns and the totals in the footer — so the run keeps
-  // writing into its own thread and the reply is whole when the reader comes
-  // back, instead of being re-read from a store that is a step behind.
-  parked: null,
 };
+
+/// The conversation a paint pass is writing into: the one on screen, unless a
+/// background turn's events are being applied.
+const paintingThread = () => paintThread || visibleThread();
+
+/// The thread the window has open. A tab that has not started a conversation yet
+/// holds a draft record, which the run that sends the first message re-keys with
+/// the session id it creates.
+function visibleThread() {
+  // Read from the window's own view rather than through `state`: a background
+  // paint swaps those fields to its own thread, and the thread on screen is the
+  // one question that has to keep answering about the window.
+  const key = view.session ? `s:${view.session}` : draftKey(activeChatTab());
+  const record = threadRecord(key);
+  if (record.session == null && view.session) record.session = view.session;
+  if (record.project == null && view.project) record.project = view.project;
+  if (record.worktree == null && view.worktree) record.worktree = view.worktree;
+  return record;
+}
+
+function threadRecord(key) {
+  let record = threads.get(key);
+  if (!record) {
+    record = {
+      key,
+      node: null,
+      followLatest: true,
+      session: null,
+      project: null,
+      worktree: null,
+      busy: false,
+      runId: null,
+      stopRequested: false,
+      pendingSends: [],
+      tools: [],
+      currentAssistant: null,
+      currentThinking: null,
+      runError: "",
+      runStartedAt: 0,
+      runElapsed: 0,
+      usage: null,
+      changes: [],
+      contextCorrection: null,
+      contextLimits: [],
+      contextWindow: 0,
+      repositoryChanges: null,
+      runSession: null,
+      runProject: null,
+      runTitle: "",
+      clock: null,
+      unread: false,
+    };
+    threads.set(key, record);
+  }
+  return record;
+}
+
+/// The tab's own draft thread, made on demand so a conversation with no session
+/// yet still has a record to be painted into and a key to be found by.
+function draftKey(tab) {
+  if (!tab) return "draft:0";
+  tab.draftKey ||= `draft:${nextDraft++}`;
+  return tab.draftKey;
+}
+
+/// The thread whose run this is, so an event a background turn sends is applied
+/// to that conversation rather than to whichever one is on screen.
+function threadForRunId(runId) {
+  if (runId == null) return null;
+  for (const record of threads.values()) if (record.runId === runId) return record;
+  return null;
+}
+
+/// Applies `fn` to a thread that is not the one on screen: every thread field
+/// `fn` reads or writes resolves through `paintThread`, and its transcript is the
+/// conversation it holds off screen. The visible thread needs no swap — it is
+/// already the one the fields point at.
+function withThread(record, fn) {
+  if (!record || record === visibleThread()) return fn();
+  const previous = paintThread;
+  paintThread = record;
+  try {
+    return fn();
+  } finally {
+    paintThread = previous;
+  }
+}
+
+/// The transcript a paint pass writes into: the one on screen for the reader's
+/// own thread, and the detached conversation a thread keeps while it is elsewhere.
+function transcriptFor(record) {
+  if (!record || record === visibleThread()) return el("transcript");
+  record.node ||= conversationNode();
+  return record.node;
+}
+
+function conversationNode() {
+  const node = document.createElement("div");
+  node.className = "conversation";
+  return node;
+}
+
+/// Moves the thread on screen into its own record — every node painted into it so
+/// far, and the run it belonged to — so another thread can be read, or another
+/// tab shown, without the turn losing what it has written.
+function parkThread() {
+  const transcript = el("transcript");
+  const record = visibleThread();
+  record.session = state.session;
+  record.project = state.project;
+  record.worktree = state.worktree;
+  record.followLatest = transcript.followLatest !== false;
+  if (transcript.children.length) {
+    record.node ||= conversationNode();
+    record.node.append(...transcript.children);
+  }
+}
+
+/// Hands a thread's conversation back to the screen, whole — whatever its run
+/// painted while the reader was elsewhere is already in it. The caller sets the
+/// thread and folder the tab is showing; this only moves the nodes.
+function restoreThread(record) {
+  if (record) record.unread = false;
+  const transcript = el("transcript");
+  if (record?.node) {
+    transcript.replaceChildren(...record.node.children);
+    record.node = null;
+  } else {
+    transcript.replaceChildren();
+  }
+  if (record) transcript.followLatest = record.followLatest !== false;
+  scrollDown(transcript, true);
+}
+
+/// The thread field accessors: every run, queue, card and transcript pointer
+/// belongs to a conversation, and the one being painted is the one read.
+for (const key of [
+  "busy",
+  "runId",
+  "stopRequested",
+  "pendingSends",
+  "tools",
+  "currentAssistant",
+  "currentThinking",
+  "runError",
+  "runStartedAt",
+  "runElapsed",
+  "usage",
+  "changes",
+  "contextCorrection",
+  "contextLimits",
+  "contextWindow",
+  "repositoryChanges",
+  "runSession",
+  "runProject",
+  "runTitle",
+]) {
+  Object.defineProperty(state, key, {
+    get: () => paintingThread()[key],
+    set: (value) => {
+      paintingThread()[key] = value;
+    },
+  });
+}
+for (const key of ["session", "project", "worktree"]) {
+  Object.defineProperty(state, key, {
+    get: () => (paintThread ? paintThread[key] : view[key]),
+    set: (value) => {
+      if (paintThread) paintThread[key] = value;
+      else view[key] = value;
+    },
+  });
+}
 
 // ---------- helpers ----------
 
@@ -619,7 +773,7 @@ function showToast(text, level = "info", action = null) {
 
 /// The action carries the status; a separate line is only needed for a notice.
 function paintStatus() {
-  const busy = Boolean(state.busy || state.sendView);
+  const busy = Boolean(state.busy);
   const level = busy ? "busy" : state.statusLevel;
   const badge = el("status");
   badge.dataset.level = level;
@@ -638,8 +792,6 @@ function paintStatus() {
   badge.setAttribute("aria-label", text || IDLE_STATUS);
 }
 
-const runClockElement = el("run-time");
-const runClockText = el("run-time-text");
 let runClockTimer = 0;
 
 function runDuration(ms) {
@@ -650,38 +802,60 @@ function runDuration(ms) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-function paintRunClock() {
-  const active = state.busy && viewingRun();
-  const belongsHere =
-    state.runClockProject === state.project && state.runClockSession === state.session;
-  const visible = state.runStartedAt > 0 && (active || (!state.busy && belongsHere));
-  const clock = runClockElement;
-  clock.hidden = !visible;
-  if (!visible) return;
-  const transcript = active ? runTranscript(state.runSession) : el("transcript");
-  if (transcript.lastElementChild !== clock) {
-    clock.remove();
-    transcript.appendChild(clock);
-    scrollDown(transcript);
+/// Each turn's own elapsed line, in its own conversation: two threads can be
+/// running at once, and the one the reader is not reading keeps its clock with
+/// the reply it is writing.
+function runClock(record) {
+  if (!record.clock) {
+    const node = document.createElement("div");
+    node.className = "run-time";
+    node.setAttribute("role", "timer");
+    record.clock = node;
   }
-  const elapsed = active ? Date.now() - state.runStartedAt : state.runElapsed;
-  runClockText.textContent = t(active ? "run.workingFor" : "run.workedFor", active ? "Working for {duration}" : "Worked for {duration}", { duration: runDuration(elapsed) });
+  return record.clock;
 }
 
-function startRunClock() {
-  if (state.runStartedAt) return;
-  state.runStartedAt = Date.now();
-  state.runElapsed = 0;
-  state.runClockProject = state.runProject || state.project;
-  state.runClockSession = state.sendView?.session ?? state.session;
+function paintRunClock() {
+  for (const record of threads.values()) {
+    if (!record.runStartedAt) continue;
+    // A finished turn's line is the one it already painted: a transcript rebuilt
+    // from the store does not grow a clock for a turn nobody is running.
+    if (!record.busy && !record.clock) continue;
+    const active = record.busy;
+    const clock = runClock(record);
+    const transcript = transcriptFor(record);
+    if (!record.busy && clock.parentNode !== transcript) continue;
+    if (clock.parentNode !== transcript || transcript.lastElementChild !== clock) {
+      clock.remove();
+      transcript.appendChild(clock);
+    }
+    clock.hidden = false;
+    const elapsed = active ? Date.now() - record.runStartedAt : record.runElapsed;
+    clock.textContent = t(
+      active ? "run.workingFor" : "run.workedFor",
+      active ? "Working for {duration}" : "Worked for {duration}",
+      { duration: runDuration(elapsed) },
+    );
+    if (record === visibleThread()) scrollDown(transcript);
+  }
+}
+
+function startRunClock(record = paintingThread()) {
+  // A thread's second turn gets its own clock rather than the one the first left
+  // standing: the line is the same node, counting this turn.
+  record.runStartedAt = Date.now();
+  record.runElapsed = 0;
   paintRunClock();
   if (!runClockTimer) runClockTimer = setInterval(paintRunClock, 1000);
 }
 
-function finishRunClock() {
-  if (state.runStartedAt) state.runElapsed = Math.max(0, Date.now() - state.runStartedAt);
-  if (runClockTimer) clearInterval(runClockTimer);
-  runClockTimer = 0;
+function finishRunClock(record = paintingThread()) {
+  if (record.runStartedAt) record.runElapsed = Math.max(0, Date.now() - record.runStartedAt);
+  const running = [...threads.values()].some((entry) => entry.runStartedAt && entry.busy);
+  if (!running && runClockTimer) {
+    clearInterval(runClockTimer);
+    runClockTimer = 0;
+  }
 }
 
 /// The word the window is idle under: the words are dropped for it and the icon
@@ -755,10 +929,12 @@ function setUsage({
   // What the thread has spent, held so one the reader leaves can take its own
   // totals with it and paint them back on return. The percentage is not kept
   // beside them: it is a fraction of the window in force where they are drawn
-  // (see `usagePercent`), so a folder switched under a parked run cannot label
-  // its thread with the window of the folder the reader left.
+  // (see `usagePercent`), so a folder switched under a background run cannot
+  // label its thread with the window of the folder the reader left.
   state.usage = { input, output, cacheRead, cacheWrite, cost, prompt, cacheHitRate };
-  paintUsage();
+  // The footer is the thread being read's, so a step counted for another one
+  // waits with it rather than painting under this conversation.
+  if (paintingThread() === visibleThread()) paintUsage();
 }
 
 /// The usage line, drawn the way the terminal footer draws its own: the tokens
@@ -810,17 +986,24 @@ function captureChatTab() {
   if (!tab) return;
   tab.title = el("thread-title").textContent || "New chat";
   tab.session = state.session;
+  // The tab's conversation goes into its own record, so a turn still running in
+  // it keeps writing there while another tab is on screen.
+  parkThread();
   tab.snapshot = {
     project: state.project, projectName: state.projectName, session: state.session, trust: state.trust,
     worktree: state.worktree, worktrees: state.worktrees, agent: state.agent,
-    changes: state.changes, repositoryChanges: state.repositoryChanges,
-    usage: state.usage, contextWindow: state.contextWindow, contextCorrection: state.contextCorrection, contextLimits: state.contextLimits,
     draft: el("prompt").value, attachments: [...state.attachments],
     selectionStart: el("prompt").selectionStart, selectionEnd: el("prompt").selectionEnd,
     inputScrollTop: el("prompt").scrollTop, undo: el("prompt").captureHistory?.(),
-    nodes: [...el("transcript").children], scrollTop: el("transcript").scrollTop,
-    followLatest: el("transcript").followLatest !== false,
+    scrollTop: el("transcript").scrollTop,
   };
+}
+
+/// The thread a tab is holding: its session when it has one, else its draft.
+function tabThread(tab) {
+  if (!tab) return null;
+  return tab.session ? threads.get(`s:${tab.session}`) || null
+    : tab.draftKey ? threads.get(tab.draftKey) || null : null;
 }
 
 function paintChatTabs() {
@@ -838,8 +1021,7 @@ function paintChatTabs() {
     select.setAttribute("aria-selected", String(tab.id === activeTabId));
     select.setAttribute("aria-controls", "transcript");
     select.tabIndex = tab.id === activeTabId ? 0 : -1;
-    const running = state.busy && (tab.session != null
-      ? tab.session === state.runSession : state.sendView?.tabId === tab.id);
+    const running = Boolean(tabThread(tab)?.busy);
     if (running) {
       const indicator = document.createElement("span");
       indicator.className = "spinner";
@@ -895,19 +1077,16 @@ async function activateChatTab(id) {
     closeAt();
     closeSidebarCards();
     closeQueueMenu();
-    parkRun();
     clearPaintIdle();
     activeTabId = id;
     const saved = tab.snapshot;
     if (saved) {
-      for (const key of ["project", "projectName", "session", "trust", "worktree", "worktrees", "agent", "changes", "repositoryChanges", "contextWindow", "contextCorrection", "contextLimits"]) state[key] = saved[key];
-      el("transcript").replaceChildren(...saved.nodes);
-      const ownsParked = tab.session != null
-        ? state.parked?.session === tab.session
-        : state.parked?.pending && state.sendView?.tabId === tab.id;
-      if (!ownsParked || !restoreParked(tab.session)) setUsage(saved.usage || {});
+      for (const key of ["project", "projectName", "trust", "worktree", "worktrees", "agent"]) state[key] = saved[key];
+      // The tab's own thread, not the one its snapshot was taken in: a run may
+      // have named the thread the tab was starting after the capture.
+      state.session = tab.session ?? saved.session ?? null;
+      restoreThread(tabThread(tab));
       el("transcript").scrollTop = saved.scrollTop || 0;
-      el("transcript").followLatest = saved.followLatest;
       el("transcript").followScrollTop = el("transcript").scrollTop;
       el("prompt").value = saved.draft;
       el("prompt").restoreHistory?.(saved.undo);
@@ -929,6 +1108,7 @@ async function activateChatTab(id) {
     paintQueue();
     updateRunBanner();
     updateSendState();
+    paintUsage();
     renderProjectsTree();
     renderMessageNavigator();
     loadGit();
@@ -1128,14 +1308,20 @@ function listedSessions() {
   const listed = state.sessions || [];
   const seconds = Math.floor(Date.now() / 1000);
   const standing = [];
-  for (const id of [state.session, state.runSession, state.parked?.session]) {
-    // The thread the run is in — or the one a finished turn left parked — lives in
-    // a folder of its own, which is not the one the store was read for once the
-    // reader has opened another project's thread: a row standing in for it carries
-    // that folder, so opening the row goes back to its own work rather than asking
-    // the wrong project for a thread it has not got.
-    const own = id != null && (id === state.runSession || state.parked?.session === id);
-    const cwd = own ? transcriptProject(id) : state.project;
+  // Every thread this window is holding that the store has not written yet: the
+  // one on screen, and the ones a turn is running in while the reader is
+  // elsewhere. A row standing in for one carries the folder that thread runs in,
+  // so opening it goes back to its own work rather than asking the wrong project
+  // for a thread it has not got.
+  const held = [];
+  if (state.session) held.push(visibleThread());
+  for (const record of threads.values()) {
+    if (record.session && (record.busy || record.unread)) held.push(record);
+  }
+  for (const record of held) {
+    if (record === visibleThread() && !record.session) continue;
+    const id = record.session;
+    const cwd = record === visibleThread() ? state.project : transcriptProject(record);
     if (!id || !cwd) continue;
     if (listed.some((session) => session.id === id)) continue;
     if (standing.some((session) => session.id === id)) continue;
@@ -1175,7 +1361,8 @@ function heldTitle(id) {
 /// is holding has. The rest of that listing is empty for it, since the store has
 /// not written it and nothing else knows it.
 function standingInName(id) {
-  return heldTitle(id) || null;
+  const record = id ? threads.get(`s:${id}`) : null;
+  return record?.runTitle || heldTitle(id) || null;
 }
 
 function sessionById(id) {
@@ -1769,13 +1956,11 @@ async function pickProject(project) {
 }
 
 async function selectProject(project) {
-  // A running turn keeps the folder it started in — its run id is that folder's
-  // thread — so the window moving to another project takes the run's thread with
-  // it rather than stopping it: the transcript it is writing into is parked (see
-  // `parkRun`), the header's strip and the sidebar row the run's own mark keep
-  // saying where it is, and the composer refuses to send into a folder the run is
-  // not in. The reader can look at another project while it works.
-  parkRun();
+  // A running turn keeps the folder it started in, and its conversation goes on
+  // in its own thread record: the header's strip and the sidebar row the run's
+  // own mark keep saying where it is while the window looks at another folder,
+  // and the reader can send a message here without waiting for that turn.
+  parkThread();
   // A folder picked while nothing was open is the first step of the message
   // already in the box, so the draft goes with it: the chips came from the
   // reader rather than from the project being left. A switch between folders
@@ -1800,9 +1985,8 @@ async function selectProject(project) {
   state.worktree = null;
   state.worktrees = [];
   paintWorktreeChip();
-  // Follow-ups belong to the parked run, not the folder being viewed. Keep
-  // them while the reader looks at another project; `paintQueue` hides them
-  // until the run's own thread is opened again.
+  // The queue belongs to the thread being left with its run, so the composer
+  // shows this folder's own — nothing, until it has a message queued.
   paintQueue();
   // The window the ring measures against belonged to the folder being left, and
   // the one arriving is not known until its own facts do: left in place it would
@@ -2446,7 +2630,6 @@ async function handoffSession() {
   try {
     const result = await invoke("handoff_session", { project, source, id, toWorktree });
     if (state.session !== id || project !== state.project) return;
-    state.parked = null;
     await loadWorktrees();
     await loadSessions();
     const session = sessionById(id) || { id, cwd: result.cwd, project, name: state.threadTitle };
@@ -2503,10 +2686,10 @@ function repaintWelcome() {
   if (only.length === 1 && only[0].classList?.contains("welcome")) renderWelcome();
 }
 
-/// Opens a stored thread for reading. A turn may be running in another one while
-/// this happens — the transcript is the reader's, so the run's own output is not
-/// painted into it (see `viewingRun`) — and a card a turn left for this thread
-/// while the reader was elsewhere is painted with it.
+/// Opens a stored thread for reading. A turn may be running in another thread
+/// while this happens: that thread keeps its own conversation, and opening this
+/// one only moves the window. A thread this window is already holding is handed
+/// back as it stands rather than read again from a store that is a step behind.
 let sessionRead = 0;
 async function openSession(session) {
   if (state.handingOff && !state.applyingHandoff) return;
@@ -2514,25 +2697,42 @@ async function openSession(session) {
   const ownerTab = activeChatTab();
   if (ownerTab) ownerTab.pendingSession = session;
   const tabId = activeTabId;
-  // Leaving the thread a turn is running in parks its transcript with the run:
-  // what it has painted stays, and its next step goes on painting into it.
-  parkRun();
+  // The thread being left keeps its conversation, run and cards in its record —
+  // parked before the tab is pointed at the one being opened, so what is on
+  // screen goes to the record it belongs to.
+  parkThread();
   state.session = session.id;
+  if (ownerTab) {
+    ownerTab.session = session.id;
+    ownerTab.draftKey = undefined;
+  }
   setThreadTitle(sessionLabel(session));
   // The thread runs where its own header says it does: a thread in a worktree
   // is read back from, and continued in, that checkout rather than in the
   // folder the reader has open.
   state.worktree = worktreePathFor(session.cwd);
   paintWorktreeChip();
-  // Coming back to a thread the run parked: its own transcript is the thread —
-  // with everything the run did while the reader was away, including the reply
-  // the store has not been told about yet — so it is handed back rather than
-  // read again from a listing that is a step behind.
-  if (restoreParked(session.id)) {
+  // Coming back to a thread this window is still holding: its own transcript is
+  // the thread — with everything the run did while the reader was away,
+  // including the reply the store has not been told about yet — so it is handed
+  // back rather than read again from a listing that is a step behind.
+  // A thread this window holds is handed back when its own turn is still in
+  // flight, or ended while the reader was elsewhere: what it painted is not in
+  // the store yet. Everything else is read again, since the store is the copy
+  // every front-end shares and this window's may have paused on it.
+  const held = threads.get(`s:${session.id}`);
+  if (held?.node && !held.busy && !held.unread) {
+    held.node = null;
+  }
+  if (held?.node) {
+    restoreThread(held);
     if (ownerTab) delete ownerTab.pendingSession;
     closeReview();
     setThreadTitle(sessionLabel(session));
+    paintQueue();
+    paintUsage();
     updateRunBanner();
+    updateSendState();
     loadSessions();
     return;
   }
@@ -2586,6 +2786,12 @@ async function openSession(session) {
 }
 
 function resetTranscript() {
+  parkThread();
+  const tab = activeChatTab();
+  if (tab) {
+    tab.session = null;
+    tab.draftKey = `draft:${nextDraft++}`;
+  }
   state.session = null;
   // The transcript is not the running turn's own any more, so its banner says
   // where that turn is — if it is not the one this welcome belongs to.
@@ -3053,19 +3259,15 @@ function installMarkdownInput(editor, render) {
 function updateSendState() {
   const hasText =
     el("prompt").value.trim().length > 0 || state.attachments.length > 0;
-  // The corner's own actions belong to the thread this composer is showing. A
-  // turn running in another thread is not this transcript's, so a message typed
-  // here would be steered into that run and its reply would land in a
-  // conversation that is not on screen: the corner offers Stop alone until the
-  // reader is back in it (the header's strip is the way there), and the typed
-  // text is kept rather than sent.
-  const here = viewingRun();
-  const busyHere = state.busy && here;
+  // The corner acts on the thread this composer is showing: its own turn, so a
+  // message queued or steered here goes to this conversation and a Stop ends
+  // this one — another thread's turn has its own corner when the reader opens it.
+  const busyHere = state.busy;
   el("composer").classList.toggle("filled", hasText);
   el("send").classList.toggle("enabled", hasText);
   el("send").disabled = !hasText;
-  el("send").hidden = state.busy && (!hasText || !here);
-  el("stop").hidden = !state.busy || (hasText && here);
+  el("send").hidden = state.busy && !hasText;
+  el("stop").hidden = !state.busy || hasText;
   el("send").title = busyHere
     ? state.followUpBehavior === "steer"
       ? t("composer.steerHint", "Steer the active response (Enter)")
@@ -3149,7 +3351,7 @@ function paintQueue() {
   const list = el("queue-list");
   closeQueueMenu();
   list.innerHTML = "";
-  list.hidden = state.pendingSends.length === 0 || (state.busy && !viewingRun());
+  list.hidden = state.pendingSends.length === 0;
   state.pendingSends.forEach((pending, index) => {
     const row = document.createElement("div");
     row.className = "queued-message";
@@ -3199,7 +3401,7 @@ function paintQueue() {
 }
 
 function paintRunningChrome() {
-  document.body.classList.toggle("running", state.busy && viewingRun());
+  document.body.classList.toggle("running", state.busy);
   paintLiveChanges();
   paintDockToggles();
   paintChatTabs();
@@ -3221,180 +3423,89 @@ function setBusy() {
 }
 
 function setIdle() {
-  finishRunClock();
-  state.busy = false;
+  const record = paintingThread();
+  finishRunClock(record);
+  record.busy = false;
+  record.runId = null;
+  record.runSession = null;
+  record.runProject = null;
   paintRunningChrome();
-  state.runId = null;
-  // The turn is over, so the thread it was in is nobody's running thread: what
-  // the window shows is the reader's own thread again, wherever that is. The
-  // run's folder is dropped with it, since nothing is running in it any more —
-  // a thread it left parked stays parked, which is the strip's way back.
-  state.runSession = null;
-  state.runProject = null;
-  state.runTitle = "";
-  // And no send is in flight any more, so the next run cannot be judged by the
-  // view this one was composed in.
-  state.sendView = null;
   updateSendState();
   updateRunBanner();
   paintStatus();
   paintRunClock();
 }
 
-/// Whether the thread the transcript is showing is the one the turn on the window
-/// is running in. A reader who opened another thread while it works is reading
-/// that one, and the composer refuses to send into it — the run's own output
-/// belongs to the thread they left, which is parked with the run (see `parkRun`)
-/// rather than painted under this one. A turn with no thread recorded for it is
-/// not known to be anywhere else, so the transcript on screen is where it is
-/// read.
-function viewingRun() {
-  if (state.runSession != null) return state.runSession === state.session;
-  // A turn that has not reported itself yet has no id of its own, and the thread
-  // the message being started was composed in is where it is running — so the same
-  // question is asked of that one. It matters: between the send and `agent-start`
-  // the reader can open another thread, and a message typed there would be steered
-  // into a run whose reply belongs to a conversation that is not on screen.
-  if (state.sendView != null) {
-    return (!state.sendView.tabId || state.sendView.tabId === activeTabId) && state.sendView.session === state.session && state.sendView.project === state.project;
-  }
-  return true;
-}
-
-/// The thread the header's strip names: the one a turn is running in, and — once
-/// that turn has ended while the reader was elsewhere — the one its transcript is
-/// still parked for, since what it painted is waiting there to be read.
-function bannerThread() {
-  return state.runSession ?? state.parked?.session ?? null;
-}
-
-/// The thread the strip names, by the label the sidebar's own row carries for it.
-function runThreadLabel() {
-  const id = bannerThread();
-  const listed = id ? sessionById(id) : null;
-  const title = id === state.runSession ? state.runTitle : state.parked?.title;
-  return title || (listed ? sessionLabel(listed) : "") || t("ui.anotherThread", "another thread");
-}
-
-/// The transcript the run's own output is painted into: the one on screen while
-/// the reader is in its thread, and the parked one while they are reading
-/// another. The run writes into its own thread either way — a delta, a tool card,
-/// the card of a turn that changed files — so nothing it does while the reader is
-/// away is lost or painted under the thread they moved to.
-function runTranscript(session) {
-  if (session == null) return el("transcript");
-  if (state.parked?.session === session) return state.parked.node;
-  // A run's thread is parked by whichever door moved the reader off it — under
-  // the run's id, or under the thread a message being started was composed in
-  // while the run has not said which one that is — so what is left to answer here
-  // is the node: the parked transcript, or the one on screen when the thread
-  // being painted is the reader's own.
-  return state.parked?.session === session ? state.parked.node : el("transcript");
+/// The transcript the turn being painted writes into: the one on screen while
+/// the reader is in its thread, and the conversation the thread keeps off screen
+/// while they are reading another. A run writes into its own thread either way —
+/// a delta, a tool card, the card of a turn that changed files — so nothing it
+/// does while the reader is away is lost or painted under the thread they moved
+/// to.
+function runTranscript() {
+  return transcriptFor(paintingThread());
 }
 
 /// The finished turns whose cards a thread holds. Each thread keeps its own, so
 /// the Undo an older card drops is the newest card *of that thread* rather than
 /// of whichever conversation happens to be on screen.
-function changesFor(session) {
-  if (session != null && state.parked?.session === session) return state.parked.changes;
-  return state.changes;
+function changesFor() {
+  return paintingThread().changes;
 }
 
-/// The folder a thread's transcript belongs to: the run's own while it is in
-/// flight, the one the park recorded once it is over — the window's folder for
-/// everything else. A run that ended has no folder of its own any more, but its
-/// parked transcript is still that folder's, and the strip is the way back into
-/// it.
-function transcriptProject(session) {
-  if (session != null && state.parked?.session === session) {
-    return state.parked.project || state.runProject || state.project;
+/// The folder a thread's transcript belongs to: the folder its own turn ran in,
+/// and the window's for a thread that has not started one.
+function transcriptProject(record = paintingThread()) {
+  return record.project || record.runProject || view.project;
+}
+
+/// A turn running in a thread the reader is not looking at, so the header's strip
+/// can say where it is and open it. The thread on screen has its own composer,
+/// which acts on its own run.
+/// Whether a turn is running in the thread with this session id, wherever the
+/// reader happens to be reading.
+function turnInThread(id) {
+  if (!id) return false;
+  for (const record of threads.values()) {
+    if (record.busy && record.session === id) return true;
   }
-  if (state.runSession != null && session === state.runSession) return state.runProject || state.project;
-  return state.project;
+  return false;
 }
 
-/// Parks the thread a turn is running in when the reader is reading another one:
-/// the transcript on screen goes with the run when it is the run's own — every
-/// node painted into it so far, the cards of its finished turns and the totals in
-/// the footer — and an empty one is opened for the run when the reader had
-/// already moved on. The run goes on writing into that node, so the thread is
-/// whole when the reader comes back to it, including the reply the store has not
-/// been told about yet. One thread is parked at a time: a turn that ended has
-/// written its thread to the store, so a second park is free to let the first go.
-function parkRun() {
-  // The run's own thread. A turn that has not reported itself yet has no id, and
-  // the message being started is what names the thread it is in: the one it was
-  // composed in, where its own bubble is already painted and where the run's
-  // first output will land. A message that starts a thread of its own has no id
-  // at all — the park is keyed by nothing and `agent-start` re-keys it with the
-  // id the run created, which is why the park says it is still waiting for one.
-  const session = state.runSession ?? state.sendView?.session ?? null;
-  const starting = state.runSession == null && state.sendView != null;
-  if (!starting && session == null) return;
-  if (state.parked?.session === session && (!starting || state.parked.pending)) return;
-  const node = document.createElement("div");
-  node.className = "conversation";
-  node.followLatest = el("transcript").followLatest;
-  if (state.session === session) node.append(...el("transcript").children);
-  state.parked = {
-    session,
-    // Whether this park is still waiting for the turn to say which thread it is
-    // in — the case `agent-start` finishes.
-    pending: starting,
-    node,
-    changes: state.changes,
-    // The footer describes the thread being read, so the run's totals wait here
-    // while the reader is away.
-    usage: state.usage,
-    contextWindow: state.contextWindow,
-    contextCorrection: state.contextCorrection, contextLimits: state.contextLimits,
-    title: state.runTitle,
-    // And the folder it belongs to travels with it: the turn may end while the
-    // reader is in another project, and the strip still opens this thread's own
-    // folder rather than whichever one the window happens to be showing. Every
-    // door parks before it moves the view, so a message still being started is
-    // recorded under the folder it was composed in.
-    project: transcriptProject(session),
-  };
-  state.changes = [];
+/// A turn running in a thread the reader is not looking at, so the header's strip
+/// can say where it is and open it. The thread on screen has its own composer,
+/// which acts on its own run.
+function backgroundRun() {
+  const visible = visibleThread();
+  let finished = null;
+  for (const record of threads.values()) {
+    if (record === visible) continue;
+    if (record.busy) return record;
+    if (record.unread) finished = record;
+  }
+  return finished;
 }
 
-/// Hands a parked thread back to the screen — the run has been painting into it
-/// the whole time, so the reply is whole rather than re-read from a store that is
-/// a step behind — and answers whether it had it.
-function restoreParked(session) {
-  if (state.parked?.session !== session) return false;
-  const parked = state.parked;
-  state.parked = null;
-  state.changes = parked.changes;
-  const transcript = el("transcript");
-  transcript.replaceChildren(...parked.node.children);
-  scrollDown(transcript, true);
-  state.contextCorrection = parked.contextCorrection || null;
-  state.contextLimits = parked.contextLimits || [];
-  state.contextWindow = correctionWindow() ?? state.catalogWindow;
-  setUsage(parked.usage || {});
-  return true;
+/// The thread the strip names, by the label the sidebar's own row carries for it.
+function runThreadLabel(record = backgroundRun()) {
+  if (!record) return t("ui.anotherThread", "another thread");
+  const listed = record.session ? sessionById(record.session) : null;
+  return record.runTitle || (listed ? sessionLabel(listed) : "") || t("ui.anotherThread", "another thread");
 }
 
-/// The header says where the turn on the window is running while the reader is
-/// looking at another thread, and the whole strip is the way back to it: the
-/// rest of the window — the transcript, the composer, the send refusal — is
-/// about the thread being read, so one line has to say what is still going and
-/// which conversation it belongs to. A turn that ends while the reader is away
-/// leaves the strip up, saying what it left behind, since its transcript is still
-/// parked and nowhere else on screen. The composer's corner reads the same
-/// question — off the run's own thread it offers Stop alone — so the two are
-/// repainted together, and every path that moves the view goes through here.
+/// The header says where a turn in another thread is running, and the whole strip
+/// is the way back to it: the rest of the window — the transcript, the composer —
+/// is about the thread being read, so one line has to say what is still going and
+/// which conversation it belongs to. A run in the thread on screen is read from
+/// its own composer and needs no strip.
 function updateRunBanner() {
   const banner = el("run-banner");
   if (!banner) return;
-  const id = bannerThread();
-  const away = Boolean(id && id !== state.session);
-  banner.hidden = !away;
-  if (away) {
-    const label = runThreadLabel();
-    const text = state.runSession
+  const record = backgroundRun();
+  banner.hidden = !record;
+  if (record) {
+    const label = runThreadLabel(record);
+    const text = record.busy
       ? t("ui.aTurnIsRunningIn", "A turn is running in “{value0}”", { value0: label })
       : t("ui.aTurnFinishedIn", "A turn finished in “{value0}”", { value0: label });
     el("run-banner-text").textContent = text;
@@ -3404,58 +3515,71 @@ function updateRunBanner() {
   paintQueue();
   paintRunningChrome();
   updateSendState();
-  paintRunClock();
 }
 
-/// The banner's click: the thread the running turn is in — or the one a finished
-/// turn left parked — opened for reading, so the Queue or Steer it takes is in
-/// reach again. The run's own folder is where its thread lives, so a reader who
-/// moved to another project is taken back there first. It is the same door the
-/// sidebar's own row for that thread is.
+/// The banner's click: the thread the running turn is in, opened for reading, so
+/// the Stop or the queue it takes is in reach again. The run's own folder is where
+/// its thread lives, so a reader who moved to another project is taken back there
+/// first. It is the same door the sidebar's own row for that thread is.
 async function openRun() {
-  const id = bannerThread();
-  if (!id || state.session === id) return;
-  // The thread lives in a folder of its own — the run's while it is in flight,
-  // the one its park recorded once it is over — which is not the one the store
-  // was read for once the reader has opened another project's thread.
-  const folder = transcriptProject(id);
-  if (folder && folder !== state.project) {
-    const project = state.projects.find((entry) => entry.path === folder);
+  const record = backgroundRun();
+  if (!record) return;
+  await openThreadRecord(record);
+}
+
+/// Opens one held thread — its own conversation, cards and totals — in the tab on
+/// screen, moving the window to the folder it ran in first when that is another
+/// project's.
+async function openThreadRecord(record) {
+  if (!record) return;
+  record.unread = false;
+  if (record.project && record.project !== state.project) {
+    const project = state.projects.find((entry) => entry.path === record.project);
     if (project) await selectProject(project);
   }
-  // A thread written in a worktree keeps that checkout: the window may have moved
-  // to another thread's folder while it ran, and coming back to it is coming back
-  // to the files its next message belongs to.
-  if (folder) {
-    state.worktree = folder === state.project ? null : folder;
+  const id = record.session;
+  if (!id) {
+    // A turn that has not reported its thread yet: the record is the thread, so
+    // the tab is pointed at the draft and handed what it has painted.
+    parkThread();
+    const tab = activeChatTab();
+    if (tab) {
+      tab.draftKey = record.key;
+      tab.session = null;
+    }
+    state.session = null;
+    state.worktree = record.worktree;
+    restoreThread(record);
+    paintUsage();
     paintWorktreeChip();
-  }
-  const listed = sessionById(id);
-  if (!listed) return;
-  if (!listed.unstored) {
-    await selectSessionFromTree(listed);
-    return;
-  }
-  // A thread the store has not listed yet is one this window is still holding:
-  // the run wrote its header as it started, so the listing is a moment behind,
-  // and what it has painted so far is not somewhere to read back from. Its own
-  // parked transcript is, when there is one — the run may have gone on painting
-  // into it while the reader was away.
-  state.session = id;
-  if (restoreParked(id)) {
     closeReview();
     refreshThreadTitle();
     updateRunBanner();
+    updateSendState();
     el("prompt").focus();
     return;
   }
-  state.changes = [];
+  state.worktree = record.worktree;
+  paintWorktreeChip();
+  const listed = sessionById(id);
+  if (listed && !listed.unstored) {
+    await selectSessionFromTree(listed);
+    return;
+  }
+  parkThread();
+  const tab = activeChatTab();
+  if (tab) {
+    tab.session = id;
+    tab.draftKey = undefined;
+  }
+  state.session = id;
+  restoreThread(record);
+  state.changes = record.changes;
   closeReview();
-  if (!el("details-panel").hidden) refreshProjectDetails();
-  el("transcript").innerHTML = "";
-  clearPaintIdle();
   refreshThreadTitle();
   updateRunBanner();
+  updateSendState();
+  loadGit();
   el("prompt").focus();
 }
 
@@ -3737,15 +3861,9 @@ async function send(opposite = false) {
   }
 
   if (state.busy) {
-    if (state.runId == null) return;
-    // The run owns the thread it is in: a message typed into another thread's
-    // transcript would be steered into that run while its reply has nowhere here
-    // to land. The header names the thread it is in, and opening it is where a
-    // Queue or a Steer belongs.
-    if (!viewingRun()) {
-      setStatus(t("ui.aTurnIsRunningInOpenItToQueueOrSteerOrStopIt", "A turn is running in “{value0}”; open it to queue or steer, or stop it.", { value0: runThreadLabel() }));
-      return;
-    }
+    // The run is this thread's own, so a message typed here is the correction or
+    // the follow-up it looks like: queued for the next turn of this conversation,
+    // or steered into the response on screen.
     const defaultQueue = state.followUpBehavior === "queue";
     const followUp = opposite ? !defaultQueue : defaultQueue;
     lastInputs.set(inputHistoryKey(), textarea.value);
@@ -3769,6 +3887,14 @@ async function send(opposite = false) {
       bubble("user", prompt, attachments),
     );
     scrollDown(el("transcript"), true);
+    if (state.runId == null) {
+      // The turn has not reported its id yet: the message waits rather than
+      // being lost, and starts this thread's next turn.
+      state.pendingSends.push({ prompt, attachments, showBubble: false });
+      paintQueue();
+      updateSendState();
+      return;
+    }
     const accepted = await invoke("steer_run", {
       runId: state.runId,
       message: prompt,
@@ -3798,41 +3924,57 @@ async function send(opposite = false) {
   await startPrompt(prompt, attachments);
 }
 
-/// Starts a turn. `target` is the thread and folder a message was composed in
-/// when it is not the one on screen — a message that arrived as the previous run
-/// finished, started once that run is really over — and either way the view it
-/// was sent from is recorded, so the run's own `agent-start` can tell whether the
-/// reader is still looking at the thread that message was typed in. The folder is
-/// recorded with it: a message that starts a thread of its own has no id for the
-/// comparison, and two folders both have none.
-async function startPrompt(prompt, attachments, showBubble = true, target = null) {
-  const project = target?.project || runFolder();
+/// Starts a turn in `thread` — the conversation on screen unless a queued message
+/// names its own — and records the run on that thread, so its events paint into
+/// that conversation wherever the reader is while it works.
+async function startPrompt(prompt, attachments, showBubble = true, thread = null) {
+  const record = thread || visibleThread();
+  const here = record === visibleThread();
+  if (here) {
+    // The conversation on screen is the one the composer describes: its folder
+    // and the checkout the reader picked travel with the message.
+    record.project = state.project;
+    record.worktree = state.worktree;
+  }
+  const project = record.worktree || record.project || view.project;
   if (!project) return;
-  const session = target ? target.session : state.session;
-  const here = project === runFolder() && session === state.session;
-  const tabId = here ? activeTabId : chatTabs.find((tab) => tab.session === session)?.id;
-  state.sendView = { session, project, tabId };
-  // The run's own thread and folder, held apart from the ones on screen: the
-  // reader may open another thread while it works, and the run keeps writing into
-  // this thread of this folder.
-  state.runProject = project;
+  const session = record.session;
+  record.project ||= project;
+  record.runProject = project;
+  record.runSession = session;
+  record.runTitle = "";
+  record.stopRequested = false;
   if (here) {
     clearWelcome();
+    lastInputs.set(inputHistoryKey(), el("prompt").value);
     if (showBubble) {
-      lastInputs.set(inputHistoryKey(), el("prompt").value);
       el("prompt").value = "";
       clearAttachments();
-      el("transcript").appendChild(bubble("user", prompt, attachments));
-      scrollDown(el("transcript"), true);
     }
+    resetTurn();
+    record.runError = "";
+    record.busy = true;
+    startRunClock(record);
+    paintRunningChrome();
+    updateSendState();
+    paintStatus();
+    setStatus(t("composer.working", "Working…"));
+  } else {
+    record.runError = "";
+    record.busy = true;
+    record.tools = [];
+    record.currentAssistant = null;
+    record.currentThinking = null;
+    startRunClock(record);
   }
-  resetTurn();
-  state.stopRequested = false;
-  setBusy();
-  setStatus(t("composer.working", "Working…"));
+  if (showBubble) {
+    transcriptFor(record).appendChild(bubble("user", prompt, attachments));
+    scrollDown(transcriptFor(record), true);
+  }
+  paintRunClock();
   try {
     await reasoningSave;
-    state.runId = await invoke("send_prompt", {
+    record.runId = await invoke("send_prompt", {
       project,
       prompt,
       // No thread on screen means the reader is starting one: `new` has the core
@@ -3844,18 +3986,25 @@ async function startPrompt(prompt, attachments, showBubble = true, target = null
       reasoning: state.reasoningPicked ? state.reasoning : null,
       attachments: attachments.length ? attachments : null,
     });
-    if (state.stopRequested && state.busy) await stop();
+    if (record.stopRequested && record.busy) await stopThread(record);
   } catch (error) {
-    reportRunError(String(error));
-    setIdle();
+    withThread(record, () => {
+      reportRunError(String(error));
+      setIdle();
+    });
+    if (here) paintQueue();
   }
 }
 
-async function startNextPendingSend() {
-  if (state.busy || state.pendingSends.length === 0) return;
-  const pending = state.pendingSends.shift();
-  paintQueue();
-  await startPrompt(pending.prompt, pending.attachments, pending.showBubble !== false, pending);
+/// The turn a thread has queued start once its last one ends — the message the
+/// reader composed while it worked, in this thread whether or not they are still
+/// looking at it.
+async function startNextPendingSend(thread = visibleThread()) {
+  const record = thread || visibleThread();
+  if (record.busy || record.pendingSends.length === 0) return;
+  const pending = record.pendingSends.shift();
+  if (record === visibleThread()) paintQueue();
+  await startPrompt(pending.prompt, pending.attachments, pending.showBubble !== false, record);
 }
 
 async function queueAction(action, index, direction = 0) {
@@ -3886,7 +4035,7 @@ async function queueAction(action, index, direction = 0) {
     el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
     el("prompt").focus();
   } else if (action === "steer") {
-    if (!state.busy || state.runId == null || !viewingRun()) return;
+    if (!state.busy || state.runId == null) return;
     const pending = state.pendingSends[index];
     const accepted = await invoke("steer_run", {
       runId: state.runId,
@@ -3905,14 +4054,20 @@ async function queueAction(action, index, direction = 0) {
 }
 
 async function stop() {
-  if (!state.busy) return;
-  state.stopRequested = true;
-  setStatus(t("composer.stopping", "Stopping…"));
-  if (state.runId == null) return;
+  await stopThread(visibleThread());
+}
+
+/// Ends one thread's turn. The corner offers this for the thread in the composer,
+/// and the message the turn left behind stays in that thread.
+async function stopThread(record) {
+  if (!record?.busy) return;
+  record.stopRequested = true;
+  if (record === visibleThread()) setStatus(t("composer.stopping", "Stopping…"));
+  if (record.runId == null) return;
   try {
-    await invoke("cancel_run", { runId: state.runId });
+    await invoke("cancel_run", { runId: record.runId });
   } catch (error) {
-    reportRunError(String(error));
+    withThread(record, () => reportRunError(String(error)));
   }
 }
 
@@ -3924,7 +4079,7 @@ function ensureAssistant() {
   const body = document.createElement("div");
   body.className = "body";
   wrap.append(label, body);
-  runTranscript(state.runSession).appendChild(wrap);
+  runTranscript().appendChild(wrap);
   state.currentAssistant = { wrap, body, text: "" };
   return state.currentAssistant;
 }
@@ -3933,7 +4088,7 @@ function appendText(delta) {
   const assistant = ensureAssistant();
   assistant.text += delta;
   paintMarkdown(assistant.body, assistant.text);
-  scrollDown(runTranscript(state.runSession));
+  scrollDown(runTranscript());
 }
 
 function discardAttempt() {
@@ -3948,7 +4103,7 @@ function discardAttempt() {
 }
 
 function appendThinking(delta) {
-  const transcript = runTranscript(state.runSession);
+  const transcript = runTranscript();
   if (!state.currentThinking) {
     const block = document.createElement("div");
     block.className = "thinking";
@@ -4101,7 +4256,7 @@ function startTool(name, args) {
   state.currentAssistant = null;
   state.currentThinking = null;
   const tool = createToolCard(name, args);
-  const transcript = runTranscript(state.runSession);
+  const transcript = runTranscript();
   transcript.appendChild(tool.block);
   state.tools.push(tool);
   startToolTimer(tool);
@@ -4136,7 +4291,7 @@ function diffCounts(text) {
 }
 
 function hasChat() {
-  return Boolean(runFolder() && (state.session || (state.busy && viewingRun())));
+  return Boolean(runFolder() && (state.session || state.busy));
 }
 
 function paintLiveChanges() {
@@ -4302,20 +4457,19 @@ function renderChanges(payload) {
   const changes = payload && payload.changes;
   if (!changes || !Array.isArray(changes.files) || !changes.files.length) return;
   // The card belongs to the thread the turn changed, whichever thread the reader
-  // is reading when it lands: that thread's transcript is the one on screen, or
-  // the one parked with the run, and its own folder travels with the card so an
-  // Undo reaches the work tree it really changed. `runTranscript` answers with
-  // that thread's transcript — parking the run's thread if the reader moved on
-  // before the turn started there — and `changesFor` with its cards, so an older
-  // turn's Undo is dropped against the newest card *of that thread*.
-  const session = payload.sessionId || (state.runSession ?? state.session);
-  const transcript = runTranscript(session);
-  const list = changesFor(session);
+  // is reading when it lands: its transcript is the one on screen or the one the
+  // thread keeps off screen, and its own folder travels with the card so an Undo
+  // reaches the work tree it really changed. `runTranscript` answers with that
+  // thread's transcript, and `changesFor` with its cards, so an older turn's Undo
+  // is dropped against the newest card *of that thread*.
+  const record = paintingThread();
+  const transcript = runTranscript();
+  const list = changesFor();
   // The transcript it lands in belongs to one folder — the thread's own, which is
   // the window's only when that thread is this project's. A turn the frame places
   // in another folder leaves no card here: its Undo would reach into a work tree
   // this transcript is not about.
-  const folder = transcriptProject(session);
+  const folder = transcriptProject();
   const project = payload.project || folder;
   if (project !== folder) return;
   const card = {
@@ -4343,7 +4497,9 @@ function renderChanges(payload) {
   }
   transcript.appendChild(changesCard(card));
   scrollDown(transcript);
-  if (project === runFolder() && !el("details-panel").hidden) refreshProjectDetails();
+  if (record === visibleThread() && project === runFolder() && !el("details-panel").hidden) {
+    refreshProjectDetails();
+  }
 }
 
 /// `+12 −3`; compact turn cards also show a side with zero changed lines.
@@ -4883,6 +5039,9 @@ async function readProjectChanges(project) {
 /// timer, so a run editing in a loop reads the repository a few times a second at
 /// most.
 function scheduleProjectChanges() {
+  // The dock describes the thread on screen, so a background turn's edit is not
+  // its business: its own thread reads the listing when the reader opens it.
+  if (paintingThread() !== visibleThread()) return;
   if (!state.busy || !hasChat()) return;
   const now = Date.now();
   if (now >= detailsChangesDue) {
@@ -4935,15 +5094,6 @@ function changeReviewScope() {
   el("review-files").replaceChildren(reviewNote(t("ui.noChangesFromATurnInThisChatYet", "No changes from a turn in this chat yet.")));
 }
 
-/// The events that write into the thread a turn is in. The transcript events go
-/// there wherever the reader is — the thread is parked while they read another,
-/// never dropped (see `runTranscript`) — while the usage line that reads out that
-/// conversation's own totals belongs to the thread being read and waits for its
-/// own thread to be opened again. Everything else — the status line, a compaction
-/// note — is the window's readout of the run and is painted wherever the reader
-/// happens to be.
-const FOOTER_EVENT = "usage";
-
 /// The still-running card a tool event belongs to. Results are emitted in call
 /// order, so the oldest running card with a matching name is the right one.
 function activeTool(name) {
@@ -4959,42 +5109,38 @@ function reportRunError(message) {
   notice.className = "run-error";
   notice.setAttribute("role", "alert");
   notice.textContent = state.runError;
-  runTranscript(state.runSession).appendChild(notice);
-  setStatus(state.runError, "error");
-  scrollDown(runTranscript(state.runSession));
+  runTranscript().appendChild(notice);
+  if (paintingThread() === visibleThread()) setStatus(state.runError, "error");
+  scrollDown(runTranscript());
 }
 
+/// Says something about the turn being painted only where that turn is the thread
+/// on screen: a background turn's phase is its own thread's to show when the
+/// reader opens it, not this window's status line.
+function runStatus(text, level = "info") {
+  if (paintingThread() === visibleThread()) setStatus(text, level);
+}
+
+/// Applies one event of the turn being painted. The caller has already pointed
+/// `paintingThread` at the conversation it belongs to, so every field here is
+/// that thread's own.
 function handleEvent(event) {
-  updateTranscriptFollow(runTranscript(state.runSession));
+  updateTranscriptFollow(runTranscript());
   if (event.runId != null) state.runId = event.runId;
-  // A delta, a tool card, a retry that drops the attempt it replaced: each writes
-  // into the thread the run is in, which is the one on screen or the one parked
-  // with the run — `runTranscript` picks it. The footer is the exception: the
-  // totals it shows are the read thread's own, so the run's wait with its thread.
-  if (event.type === FOOTER_EVENT && !viewingRun()) {
-    const parked = state.parked;
-    // A run's step belongs to the thread it is in: while that thread is parked,
-    // its own totals wait with it rather than being painted under the thread
-    // being read.
-    if (parked && parked.session === state.runSession) {
-      parked.usage = addTotals(parked.usage, event);
-      return;
-    }
-    addUsage(event);
-    return;
-  }
   switch (event.type) {
     case "session_title": {
       const title = String(event.title || "").trim();
       if (!title) break;
-      state.runTitle = title;
-      for (const tab of chatTabs) if (tab.session === state.runSession) tab.title = title;
+      const record = paintingThread();
+      record.runTitle = title;
+      for (const tab of chatTabs) if (tab.session === record.session) tab.title = title;
       paintChatTabs();
-      if (state.heldThread?.id === state.runSession) state.heldThread.title = title;
-      if (state.parked?.session === state.runSession) state.parked.title = title;
-      refreshThreadTitle();
+      if (state.heldThread?.id === record.session) state.heldThread.title = title;
+      if (record === visibleThread()) {
+        refreshThreadTitle();
+        loadSessions();
+      }
       updateRunBanner();
-      loadSessions();
       break;
     }
     case "message_update": {
@@ -5011,7 +5157,7 @@ function handleEvent(event) {
       if (tool) {
         tool.live += event.partialResult || "";
         tool.pre.textContent = tool.live;
-        scrollDown(runTranscript(state.runSession));
+        scrollDown(runTranscript());
       }
       break;
     }
@@ -5023,7 +5169,7 @@ function handleEvent(event) {
           diff: event.diff,
           elapsed: Math.max(0, Math.round(performance.now() - tool.started)),
         });
-        scrollDown(runTranscript(state.runSession));
+        scrollDown(runTranscript());
       }
       break;
     }
@@ -5038,19 +5184,22 @@ function handleEvent(event) {
       // A retry re-streams the response from the start, so the partial output
       // of the failed attempt is dropped instead of being extended.
       discardAttempt();
-      setStatus(t("ui.retrying", "Retrying ({value0}/{value1})…", { value0: event.attempt, value1: event.maxAttempts }));
+      runStatus(t("ui.retrying", "Retrying ({value0}/{value1})…", { value0: event.attempt, value1: event.maxAttempts }));
       break;
     case "context_window": {
       if (!(event.tokens > 0) || !event.provider || !event.model) break;
-      const correction = { tokens: event.tokens, provider: event.provider, model: event.model,
-        project: viewingRun() ? runFolder() : state.parked?.project, session: state.runSession ?? state.session };
-      if (viewingRun()) {
-        state.contextCorrection = correction;
-        state.contextWindow = correctionWindow() ?? state.catalogWindow;
+      const record = paintingThread();
+      record.contextCorrection = {
+        tokens: event.tokens,
+        provider: event.provider,
+        model: event.model,
+        project: record.project || runFolder(),
+        session: record.session,
+      };
+      record.contextWindow = correctionWindow() ?? state.catalogWindow;
+      if (record === visibleThread()) {
+        state.contextWindow = record.contextWindow;
         paintComposerFacts();
-      } else if (state.parked?.session === state.runSession) {
-        state.parked.contextCorrection = correction;
-        state.parked.contextWindow = event.tokens;
       }
       break;
     }
@@ -5059,7 +5208,7 @@ function handleEvent(event) {
       break;
     }
     case "compaction":
-      setStatus(t("ui.compactedEarlierMessages", "Compacted {value0} earlier messages", { value0: event.summarized }));
+      runStatus(t("ui.compactedEarlierMessages", "Compacted {value0} earlier messages", { value0: event.summarized }));
       break;
     case "error":
       reportRunError(event.message);
@@ -6456,6 +6605,10 @@ function openInstallUpdate(payload) {
 /// the way starting a new thread is.
 function restartApp() {
   if (busyRefusal(t("ui.restartingOxide", "restarting Oxide"))) return;
+  if ([...threads.values()].some((record) => record.busy)) {
+    setStatus(t("ui.aTurnIsRunningStopItBefore", "A turn is running; stop it before {value0}.", { value0: t("ui.restartingOxide", "restarting Oxide") }));
+    return;
+  }
   invoke("restart_app").catch((error) => showToast(t("ui.couldNotRestartOxide", "Could not restart Oxide: {value0}", { value0: error }), "error"));
 }
 
@@ -6608,7 +6761,7 @@ function renderSessions() {
     return;
   }
   for (const session of threads) {
-    const running = Boolean(state.runSession) && session.id === state.runSession;
+    const running = turnInThread(session.id);
     const row = document.createElement("button");
     row.type = "button";
     row.className =
@@ -7194,64 +7347,96 @@ function cycleReasoning() {
 async function initEvents() {
   await listen("agent-start", async (event) => {
     const payload = event.payload || {};
-    if (payload.runId != null) state.runId = payload.runId;
-    // The run belongs to the thread it started in, whichever thread the reader
-    // has opened since: `state.session` follows the transcript, so the run's own
-    // id is kept apart from it and the sidebar and the header can name it.
-    state.runSession = payload.sessionId || null;
-    state.runClockSession = payload.sessionId || state.runClockSession;
+    const record = threadForRunId(payload.runId) || visibleThread();
+    const session = payload.sessionId || null;
+    const wasVisible = record === visibleThread();
+    const draftKeyBefore = record.key;
+    // The tab that sent the message adopts the thread it made, so a tab that
+    // started a conversation is that conversation from here.
+    const sendingTab = chatTabs.find((entry) => entry.draftKey === draftKeyBefore)
+      || chatTabs.find((entry) => session && entry.session === session);
+    // The run names the thread it made: a draft that started a conversation is
+    // re-keyed with the id the core created, so the same record — and the same
+    // transcript it has been painting into — is what the sidebar and every
+    // later listing find by that id.
+    if (session && record.key.startsWith("draft:")) {
+      const key = `s:${session}`;
+      const existing = threads.get(key);
+      if (!existing || existing === record) {
+        threads.delete(record.key);
+        for (const tab of chatTabs) if (tab.draftKey === record.key) tab.draftKey = undefined;
+        record.key = key;
+        threads.set(key, record);
+      }
+    }
+    if (session) record.session = session;
+    record.runSession = session;
     // A turn titles its thread the moment it starts, so the header names it now
     // and the sidebar lists it — with the same label — without waiting for the
     // turn to end. The session is on disk from here, so the listing has it.
-    state.runTitle = payload.title || "";
-    state.heldThread = payload.sessionId ? { id: payload.sessionId, title: state.runTitle } : null;
-    // A park the reader made while this turn was still starting was keyed by the
-    // thread the message was composed in — or by nothing at all, when it started a
-    // thread of its own: the run's own id is what the way back to it is keyed by
-    // from here, and what the strip, the sidebar row and the composer read.
-    if (state.parked?.pending) {
-      state.parked.session = payload.sessionId || null;
-      state.parked.pending = false;
+    record.runTitle = payload.title || "";
+    if (session) state.heldThread = { id: session, title: record.runTitle };
+    if (sendingTab && session) {
+      sendingTab.draftKey = undefined;
+      sendingTab.session = session;
+      sendingTab.title = record.runTitle || sendingTab.title;
     }
-    // The thread this run reports is adopted by the view only while the reader
-    // is still on the thread the message that started it was composed in: one
-    // sent from a thread with nothing in it yet has no id to compare, and a
-    // reader who opened another conversation — or another folder, which has none
-    // of its own — since is reading that one.
-    const sent = state.sendView;
-    if (sent?.tabId) {
-      const tab = chatTabs.find((entry) => entry.id === sent.tabId);
-      if (tab) {
-        tab.session = payload.sessionId || null;
-        tab.title = payload.title || tab.title;
-        if (tab.snapshot) tab.snapshot.session = tab.session;
-      }
-      paintChatTabs();
+    if (wasVisible && session) state.session = session;
+    if (record === visibleThread()) {
+      refreshThreadTitle();
+      paintQueue();
+      updateSendState();
+      paintStatus();
     }
-    if (sent == null || ((!sent.tabId || sent.tabId === activeTabId) && state.session === sent.session && state.project === sent.project)) {
-      state.session = payload.sessionId || null;
-    }
-    state.sendView = null;
-    resetTurn();
-    refreshThreadTitle();
     updateRunBanner();
+    paintChatTabs();
+    paintRunClock();
     await loadSessions();
   });
   await listen("agent-event", (event) => {
-    handleEvent(event.payload || {});
+    const payload = event.payload || {};
+    const record = threadForRunId(payload.runId) || visibleThread();
+    withThread(record, () => handleEvent(payload));
     paintRunClock();
+    paintChatTabs();
   });
   await listen("agent-end", async (event) => {
-    setIdle();
-    setStatus(state.runError || idleStatus(), state.runError ? "error" : "info");
-    renderChanges(event.payload || {});
-    resetTurn();
-    // A turn is where the branch the composer's top row reads can change — the
-    // model runs git like any other command — so the row is read again before
-    // the next message is composed against it.
-    loadGit();
+    const payload = event.payload || {};
+    const record = threadForRunId(payload.runId)
+      || threadForRunId(null)
+      || visibleThread();
+    const visible = record === visibleThread();
+    if (payload.sessionId) record.session = payload.sessionId;
+    withThread(record, () => {
+      finishRunClock(record);
+      record.busy = false;
+      record.runId = null;
+      // A failure reported mid-run is the turn's outcome, so it is kept; the
+      // next turn is what clears it.
+      if (payload.error) {
+        record.runError = t("common.errorDetail", "Error: {value0}", { value0: payload.error });
+      }
+      record.runProject = null;
+      record.runSession = null;
+      record.unread = !visible;
+      renderChanges(payload);
+      resetTurn();
+    });
+    if (visible) {
+      setStatus(record.runError || idleStatus(), record.runError ? "error" : "info");
+      // A turn is where the branch the composer's top row reads can change — the
+      // model runs git like any other command — so the row is read again before
+      // the next message is composed against it.
+      loadGit();
+    }
+    paintRunningChrome();
+    updateSendState();
+    updateRunBanner();
+    paintStatus();
+    paintRunClock();
+    paintUsage();
     await loadSessions();
-    await startNextPendingSend();
+    await startNextPendingSend(record);
   });
   el("review-modal").onkeydown = reviewKey;
   await listen("approval-request", (event) => showApproval(event.payload || {}));
@@ -8454,7 +8639,9 @@ async function pinSession(session) {
 
 async function archiveSession(session) {
   if (!session || session.unstored) return;
-  if (state.busy && (state.session === session.id || state.runSession === session.id)) {
+  // A turn's own thread cannot be archived from anywhere: its reply would have
+  // nowhere to land, and the files it is writing are still its own.
+  if (turnInThread(session.id)) {
     showToast(t("ui.aTurnIsRunningStopItBeforeArchivingThisThread", "A turn is running; stop it before archiving this thread."));
     return;
   }
@@ -8464,7 +8651,6 @@ async function archiveSession(session) {
       if (chatTabs[index].id !== activeTabId && chatTabs[index].session === session.id) chatTabs.splice(index, 1);
     }
     paintChatTabs();
-    if (state.parked?.session === session.id) state.parked = null;
     if (state.session === session.id) resetTranscript();
     updateRunBanner();
     closeSidebarCards();
@@ -8666,7 +8852,7 @@ async function renderProjectsTree() {
       // The thread a turn is running in says so on its own row, wherever the
       // reader is: the transcript they are looking at may be another thread's,
       // so this is what tells them which conversation is still working.
-      const running = Boolean(state.runSession) && session.id === state.runSession;
+      const running = turnInThread(session.id);
       const sessionItem = document.createElement("div");
       sessionItem.className =
         "session-item" +
@@ -8798,7 +8984,7 @@ async function renderProjectsTree() {
     row.className =
       "recent-session-item" +
       (session.id === state.session ? " active" : "") +
-      (session.id === state.runSession ? " running" : "");
+      (turnInThread(session.id) ? " running" : "");
     const name = document.createElement("div");
     name.className = "name";
     name.textContent = sessionLabel(session);
@@ -8806,7 +8992,7 @@ async function renderProjectsTree() {
       session.worktree ? `worktree ${session.worktree}` : projectNameOf(sessionProject(session))
     }`;
     row.appendChild(name);
-    if (session.id === state.runSession) {
+    if (turnInThread(session.id)) {
       const spinner = document.createElement("span");
       spinner.className = "spinner";
       spinner.setAttribute("aria-hidden", "true");
@@ -8858,10 +9044,10 @@ async function selectSessionFromTree(session) {
 }
 
 function clearSelectedProject() {
-  // The folder is going away from the window, so a turn running in it parks its
-  // transcript like any other thread the reader leaves: it keeps its thread and
-  // goes on writing into it, and the strip is the way back.
-  parkRun();
+  // The folder is going away from the window, so a turn running in it keeps its
+  // thread like any other conversation the reader leaves: it goes on writing
+  // into its own record, and the strip is the way back.
+  parkThread();
   state.project = null;
   state.projectName = "";
   state.session = null;
@@ -8886,7 +9072,14 @@ function selectedProjectStillListed() {
 }
 
 async function removeProject(project) {
-  if (state.busy && (state.runProject || state.project) === project.path) {
+  // Any turn in the folder would have its transcript and its files moved under
+  // it, whichever thread it belongs to.
+  const busyInFolder = [...threads.values()].some((record) => {
+    if (!record.busy) return false;
+    const folder = record.worktree || record.project || record.runProject;
+    return folder === project.path;
+  });
+  if (busyInFolder || (state.busy && (state.runProject || state.project) === project.path)) {
     showToast(t("ui.aTurnIsRunningStopItBeforeRemovingThisProject", "A turn is running; stop it before removing this project."));
     return;
   }

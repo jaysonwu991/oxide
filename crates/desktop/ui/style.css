@@ -82,7 +82,7 @@ input:focus, textarea:focus { outline: none; }
 /* Every icon the window draws is an inline SVG (`ICONS` in `app.js`), so a
    control's drawing does not depend on the machine's fonts. Each is sized here,
    beside the box it sits in, and the marks inside one are `currentColor`. */
-.welcome-mark svg { display: block; width: 26px; height: 26px; }
+.welcome-mark svg { display: block; width: 40px; height: 40px; }
 .label-mark svg { display: block; width: 10px; height: 10px; }
 .label-mark { display: inline-flex; color: var(--accent); }
 .project-item .icon svg { display: block; width: 15px; height: 15px; }
@@ -343,11 +343,11 @@ body.resizing { cursor: col-resize; user-select: none; }
   gap: 22px;
 }
 
-/* The home mark. Its box is a block in a centred column, so it has to be
-   centred itself: left to the column it sat at the column's edge while the
-   title under it was centred. The tile is the app's own shape — the icon's
-   rounded square with the same diamond inside it — so the home state wears the
-   mark rather than a drawing that reads as stray. */
+/* The home mark is the app's own icon: the near-black tile the dock shows with
+   the split diamond inside it, at the icon's own proportions — the mark fills
+   71.875% of a tile whose corner is 18.95% of its side. It is centred itself
+   because its box is a block in a centred column: left to the column it sat at
+   the column's edge while the title under it was centred. */
 .welcome { margin: auto; text-align: center; max-width: 560px; }
 .welcome-mark {
   width: 56px;
@@ -355,11 +355,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   margin: 0 auto 16px;
   display: grid;
   place-items: center;
-  color: var(--accent);
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 10px 24px rgba(0, 0, 0, 0.35);
+  background: #14141a;
+  border-radius: 19%;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
 }
 .welcome h1 { font-size: 24px; font-weight: 600; margin: 0 0 8px; }
 .welcome p { color: var(--dim); margin: 0 0 22px; word-break: break-all; }
