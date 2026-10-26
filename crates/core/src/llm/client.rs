@@ -1321,6 +1321,13 @@ fn validate_gateway_model(config: &Config, actual: &str) -> Result<()> {
         return Ok(());
     }
     let actual = actual.to_ascii_lowercase();
+    // Fireworks publishes this model under its canonical registry slug;
+    // Azure deployments may report that slug instead of FW-GLM-5.2.
+    let actual = if actual == "accounts/fireworks/models/glm-5p2" {
+        "glm-5.2"
+    } else {
+        actual.as_str()
+    };
     // Providers add region/vendor prefixes, dated snapshots and deployment
     // names to model IDs. A short numeric suffix is a different generation.
     let matches = actual.find(&requested).is_some_and(|at| {
@@ -2919,6 +2926,7 @@ mod tests {
             ),
             ("glm-5.2", "glm-5.2"),
             ("glm-5.2", "FW-GLM-5.2-cogdep-llm-gateway-1-eastus"),
+            ("glm-5.2", "accounts/fireworks/models/glm-5p2"),
         ] {
             config.model = requested.into();
             validate_gateway_model(&config, actual).unwrap();
