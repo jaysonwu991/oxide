@@ -2469,8 +2469,10 @@ impl VerificationState {
                 }
             }
             "read" | "diagnostics" => {
-                if let Some(path) = path.filter(|path| !path.is_empty()) {
-                    self.edited.retain(|edited| !same_path(edited, path));
+                if !output_failed_with_state(output, is_error) {
+                    if let Some(path) = path.filter(|path| !path.is_empty()) {
+                        self.edited.retain(|edited| !same_path(edited, path));
+                    }
                 }
             }
             "bash" => {
@@ -2588,7 +2590,10 @@ impl VerificationState {
         }
         self.nudged = true;
         Some(format!(
-            "# Definition of Done\nBefore you finish: {} An explicit instruction from the user \
+            "# Definition of Done\nInternal verification reminder from Oxide, not a new user \
+             message or correction. Preserve the user's intent and constraints; do not attribute \
+             this reminder to the user or acknowledge it as their feedback. Before you finish: {} \
+             An explicit instruction from the user \
              outranks these checks — if they said one is not needed, do what they asked and say \
              plainly what you did not verify instead of running it anyway.",
             parts.join(" ")
@@ -6743,6 +6748,24 @@ for line in sys.stdin:
         let mut state = VerificationState::default();
         state.record("edit", &json!({"path": "src/main.rs"}), "error: no match");
         assert!(state.edited.is_empty());
+    }
+
+    #[test]
+    fn failed_reads_do_not_confirm_edits() {
+        for tool in ["read", "diagnostics"] {
+            for (output, is_error) in [
+                ("error: permission denied", true),
+                ("File not found", true),
+                ("[exit: 1]", false),
+            ] {
+                let mut state = VerificationState::default();
+                state.record("edit", &json!({"path": "README.md"}), "ok");
+                state.record_result(tool, &json!({"path": "README.md"}), output, is_error);
+                assert!(state.reminder().is_some(), "{tool}: {output}");
+                state.record_result(tool, &json!({"path": "README.md"}), "new content", false);
+                assert!(state.edited.is_empty());
+            }
+        }
     }
 
     #[test]

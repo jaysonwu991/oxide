@@ -4277,7 +4277,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
 }
 
 fn bash_failure_hint(output: &str) -> Option<&'static str> {
-    if output.contains("grep: maximum repetition exceeds")
+    if output.contains("[rejected]")
+        && (output.contains("(stale info)")
+            || output.contains("(fetch first)")
+            || output.contains("(non-fast-forward)"))
+    {
+        Some("[hint: the remote branch or its tracking ref differs from your expectation. Inspect the remote head, fetch into the relevant remote-tracking ref, and compare remote-only commits before reconciling. Do not bypass this rejection with --force, -f, a + refspec, or a blindly refreshed lease; prefer a normal follow-up commit and push.]")
+    } else if output.contains("grep: maximum repetition exceeds")
         || output.contains("grep: invalid repetition count")
     {
         Some("[hint: this grep limits regex repetition counts. Use the `grep` tool with `pattern` and `path` instead; its regex engine supports larger repetition counts.]")
@@ -7368,6 +7374,87 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn rejected_git_lease_reports_recovery_without_retrying() {
+        let dir = std::env::temp_dir().join(format!("oxide_git_lease_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&["init", "--bare", "remote.git"]);
+        git(&["init", "--initial-branch=feature", "local"]);
+        git(&["-C", "local", "config", "user.name", "Test"]);
+        git(&["-C", "local", "config", "user.email", "test@example.com"]);
+        git(&[
+            "-C",
+            "local",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "base",
+        ]);
+        git(&["-C", "local", "remote", "add", "origin", "../remote.git"]);
+        git(&["-C", "local", "push", "-u", "origin", "feature"]);
+        let base = git(&["-C", "local", "rev-parse", "HEAD"]);
+        git(&[
+            "-C",
+            "local",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "remote update",
+        ]);
+        git(&["-C", "local", "push", "origin", "feature"]);
+        let remote_head = git(&["-C", "local", "rev-parse", "HEAD"]);
+        git(&["-C", "local", "reset", "--hard", &base]);
+        git(&[
+            "-C",
+            "local",
+            "update-ref",
+            "refs/remotes/origin/feature",
+            &base,
+        ]);
+
+        let output = execute(
+            &call(
+                "bash",
+                json!({"command": "git push --force-with-lease origin feature"}),
+            ),
+            &dir.join("local"),
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(output.is_error, "{}", output.text);
+        assert!(output.text.contains("(stale info)"), "{}", output.text);
+        assert!(
+            output.text.contains("Do not bypass this rejection"),
+            "{}",
+            output.text
+        );
+        assert!(!output.text.contains("retried once"), "{}", output.text);
+        assert_eq!(
+            git(&["--git-dir=remote.git", "rev-parse", "feature"]),
+            remote_head
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn shell_errors_from_sessions_have_specific_recovery_hints() {
         let repetition = bash_failure_hint("grep: maximum repetition exceeds 255").unwrap();
@@ -7395,6 +7482,13 @@ mod tests {
         )
         .unwrap()
         .contains("usually transient"));
+        for reason in ["stale info", "fetch first", "non-fast-forward"] {
+            let hint =
+                bash_failure_hint(&format!(" ! [rejected] feature -> feature ({reason})")).unwrap();
+            assert!(hint.contains("remote-only commits"), "{hint}");
+            assert!(hint.contains("Do not bypass"), "{hint}");
+        }
+        assert!(bash_failure_hint("stale info in a cache").is_none());
         assert!(bash_failure_hint("error: test failed").is_none());
     }
 
