@@ -582,6 +582,14 @@ impl LlmClient {
         max_tokens: u32,
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
+        // Claude tool loops need its signed thinking blocks, which the
+        // OpenAI compatibility route does not preserve. Keep model discovery
+        // on Portkey's shared catalog, but use its native Messages endpoint.
+        if self.config.is_portkey() && self.config.model.to_ascii_lowercase().contains("claude-") {
+            return self
+                .stream_anthropic(messages, tools, max_tokens, hooks)
+                .await;
+        }
         match self.config.provider_kind() {
             ProviderKind::Anthropic => {
                 self.stream_anthropic(messages, tools, max_tokens, hooks)
@@ -685,6 +693,10 @@ impl LlmClient {
             };
             if let Some(error) = parsed.error {
                 anyhow::bail!("provider error: {}", error.describe());
+            }
+            if let Some(model) = parsed.model.filter(|model| !model.is_empty()) {
+                validate_gateway_model(&self.config, &model)?;
+                turn.response_model = Some(model);
             }
             if let Some(usage) = &parsed.usage {
                 let cached = usage
@@ -811,13 +823,29 @@ impl LlmClient {
         max_tokens: u32,
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
-        let url = self.config.chat_url()?;
+        let url = if self.config.is_portkey() {
+            format!(
+                "{}/messages",
+                self.config.base_url.trim().trim_end_matches('/')
+            )
+        } else {
+            self.config.chat_url()?
+        };
         let mut config = self.config.clone();
         config.max_tokens = max_tokens;
         let body = anthropic::request_body(&config, messages, tools);
 
         let mut request = self.http.post(&url);
-        if self.config.auth_style() == AuthStyle::Gitlab {
+        if self.config.is_portkey() {
+            request = self
+                .authenticate_openai(request)?
+                .header("anthropic-version", anthropic::API_VERSION);
+            if let Some(session) = self.session_id.as_deref() {
+                request = request
+                    .header("x-session-id", session)
+                    .header("x-client-request-id", session);
+            }
+        } else if self.config.auth_style() == AuthStyle::Gitlab {
             let access = gitlab::direct_access(
                 &self.http,
                 &self.config.gitlab_instance(),
@@ -837,6 +865,13 @@ impl LlmClient {
         let mut partials = BTreeMap::new();
 
         let outcome = read_sse(response, |data| {
+            if self.config.is_portkey() {
+                if let Ok(value) = serde_json::from_str::<Value>(data) {
+                    if let Some(model) = value.pointer("/message/model").and_then(Value::as_str) {
+                        validate_gateway_model(&self.config, model)?;
+                    }
+                }
+            }
             anthropic::apply_event(data, &mut turn, &mut partials, hooks.text, hooks.thinking)
         })
         .await?;
@@ -1264,6 +1299,51 @@ fn openai_tools(tools: &[ToolSpec], cache: bool) -> Option<Vec<Value>> {
     Some(specs)
 }
 
+#[derive(Debug)]
+struct GatewayModelMismatch(String);
+
+impl std::fmt::Display for GatewayModelMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for GatewayModelMismatch {}
+
+/// Known picker models must not silently fall through a gateway's default
+/// route. Opaque user-defined aliases remain the gateway's responsibility.
+fn validate_gateway_model(config: &Config, actual: &str) -> Result<()> {
+    if !config.is_portkey() {
+        return Ok(());
+    }
+    let requested = crate::config::vendorless(&config.model).to_ascii_lowercase();
+    if !crate::config::PORTKEY_FALLBACK_MODELS.contains(&requested.as_str()) {
+        return Ok(());
+    }
+    let actual = actual.to_ascii_lowercase();
+    // Providers add region/vendor prefixes, dated snapshots and deployment
+    // names to model IDs. A short numeric suffix is a different generation.
+    let matches = actual.find(&requested).is_some_and(|at| {
+        let prefix = &actual[..at];
+        let suffix = &actual[at + requested.len()..];
+        let dated = suffix
+            .strip_prefix('-')
+            .is_some_and(|tail| tail.chars().take_while(char::is_ascii_digit).count() >= 4);
+        (prefix.is_empty() || prefix.ends_with(['/', '.', ':', '@', '-']))
+            && (suffix.is_empty()
+                || suffix.starts_with(':')
+                || suffix.starts_with("-v")
+                || suffix
+                    .strip_prefix('-')
+                    .is_some_and(|tail| tail.starts_with(char::is_alphabetic))
+                || dated)
+    });
+    if !matches {
+        return Err(GatewayModelMismatch(format!("gateway model mismatch: selected '{}' but the provider returned '{}'. Check the Portkey Config ID and its routing/fallback rules; the substituted model was not accepted", config.model, actual)).into());
+    }
+    Ok(())
+}
+
 fn openai_reasoning(
     config: &Config,
 ) -> (
@@ -1612,6 +1692,9 @@ fn rejects_effort(error: &str) -> bool {
 /// truncation, rate limits, and 5xx responses are retryable; other 4xx provider
 /// errors (bad request, auth, not found) are not.
 fn is_retryable(err: &anyhow::Error) -> bool {
+    if err.is::<GatewayModelMismatch>() {
+        return false;
+    }
     let text = format!("{err:#}");
     if let Some(rest) = text.split("provider returned ").nth(1) {
         if let Some(code) = rest
@@ -2815,6 +2898,213 @@ mod tests {
             requests
         });
         (addr, server)
+    }
+
+    #[test]
+    fn gateway_model_identity_accepts_snapshots_but_rejects_substitution() {
+        let mut config = Config {
+            provider: "portkey".into(),
+            ..Config::default()
+        };
+        for (requested, actual) in [
+            (
+                "claude-haiku-4-5",
+                "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+            ),
+            ("claude-opus-5", "eu.anthropic.claude-opus-5"),
+            ("gpt-5.6-sol", "gpt-5.6-sol-2026-07-09"),
+            (
+                "gpt-5.6-sol",
+                "gpt-5.6-sol-cogdep-llm-gateway-1-germanywestcentral",
+            ),
+            ("glm-5.2", "glm-5.2"),
+            ("glm-5.2", "FW-GLM-5.2-cogdep-llm-gateway-1-eastus"),
+        ] {
+            config.model = requested.into();
+            validate_gateway_model(&config, actual).unwrap();
+        }
+        for (requested, actual) in [
+            ("gpt-5.6-sol", "eu.anthropic.claude-haiku-4-5-20251001-v1:0"),
+            ("claude-opus-5", "claude-opus-5-5"),
+            ("claude-opus-5", "claude-sonnet-5"),
+            ("glm-5.2", "gpt-5.4"),
+        ] {
+            config.model = requested.into();
+            assert!(
+                validate_gateway_model(&config, actual).is_err(),
+                "{requested}: {actual}"
+            );
+        }
+        config.model = "company-fast-alias".into();
+        validate_gateway_model(&config, "claude-haiku-4-5").unwrap();
+    }
+
+    #[tokio::test]
+    async fn gateway_substitution_stops_before_tools_or_text_are_accepted() {
+        for model in ["gpt-5.6-sol", "claude-opus-5"] {
+            let wrong_model = "eu.anthropic.claude-haiku-4-5-20251001-v1:0";
+            let body = if model.starts_with("claude") {
+                anthropic_sse(&[
+                    serde_json::json!({"type":"message_start","message":{"model":wrong_model}}),
+                ])
+            } else {
+                sse(&[
+                    serde_json::json!({"model":wrong_model,"choices":[{"delta":{"content":"wrong answer"},"finish_reason":"stop"}]}),
+                ])
+            };
+            let (addr, server) = sse_server(vec![body]).await;
+            let client = LlmClient::new(Config {
+                model: model.into(),
+                ..portkey_test_config(addr, 4096)
+            });
+            let mut hooks = StreamHooks {
+                text: &mut |_| panic!("substituted text escaped"),
+                thinking: &mut |_| {},
+                retry: &mut |_| panic!("routing errors must not retry"),
+            };
+            let error = client
+                .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("gateway model mismatch"),
+                "{error}"
+            );
+            assert_eq!(server.await.unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn portkey_claude_models_preserve_signed_thinking_across_tools() {
+        for model in [
+            "claude-haiku-4-5",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+        ] {
+            let signed = serde_json::json!({"type":"thinking","thinking":"","signature":"opaque-signed-state"});
+            let redacted =
+                serde_json::json!({"type":"redacted_thinking","data":"opaque-redacted-state"});
+            let first = anthropic_sse(&[
+                serde_json::json!({"type":"content_block_start","index":0,"content_block":signed}),
+                serde_json::json!({"type":"content_block_start","index":1,"content_block":redacted}),
+                serde_json::json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"lookup","name":"read"}}),
+                serde_json::json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"a.rs\"}"}}),
+                serde_json::json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":12}}),
+            ]);
+            let last = anthropic_sse(&[
+                serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}),
+                serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}),
+            ]);
+            let (addr, server) = sse_server(vec![first, last]).await;
+            let client = LlmClient::new(Config {
+                model: model.into(),
+                reasoning: Reasoning::Medium,
+                portkey_config: "team-config".into(),
+                ..portkey_test_config(addr, 8192)
+            })
+            .with_session_id("test-session");
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            let tools = vec![crate::llm::ToolSpec {
+                kind: "function",
+                function: crate::llm::FunctionSpec {
+                    name: "read".into(),
+                    description: "Read a file".into(),
+                    parameters: serde_json::json!({"type":"object"}),
+                },
+            }];
+            let mut messages = vec![Message::user("read a.rs")];
+            let turn = client
+                .stream_chat(&messages, &tools, &mut hooks)
+                .await
+                .unwrap();
+            assert_eq!(
+                turn.thinking,
+                vec![signed.clone(), redacted.clone()],
+                "{model}"
+            );
+            messages.push(
+                Message::assistant(turn.content, turn.tool_calls).with_thinking(turn.thinking),
+            );
+            messages.push(Message::tool("lookup", "file contents"));
+            assert_eq!(
+                client
+                    .stream_chat(&messages, &tools, &mut hooks)
+                    .await
+                    .unwrap()
+                    .content,
+                "done"
+            );
+            let requests = server.await.unwrap();
+            for request in &requests {
+                assert!(request.starts_with("POST /messages "), "{model}: {request}");
+                let headers = request
+                    .split_once("\r\n\r\n")
+                    .unwrap()
+                    .0
+                    .to_ascii_lowercase();
+                assert!(headers.contains("x-portkey-api-key: pk-test"));
+                assert!(headers.contains("x-portkey-config: team-config"));
+                assert!(headers.contains("x-session-id: test-session"));
+                assert!(!headers.contains("\r\nx-api-key:"));
+            }
+            let body: Value =
+                serde_json::from_str(requests[1].split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body["messages"][1]["content"][0], signed);
+            assert_eq!(body["messages"][1]["content"][1], redacted);
+            assert_eq!(body["messages"][1]["content"][2]["type"], "tool_use");
+            assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+            if supports_adaptive_thinking(model) {
+                assert_eq!(body["output_config"]["effort"], "medium");
+            } else {
+                assert_eq!(body["thinking"]["budget_tokens"], 6144);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn portkey_non_claude_models_keep_the_openai_transport() {
+        for model in [
+            "glm-5.2",
+            "gpt-5.4",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        ] {
+            let (addr, server) = sse_server(vec![completed_turn("done")]).await;
+            let client = LlmClient::new(Config {
+                model: model.into(),
+                reasoning: Reasoning::Medium,
+                ..portkey_test_config(addr, 8192)
+            });
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| {},
+            };
+            assert_eq!(
+                client
+                    .stream_chat(&[Message::user("hi")], &[], &mut hooks)
+                    .await
+                    .unwrap()
+                    .content,
+                "done"
+            );
+            let requests = server.await.unwrap();
+            assert!(
+                requests[0].starts_with("POST /chat/completions "),
+                "{model}"
+            );
+            let body: Value =
+                serde_json::from_str(requests[0].split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body["reasoning_effort"], "medium");
+            assert!(body.get("output_config").is_none());
+        }
     }
 
     #[tokio::test]

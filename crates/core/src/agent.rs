@@ -4718,8 +4718,11 @@ mod tests {
 
     #[tokio::test]
     async fn portkey_turns_send_catalog_budget_and_persist_effort_choices() {
-        let (addr, server) =
-            sse_server(vec![answer_body("Completed"), answer_body("Completed")]).await;
+        let native_answer = openai_sse(&[
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Completed"}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}),
+        ]);
+        let (addr, server) = sse_server(vec![native_answer.clone(), native_answer]).await;
         let dir = std::env::temp_dir().join(format!("oxide_portkey_turn_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
@@ -4776,7 +4779,7 @@ mod tests {
             assert_eq!(body["max_tokens"], 32_768);
             assert_eq!(body["thinking"]["type"], "adaptive");
             assert_eq!(body["output_config"]["effort"], effort);
-            let system = body["messages"][0]["content"].to_string();
+            let system = body["system"].to_string();
             assert!(
                 system.contains(&format!("Effective reasoning effort: {effort}")),
                 "{system}"

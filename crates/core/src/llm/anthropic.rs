@@ -94,6 +94,9 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
     }
     let adaptive = supports_adaptive_thinking(&config.model);
     match config.effective_reasoning() {
+        Reasoning::Off if adaptive => {
+            body["thinking"] = json!({ "type": "disabled" });
+        }
         Reasoning::Off => {}
         Reasoning::Auto if adaptive => {
             body["thinking"] = json!({ "type": "adaptive" });
@@ -126,12 +129,21 @@ pub fn apply_event(
 
     match value["type"].as_str() {
         Some("message_start") => {
+            if let Some(model) = value["message"]["model"].as_str() {
+                turn.response_model = Some(model.to_string());
+            }
             let usage = &value["message"]["usage"];
             if let Some(tokens) = usage["input_tokens"].as_u64() {
                 turn.usage.input = tokens;
             }
             if let Some(tokens) = usage["output_tokens"].as_u64() {
                 turn.usage.output = tokens;
+            }
+            if let Some(tokens) = usage
+                .pointer("/output_tokens_details/thinking_tokens")
+                .and_then(Value::as_u64)
+            {
+                turn.usage.reasoning = tokens;
             }
             if let Some(tokens) = usage["cache_read_input_tokens"].as_u64() {
                 turn.usage.cache_read = tokens;
@@ -149,6 +161,12 @@ pub fn apply_event(
             let usage = &value["usage"];
             if let Some(tokens) = usage["output_tokens"].as_u64() {
                 turn.usage.output = tokens;
+            }
+            if let Some(tokens) = usage
+                .pointer("/output_tokens_details/thinking_tokens")
+                .and_then(Value::as_u64)
+            {
+                turn.usage.reasoning = tokens;
             }
             if let Some(tokens) = usage["input_tokens"].as_u64() {
                 turn.usage.input = tokens;
@@ -174,8 +192,9 @@ pub fn apply_event(
                     }
                 }
                 Some("thinking") => {
-                    turn.thinking
-                        .push(json!({ "type": "thinking", "thinking": "", "signature": "" }));
+                    // Even an omitted thinking block carries an opaque signature
+                    // that must survive the next tool-result request.
+                    turn.thinking.push(block.clone());
                 }
                 Some("redacted_thinking") => {
                     turn.thinking.push(block.clone());
@@ -542,6 +561,18 @@ mod tests {
         let body = request_body(&cfg, &[Message::user("hi")], &[]);
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "medium");
+    }
+
+    #[test]
+    fn adaptive_off_explicitly_disables_default_thinking() {
+        let config = Config {
+            model: "claude-opus-5".into(),
+            reasoning: Reasoning::Off,
+            ..Config::default()
+        };
+        let body = request_body(&config, &[Message::user("hi")], &[]);
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body.get("output_config").is_none());
     }
 
     #[test]
