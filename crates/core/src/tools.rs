@@ -3506,7 +3506,8 @@ fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
         .enumerate()
         .find_map(|(index, segment)| {
             let mut grep = parse_shell_grep(segment)?;
-            let here = shell_command_index(&grep_shell_words(segment)) == Some(0);
+            // `restatable` is already set to `grep_index == 0` by parse_shell_grep,
+            // so we can infer if this is the first shell command in this segment.
             // A segment whose directory could be followed is judged against it,
             // so a glob that expands to files there is a search of named files
             // rather than a sweep. Anything else keeps the conservative rule: the
@@ -3516,7 +3517,7 @@ fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
                 Some(base) => (base, true),
                 None => {
                     grep.restatable &= index == 0;
-                    (cwd, here && index == 0)
+                    (cwd, grep.restatable && index == 0)
                 }
             };
             if !grep.recursive || !recursive_grep_sweeps(&grep.operands, base, verified) {
@@ -3574,17 +3575,14 @@ fn segment_directories(command: &str, cwd: &Path) -> Vec<Option<PathBuf>> {
     for segment in shell_segments(command) {
         // A segment that could move itself — a subshell, `env -C`, `pushd` —
         // cannot be placed, so its own operands keep the conservative rule.
-        directories.push(if changes_directory_opaquely(segment) {
-            None
-        } else {
-            base.clone()
-        });
+        let opaque = changes_directory_opaquely(segment);
+        directories.push(if opaque { None } else { base.clone() });
         base = match cd_target(segment) {
             Some(Some(target)) => base
                 .as_deref()
                 .and_then(|base| resolved_directory(base, &target)),
             Some(None) => None,
-            None if changes_directory_opaquely(segment) => None,
+            None if opaque => None,
             None => base,
         };
     }
