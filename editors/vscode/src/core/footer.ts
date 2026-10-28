@@ -37,6 +37,7 @@ export interface FooterState {
   worktree: FooterWorktree;
   /// The cumulative usage line. Empty until the provider reports usage.
   usage: string;
+  usageTitle?: string;
   /// Context used by the last request, for the gauge.
   percent: number | null;
   level: ContextLevel;
@@ -147,6 +148,7 @@ export function footerState(input: FooterInput): FooterState {
     },
     info: input.branch,
     usage: usageLine(input),
+    ...(input.usage.attribution ? { usageTitle: usageDetails(input) } : {}),
     percent,
     level: contextLevel(percent),
   };
@@ -217,4 +219,15 @@ function accessTitle(input: FooterInput): string {
         : t("ui.savedDecisionForThisFolder", " Saved decision for this folder: {value0}.", { value0: input.savedTrust ? "trusted" : "declined" })
       : "";
   return t("ui.clickToChangeIt", "{value0}{value1}{value2} Click to change it.", { value0: what, value1: override, value2: saved });
+}
+
+function usageDetails(input: FooterInput): string {
+  const usage = input.usage;
+  const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+  const lines = [usageLine(input), "CH: latest request with cache traffic"];
+  if (prompt) lines.push(`Session cache hit: ${(100 * usage.cacheRead / prompt).toFixed(1)}%`);
+  for (const [source, bucket] of Object.entries(usage.attribution || {})) {
+    lines.push(`${source}: ${bucket.modelCalls} model calls · ↑${formatTokens(bucket.input)} ↓${formatTokens(bucket.output)} R${formatTokens(bucket.cacheRead)} W${formatTokens(bucket.cacheWrite)} · $${bucket.cost.toFixed(3)}`);
+  }
+  return lines.join("\n");
 }

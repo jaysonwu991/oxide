@@ -239,6 +239,7 @@ fn render_show(
             "cacheWrite": totals.cache_write,
             "cost": totals.cost,
             "cacheHitRate": totals.cache_hit_rate,
+            "attribution": totals.attribution,
             "contextTokens": context_tokens,
             "messageCount": total,
         });
@@ -535,6 +536,7 @@ mod tests {
             cache_write: 0,
             cost: 0.25,
             cache_hit_rate: Some(90.0),
+            attribution: Default::default(),
         }
     }
 

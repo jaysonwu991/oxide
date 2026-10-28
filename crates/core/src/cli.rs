@@ -331,6 +331,8 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             "isError": is_error,
         }),
         AgentEvent::Usage {
+            model_calls,
+            source,
             input,
             output,
             cache_read,
@@ -340,6 +342,8 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
         } => json!({
             "type": "usage",
             "usage": {
+                "modelCalls": model_calls,
+                "source": source,
                 "input": input,
                 "output": output,
                 "cacheRead": cache_read,
@@ -669,6 +673,8 @@ mod tests {
         );
 
         let usage = event_json(&AgentEvent::Usage {
+            model_calls: 1,
+            source: crate::agent::UsageSource::Main,
             input: 1,
             output: 2,
             cache_read: 3,

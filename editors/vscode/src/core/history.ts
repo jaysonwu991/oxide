@@ -134,6 +134,13 @@ export function parseSessionHistory(json: string): SessionHistory | null {
     }).filter((limit) => limit.tokens > 0 && limit.provider && limit.model),
     usage: {
       ...emptyUsage(),
+      ...(usage.attribution && typeof usage.attribution === "object" ? {
+        attribution: Object.fromEntries(Object.entries(obj(usage.attribution)).map(([source, raw]) => {
+          const bucket = obj(raw);
+          return [source, { modelCalls: num(bucket.modelCalls), input: num(bucket.input), output: num(bucket.output),
+            cacheRead: num(bucket.cacheRead), cacheWrite: num(bucket.cacheWrite), cost: num(bucket.cost) }];
+        })),
+      } : {}),
       input: num(usage.input),
       output: num(usage.output),
       cacheRead: num(usage.cacheRead),

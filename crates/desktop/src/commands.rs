@@ -581,6 +581,7 @@ pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
             "cacheWrite": totals.cache_write,
             "cost": totals.cost,
             "cacheHitRate": totals.cache_hit_rate,
+            "attribution": totals.attribution,
             "messageCount": messages.len(),
             // The prompt tokens of the newest recorded request, which is the
             // context the thread was last run with: a front-end that opens a

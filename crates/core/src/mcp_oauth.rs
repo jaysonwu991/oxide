@@ -133,6 +133,29 @@ impl OAuthState {
         None
     }
 
+    /// Picks up an out-of-process login without reopening the browser or retrying the server.
+    pub async fn reload_authorization(&self) -> bool {
+        self.accept_authorization(load_stored(&self.name)).await
+    }
+
+    async fn accept_authorization(&self, auth: Option<StoredAuth>) -> bool {
+        let Some(auth) = auth
+            .filter(|auth| auth.resource_url.as_deref() == Some(self.resource_url.as_str()))
+            .filter(|auth| !is_expired(auth))
+        else {
+            return false;
+        };
+        let mut current = self.auth.lock().await;
+        if current
+            .as_ref()
+            .is_some_and(|old| old.access_token == auth.access_token)
+        {
+            return false;
+        }
+        *current = Some(auth);
+        true
+    }
+
     async fn valid_token(&self) -> Option<String> {
         let guard = self.auth.lock().await;
         guard
@@ -991,6 +1014,43 @@ fn open_browser_notice(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn authorization_recovery_requires_a_new_token_for_the_same_resource() {
+        let state = OAuthState::new(
+            "recovery-unit-test",
+            &McpOAuth::default(),
+            "https://example.com/mcp",
+        );
+        let token = |access: &str, resource: &str| {
+            serde_json::from_value::<StoredAuth>(serde_json::json!({
+                "access_token": access, "resource_url": resource,
+            }))
+            .unwrap()
+        };
+        assert!(!state.accept_authorization(None).await);
+        assert!(
+            !state
+                .accept_authorization(Some(token("a", "https://other.example/mcp")))
+                .await
+        );
+        assert!(
+            state
+                .accept_authorization(Some(token("a", "https://example.com/mcp")))
+                .await
+        );
+        assert!(
+            !state
+                .accept_authorization(Some(token("a", "https://example.com/mcp")))
+                .await
+        );
+        assert!(
+            state
+                .accept_authorization(Some(token("b", "https://example.com/mcp")))
+                .await
+        );
+        assert_eq!(state.valid_token().await.as_deref(), Some("b"));
+    }
 
     #[test]
     fn base64url_encodes_without_padding() {

@@ -119,6 +119,8 @@ impl CompactionConfig {
 /// Token usage that produced a summary, stored so session totals include it.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct UsageRecord {
+    #[serde(default)]
+    pub model_calls: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::llm::ContextUsage>,
     pub input: u64,
@@ -134,6 +136,7 @@ pub struct UsageRecord {
 impl From<Usage> for UsageRecord {
     fn from(usage: Usage) -> Self {
         Self {
+            model_calls: 1,
             context: Some(usage.into()),
             input: usage.input,
             output: usage.output,
@@ -750,7 +753,16 @@ pub async fn generate(
         first_kept: preparation.first_kept,
         summarized: preparation.summarized,
         tokens_before: preparation.tokens_before,
-        usage: Some(usage.into()),
+        usage: Some(UsageRecord {
+            model_calls: if !preparation.turn_prefix.is_empty()
+                && !preparation.messages_to_summarize.is_empty()
+            {
+                2
+            } else {
+                1
+            },
+            ..usage.into()
+        }),
         details: preparation.details,
     }))
 }

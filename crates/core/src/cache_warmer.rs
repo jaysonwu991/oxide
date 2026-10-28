@@ -21,7 +21,7 @@ use crate::config::{Config, ProviderKind, Reasoning};
 use crate::llm::{LlmClient, Message, Retry, StreamHooks, ToolSpec};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -112,6 +112,7 @@ pub fn schedule(
     request: Vec<Message>,
     tools: Vec<ToolSpec>,
     session_id: Option<String>,
+    session_log: Option<Arc<crate::session::SessionLog>>,
 ) {
     cancel();
     let Some(ttl) = config.prompt_cache_ttl() else {
@@ -143,8 +144,15 @@ pub fn schedule(
             tokio::select! {
                 _ = wake().notified() => return,
                 result = warm_once(&config, &request, &tools, session_id.as_deref()) => {
-                    if result.is_err() {
-                        return;
+                    match result {
+                        Ok(usage) => {
+                            if let Some(log) = &session_log {
+                                if let Err(error) = log.append_background_usage(usage.into()) {
+                                    crate::notice::warn(format!("saving cache warming usage: {error:#}"));
+                                }
+                            }
+                        }
+                        Err(_) => return,
                     }
                 }
             }
@@ -177,14 +185,14 @@ fn estimate_tokens(request: &[Message], tools: &[ToolSpec]) -> u64 {
     ((messages + tools) / 4) as u64
 }
 
-/// Replays one request with a one-token output cap. Nothing it returns is shown
-/// or stored; the point is the provider-side cache entry it refreshes.
+/// Replays one request with a one-token output cap. Its text is discarded;
+/// reported usage is returned for accounting.
 pub async fn warm_once(
     config: &Config,
     request: &[Message],
     tools: &[ToolSpec],
     session_id: Option<&str>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<crate::llm::Usage> {
     let mut warm = config.clone();
     warm.max_tokens = 1;
     // A cap this call chose, not a reader's; without this the catalog's output
@@ -202,8 +210,7 @@ pub async fn warm_once(
         thinking: &mut ignore_thinking,
         retry: &mut ignore_retry,
     };
-    client.stream_cache_warm(request, tools, &mut hooks).await?;
-    Ok(())
+    client.stream_cache_warm(request, tools, &mut hooks).await
 }
 
 #[cfg(test)]

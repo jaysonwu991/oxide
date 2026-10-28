@@ -33,7 +33,17 @@ export interface WireEvent {
   [key: string]: unknown;
 }
 
+export interface UsageBucket {
+  modelCalls: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+}
+
 export interface UsageTotals {
+  attribution?: Record<string, UsageBucket>;
   input: number;
   output: number;
   cacheRead: number;
@@ -824,13 +834,27 @@ export class Transcript {
           cacheRead + cacheWrite > 0 && prompt > 0
             ? (cacheRead / prompt) * 100
             : this.usage.cacheHit;
+        let attribution = this.usage.attribution;
+        if (typeof usage.source === "string") {
+          const source = ["main", "compaction", "background"].includes(usage.source) ? usage.source : "main";
+          const before = attribution?.[source];
+          attribution = { ...attribution, [source]: {
+            modelCalls: (before?.modelCalls || 0) + num(usage.modelCalls),
+            input: (before?.input || 0) + num(usage.input),
+            output: (before?.output || 0) + num(usage.output),
+            cacheRead: (before?.cacheRead || 0) + cacheRead,
+            cacheWrite: (before?.cacheWrite || 0) + cacheWrite,
+            cost: (before?.cost || 0) + num(usage.cost),
+          } };
+        }
         this.usage = {
+          ...(attribution ? { attribution } : {}),
           input: this.usage.input + num(usage.input),
           output: this.usage.output + num(usage.output),
           cacheRead: this.usage.cacheRead + cacheRead,
           cacheWrite: this.usage.cacheWrite + cacheWrite,
           cost: this.usage.cost + num(usage.cost),
-          contextTokens: typeof usage.contextTokens === "number" ? usage.contextTokens : prompt,
+          contextTokens: usage.source === "background" ? this.usage.contextTokens : typeof usage.contextTokens === "number" ? usage.contextTokens : prompt,
           cacheHit,
         };
         return [{ k: "usage", usage: this.usage }];

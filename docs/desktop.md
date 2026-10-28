@@ -1027,6 +1027,21 @@ it is the context that request was sent with, which is what the ring measures â€
 a step that read no cache keeps the rate the warm one reported, the same rule
 `UsageTotals::cache_hit_rate` follows.
 
+Hover over the usage line to see the session-wide cache-hit rate, model-call
+counts and token/cost totals for the main agent, compaction and background tasks,
+plus the current or latest run's totals. `CH` remains the latest request with
+cache traffic. Background tasks contribute to spend without replacing the
+parent chat's context reading. Source totals survive reopening a session;
+current-run totals are live-only. Older records without call counts count as one
+recorded request, so historical merged requests cannot be reconstructed.
+
+Idle cache-warming requests are saved as background usage and appear when the
+session is reopened. They do not append model-visible messages. These totals
+include usage reported on successful responses; failed requests without usage
+and provider-side billing adjustments are not inferred. The RPC usage events
+also carry `source` and `modelCalls`, and session JSON includes `attribution`;
+VS Code shows the source totals and session cache-hit rate in its usage tooltip.
+
 ## Themes
 
 The desktop ships built-in **Dark** and **Light** themes (default Dark) and

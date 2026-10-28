@@ -897,6 +897,17 @@ function addTotals(spent, event) {
   const billedPrompt = input + cacheRead + cacheWrite;
   const prompt = typeof usage.contextTokens === "number" ? usage.contextTokens : billedPrompt;
   const before = spent || {};
+  const source = ["main", "compaction", "background"].includes(usage.source) ? usage.source : "main";
+  const attribution = { ...(before.attribution || {}) };
+  const bucket = attribution[source] || {};
+  attribution[source] = {
+    modelCalls: (bucket.modelCalls || 0) + (usage.modelCalls ?? 1),
+    input: (bucket.input || 0) + input,
+    output: (bucket.output || 0) + output,
+    cacheRead: (bucket.cacheRead || 0) + cacheRead,
+    cacheWrite: (bucket.cacheWrite || 0) + cacheWrite,
+    cost: (bucket.cost || 0) + cost,
+  };
   const cacheHitRate =
     cacheRead + cacheWrite > 0 && billedPrompt > 0
       ? (cacheRead / billedPrompt) * 100
@@ -907,14 +918,17 @@ function addTotals(spent, event) {
     cacheRead: (before.cacheRead || 0) + cacheRead,
     cacheWrite: (before.cacheWrite || 0) + cacheWrite,
     cost: (before.cost || 0) + cost,
-    prompt,
+    prompt: source === "background" ? (before.prompt || 0) : prompt,
     cacheHitRate,
+    attribution,
   };
 }
 
 /// A step of the thread the reader is in, added to what the window is showing.
 function addUsage(event) {
-  setUsage(addTotals(state.usage, event));
+  const totals = addTotals(state.usage, event);
+  totals.turn = addTotals(state.usage?.turn, event);
+  setUsage(totals);
 }
 
 function setUsage({
@@ -925,13 +939,15 @@ function setUsage({
   cost = 0,
   prompt = 0,
   cacheHitRate = null,
+  attribution = {},
+  turn = null,
 }) {
   // What the thread has spent, held so one the reader leaves can take its own
   // totals with it and paint them back on return. The percentage is not kept
   // beside them: it is a fraction of the window in force where they are drawn
   // (see `usagePercent`), so a folder switched under a background run cannot
   // label its thread with the window of the folder the reader left.
-  state.usage = { input, output, cacheRead, cacheWrite, cost, prompt, cacheHitRate };
+  state.usage = { input, output, cacheRead, cacheWrite, cost, prompt, cacheHitRate, attribution, turn };
   // The footer is the thread being read's, so a step counted for another one
   // waits with it rather than painting under this conversation.
   if (paintingThread() === visibleThread()) paintUsage();
@@ -959,7 +975,22 @@ function paintUsage() {
     }
   }
   el("usage").textContent = bits.join(" ");
-  el("usage").title = bits.join(" · ");
+  const details = [bits.join(" · ")];
+  if (totals) {
+    const prompt = totals.input + totals.cacheRead + totals.cacheWrite;
+    if (prompt) details.push(`Session cache hit: ${(100 * totals.cacheRead / prompt).toFixed(1)}%`);
+    details.push("CH: latest request with cache traffic");
+    for (const [source, label] of [["main", "Main agent"], ["compaction", "Compaction"], ["background", "Background tasks"]]) {
+      const bucket = totals.attribution?.[source];
+      if (bucket) details.push(`${label}: ${bucket.modelCalls} model calls · ↑${formatTokens(bucket.input)} ↓${formatTokens(bucket.output)} R${formatTokens(bucket.cacheRead)} W${formatTokens(bucket.cacheWrite)} · $${Number(bucket.cost || 0).toFixed(3)}`);
+    }
+    if (totals.turn) {
+      const turn = totals.turn;
+      const calls = Object.values(turn.attribution || {}).reduce((sum, bucket) => sum + bucket.modelCalls, 0);
+      details.push(`Current/latest run: ${calls} model calls · ↑${formatTokens(turn.input)} ↓${formatTokens(turn.output)} R${formatTokens(turn.cacheRead)} W${formatTokens(turn.cacheWrite)} · $${Number(turn.cost || 0).toFixed(3)}`);
+    }
+  }
+  el("usage").title = details.join("\n");
   // The context reading is painted from these totals wherever they move, rather
   // than from a second reading of its own.
   paintComposerFacts();
@@ -2777,6 +2808,7 @@ async function openSession(session) {
         // line's `CH` shows.
         prompt: data.usage.contextTokens || 0,
         cacheHitRate: data.usage.cacheHitRate ?? null,
+        attribution: data.usage.attribution || {},
       });
     }
   } catch (error) {
@@ -3411,6 +3443,7 @@ function setBusy() {
   const starting = !state.busy;
   state.busy = true;
   if (starting) {
+    if (state.usage) state.usage = { ...state.usage, turn: null };
     state.runError = "";
     state.runStartedAt = 0;
     startRunClock();

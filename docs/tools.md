@@ -198,6 +198,22 @@ recover the dropped detail without re-running the tool. Set
 `OXIDE_TRUNCATION_DIR` to change where those files go; they are retained for
 7 days.
 
+The agent applies these limits again after plugin hooks and agent-level tools
+(such as `task` and `diagnostics`), preserving an existing full-output pointer
+when the result is already bounded. This prevents those paths from bypassing
+the context budget.
+
+A typed MCP authorization failure blocks subsequent calls to every tool on that
+connection before making another request. A newly stored, unexpired OAuth token
+for the same resource releases the guard without restarting the app. Otherwise,
+authorize out of band and reconnect after changing server configuration.
+
+Within a run, three identical failures from the same tool and JSON arguments
+stop the run with an error. Changed failures restart the count; successful
+state-changing tools clear the history, and successful reads clear their own
+failure. Successful polling (including pending CI and empty searches) is not a
+failure. This guard does not replace transport retry/backoff for transient errors.
+
 ## Concurrency and steering
 
 When the model requests several tools at once, the ones with no side effects
