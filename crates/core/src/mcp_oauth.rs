@@ -35,6 +35,8 @@ pub struct StoredAuth {
     #[serde(default)]
     pub expires_at: Option<u64>,
     #[serde(default)]
+    pub refresh_at: Option<u64>,
+    #[serde(default)]
     pub client_id: Option<String>,
     #[serde(default)]
     pub token_endpoint: Option<String>,
@@ -48,6 +50,7 @@ struct Metadata {
     token_endpoint: String,
     registration_endpoint: Option<String>,
     resource_scopes_supported: Vec<String>,
+    offline_access_supported: bool,
 }
 
 /// Shared OAuth state for one remote server. Cheap to clone via `Arc`.
@@ -57,6 +60,8 @@ pub struct OAuthState {
     resource_url: String,
     client: reqwest::Client,
     auth: Mutex<Option<StoredAuth>>,
+    refresh_lock: Mutex<()>,
+    token_file: Option<PathBuf>,
     metadata: Mutex<Option<Metadata>>,
     resource_metadata_url: Mutex<Option<String>>,
     challenge_scopes: Mutex<Vec<String>>,
@@ -68,14 +73,20 @@ impl OAuthState {
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
+        let token_file = token_path(name);
         Self {
             name: name.to_string(),
             config: config.clone(),
             resource_url: resource_url.to_string(),
             client,
             auth: Mutex::new(
-                load_stored(name).filter(|auth| auth.resource_url.as_deref() == Some(resource_url)),
+                token_file
+                    .as_deref()
+                    .and_then(load_stored)
+                    .filter(|auth| auth.resource_url.as_deref() == Some(resource_url)),
             ),
+            refresh_lock: Mutex::new(()),
+            token_file,
             metadata: Mutex::new(None),
             resource_metadata_url: Mutex::new(None),
             challenge_scopes: Mutex::new(Vec::new()),
@@ -111,10 +122,10 @@ impl OAuthState {
     /// [`Self::access_token_if_available`] instead, which refreshes silently and
     /// otherwise reports that authorization is needed.
     pub async fn ensure_authorized(&self) -> Result<()> {
-        if self.valid_token().await.is_some() {
-            return Ok(());
-        }
-        if self.try_refresh().await {
+        let _guard = self.refresh_lock.lock().await;
+        let _file = self.lock_tokens().await?;
+        self.reload_for_refresh().await;
+        if self.valid_token().await.is_some() || self.refresh_locked().await? {
             return Ok(());
         }
         let auth = self.authorize().await?;
@@ -127,15 +138,91 @@ impl OAuthState {
         if let Some(token) = self.valid_token().await {
             return Some(token);
         }
-        if self.try_refresh().await {
-            return self.valid_token().await;
+        if self.auth.lock().await.is_none() {
+            self.reload_for_refresh().await;
+            if self.auth.lock().await.is_none() {
+                return None;
+            }
         }
-        None
+        let _guard = self.refresh_lock.lock().await;
+        let result = async {
+            let _file = self.lock_tokens().await?;
+            self.reload_for_refresh().await;
+            if self.valid_token().await.is_none() {
+                self.refresh_locked().await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            crate::notice::warn(format!(
+                "[mcp] OAuth refresh for `{}` failed: {error:#}",
+                self.name
+            ));
+        }
+        // A refresh failure need not interrupt work while the access token is
+        // still valid. Tokens shorter than the refresh margin are usable too.
+        self.auth
+            .lock()
+            .await
+            .as_ref()
+            .filter(|auth| auth.expires_at.is_none_or(|expiry| now() < expiry))
+            .map(|auth| auth.access_token.clone())
+    }
+
+    async fn lock_tokens(&self) -> Result<std::fs::File> {
+        let path = self
+            .token_file
+            .as_ref()
+            .context("no OAuth config directory available")?;
+        let parent = path.parent().context("no OAuth token directory")?;
+        std::fs::create_dir_all(parent).context("creating OAuth token directory")?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(path.with_extension("lock"))
+            .context("opening OAuth token lock")?;
+        // Poll a nonblocking OS lock so another process's browser login or
+        // refresh cannot block a Tokio worker. Dropping the file unlocks it.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match file.try_lock() {
+                    Ok(()) => return Ok(file),
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+                }
+            }
+        })
+        .await
+        .context("timed out waiting for another OAuth operation")?
     }
 
     /// Picks up an out-of-process login without reopening the browser or retrying the server.
     pub async fn reload_authorization(&self) -> bool {
-        self.accept_authorization(load_stored(&self.name)).await
+        self.accept_authorization(self.token_file.as_deref().and_then(load_stored))
+            .await
+    }
+
+    async fn reload_for_refresh(&self) {
+        let Some(auth) = self
+            .token_file
+            .as_deref()
+            .and_then(load_stored)
+            .filter(|auth| auth.resource_url.as_deref() == Some(self.resource_url.as_str()))
+        else {
+            return;
+        };
+        let mut current = self.auth.lock().await;
+        // Even an expired access token may carry a refresh token rotated by a
+        // different process. Do not restore the same token rejected by a 401.
+        if current.as_ref().is_none_or(|old| {
+            old.access_token != auth.access_token || old.refresh_token != auth.refresh_token
+        }) {
+            *current = Some(auth);
+        }
     }
 
     async fn accept_authorization(&self, auth: Option<StoredAuth>) -> bool {
@@ -146,10 +233,9 @@ impl OAuthState {
             return false;
         };
         let mut current = self.auth.lock().await;
-        if current
-            .as_ref()
-            .is_some_and(|old| old.access_token == auth.access_token)
-        {
+        if current.as_ref().is_some_and(|old| {
+            old.access_token == auth.access_token && old.refresh_token == auth.refresh_token
+        }) {
             return false;
         }
         *current = Some(auth);
@@ -166,7 +252,12 @@ impl OAuthState {
 
     async fn store(&self, mut auth: StoredAuth) {
         auth.resource_url = Some(self.resource_url.clone());
-        if let Err(err) = save_stored(&self.name, &auth) {
+        if let Err(err) = self
+            .token_file
+            .as_deref()
+            .context("no config directory available")
+            .and_then(|path| write_private(path, &serde_json::to_string_pretty(&auth)?))
+        {
             crate::notice::warn(format!(
                 "[mcp] failed to store OAuth token for `{}`: {err:#}",
                 self.name
@@ -179,13 +270,13 @@ impl OAuthState {
     /// them, so later status checks report `Needs Auth` instead of retrying a
     /// refresh token that can never work again.
     async fn clear(&self) {
-        if let Some(path) = token_path(&self.name) {
+        if let Some(path) = &self.token_file {
             let _ = std::fs::remove_file(path);
         }
         *self.auth.lock().await = None;
     }
 
-    async fn try_refresh(&self) -> bool {
+    async fn refresh_locked(&self) -> Result<bool> {
         let (refresh_token, stored_client, stored_endpoint) = {
             let guard = self.auth.lock().await;
             match guard.as_ref() {
@@ -194,22 +285,19 @@ impl OAuthState {
                     auth.client_id.clone(),
                     auth.token_endpoint.clone(),
                 ),
-                None => return false,
+                None => return Ok(false),
             }
         };
         let Some(refresh_token) = refresh_token else {
-            return false;
+            return Ok(false);
         };
         let client_id = stored_client.or_else(|| self.config.client_id.clone());
         let Some(client_id) = client_id else {
-            return false;
+            bail!("stored refresh token has no client ID");
         };
         let token_endpoint = match stored_endpoint {
             Some(endpoint) => endpoint,
-            None => match self.metadata().await {
-                Ok(metadata) => metadata.token_endpoint,
-                Err(_) => return false,
-            },
+            None => self.metadata().await?.token_endpoint,
         };
 
         let mut form = vec![
@@ -221,19 +309,28 @@ impl OAuthState {
         if let Some(secret) = &self.config.client_secret {
             form.push(("client_secret", secret.clone()));
         }
-        let response = match self.client.post(&token_endpoint).form(&form).send().await {
-            Ok(response) => response,
-            Err(_) => return false,
-        };
+        let response = self
+            .client
+            .post(&token_endpoint)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|error| error.without_url())
+            .context("contacting OAuth token endpoint")?;
         let status = response.status();
         let value = response.json::<Value>().await.unwrap_or(Value::Null);
         let mut auth = match parse_token(&value, status) {
             Ok(auth) => auth,
-            Err(_) => {
-                if refresh_token_rejected(&value) {
+            Err(error) => {
+                if status.is_client_error() && refresh_token_rejected(&value) {
                     self.clear().await;
+                    crate::notice::warn(format!(
+                        "[mcp] OAuth credentials for `{}` were rejected; run `oxide mcp auth {}`",
+                        self.name, self.name
+                    ));
+                    return Ok(false);
                 }
-                return false;
+                return Err(error);
             }
         };
         if auth.refresh_token.is_none() {
@@ -242,7 +339,7 @@ impl OAuthState {
         auth.client_id = Some(client_id);
         auth.token_endpoint = Some(token_endpoint);
         self.store(auth).await;
-        true
+        Ok(true)
     }
 
     async fn authorize(&self) -> Result<StoredAuth> {
@@ -262,16 +359,11 @@ impl OAuthState {
             None => self.register_client(&metadata, &redirect_uri).await?,
         };
 
-        let scopes = if self.config.scopes.is_empty() {
-            let challenge_scopes = self.challenge_scopes.lock().await.clone();
-            if challenge_scopes.is_empty() {
-                metadata.resource_scopes_supported.clone()
-            } else {
-                challenge_scopes
-            }
-        } else {
-            self.config.scopes.clone()
-        };
+        let scopes = authorization_scopes(
+            &self.config.scopes,
+            &self.challenge_scopes.lock().await,
+            &metadata,
+        );
         let scope_param = self
             .config
             .scope_param
@@ -375,6 +467,24 @@ impl OAuthState {
     }
 }
 
+fn authorization_scopes(
+    config: &[String],
+    challenge: &[String],
+    metadata: &Metadata,
+) -> Vec<String> {
+    let mut scopes = if !config.is_empty() {
+        config.to_vec()
+    } else if !challenge.is_empty() {
+        challenge.to_vec()
+    } else {
+        metadata.resource_scopes_supported.clone()
+    };
+    if metadata.offline_access_supported && !scopes.iter().any(|scope| scope == "offline_access") {
+        scopes.push("offline_access".to_string());
+    }
+    scopes
+}
+
 /// Whether a token-endpoint error payload means the stored refresh token can
 /// never be used again (for example `invalid_grant` or `access_denied`).
 fn refresh_token_rejected(value: &Value) -> bool {
@@ -386,7 +496,13 @@ fn refresh_token_rejected(value: &Value) -> bool {
 
 fn is_expired(auth: &StoredAuth) -> bool {
     match auth.expires_at {
-        Some(expires_at) => now() + REFRESH_MARGIN >= expires_at,
+        Some(expires_at) => {
+            now()
+                >= auth
+                    .refresh_at
+                    .unwrap_or_else(|| expires_at.saturating_sub(REFRESH_MARGIN))
+                    .min(expires_at)
+        }
         None => false,
     }
 }
@@ -527,6 +643,14 @@ async fn discover(
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 resource_scopes_supported,
+                offline_access_supported: value
+                    .get("scopes_supported")
+                    .and_then(Value::as_array)
+                    .is_some_and(|scopes| {
+                        scopes
+                            .iter()
+                            .any(|scope| scope.as_str() == Some("offline_access"))
+                    }),
             });
         }
     }
@@ -855,17 +979,20 @@ fn parse_token(value: &Value, status: reqwest::StatusCode) -> Result<StoredAuth>
         .get("access_token")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let Some(access_token) = access_token else {
+    if !status.is_success() || access_token.as_ref().is_none_or(String::is_empty) {
         let error = value
             .get("error")
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| value.to_string());
-        bail!("token endpoint returned no access_token ({status}): {error}");
-    };
+            .filter(|error| {
+                error.len() <= 64 && error.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .unwrap_or("invalid_token_response");
+        bail!("token endpoint failed ({status}): {error}");
+    }
     let expires_in = value.get("expires_in").and_then(Value::as_u64);
+    let issued_at = now();
     Ok(StoredAuth {
-        access_token,
+        access_token: access_token.unwrap(),
         refresh_token: value
             .get("refresh_token")
             .and_then(Value::as_str)
@@ -878,7 +1005,10 @@ fn parse_token(value: &Value, status: reqwest::StatusCode) -> Result<StoredAuth>
             .get("scope")
             .and_then(Value::as_str)
             .map(str::to_string),
-        expires_at: expires_in.map(|seconds| now() + seconds),
+        expires_at: expires_in.map(|seconds| issued_at.saturating_add(seconds)),
+        refresh_at: expires_in.map(|seconds| {
+            issued_at.saturating_add(seconds.saturating_sub(REFRESH_MARGIN.min(seconds / 10)))
+        }),
         client_id: None,
         token_endpoint: None,
         resource_url: None,
@@ -890,15 +1020,9 @@ fn token_path(name: &str) -> Option<PathBuf> {
     Some(dir.join(format!("{}.json", sanitize(name))))
 }
 
-fn load_stored(name: &str) -> Option<StoredAuth> {
-    let path = token_path(name)?;
+fn load_stored(path: &Path) -> Option<StoredAuth> {
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
-}
-
-fn save_stored(name: &str, auth: &StoredAuth) -> Result<()> {
-    let path = token_path(name).context("no config directory available")?;
-    write_private(&path, &serde_json::to_string_pretty(auth)?)
 }
 
 fn write_private(path: &Path, contents: &str) -> Result<()> {
@@ -906,12 +1030,29 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    let temporary = path.with_extension(format!("tmp-{}", base64url(&random_bytes(12))));
+    let result = (|| -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .context("creating private OAuth token file")?;
+        std::io::Write::write_all(&mut file, contents.as_bytes())
+            .context("writing OAuth token file")?;
+        file.sync_all().context("syncing OAuth token file")?;
+        drop(file);
+        std::fs::rename(&temporary, path).context("replacing OAuth token file")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
+    result?;
     Ok(())
 }
 
@@ -1014,6 +1155,291 @@ fn open_browser_notice(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TokenStore(PathBuf);
+
+    impl TokenStore {
+        fn new() -> Self {
+            Self(std::env::temp_dir().join(format!("oxide-oauth-{}", base64url(&random_bytes(12)))))
+        }
+
+        fn path(&self) -> PathBuf {
+            self.0.join("server.json")
+        }
+
+        fn save(&self, auth: &StoredAuth) {
+            write_private(&self.path(), &serde_json::to_string(auth).unwrap()).unwrap();
+        }
+
+        fn state(&self) -> OAuthState {
+            let mut state = OAuthState::new(
+                "refresh-test",
+                &McpOAuth::default(),
+                "https://example.com/mcp",
+            );
+            state.token_file = Some(self.path());
+            state.auth = Mutex::new(load_stored(&self.path()));
+            state
+        }
+    }
+
+    impl Drop for TokenStore {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn expired_auth(endpoint: &str) -> StoredAuth {
+        StoredAuth {
+            access_token: "old-access".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: Some(0),
+            client_id: Some("test-client".into()),
+            token_endpoint: Some(endpoint.into()),
+            resource_url: Some("https://example.com/mcp".into()),
+            ..Default::default()
+        }
+    }
+
+    async fn token_server(
+        responses: Vec<(u16, Value)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let endpoint = format!("http://{}/token", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let read = socket.read(&mut buffer).await.unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&buffer[..read]);
+                    let text = String::from_utf8_lossy(&request);
+                    if let Some((headers, body)) = text.split_once("\r\n\r\n") {
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (key, value) = line.split_once(':')?;
+                                key.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            break;
+                        }
+                    }
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                let body = body.to_string();
+                let response = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        (endpoint, server)
+    }
+
+    #[tokio::test]
+    async fn concurrent_states_share_one_rotating_refresh() {
+        let (endpoint, server) = token_server(vec![(
+            200,
+            json!({
+                "access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600
+            }),
+        )])
+        .await;
+        let store = TokenStore::new();
+        store.save(&expired_auth(&endpoint));
+        let first = std::sync::Arc::new(store.state());
+        let second = std::sync::Arc::new(store.state());
+        let mut calls = Vec::new();
+        for index in 0..8 {
+            let state = if index % 2 == 0 {
+                first.clone()
+            } else {
+                second.clone()
+            };
+            calls.push(tokio::spawn(async move {
+                state.access_token_if_available().await
+            }));
+        }
+        for call in calls {
+            assert_eq!(call.await.unwrap().as_deref(), Some("new-access"));
+        }
+        assert_eq!(server.await.unwrap().len(), 1);
+        assert_eq!(
+            load_stored(&store.path()).unwrap().refresh_token.as_deref(),
+            Some("new-refresh")
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_reloads_rotated_credentials_even_when_access_token_expired() {
+        let (endpoint, server) = token_server(vec![(
+            200,
+            json!({
+                "access_token": "new-access", "expires_in": 3600
+            }),
+        )])
+        .await;
+        let store = TokenStore::new();
+        let mut auth = expired_auth(&endpoint);
+        store.save(&auth);
+        let state = store.state();
+        auth.refresh_token = Some("rotated-refresh".into());
+        store.save(&auth);
+        assert_eq!(
+            state.access_token_if_available().await.as_deref(),
+            Some("new-access")
+        );
+        let requests = server.await.unwrap();
+        assert!(requests[0].contains("refresh_token=rotated-refresh"));
+        assert_eq!(
+            load_stored(&store.path()).unwrap().refresh_token.as_deref(),
+            Some("rotated-refresh")
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_refresh_failure_keeps_credentials_and_retries() {
+        let (endpoint, server) = token_server(vec![
+            (
+                503,
+                json!({"error": "invalid_grant", "access_token": "must-not-use"}),
+            ),
+            (
+                200,
+                json!({"access_token": "new-access", "expires_in": 3600}),
+            ),
+        ])
+        .await;
+        let store = TokenStore::new();
+        let mut auth = expired_auth(&endpoint);
+        auth.expires_at = Some(now() + 30);
+        auth.refresh_at = Some(0);
+        store.save(&auth);
+        let state = store.state();
+        assert_eq!(
+            state.access_token_if_available().await.as_deref(),
+            Some("old-access")
+        );
+        assert_eq!(
+            load_stored(&store.path()).unwrap().refresh_token,
+            auth.refresh_token
+        );
+        assert_eq!(
+            state.access_token_if_available().await.as_deref(),
+            Some("new-access")
+        );
+        assert_eq!(server.await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rejected_refresh_clears_credentials() {
+        let (endpoint, server) = token_server(vec![(400, json!({"error": "invalid_grant"}))]).await;
+        let store = TokenStore::new();
+        store.save(&expired_auth(&endpoint));
+        let state = store.state();
+        assert!(state.access_token_if_available().await.is_none());
+        assert!(state.auth.lock().await.is_none());
+        assert!(!store.path().exists());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unauthorized_token_is_not_restored_from_disk() {
+        let store = TokenStore::new();
+        let mut auth = expired_auth("http://127.0.0.1:1/token");
+        auth.refresh_token = None;
+        auth.expires_at = Some(now() + 3600);
+        auth.refresh_at = Some(now() + 3540);
+        store.save(&auth);
+        let state = store.state();
+        state
+            .note_unauthorized(&reqwest::header::HeaderMap::new())
+            .await;
+        assert!(state.access_token_if_available().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn short_lived_access_tokens_are_usable() {
+        let auth = parse_token(
+            &json!({"access_token": "short", "expires_in": 30}),
+            reqwest::StatusCode::OK,
+        )
+        .unwrap();
+        assert!(!is_expired(&auth));
+        assert!(auth.refresh_at.unwrap() < auth.expires_at.unwrap());
+        let store = TokenStore::new();
+        let state = store.state();
+        *state.auth.lock().await = Some(auth);
+        assert_eq!(
+            state.access_token_if_available().await.as_deref(),
+            Some("short")
+        );
+    }
+
+    #[test]
+    fn offline_access_preserves_scope_precedence_and_is_not_duplicated() {
+        let mut metadata = Metadata {
+            authorization_endpoint: String::new(),
+            token_endpoint: String::new(),
+            registration_endpoint: None,
+            resource_scopes_supported: vec!["resource:read".into()],
+            offline_access_supported: true,
+        };
+        assert_eq!(
+            authorization_scopes(&[], &[], &metadata),
+            ["resource:read", "offline_access"]
+        );
+        assert_eq!(
+            authorization_scopes(&[], &["challenge".into()], &metadata),
+            ["challenge", "offline_access"]
+        );
+        assert_eq!(
+            authorization_scopes(&["custom".into()], &["challenge".into()], &metadata),
+            ["custom", "offline_access"]
+        );
+        assert_eq!(
+            authorization_scopes(&["offline_access".into()], &[], &metadata),
+            ["offline_access"]
+        );
+        metadata.offline_access_supported = false;
+        assert_eq!(authorization_scopes(&[], &[], &metadata), ["resource:read"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_tokens_keeps_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let store = TokenStore::new();
+        let auth = expired_auth("https://example.com/token");
+        store.save(&auth);
+        std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        store.save(&auth);
+        assert_eq!(
+            std::fs::metadata(store.path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_dir(&store.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn token_errors_do_not_expose_response_credentials() {
+        let error = parse_token(&json!({"access_token": "secret", "refresh_token": "secret", "error_description": "secret"}), reqwest::StatusCode::BAD_REQUEST).unwrap_err();
+        assert!(!error.to_string().contains("secret"));
+        assert!(parse_token(&json!({"access_token": ""}), reqwest::StatusCode::OK).is_err());
+    }
 
     #[tokio::test]
     async fn authorization_recovery_requires_a_new_token_for_the_same_resource() {
@@ -1189,6 +1615,7 @@ mod tests {
             metadata.resource_scopes_supported,
             ["resource:read", "offline_access"]
         );
+        assert!(metadata.offline_access_supported);
     }
 
     #[test]

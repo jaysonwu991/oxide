@@ -812,7 +812,15 @@ Runtime state lives under the platform Oxide config directory:
   provider catalogs published, by provider and model; refreshed after four
   hours — see `OXIDE_MODEL_CATALOG` and
   [context windows](#max_tokens-and-context_window))
-- MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`)
+- MCP OAuth tokens: `mcp-oauth/<server>.json` (mode `0600`, replaced atomically).
+  Refresh and login operations coordinate through `mcp-oauth/<server>.lock`
+  across running instances. Oxide renews access tokens before expiry and picks
+  up rotated refresh tokens from disk. It requests `offline_access` when the
+  authorization server advertises support. Temporary refresh failures preserve
+  credentials and report a warning; an unexpired access token remains usable.
+  When the provider expires or revokes the refresh token, run
+  `oxide mcp auth <server>` again. Provider policy determines the maximum
+  authorization lifetime.
 - Sessions: `sessions/<project>/<timestamp>_<id>.jsonl` (Pi-style entry trees)
 - Snapshots: `snapshots/<project>/` (bare git repo)
 - Worktrees: `worktrees/<project>/<name>/` (a `git worktree` of the project on
