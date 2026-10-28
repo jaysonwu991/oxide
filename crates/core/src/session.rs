@@ -909,15 +909,16 @@ impl SessionLog {
 
     /// Tool declarations belong to the branch, including across compaction.
     pub fn selected_tools(&self) -> Vec<String> {
+        self.selected_tools_snapshot().unwrap_or_default()
+    }
+
+    pub fn selected_tools_snapshot(&self) -> Option<Vec<String>> {
         let state = self.state();
         let path = leaf_path_with(&state.entries, state.leaf_id.as_deref(), &state.by_id);
-        path.iter()
-            .rev()
-            .find_map(|entry| match entry {
-                Entry::ToolSelection(entry) => Some(entry.tools.clone()),
-                _ => None,
-            })
-            .unwrap_or_default()
+        path.iter().rev().find_map(|entry| match entry {
+            Entry::ToolSelection(entry) => Some(entry.tools.clone()),
+            _ => None,
+        })
     }
 
     /// The messages the model sees: the leaf path with the latest compaction

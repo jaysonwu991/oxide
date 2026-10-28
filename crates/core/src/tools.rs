@@ -344,7 +344,8 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
                 "properties": {
                     "path": { "type": "string", "description": path_description },
                     "offset": { "type": "integer", "description": "1-based display line to start from (text only; a long line counts once per chunk)" },
-                    "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 2000)" }
+                    "limit": { "type": "integer", "description": "Maximum number of display lines to return (text only, default 2000)" },
+                    "fresh": { "type": "boolean", "description": "Return full content even if this file and range were already read unchanged in this run" }
                 },
                 "required": ["path"]
             }),
@@ -454,10 +455,11 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
     if !configured.is_empty() {
         specs.push(spec(
             "tool_search",
-            "Search deferred MCP tool metadata with BM25 and declare matching tools for your next call. Always use tool_search for MCP tool discovery, including private links and services behind generic company gateways. Search by capability, service, or task; no domain mapping is needed. Previously discovered tools remain available.",
+            "Search deferred MCP tool metadata with BM25 and declare matching tools for your next call. Always use tool_search for MCP tool discovery, including private links and services behind generic company gateways. Search by capability, service, or task; no domain mapping is needed. The active schema set is bounded; search again for a deferred tool, or use replace to switch capabilities.",
             json!({"type":"object","properties":{
                 "query":{"type":"string","description":"Required capabilities, service, or task"},
-                "limit":{"type":"integer","minimum":1,"maximum":64,"description":"Maximum matches; default 8"}
+                "limit":{"type":"integer","minimum":1,"maximum":64,"description":"Maximum matches; default 8, bounded by maxDeclaredMcpTools"},
+                "replace":{"type":"boolean","description":"Replace the current schema set with these matches; default false"}
             },"required":["query"]}),
         ));
         // A server may be asked for by a service it answers to as well as by its
@@ -5390,6 +5392,10 @@ fn truncation_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
     Some(crate::config::config_dir()?.join("truncated"))
+}
+
+pub(crate) fn save_tool_output(text: &str) -> Option<PathBuf> {
+    save_truncated(&truncation_dir()?, text)
 }
 
 fn save_truncated(dir: &Path, text: &str) -> Option<PathBuf> {

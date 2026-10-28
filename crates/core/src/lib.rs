@@ -22,6 +22,7 @@ pub mod compact;
 pub mod config;
 pub mod diff;
 pub mod ecosystem;
+pub mod efficiency;
 pub mod html;
 pub mod i18n;
 pub mod llm;

@@ -1220,6 +1220,10 @@ pub struct Config {
     pub memory: MemoryStore,
     #[serde(skip)]
     pub compaction: crate::compact::CompactionConfig,
+    #[serde(skip)]
+    pub token_efficiency: crate::efficiency::TokenEfficiency,
+    #[serde(skip)]
+    pub turn_meter: Option<std::sync::Arc<std::sync::Mutex<crate::efficiency::TurnBudget>>>,
     /// How queued steering and follow-up messages are delivered, from
     /// `steeringMode`/`followUpMode` in settings. Pi defaults both to
     /// `one-at-a-time`.
@@ -1656,6 +1660,8 @@ impl Default for Config {
             active_agent: None,
             memory: MemoryStore::default(),
             compaction: crate::compact::CompactionConfig::default(),
+            token_efficiency: Default::default(),
+            turn_meter: None,
             steering_mode: crate::agent::QueueMode::OneAtATime,
             follow_up_mode: crate::agent::QueueMode::OneAtATime,
             prices: crate::pricing::defaults(),
@@ -1967,6 +1973,7 @@ impl Config {
         config.ecosystem = ecosystem::load(cwd);
         config.memory = MemoryStore::load(cwd);
         config.compaction = crate::compact::load_config(cwd);
+        config.token_efficiency = crate::efficiency::load(cwd)?;
         config.prices = crate::pricing::load(cwd);
         config.model_context_windows = load_model_context_windows(cwd);
         config.catalog_windows = crate::catalog::windows();

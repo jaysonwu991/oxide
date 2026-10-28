@@ -671,6 +671,70 @@ leaf; the model sees the leaf path with the latest compaction applied. Branching
 moves the leaf back and appends a `branch_summary`, so in-file alternatives are
 preserved.
 
+### Token efficiency and run budgets
+
+The shared core applies these settings in CLI, Desktop and VS Code. The global
+`settings.json` and project `.oxide/settings.json` merge per key; project values
+win. Defaults enable read reuse and stale-output shortening, with no run budget:
+
+```json
+{
+  "tokenEfficiency": {
+    "reuseReads": true,
+    "maxDeclaredMcpTools": 24,
+    "toolHistory": {
+      "enabled": true,
+      "pruneAboveTokens": 32000,
+      "keepRecent": 8,
+      "maxResultBytes": 2048
+    },
+    "turnBudget": {
+      "maxModelCalls": null,
+      "maxOutputTokens": null,
+      "maxCostUsd": null
+    }
+  }
+}
+```
+
+For example, set `maxModelCalls` to `40`, `maxOutputTokens` to `20000`, and
+`maxCostUsd` to `1.0` to stop further model requests when one of those thresholds
+is reached. Calls include provider retry attempts, subagents and compaction;
+subagents share their parent's budget. Each request's output cap is reduced to
+the remaining output-token allowance, including reservations for in-flight
+requests. When usage is missing, the budget conservatively charges the request's
+output allowance and estimates the prompt size; the billing display continues
+to use provider-reported usage. A budget stop saves a checkpoint and the completed
+tool results. Send another message to continue with a fresh budget.
+
+The cost threshold uses `modelPrices` and is checked between requests, so the
+last request can exceed it. A model with no known price pauses before making a
+request when a cost limit is configured. Failed requests with no reported usage
+cannot be priced. Idle cache warming is outside the active run budget. All limits
+must be positive, or `null` for unlimited. `maxDeclaredMcpTools` accepts 1–64;
+`keepRecent` and `pruneAboveTokens` must be positive, and `maxResultBytes` at least
+256. Invalid values are reported instead of silently disabling limits.
+
+Unchanged text-file reads return a short reference to an earlier result still
+in context. The file's bytes and canonical path are checked, so external edits
+and symlink changes invalidate reuse; offset/limit are part of the key. Use
+`read` with `fresh: true` to retrieve full content again. Directories, attachments,
+files over 8 MiB and remote queries are read normally. A potentially mutating tool
+clears read reuse, and compaction drops references to removed or shortened results.
+
+Once history reaches `pruneAboveTokens`, successful tool results older than the
+last `keepRecent` results are shortened to a head/tail excerpt. A pointer lets the
+model retrieve the full saved evidence. User requests, assistant decisions,
+errors, attachments and recent results remain intact; session storage retains
+the original transcript. This reduces context without another summarizer call.
+Disable `toolHistory.enabled` to retain all tool results until ordinary compaction.
+
+MCP discovery still searches all enabled servers. Only the bounded active tool
+set contributes schemas and server instructions to each request. New search
+matches take priority; older tools may be deferred and rediscovered when needed.
+`tool_search` with `replace: true` switches the active set to its new matches.
+Selections, including an empty replacement, survive reopening the session.
+
 ### Context compaction
 
 Oxide compacts Pi-style once the outgoing context approaches the model window. It
