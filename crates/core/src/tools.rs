@@ -4982,7 +4982,7 @@ enum Keep {
 /// boundaries rather than at a byte offset. When content is dropped, the full
 /// text is saved under the Oxide config dir and the result points at it so the
 /// model can inspect the full output without re-running the tool.
-fn truncate(name: &str, output: String) -> String {
+pub(crate) fn truncate(name: &str, output: String) -> String {
     truncate_into(name, output, truncation_dir().as_deref())
 }
 
@@ -4991,6 +4991,18 @@ fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
     let lines: Vec<&str> = output.lines().collect();
     if output.len() <= max_bytes && lines.len() <= max_lines {
         return output;
+    }
+    // Preserve a built-in's original full-output pointer when bounding the
+    // post-plugin result a second time.
+    if let Some((marker, body)) = output.split_once('\n') {
+        if marker.starts_with("[truncated:")
+            && marker.ends_with(']')
+            && marker.len() <= 1024
+            && body.len() <= max_bytes
+            && body.lines().count() <= max_lines
+        {
+            return output;
+        }
     }
 
     if is_mcp_tool(name) {
@@ -5468,6 +5480,15 @@ mod tests {
         assert!(out.text.trim_end().ends_with("[exit: 0]"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bounding_an_already_spooled_result_keeps_the_original_full_output() {
+        let body = "x".repeat(MAX_OUTPUT_BYTES);
+        let output = format!("[truncated: 100 lines; full: /tmp/original-output.txt]\n{body}");
+        assert_eq!(truncate_into("bash", output.clone(), None), output);
+        let huge = format!("{output}{}", "y".repeat(MAX_OUTPUT_BYTES));
+        assert!(truncate_into("bash", huge, None).len() < MAX_OUTPUT_BYTES + 1024);
     }
 
     #[test]

@@ -402,6 +402,16 @@ describe("Transcript", () => {
     assert.equal(transcript.usage.contextTokens, 20);
   });
 
+  it("attributes background usage without replacing the parent context", () => {
+    const transcript = new Transcript();
+    transcript.apply({ type: "usage", usage: { input: 10, output: 2, modelCalls: 2, source: "main", contextTokens: 123 } });
+    transcript.apply({ type: "usage", usage: { input: 20, output: 3, modelCalls: 1, source: "background", contextTokens: 9000 } });
+    assert.equal(transcript.usage.input, 30);
+    assert.equal(transcript.usage.contextTokens, 123);
+    assert.equal(transcript.usage.attribution?.main.modelCalls, 2);
+    assert.equal(transcript.usage.attribution?.background.modelCalls, 1);
+  });
+
   it("validates parked transcript corrections against their original model", () => {
     const parked = new Transcript();
     parked.apply({ type: "context_window", tokens: 200_000, provider: "gateway", model: "A" });

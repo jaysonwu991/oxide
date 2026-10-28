@@ -562,10 +562,27 @@ impl McpRegistry {
             })
             .with_context(|| format!("unknown MCP tool `{name}`"))?;
         let mut connection = handle.connection.lock().await;
-        connection
-            .call_tool(&original, arguments)
-            .await
-            .with_context(|| format!("MCP tool `{original}` on `{}`", handle.name))
+        if connection.authorization_blocked {
+            let recovered = match &connection.transport {
+                Transport::Remote {
+                    oauth: Some(state), ..
+                } => state.reload_authorization().await,
+                _ => false,
+            };
+            if !recovered {
+                return Err(AuthorizationRequired::new(&handle.name).into());
+            }
+            connection.authorization_blocked = false;
+        }
+        let result = connection.call_tool(&original, arguments).await;
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.is::<AuthorizationRequired>())
+        {
+            connection.authorization_blocked = true;
+        }
+        result.with_context(|| format!("MCP tool `{original}` on `{}`", handle.name))
     }
 }
 
@@ -692,6 +709,7 @@ struct McpConnection {
     transport: Transport,
     next_id: u64,
     instructions: Option<String>,
+    authorization_blocked: bool,
 }
 
 enum Transport {
@@ -784,6 +802,7 @@ impl McpConnection {
         let mut connection = Self {
             name: server.name.clone(),
             transport,
+            authorization_blocked: false,
             next_id: 1,
             instructions: None,
         };
@@ -962,6 +981,9 @@ impl McpConnection {
                                 )
                             })?;
                     }
+                }
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    return Err(AuthorizationRequired::new(&self.name).into());
                 }
                 if method == "initialize" && response.status().is_success() {
                     *session_id = response.headers().get(MCP_SESSION_ID).cloned();
@@ -1634,6 +1656,62 @@ for line in sys.stdin:
         assert!(!output.is_error);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn authorization_failure_blocks_other_tools_on_the_same_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_http_request(&mut socket).await;
+            send_http_response(&mut socket, "401 Unauthorized", "", None).await;
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let registry = McpRegistry::default();
+        registry
+            .servers
+            .write()
+            .unwrap()
+            .push(Arc::new(McpServerHandle {
+                name: "guard-test".into(),
+                source: "test".into(),
+                instructions: None,
+                tools: ["first", "second"]
+                    .into_iter()
+                    .map(|name| McpTool {
+                        exposed: format!("guard-test__{name}"),
+                        original: name.into(),
+                        description: String::new(),
+                        schema: json!({}),
+                    })
+                    .collect(),
+                connection: Mutex::new(McpConnection {
+                    name: "guard-test".into(),
+                    next_id: 1,
+                    instructions: None,
+                    authorization_blocked: false,
+                    transport: Transport::Remote {
+                        client: reqwest::Client::new(),
+                        url: format!("http://{address}"),
+                        headers: HeaderMap::new(),
+                        oauth: None,
+                        session_id: None,
+                    },
+                }),
+            }));
+        for name in ["first", "second", "first"] {
+            let error = registry
+                .call(&format!("guard-test__{name}"), json!({}))
+                .await
+                .unwrap_err();
+            assert!(error.is::<AuthorizationRequired>(), "{error:#}");
+        }
+        server_task.await.unwrap();
     }
 
     #[tokio::test]

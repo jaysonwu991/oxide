@@ -570,9 +570,8 @@ impl LlmClient {
         messages: &[Message],
         tools: &[ToolSpec],
         hooks: &mut StreamHooks<'_>,
-    ) -> Result<()> {
-        self.stream_once(messages, tools, 1, hooks).await?;
-        Ok(())
+    ) -> Result<Usage> {
+        Ok(self.stream_once(messages, tools, 1, hooks).await?.usage)
     }
 
     async fn stream_once(

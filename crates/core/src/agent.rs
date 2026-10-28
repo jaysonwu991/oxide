@@ -26,6 +26,14 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const MAX_TASK_DEPTH: usize = 2;
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageSource {
+    Main,
+    Compaction,
+    Background,
+}
+
 /// A user can send several messages while one run is still working. Providers
 /// otherwise tend to treat the newest one as a replacement prompt, especially
 /// when it is only an attachment, and can abandon work requested by the earlier
@@ -399,6 +407,8 @@ pub enum AgentEvent {
     },
     /// Token usage reported by the provider for the turn just completed.
     Usage {
+        model_calls: u64,
+        source: UsageSource,
         input: u64,
         output: u64,
         cache_read: u64,
@@ -588,6 +598,8 @@ pub fn run_subagent(
                     });
                 }
                 AgentEvent::Usage {
+                    model_calls,
+                    source: _,
                     input,
                     output,
                     cache_read,
@@ -595,7 +607,18 @@ pub fn run_subagent(
                     cost,
                     context_tokens,
                 } => {
+                    record_background_usage(
+                        &session,
+                        model_calls,
+                        input,
+                        output,
+                        cache_read,
+                        cache_write,
+                        cost,
+                    );
                     let _ = tx.send(AgentEvent::Usage {
+                        model_calls,
+                        source: UsageSource::Background,
                         input,
                         output,
                         cache_read,
@@ -789,6 +812,7 @@ async fn run_loop(
     // Offer it at most once per run so an invalid title or an unwritable log
     // cannot turn that fallback into an unbounded request loop.
     let mut title_attempted = false;
+    let mut failure_loop = FailureLoop::default();
     // A title-only response is not a valid conversation message. Hold its
     // usage until a real assistant response arrives, then persist both API
     // requests on that response without replaying an empty assistant turn.
@@ -799,9 +823,9 @@ async fn run_loop(
             // A summary held for its re-check is still the answer: keep it.
             if let Some((held, held_usage)) = held_summary.take() {
                 record_usage(&runtime.session, depth, &held, held_usage);
-                send_usage(&tx, held_usage);
+                send_usage(&tx, depth, held_usage);
             }
-            send_usage(&tx, pending_title_usage.take());
+            send_usage(&tx, depth, pending_title_usage.take());
             finish(&runtime, &tx, messages, depth);
             return;
         }
@@ -889,9 +913,9 @@ async fn run_loop(
                                     )));
                                     if let Some((held, held_usage)) = held_summary.take() {
                                         record_usage(&runtime.session, depth, &held, held_usage);
-                                        send_usage(&tx, held_usage);
+                                        send_usage(&tx, depth, held_usage);
                                     }
-                                    send_usage(&tx, pending_title_usage.take());
+                                    send_usage(&tx, depth, pending_title_usage.take());
                                     finish(&runtime, &tx, messages, depth);
                                     return;
                                 }
@@ -910,6 +934,12 @@ async fn run_loop(
                             measured_at = messages.len();
                             if let Some(usage) = compaction.usage {
                                 let _ = tx.send(AgentEvent::Usage {
+                                    model_calls: usage.model_calls.max(1),
+                                    source: if depth == 0 {
+                                        UsageSource::Compaction
+                                    } else {
+                                        UsageSource::Background
+                                    },
                                     input: usage.input,
                                     output: usage.output,
                                     cache_read: usage.cache_read,
@@ -941,9 +971,9 @@ async fn run_loop(
         if let Some(error) = overflow_error.take() {
             if let Some((held, held_usage)) = held_summary.take() {
                 record_usage(&runtime.session, depth, &held, held_usage);
-                send_usage(&tx, held_usage);
+                send_usage(&tx, depth, held_usage);
             }
-            send_usage(&tx, pending_title_usage.take());
+            send_usage(&tx, depth, pending_title_usage.take());
             let _ = tx.send(AgentEvent::Error(error));
             finish(&runtime, &tx, messages, depth);
             return;
@@ -1074,9 +1104,9 @@ async fn run_loop(
             let Some(response) = response else {
                 if let Some((held, usage)) = held_summary.take() {
                     record_usage(&runtime.session, depth, &held, usage);
-                    send_usage(&tx, usage);
+                    send_usage(&tx, depth, usage);
                 }
-                send_usage(&tx, pending_title_usage.take());
+                send_usage(&tx, depth, pending_title_usage.take());
                 let streamed = attempt_text
                     .lock()
                     .map(|text| text.clone())
@@ -1103,7 +1133,7 @@ async fn run_loop(
                     // not keep it open as still thinking.
                     if let Some((held, held_usage)) = held_summary.take() {
                         record_usage(&runtime.session, depth, &held, held_usage);
-                        send_usage(&tx, held_usage);
+                        send_usage(&tx, depth, held_usage);
                     }
                     let _ = tx.send(AgentEvent::Thought {
                         millis: started.elapsed().as_millis() as u64,
@@ -1145,9 +1175,9 @@ async fn run_loop(
                     // error.
                     if let Some((held, held_usage)) = held_summary.take() {
                         record_usage(&runtime.session, depth, &held, held_usage);
-                        send_usage(&tx, held_usage);
+                        send_usage(&tx, depth, held_usage);
                     }
-                    send_usage(&tx, pending_title_usage.take());
+                    send_usage(&tx, depth, pending_title_usage.take());
                     let streamed = attempt_text
                         .lock()
                         .map(|text| text.clone())
@@ -1175,7 +1205,7 @@ async fn run_loop(
         }
 
         if turn.content.trim().is_empty() && turn.tool_calls.is_empty() {
-            send_usage(&tx, pending_title_usage.take());
+            send_usage(&tx, depth, pending_title_usage.take());
             let _ = tx.send(AgentEvent::ThoughtDone {
                 millis: started.elapsed().as_millis() as u64,
             });
@@ -1244,6 +1274,7 @@ async fn run_loop(
         if tool_calls.is_empty() && !has_answer {
             send_usage(
                 &tx,
+                depth,
                 combine_usage(pending_title_usage.take(), response_usage),
             );
             let _ = tx.send(AgentEvent::ThoughtDone {
@@ -1348,7 +1379,7 @@ async fn run_loop(
                 }
                 Some((prior, prior_usage)) => {
                     record_usage(&runtime.session, depth, &prior, prior_usage);
-                    send_usage(&tx, prior_usage);
+                    send_usage(&tx, depth, prior_usage);
                     (assistant, usage)
                 }
                 None => (assistant, usage),
@@ -1360,7 +1391,7 @@ async fn run_loop(
                 context_tokens = context.prompt + context.output;
                 measured_at = messages.len();
             }
-            send_usage(&tx, usage);
+            send_usage(&tx, depth, usage);
             let _ = tx.send(AgentEvent::ThoughtDone {
                 millis: started.elapsed().as_millis() as u64,
             });
@@ -1403,7 +1434,7 @@ async fn run_loop(
         // text and usage are not lost when the re-check used a tool.
         if let Some((prior, prior_usage)) = held_summary.take() {
             record_usage(&runtime.session, depth, &prior, prior_usage);
-            send_usage(&tx, prior_usage);
+            send_usage(&tx, depth, prior_usage);
         }
         held_is_tail = false;
         record_usage(&runtime.session, depth, &assistant, usage);
@@ -1412,7 +1443,7 @@ async fn run_loop(
             context_tokens = context.prompt + context.output;
             measured_at = messages.len();
         }
-        send_usage(&tx, usage);
+        send_usage(&tx, depth, usage);
         let _ = tx.send(AgentEvent::ThoughtDone {
             millis: started.elapsed().as_millis() as u64,
         });
@@ -1460,6 +1491,7 @@ async fn run_loop(
                 }
 
                 let mut prepared = Vec::with_capacity(tool_calls.len());
+                let mut executed_arguments = Vec::with_capacity(tool_calls.len());
                 for original in &tool_calls {
                     let name = original.function.name.clone();
                     let _ = tx.send(AgentEvent::ToolCall {
@@ -1484,6 +1516,7 @@ async fn run_loop(
                         }
                         _ => args,
                     };
+                    executed_arguments.push(call.function.arguments.clone());
                     let subject = subject_for(&name, &effective_args);
                     prepared.push(
                         if runtime
@@ -1558,7 +1591,11 @@ async fn run_loop(
                     }));
                 }
 
-                for (handle, original) in handles.into_iter().zip(&tool_calls) {
+                for ((handle, original), arguments) in handles
+                    .into_iter()
+                    .zip(&tool_calls)
+                    .zip(&executed_arguments)
+                {
                     let (mut output, millis) = match handle.await {
                         Ok(result) => result,
                         Err(_) => (
@@ -1570,6 +1607,8 @@ async fn run_loop(
                             0,
                         ),
                     };
+                    failure_loop.observe(&original.function.name, arguments, &output);
+                    output.text = tools::truncate(&original.function.name, output.text);
                     omit_duplicate_media(&mut output, &mut seen_media);
                     let args = serde_json::from_str::<Value>(&original.function.arguments)
                         .unwrap_or(Value::Null);
@@ -1721,6 +1760,8 @@ async fn run_loop(
                         }
                         output.terminate |= result.terminate;
                     }
+                    failure_loop.observe(&name, &call.function.arguments, &output);
+                    output.text = tools::truncate(&name, output.text);
                     omit_duplicate_media(&mut output, &mut seen_media);
                     let millis = started.elapsed().as_millis() as u64;
                     verification.record_result(
@@ -1784,9 +1825,55 @@ async fn run_loop(
             }
         }
 
+        if let Some(reason) = failure_loop.blocked.take() {
+            let _ = tx.send(AgentEvent::Error(reason));
+            finish(&runtime, &tx, messages, depth);
+            return;
+        }
         if batch_terminates(&terminated) {
             finish(&runtime, &tx, messages, depth);
             return;
+        }
+    }
+}
+
+/// Only identical failures count; successful polling never exhausts this guard.
+#[derive(Default)]
+struct FailureLoop {
+    failures: BTreeMap<(String, String), ([u8; 32], usize)>,
+    blocked: Option<String>,
+}
+
+impl FailureLoop {
+    fn observe(&mut self, name: &str, arguments: &str, output: &tools::ToolOutput) {
+        let normalized = serde_json::from_str::<Value>(arguments)
+            .ok()
+            .and_then(|value| serde_json::to_string(&value).ok())
+            .unwrap_or_else(|| arguments.to_string());
+        let key = (name.to_string(), normalized);
+        if !output_failed_with_state(&output.text, output.is_error) {
+            // A successful action may have repaired the inputs of an earlier failure.
+            if tool_may_mutate_workspace(name) {
+                self.failures.clear();
+            } else {
+                self.failures.remove(&key);
+            }
+            return;
+        }
+        let digest: [u8; 32] = Sha256::digest(output.text.as_bytes()).into();
+        if self.failures.len() >= 128 && !self.failures.contains_key(&key) {
+            self.failures.clear();
+        }
+        let entry = self.failures.entry(key).or_insert((digest, 0));
+        if entry.0 != digest {
+            *entry = (digest, 0);
+        }
+        entry.1 += 1;
+        if entry.1 >= 3 {
+            self.blocked = Some(format!(
+                "Stopped repeated tool failures: `{name}` returned the same failure three times \
+                 with unchanged arguments. Resolve the failure before starting another turn."
+            ));
         }
     }
 }
@@ -1929,6 +2016,7 @@ fn finish(
             request,
             tools,
             warm.session.clone(),
+            runtime.session.clone(),
         );
     }
     let _ = tx.send(AgentEvent::Finished(messages));
@@ -2899,9 +2987,19 @@ fn nudge_failed_quietly(nudging: bool, err: &anyhow::Error) -> bool {
 /// Emits a step's usage. A summary held for its re-check defers this until the
 /// run commits it, because the front-ends treat `usage` as a step boundary and
 /// would paint the re-check as a second bubble.
-fn send_usage(tx: &UnboundedSender<AgentEvent>, usage: Option<crate::compact::UsageRecord>) {
+fn send_usage(
+    tx: &UnboundedSender<AgentEvent>,
+    depth: usize,
+    usage: Option<crate::compact::UsageRecord>,
+) {
     if let Some(usage) = usage {
         let _ = tx.send(AgentEvent::Usage {
+            model_calls: usage.model_calls.max(1),
+            source: if depth == 0 {
+                UsageSource::Main
+            } else {
+                UsageSource::Background
+            },
             input: usage.input,
             output: usage.output,
             cache_read: usage.cache_read,
@@ -2909,6 +3007,31 @@ fn send_usage(tx: &UnboundedSender<AgentEvent>, usage: Option<crate::compact::Us
             cost: usage.cost,
             context_tokens: usage.context.map(|context| context.prompt),
         });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_background_usage(
+    session: &Option<Arc<SessionLog>>,
+    model_calls: u64,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+    cost: f64,
+) {
+    if let Some(log) = session {
+        if let Err(error) = log.append_background_usage(crate::compact::UsageRecord {
+            model_calls,
+            input,
+            output,
+            cache_read,
+            cache_write,
+            cost,
+            context: None,
+        }) {
+            crate::notice::warn(format!("saving background usage: {error:#}"));
+        }
     }
 }
 
@@ -2953,6 +3076,7 @@ fn combine_usage(
 ) -> Option<crate::compact::UsageRecord> {
     match (first, second) {
         (Some(first), Some(second)) => Some(crate::compact::UsageRecord {
+            model_calls: first.model_calls.max(1) + second.model_calls.max(1),
             input: first.input + second.input,
             output: first.output + second.output,
             cache_read: first.cache_read + second.cache_read,
@@ -3621,9 +3745,37 @@ async fn task_inner(
             AgentEvent::SessionTitle { .. } => {}
             // A no-tool step commits here, not at the next tool call.
             AgentEvent::ThoughtDone { .. } => committed = output.len(),
+            AgentEvent::Usage {
+                model_calls,
+                input,
+                output,
+                cache_read,
+                cache_write,
+                cost,
+                ..
+            } => {
+                record_background_usage(
+                    &runtime.session,
+                    model_calls,
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    cost,
+                );
+                let _ = events.send(AgentEvent::Usage {
+                    model_calls,
+                    source: UsageSource::Background,
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    cost,
+                    context_tokens: None,
+                });
+            }
             AgentEvent::ToolProgress { .. }
             | AgentEvent::ToolResult { .. }
-            | AgentEvent::Usage { .. }
             | AgentEvent::Compaction { .. }
             | AgentEvent::ContextWindow { .. }
             | AgentEvent::Branch { .. }
@@ -4135,6 +4287,34 @@ mod tests {
     use super::*;
     use crate::ecosystem::{AgentDef, Skill};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn repeated_failure_guard_allows_polling_and_recovery() {
+        let mut guard = FailureLoop::default();
+        let failure = tools::ToolOutput::error("authentication required");
+        guard.observe("lookup", r#"{"a":1,"b":2}"#, &failure);
+        guard.observe("lookup", r#"{ "b": 2, "a": 1 }"#, &failure);
+        assert!(guard.blocked.is_none());
+        guard.observe("lookup", r#"{"a":1,"b":2}"#, &failure);
+        assert!(guard.blocked.is_some());
+
+        let mut guard = FailureLoop::default();
+        for _ in 0..10 {
+            guard.observe("status", "{}", &tools::ToolOutput::text("pending"));
+        }
+        assert!(guard.blocked.is_none());
+        guard.observe("build", "{}", &tools::ToolOutput::text("failed\n[exit: 1]"));
+        guard.observe("build", "{}", &tools::ToolOutput::text("failed\n[exit: 1]"));
+        guard.observe("edit", "{}", &tools::ToolOutput::text("updated"));
+        guard.observe("build", "{}", &tools::ToolOutput::text("failed\n[exit: 1]"));
+        assert!(guard.blocked.is_none());
+        guard.observe(
+            "build",
+            "{}",
+            &tools::ToolOutput::text("different failure\n[exit: 1]"),
+        );
+        assert!(guard.blocked.is_none());
+    }
 
     #[test]
     fn project_context_names_the_checkout_and_resolves_user_file_references() {

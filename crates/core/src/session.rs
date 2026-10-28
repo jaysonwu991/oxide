@@ -52,6 +52,37 @@ pub struct UsageTotals {
     pub cache_write: u64,
     pub cost: f64,
     pub cache_hit_rate: Option<f64>,
+    pub attribution: UsageAttribution,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBucket {
+    pub model_calls: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub cost: f64,
+}
+
+impl UsageBucket {
+    pub fn add(&mut self, usage: UsageRecord) {
+        self.model_calls += usage.model_calls.max(1);
+        self.input += usage.input;
+        self.output += usage.output;
+        self.cache_read += usage.cache_read;
+        self.cache_write += usage.cache_write;
+        self.cost += usage.cost;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageAttribution {
+    pub main: UsageBucket,
+    pub compaction: UsageBucket,
+    pub background: UsageBucket,
 }
 
 /// Lightweight metadata for one persisted session, used by the session picker.
@@ -78,6 +109,16 @@ pub enum Entry {
     ModelChange(ModelChangeEntry),
     ThinkingLevelChange(ThinkingLevelEntry),
     ToolSelection(ToolSelectionEntry),
+    BackgroundUsage(BackgroundUsageEntry),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundUsageEntry {
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    pub usage: UsageRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,6 +214,7 @@ impl Entry {
             Entry::ModelChange(entry) => &entry.id,
             Entry::ThinkingLevelChange(entry) => &entry.id,
             Entry::ToolSelection(entry) => &entry.id,
+            Entry::BackgroundUsage(entry) => &entry.id,
         }
     }
 
@@ -186,6 +228,7 @@ impl Entry {
             Entry::ModelChange(entry) => entry.parent_id.as_deref(),
             Entry::ThinkingLevelChange(entry) => entry.parent_id.as_deref(),
             Entry::ToolSelection(entry) => entry.parent_id.as_deref(),
+            Entry::BackgroundUsage(entry) => entry.parent_id.as_deref(),
         }
     }
 
@@ -663,9 +706,18 @@ impl SessionLog {
                 Entry::Message(entry) => entry.usage,
                 Entry::Compaction(entry) => entry.usage,
                 Entry::BranchSummary(entry) => entry.usage,
+                Entry::BackgroundUsage(entry) => Some(entry.usage),
                 _ => None,
             };
             if let Some(usage) = usage {
+                let bucket = match entry {
+                    Entry::Compaction(_) | Entry::BranchSummary(_) => {
+                        &mut totals.attribution.compaction
+                    }
+                    Entry::BackgroundUsage(_) => &mut totals.attribution.background,
+                    _ => &mut totals.attribution.main,
+                };
+                bucket.add(usage);
                 totals.input += usage.input;
                 totals.output += usage.output;
                 totals.cache_read += usage.cache_read;
@@ -678,6 +730,15 @@ impl SessionLog {
             }
         }
         totals
+    }
+
+    pub fn append_background_usage(&self, usage: UsageRecord) -> Result<String> {
+        self.append_entry(Entry::BackgroundUsage(BackgroundUsageEntry {
+            id: new_id(),
+            parent_id: self.leaf_id(),
+            timestamp: now_iso(),
+            usage,
+        }))
     }
 
     /// The prompt tokens of the newest recorded request: the context the thread
@@ -1381,6 +1442,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn background_usage_survives_resume_without_entering_model_context() {
+        let dir = temp_dir("background_usage");
+        let log = SessionLog::create_in(&dir, &dir).unwrap();
+        log.append_with_usage(
+            &Message::assistant("answer", vec![]),
+            Some(UsageRecord {
+                model_calls: 2,
+                input: 10,
+                context: Some(crate::llm::ContextUsage {
+                    prompt: 100,
+                    output: 5,
+                }),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let messages = log.messages().unwrap();
+        log.append_background_usage(UsageRecord {
+            model_calls: 3,
+            input: 20,
+            output: 5,
+            cache_read: 30,
+            cost: 0.25,
+            ..Default::default()
+        })
+        .unwrap();
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        let totals = reopened.usage_totals();
+        assert_eq!(totals.input, 30);
+        assert_eq!(totals.attribution.main.model_calls, 2);
+        assert_eq!(totals.attribution.background.model_calls, 3);
+        assert_eq!(totals.attribution.background.cache_read, 30);
+        assert_eq!(totals.attribution.background.cost, 0.25);
+        assert_eq!(reopened.context_tokens(), 100);
+        assert_eq!(reopened.messages().unwrap().len(), messages.len());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn relocating_preserves_the_id_history_and_name_without_leaving_a_duplicate() {
         let root = temp_dir("relocate");
         let mut log = SessionLog::create_in(&root.join("source"), Path::new("/local")).unwrap();
@@ -1748,6 +1848,7 @@ mod tests {
         log.append_with_usage(
             &Message::assistant("hi", vec![]),
             Some(UsageRecord {
+                model_calls: 1,
                 input: 100,
                 output: 20,
                 cache_read: 40,

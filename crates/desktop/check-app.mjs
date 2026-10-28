@@ -8995,5 +8995,21 @@ check(
   JSON.stringify(invokes.slice(0, 2)),
 );
 
+
+app.setUsage({ prompt: 123 });
+app.handleEvent({ type: "usage", usage: { input: 10, output: 2, cacheRead: 90, modelCalls: 2, source: "main", contextTokens: 100 } });
+app.handleEvent({ type: "usage", usage: { input: 50, output: 5, modelCalls: 1, source: "background", contextTokens: 9000 } });
+check("background usage leaves the parent context reading intact", app.state.usage.prompt === 100, JSON.stringify(app.state.usage));
+app.handleEvent({ type: "usage", usage: { input: 20, output: 3, modelCalls: 1, source: "compaction", contextTokens: 40 } });
+check("usage attributes model calls and preserves parent context across background work",
+  app.state.usage.attribution.main.modelCalls === 2 &&
+  app.state.usage.attribution.background.modelCalls === 1 &&
+  app.state.usage.attribution.compaction.modelCalls === 1 &&
+  app.state.usage.prompt === 40 &&
+  el("usage").title.includes("Session cache hit: 52.9%") &&
+  el("usage").title.includes("Main agent: 2 model calls") &&
+  el("usage").title.includes("Current/latest run: 4 model calls"),
+  el("usage").title);
+
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");
 process.exit(failures.length ? 1 : 0);

@@ -907,6 +907,8 @@ fn handle_key(
                             let refreshed = log.messages().unwrap_or(history);
                             if let Some(usage) = compaction.usage {
                                 let _ = tx.send(AgentEvent::Usage {
+                                    model_calls: usage.model_calls.max(1),
+                                    source: oxide_core::agent::UsageSource::Compaction,
                                     input: usage.input,
                                     output: usage.output,
                                     cache_read: usage.cache_read,
@@ -3133,6 +3135,8 @@ fn fork_session(
                             history
                         };
                         let _ = tx.send(AgentEvent::Usage {
+                            model_calls: 1,
+                            source: oxide_core::agent::UsageSource::Compaction,
                             input: usage.input,
                             output: usage.output,
                             cache_read: usage.cache_read,
@@ -3216,6 +3220,8 @@ fn branch_in_place(
                 );
                 let history = log.messages().unwrap_or_default();
                 let _ = tx.send(AgentEvent::Usage {
+                    model_calls: 1,
+                    source: oxide_core::agent::UsageSource::Compaction,
                     input: usage.input,
                     output: usage.output,
                     cache_read: usage.cache_read,
@@ -5775,6 +5781,8 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.status = app.t("tui.status.Thinking").to_string();
         }
         AgentEvent::Usage {
+            source,
+            model_calls: _,
             input,
             output,
             cache_read,
@@ -5789,8 +5797,11 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.cost += cost;
             // `input` is the uncached prompt only; the cached prefix is still
             // part of the context that occupies the window.
-            app.context_used = context_tokens
-                .unwrap_or_else(|| input.saturating_add(cache_read).saturating_add(cache_write));
+            if !matches!(source, oxide_core::agent::UsageSource::Background) {
+                app.context_used = context_tokens.unwrap_or_else(|| {
+                    input.saturating_add(cache_read).saturating_add(cache_write)
+                });
+            }
             if cache_read + cache_write > 0 {
                 let prompt = input + cache_read + cache_write;
                 if prompt > 0 {
@@ -6272,6 +6283,8 @@ mod tests {
         let mut app = test_app();
         handle_agent_event(
             AgentEvent::Usage {
+                model_calls: 1,
+                source: oxide_core::agent::UsageSource::Main,
                 input: 221000,
                 output: 300,
                 cache_read: 0,

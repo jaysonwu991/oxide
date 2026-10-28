@@ -75,6 +75,14 @@ describe("footerState", () => {
     );
   });
 
+  it("explains source totals and the session cache hit rate in the tooltip", () => {
+    const state = footerState(input({ usage: usage({ input: 10, cacheRead: 90, attribution: {
+      main: { modelCalls: 2, input: 10, output: 3, cacheRead: 90, cacheWrite: 0, cost: 0.01 },
+    } }) }));
+    assert.match(state.usageTitle || "", /Session cache hit: 90.0%/);
+    assert.match(state.usageTitle || "", /main: 2 model calls/);
+  });
+
   it("falls back to the config's model", () => {
     const state = footerState(input({ model: "", contextWindow: 0 }));
     assert.equal(chip(state, "model"), "model: config.json");
