@@ -679,13 +679,18 @@ pub fn run_subagent(
 }
 
 fn run_depth(
-    config: Config,
+    mut config: Config,
     cwd: PathBuf,
     history: Vec<Message>,
     tx: UnboundedSender<AgentEvent>,
     runtime: Runtime,
     depth: usize,
 ) -> RunFuture {
+    if config.turn_meter.is_none() {
+        config.turn_meter = Some(Arc::new(Mutex::new(crate::efficiency::TurnBudget::new(
+            config.token_efficiency.turn_budget.clone(),
+        ))));
+    }
     Box::pin(run_loop(config, cwd, history, tx, runtime, depth))
 }
 
@@ -741,17 +746,40 @@ async fn run_loop(
             .selected_mcp_tools
             .lock()
             .expect("tool selection poisoned");
-        if let Some(log) = &runtime.session {
-            selected.extend(log.selected_tools());
+        let snapshot = runtime
+            .session
+            .as_ref()
+            .and_then(|log| log.selected_tools_snapshot());
+        if let Some(snapshot) = snapshot {
+            *selected = snapshot.into_iter().collect();
+        } else {
+            selected.extend(
+                messages
+                    .iter()
+                    .filter_map(|m| m.tool_calls.as_ref())
+                    .flatten()
+                    .filter(|call| call.function.name.contains("__"))
+                    .map(|call| call.function.name.clone()),
+            );
         }
-        // Older logs have no selection entry; restore tools actually used.
-        selected.extend(
-            messages
-                .iter()
-                .filter_map(|m| m.tool_calls.as_ref())
-                .flatten()
-                .filter(|call| call.function.name.contains("__"))
-                .map(|call| call.function.name.clone()),
+    }
+    {
+        let mut selected = runtime
+            .selected_mcp_tools
+            .lock()
+            .expect("tool selection poisoned");
+        let recent: Vec<String> = messages
+            .iter()
+            .rev()
+            .filter_map(|m| m.tool_calls.as_ref())
+            .flatten()
+            .filter(|call| selected.contains(&call.function.name))
+            .map(|call| call.function.name.clone())
+            .collect();
+        *selected = bounded_selection(
+            &selected,
+            &recent,
+            config.token_efficiency.max_declared_mcp_tools,
         );
     }
     runtime.mcp.start_discovery();
@@ -812,6 +840,7 @@ async fn run_loop(
     // Offer it at most once per run so an invalid title or an unwritable log
     // cannot turn that fallback into an unbounded request loop.
     let mut title_attempted = false;
+    let read_reuse = Arc::new(Mutex::new(crate::efficiency::ReadReuse::default()));
     let mut failure_loop = FailureLoop::default();
     // A title-only response is not a valid conversation message. Hold its
     // usage until a real assistant response arrives, then persist both API
@@ -826,6 +855,20 @@ async fn run_loop(
                 send_usage(&tx, depth, held_usage);
             }
             send_usage(&tx, depth, pending_title_usage.take());
+            finish(&runtime, &tx, messages, depth);
+            return;
+        }
+        if let Some(reason) = config
+            .turn_meter
+            .as_ref()
+            .and_then(|meter| meter.lock().expect("turn budget poisoned").reason())
+        {
+            if let Some((held, usage)) = held_summary.take() {
+                record_usage(&runtime.session, depth, &held, usage);
+                send_usage(&tx, depth, usage);
+            }
+            send_usage(&tx, depth, pending_title_usage.take());
+            budget_checkpoint(&runtime, &tx, &mut messages, depth, &reason);
             finish(&runtime, &tx, messages, depth);
             return;
         }
@@ -854,6 +897,20 @@ async fn run_loop(
             }
         }
         skip_steering_poll = false;
+
+        let reclaimed = crate::efficiency::prune_tool_history(
+            &mut messages,
+            measured_at,
+            &config.token_efficiency.tool_history,
+            tools::save_tool_output,
+        );
+        if reclaimed > 0 {
+            context_tokens = context_tokens.saturating_sub(reclaimed as u64);
+        }
+        read_reuse
+            .lock()
+            .expect("read reuse poisoned")
+            .retain_context(&messages);
 
         // Pi-style auto-compaction: once the outgoing context approaches the
         // model window, replace older turns with a summary and keep the recent
@@ -979,6 +1036,10 @@ async fn run_loop(
             return;
         }
 
+        read_reuse
+            .lock()
+            .expect("read reuse poisoned")
+            .retain_context(&messages);
         let mut request = Vec::with_capacity(messages.len() + 3);
         let mut system = config.compose_system_prompt();
         system.push_str(&workspace_context);
@@ -1124,6 +1185,19 @@ async fn run_loop(
             };
             match response {
                 Ok(turn) => turn,
+                Err(err) if err.is::<crate::efficiency::BudgetExceeded>() => {
+                    if let Some((held, usage)) = held_summary.take() {
+                        record_usage(&runtime.session, depth, &held, usage);
+                        send_usage(&tx, depth, usage);
+                    }
+                    send_usage(&tx, depth, pending_title_usage.take());
+                    let reason = err
+                        .downcast_ref::<crate::efficiency::BudgetExceeded>()
+                        .expect("budget error checked");
+                    budget_checkpoint(&runtime, &tx, &mut messages, depth, reason);
+                    finish(&runtime, &tx, messages, depth);
+                    return;
+                }
                 Err(err) if nudge_failed_quietly(nudging && !following_through, &err) => {
                     // The reminder is advisory: the model already summarized its
                     // work and nothing more will arrive, so finish with the
@@ -1545,6 +1619,7 @@ async fn run_loop(
 
                 let mut handles = Vec::with_capacity(prepared.len());
                 for item in prepared {
+                    let read_reuse = Arc::clone(&read_reuse);
                     let config = config.clone();
                     let cwd = cwd.clone();
                     let runtime = runtime.clone();
@@ -1565,9 +1640,17 @@ async fn run_loop(
                                     }
                                 }));
                                 let started = std::time::Instant::now();
-                                let mut output =
-                                    dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress)
-                                        .await;
+                                let mut output = dispatch_reusing_read(
+                                    &config,
+                                    &cwd,
+                                    &runtime,
+                                    &tx,
+                                    &call,
+                                    depth,
+                                    &progress,
+                                    &read_reuse,
+                                )
+                                .await;
                                 if let Some(result) = runtime
                                     .cancel
                                     .until(runtime.plugins.tool_after(
@@ -1725,7 +1808,17 @@ async fn run_loop(
                     {
                         snapshot_needed |= tool_may_mutate_workspace(&name);
                         dispatched = true;
-                        dispatch(&config, &cwd, &runtime, &tx, &call, depth, &progress).await
+                        dispatch_reusing_read(
+                            &config,
+                            &cwd,
+                            &runtime,
+                            &tx,
+                            &call,
+                            depth,
+                            &progress,
+                            &read_reuse,
+                        )
+                        .await
                     } else {
                         tools::ToolOutput::error(format!("permission denied for `{name}`"))
                     };
@@ -1835,6 +1928,79 @@ async fn run_loop(
             return;
         }
     }
+}
+
+fn budget_checkpoint(
+    runtime: &Runtime,
+    tx: &UnboundedSender<AgentEvent>,
+    messages: &mut Vec<Message>,
+    depth: usize,
+    reason: &crate::efficiency::BudgetExceeded,
+) {
+    let message = Message::assistant(reason.to_string(), vec![]);
+    record(&runtime.session, depth, &message);
+    let _ = tx.send(AgentEvent::Text(reason.to_string()));
+    messages.push(message);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_reusing_read(
+    config: &Config,
+    cwd: &Path,
+    runtime: &Runtime,
+    events: &UnboundedSender<AgentEvent>,
+    call: &ToolCall,
+    depth: usize,
+    progress: &tools::Progress,
+    reuse: &Arc<Mutex<crate::efficiency::ReadReuse>>,
+) -> tools::ToolOutput {
+    let name = call.function.name.as_str();
+    if runtime.cancel.is_cancelled() {
+        return tools::ToolOutput::error("cancelled by the user");
+    }
+    if tool_may_mutate_workspace(name) {
+        reuse.lock().expect("read reuse poisoned").clear();
+    }
+    let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
+    let cacheable =
+        name == "read" && tool_enabled(config, name) && config.token_efficiency.reuse_reads;
+    let capture = || {
+        let cwd = cwd.to_path_buf();
+        let arguments = call.function.arguments.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::efficiency::ReadVersion::capture(&cwd, &arguments)
+        })
+    };
+    let before = if cacheable {
+        capture().await.ok().flatten()
+    } else {
+        None
+    };
+    if args.get("fresh").and_then(Value::as_bool) != Some(true) {
+        if let Some(previous) = before.as_ref().and_then(|version| {
+            reuse
+                .lock()
+                .expect("read reuse poisoned")
+                .previous(version)
+                .map(str::to_string)
+        }) {
+            return tools::ToolOutput::text(format!(
+                "Unchanged file and range; reuse read result `{previous}` already in context. Set fresh: true to retrieve the full content again."
+            ));
+        }
+    }
+    let output = dispatch(config, cwd, runtime, events, call, depth, progress).await;
+    if !output.is_error && output.media.is_empty() {
+        if let Some(version) = before {
+            if capture().await.ok().flatten().as_ref() == Some(&version) {
+                reuse
+                    .lock()
+                    .expect("read reuse poisoned")
+                    .remember(version, &call.id);
+            }
+        }
+    }
+    output
 }
 
 /// Only identical failures count; successful polling never exhausts this guard.
@@ -3398,6 +3564,21 @@ fn mutation_invalidates_verifier(canonical_name: &str, output: &str) -> bool {
     mutation_invalidates_verifier_result(canonical_name, output, output.starts_with("error:"))
 }
 
+fn bounded_selection(
+    previous: &BTreeSet<String>,
+    preferred: &[String],
+    cap: usize,
+) -> BTreeSet<String> {
+    let mut selected = BTreeSet::new();
+    for name in preferred.iter().chain(previous) {
+        if selected.len() >= cap {
+            break;
+        }
+        selected.insert(name.clone());
+    }
+    selected
+}
+
 async fn search_mcp_tools(
     config: &Config,
     runtime: &Runtime,
@@ -3425,11 +3606,32 @@ async fn search_mcp_tools(
         .lock()
         .expect("tool selection poisoned")
         .clone();
-    let matches = runtime
-        .mcp
-        .search_tools(query, limit, &selected, |name| tool_enabled(config, name));
-    selected.extend(matches.iter().map(|tool| tool.function.name.clone()));
-    if !matches.is_empty() {
+    let replace = match args.get("replace") {
+        None => false,
+        Some(value) => value
+            .as_bool()
+            .context("tool_search replace must be a boolean")?,
+    };
+    let previous = selected.clone();
+    if replace {
+        selected.clear();
+    }
+    let matches = runtime.mcp.search_tools(
+        query,
+        limit.min(config.token_efficiency.max_declared_mcp_tools),
+        &selected,
+        |name| tool_enabled(config, name),
+    );
+    let matching_names: Vec<String> = matches
+        .iter()
+        .map(|tool| tool.function.name.clone())
+        .collect();
+    selected = bounded_selection(
+        &selected,
+        &matching_names,
+        config.token_efficiency.max_declared_mcp_tools,
+    );
+    if selected != previous {
         if depth == 0 {
             if let Some(log) = &runtime.session {
                 log.append_tool_selection(selected.iter().cloned().collect())
@@ -3439,11 +3641,15 @@ async fn search_mcp_tools(
         *runtime
             .selected_mcp_tools
             .lock()
-            .expect("tool selection poisoned") = selected;
+            .expect("tool selection poisoned") = selected.clone();
     }
     let mut text = if matches.is_empty() {
-        "No matching undeclared tools found. Previously discovered tools remain available."
-            .to_string()
+        if replace {
+            "No matching tools found; the previous schemas were deferred."
+        } else {
+            "No matching undeclared tools found. Previously discovered tools remain available."
+        }
+        .to_string()
     } else {
         let mut text = format!(
             "Loaded {} tool(s). They are available from your next call:",
@@ -3459,6 +3665,10 @@ async fn search_mcp_tools(
         }
         text
     };
+    let deferred = previous.difference(&selected).count();
+    if deferred > 0 {
+        text.push_str(&format!("\n{deferred} previous tool schema(s) deferred to bound context. Search again to load them when needed."));
+    }
     if !errors.is_empty() {
         text.push_str(
             "\n\nSome MCP servers could not be discovered. Their tools have not been searched:",
@@ -4287,6 +4497,293 @@ mod tests {
     use super::*;
     use crate::ecosystem::{AgentDef, Skill};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn repeated_file_reads_reuse_only_current_content_and_allow_fresh_reads() {
+        let dir = std::env::temp_dir().join(format!("oxide_read_reuse_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file.txt"), "original").unwrap();
+        let runtime = test_runtime().await;
+        let config = Config::default();
+        let reuse = Arc::new(Mutex::new(crate::efficiency::ReadReuse::default()));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut call = tool_call("read");
+        call.id = "first-read".into();
+        call.function.arguments = r#"{"path":"file.txt"}"#.into();
+        let read = |call: ToolCall| {
+            let (config, dir, runtime, tx, reuse) = (
+                config.clone(),
+                dir.clone(),
+                runtime.clone(),
+                tx.clone(),
+                Arc::clone(&reuse),
+            );
+            async move {
+                dispatch_reusing_read(
+                    &config,
+                    &dir,
+                    &runtime,
+                    &tx,
+                    &call,
+                    0,
+                    &tools::Progress::default(),
+                    &reuse,
+                )
+                .await
+            }
+        };
+        assert!(read(call.clone()).await.text.contains("original"));
+        assert!(read(call.clone())
+            .await
+            .text
+            .contains("reuse read result `first-read`"));
+        std::fs::write(dir.join("file.txt"), "modified").unwrap();
+        assert!(read(call.clone()).await.text.contains("modified"));
+        call.function.arguments = r#"{"path":"file.txt","fresh":true}"#.into();
+        assert!(read(call.clone()).await.text.contains("modified"));
+        reuse.lock().unwrap().retain_context(&[]);
+        call.function.arguments = r#"{"path":"file.txt"}"#.into();
+        assert!(read(call).await.text.contains("modified"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_budgets_checkpoint_tools_and_reset_for_a_new_turn() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_budget_checkpoint_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file.txt"), "evidence").unwrap();
+        let (addr, server) =
+            sse_server(vec![tool_call_body("read", r#"{"path":"file.txt"}"#)]).await;
+        let mut config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        config.token_efficiency.turn_budget.max_model_calls = Some(1);
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        log.set_name("Budget test").unwrap();
+        let user = Message::user("read the file");
+        log.append(&user).unwrap();
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(Arc::clone(&log));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        run(config.clone(), dir.clone(), vec![user], tx, runtime).await;
+        assert_eq!(server.await.unwrap().len(), 1);
+        let mut history = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Finished(messages) = event {
+                history = messages;
+            }
+        }
+        assert!(history
+            .last()
+            .unwrap()
+            .display()
+            .unwrap()
+            .contains("model-call budget"));
+        assert!(history
+            .iter()
+            .any(|m| m.role == "tool" && m.display().unwrap().contains("evidence")));
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        assert!(reopened
+            .messages()
+            .unwrap()
+            .last()
+            .unwrap()
+            .display()
+            .unwrap()
+            .contains("Work is saved"));
+        let (addr, server) = sse_server(vec![answer_body("continued")]).await;
+        config.base_url = format!("http://{addr}");
+        history.push(Message::user("continue"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        run(config, dir.clone(), history, tx, test_runtime().await).await;
+        assert_eq!(server.await.unwrap().len(), 1);
+        assert!(std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AgentEvent::Text(text) if text.contains("continued"))));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn output_budget_caps_provider_requests_and_retry_attempts_share_call_budget() {
+        for empty in [false, true] {
+            let (addr, server) =
+                sse_server(vec![answer_body(if empty { "" } else { "complete" })]).await;
+            let mut config = Config {
+                provider: "deepseek".into(),
+                model: "deepseek-flash".into(),
+                base_url: format!("http://{addr}"),
+                api_key: "sk-test".into(),
+                ..Default::default()
+            };
+            config.token_efficiency.turn_budget.max_model_calls = Some(1);
+            config.token_efficiency.turn_budget.max_output_tokens = Some(7);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            run(
+                config,
+                std::env::temp_dir(),
+                vec![Message::user("answer")],
+                tx,
+                test_runtime().await,
+            )
+            .await;
+            let requests = server.await.unwrap();
+            assert_eq!(requests.len(), 1);
+            let body: Value =
+                serde_json::from_str(requests[0].split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body["max_tokens"], 7);
+            let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::Error(_))),
+                "{events:?}"
+            );
+            if empty {
+                assert!(events.iter().any(|event| matches!(event, AgentEvent::Text(text) if text.contains("model-call budget"))));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn output_and_cost_budgets_stop_even_without_provider_usage() {
+        let dir = std::env::temp_dir().join(format!("oxide_missing_usage_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file.txt"), "content").unwrap();
+        for output_limit in [true, false] {
+            let (addr, server) =
+                sse_server(vec![tool_call_body("read", r#"{"path":"file.txt"}"#)]).await;
+            let mut config = Config {
+                provider: "deepseek".into(),
+                model: "deepseek-flash".into(),
+                base_url: format!("http://{addr}"),
+                api_key: "sk-test".into(),
+                ..Default::default()
+            };
+            if output_limit {
+                config.token_efficiency.turn_budget.max_output_tokens = Some(7);
+            } else {
+                config.token_efficiency.turn_budget.max_cost_usd = Some(0.0000001);
+                config.prices.insert(
+                    "deepseek-flash".into(),
+                    crate::pricing::ModelPrice {
+                        input: 1.0,
+                        output: 1.0,
+                        cache_read: 1.0,
+                        cache_write: 1.0,
+                    },
+                );
+            }
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            run(
+                config,
+                dir.clone(),
+                vec![Message::user("read")],
+                tx,
+                test_runtime().await,
+            )
+            .await;
+            assert_eq!(server.await.unwrap().len(), 1);
+            let expected = if output_limit {
+                "output-token budget"
+            } else {
+                "estimated-cost budget"
+            };
+            assert!(
+                std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(event,
+                AgentEvent::Text(text) if text.contains(expected)))
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unknown_model_price_cannot_silently_bypass_a_cost_budget() {
+        let mut config = Config {
+            provider: "deepseek".into(),
+            model: "unknown-price-model".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        config.token_efficiency.turn_budget.max_cost_usd = Some(0.1);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run(
+                config,
+                std::env::temp_dir(),
+                vec![Message::user("answer")],
+                tx,
+                test_runtime().await,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(event,
+            AgentEvent::Text(text) if text.contains("Configure modelPrices")))
+        );
+    }
+
+    #[tokio::test]
+    async fn task_subagents_share_the_parent_run_budget() {
+        let (addr, server) = sse_server(vec![
+            tool_call_body("task", r#"{"prompt":"review","subagent_type":"reviewer"}"#),
+            answer_body("reviewed"),
+        ])
+        .await;
+        let mut config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        config.ecosystem.agents.push(AgentDef {
+            name: "reviewer".into(),
+            description: None,
+            mode: AgentMode::Subagent,
+            tools: None,
+            permission: None,
+            prompt: String::new(),
+        });
+        config.token_efficiency.turn_budget.max_model_calls = Some(2);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("review")],
+            tx,
+            test_runtime().await,
+        )
+        .await;
+        assert_eq!(server.await.unwrap().len(), 2);
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(events.iter().any(
+            |event| matches!(event, AgentEvent::Text(text) if text.contains("2 model calls"))
+        ));
+    }
+
+    #[test]
+    fn schema_selection_is_bounded_and_keeps_new_capabilities_first() {
+        let previous: BTreeSet<String> = ["old_a", "old_b", "old_c"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let selected = bounded_selection(&previous, &["new".into(), "old_c".into()], 2);
+        assert_eq!(
+            selected,
+            ["new", "old_c"].into_iter().map(str::to_string).collect()
+        );
+        assert_eq!(
+            bounded_selection(&previous, &["new".into(), "new".into()], 2).len(),
+            2
+        );
+    }
 
     #[test]
     fn repeated_failure_guard_allows_polling_and_recovery() {
@@ -6122,6 +6619,57 @@ for line in sys.stdin:
             .await
             .unwrap();
         assert!(!again.contains("\n- company-tools__read_thread:"));
+        let mut bounded = config_copy.clone();
+        bounded.token_efficiency.max_declared_mcp_tools = 1;
+        let replaced = search_mcp_tools(
+            &bounded,
+            &shared,
+            r#"{"query":"SQL database","replace":true}"#,
+            0,
+        )
+        .await
+        .unwrap();
+        assert!(replaced.contains("company-tools__query_database"));
+        assert_eq!(log.selected_tools(), vec!["company-tools__query_database"]);
+        let restored = search_mcp_tools(&bounded, &shared, r#"{"query":"Slack read thread"}"#, 0)
+            .await
+            .unwrap();
+        assert!(restored.contains("1 previous tool schema(s) deferred"));
+        assert_eq!(log.selected_tools(), vec!["company-tools__read_thread"]);
+        search_mcp_tools(
+            &bounded,
+            &shared,
+            r#"{"query":"zzzzzzzzzz","replace":true}"#,
+            0,
+        )
+        .await
+        .unwrap();
+        let reopened = SessionLog::open(log.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.selected_tools_snapshot(), Some(vec![]));
+        let specs = build_tool_specs(&bounded, &shared, 0, false);
+        assert!(!specs
+            .iter()
+            .any(|tool| tool.function.name.contains("company-tools__")));
+
+        let (resume_addr, resume_server) = sse_server(vec![answer_body("Done.")]).await;
+        let mut resume_config = bounded;
+        resume_config.base_url = format!("http://{resume_addr}");
+        let resumed_user = Message::user("Continue without remote tools.");
+        log.append(&resumed_user).unwrap();
+        let (resume_tx, _resume_rx) = tokio::sync::mpsc::unbounded_channel();
+        run(
+            resume_config,
+            dir.clone(),
+            log.messages().unwrap(),
+            resume_tx,
+            shared.clone(),
+        )
+        .await;
+        let resumed_requests = resume_server.await.unwrap();
+        assert!(!request_tools(&resumed_requests[0])
+            .iter()
+            .any(|name| name.starts_with("company-tools__")));
+
         let invalid =
             search_mcp_tools(&config_copy, &shared, r#"{"query":"Slack", "limit":0}"#, 0).await;
         assert!(invalid.is_err());

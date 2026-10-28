@@ -581,6 +581,57 @@ impl LlmClient {
         max_tokens: u32,
         hooks: &mut StreamHooks<'_>,
     ) -> Result<AssistantTurn> {
+        if self.config.turn_meter.is_some()
+            && self
+                .config
+                .token_efficiency
+                .turn_budget
+                .max_cost_usd
+                .is_some()
+            && crate::pricing::lookup(&self.config.prices, &self.config.model).is_none()
+        {
+            return Err(crate::efficiency::BudgetExceeded(
+                "Run paused: the estimated-cost budget requires a known model price. Configure modelPrices in settings.json, then continue. Work is saved.".into()
+            ).into());
+        }
+        let permit = self
+            .config
+            .turn_meter
+            .as_ref()
+            .map(|budget| crate::efficiency::RequestPermit::acquire(budget, max_tokens))
+            .transpose()?;
+        let max_tokens = permit
+            .as_ref()
+            .map_or(max_tokens, |permit| permit.max_tokens);
+        let result = self
+            .stream_provider(messages, tools, max_tokens, hooks)
+            .await;
+        if let (Some(permit), Ok(turn)) = (&permit, &result) {
+            let mut budget_usage = turn.usage;
+            // Missing usage must not make a configured run budget ineffective.
+            if budget_usage.output == 0
+                && (!turn.content.is_empty()
+                    || !turn.tool_calls.is_empty()
+                    || !turn.thinking.is_empty())
+            {
+                budget_usage.output = u64::from(max_tokens);
+            }
+            if budget_usage.input + budget_usage.cache_read + budget_usage.cache_write == 0 {
+                budget_usage.input = crate::compact::estimate_tokens(messages) as u64
+                    + serde_json::to_vec(tools).map_or(0, |bytes| bytes.len() as u64 / 4);
+            }
+            permit.record(budget_usage, self.config.usage_cost(&budget_usage));
+        }
+        result
+    }
+
+    async fn stream_provider(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        max_tokens: u32,
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<AssistantTurn> {
         // Claude tool loops need its signed thinking blocks, which the
         // OpenAI compatibility route does not preserve. Keep model discovery
         // on Portkey's shared catalog, but use its native Messages endpoint.
@@ -1698,7 +1749,7 @@ fn rejects_effort(error: &str) -> bool {
 /// truncation, rate limits, and 5xx responses are retryable; other 4xx provider
 /// errors (bad request, auth, not found) are not.
 fn is_retryable(err: &anyhow::Error) -> bool {
-    if err.is::<GatewayModelMismatch>() {
+    if err.is::<GatewayModelMismatch>() || err.is::<crate::efficiency::BudgetExceeded>() {
         return false;
     }
     let text = format!("{err:#}");

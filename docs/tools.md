@@ -214,6 +214,12 @@ state-changing tools clear the history, and successful reads clear their own
 failure. Successful polling (including pending CI and empty searches) is not a
 failure. This guard does not replace transport retry/backoff for transient errors.
 
+`read` can return a reference to an unchanged earlier read instead of repeating
+its contents. Set `fresh: true` to force the full result. Content hashes, read
+ranges and retained context determine whether reuse is safe; mutable remote
+queries are never cached. See [token efficiency settings](configuration.md#token-efficiency-and-run-budgets)
+for selective stale-output shortening and active MCP schema limits.
+
 ## Concurrency and steering
 
 When the model requests several tools at once, the ones with no side effects
