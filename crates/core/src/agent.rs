@@ -1958,9 +1958,11 @@ async fn dispatch_reusing_read(
     if runtime.cancel.is_cancelled() {
         return tools::ToolOutput::error("cancelled by the user");
     }
-    if tool_may_mutate_workspace(name) {
-        reuse.lock().expect("read reuse poisoned").clear();
-    }
+    // A mutating tool does not invalidate this memory: `ReadVersion` carries a
+    // digest of the file's current bytes, so reuse is offered only when the
+    // file still holds exactly what the earlier read returned. Dropping every
+    // entry after each `edit`, `write` or `bash` call instead sent the same
+    // unchanged file back in full whenever a run interleaved reads with work.
     let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
     let cacheable =
         name == "read" && tool_enabled(config, name) && config.token_efficiency.reuse_reads;
@@ -4533,6 +4535,17 @@ mod tests {
             }
         };
         assert!(read(call.clone()).await.text.contains("original"));
+        assert!(read(call.clone())
+            .await
+            .text
+            .contains("reuse read result `first-read`"));
+        // A mutating call in between does not throw the memory away: the
+        // digest decides, so an unchanged file is still answered by reference
+        // rather than resent in full.
+        let mut mutate = tool_call("write");
+        mutate.id = "write-other".into();
+        mutate.function.arguments = r#"{"path":"other.txt","content":"x"}"#.into();
+        read(mutate).await;
         assert!(read(call.clone())
             .await
             .text

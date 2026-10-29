@@ -1252,11 +1252,17 @@ fn openai_request(
     let prompt_cache_key = session_id
         .filter(|_| config.base_url.contains("api.openai.com"))
         .map(|id| id.chars().take(64).collect());
+    // GPT-5 gateways may discard the legacy field and apply their own default.
+    // Use max_completion_tokens so turn budgets and retries apply.
+    let model = crate::config::vendorless(&config.model).to_ascii_lowercase();
+    let completion_limit = config.is_portkey()
+        && (model == "gpt-5" || model.starts_with("gpt-5.") || model.starts_with("gpt-5-"));
     ChatRequest {
         model: config.model.clone(),
         messages,
         stream: true,
-        max_tokens: config.max_tokens,
+        max_tokens: (!completion_limit).then_some(config.max_tokens),
+        max_completion_tokens: completion_limit.then_some(config.max_tokens),
         tools: openai_tools(tools, anthropic_cache),
         reasoning_effort,
         thinking,
@@ -1396,7 +1402,18 @@ fn validate_gateway_model(config: &Config, actual: &str) -> Result<()> {
                 || dated)
     });
     if !matches {
-        return Err(GatewayModelMismatch(format!("gateway model mismatch: selected '{}' but the provider returned '{}'. Check the Portkey Config ID and its routing/fallback rules; the substituted model was not accepted", config.model, actual)).into());
+        let route = match config.portkey_config.trim() {
+            "" => "the gateway's default route".to_string(),
+            id => format!("Portkey config `{id}`"),
+        };
+        return Err(GatewayModelMismatch(format!(
+            "gateway model mismatch: selected '{}' but {route} served '{actual}', so the turn was \
+             stopped instead of answering from a model you did not pick. Check {route}'s routing \
+             and fallback rules for '{}', or set `portkey_config` to a config that serves it. \
+             A model in the gateway catalog is not proof that this config routes it.",
+            config.model, config.model
+        ))
+        .into());
     }
     Ok(())
 }
@@ -2141,6 +2158,40 @@ mod tests {
         assert!(lower.contains("x-portkey-api-key: pk-test"), "{sent}");
         assert!(lower.contains("x-portkey-config: pc-test"), "{sent}");
         assert!(!lower.contains("authorization"), "{sent}");
+    }
+
+    #[test]
+    fn portkey_gpt5_output_limits_use_the_field_preserved_by_the_gateway() {
+        for model in ["gpt-5", "gpt-5.4", "gpt-5.6-sol", "openai/gpt-5.6-sol"] {
+            let config = Config {
+                provider: "portkey".into(),
+                model: model.into(),
+                max_tokens: 17,
+                ..Config::default()
+            };
+            let body =
+                serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[], None))
+                    .unwrap();
+            assert_eq!(body["max_completion_tokens"], 17, "{model}");
+            assert!(body.get("max_tokens").is_none(), "{model}");
+        }
+        for (provider, model) in [
+            ("portkey", "glm-5.2"),
+            ("portkey", "claude-sonnet-5"),
+            ("deepseek", "deepseek-chat"),
+        ] {
+            let config = Config {
+                provider: provider.into(),
+                model: model.into(),
+                max_tokens: 17,
+                ..Config::default()
+            };
+            let body =
+                serde_json::to_value(openai_request(&config, &[Message::user("hi")], &[], None))
+                    .unwrap();
+            assert_eq!(body["max_tokens"], 17, "{provider}/{model}");
+            assert!(body.get("max_completion_tokens").is_none());
+        }
     }
 
     #[test]
@@ -2961,6 +3012,7 @@ mod tests {
     fn gateway_model_identity_accepts_snapshots_but_rejects_substitution() {
         let mut config = Config {
             provider: "portkey".into(),
+            portkey_config: "pc-example-route".into(),
             ..Config::default()
         };
         for (requested, actual) in [
@@ -2970,12 +3022,9 @@ mod tests {
             ),
             ("claude-opus-5", "eu.anthropic.claude-opus-5"),
             ("gpt-5.6-sol", "gpt-5.6-sol-2026-07-09"),
-            (
-                "gpt-5.6-sol",
-                "gpt-5.6-sol-cogdep-llm-gateway-1-germanywestcentral",
-            ),
+            ("gpt-5.6-sol", "gpt-5.6-sol-example-deployment-1"),
             ("glm-5.2", "glm-5.2"),
-            ("glm-5.2", "FW-GLM-5.2-cogdep-llm-gateway-1-eastus"),
+            ("glm-5.2", "FW-GLM-5.2-example-deployment-1"),
             ("glm-5.2", "accounts/fireworks/models/glm-5p2"),
         ] {
             config.model = requested.into();
@@ -2988,10 +3037,13 @@ mod tests {
             ("glm-5.2", "gpt-5.4"),
         ] {
             config.model = requested.into();
-            assert!(
-                validate_gateway_model(&config, actual).is_err(),
-                "{requested}: {actual}"
-            );
+            let error = validate_gateway_model(&config, actual)
+                .expect_err(&format!("{requested}: {actual}"))
+                .to_string();
+            // The substituted model alone does not tell a user what to change:
+            // a config pinned to one vendor's route serves every id from it.
+            assert!(error.contains("pc-example-route"), "{error}");
+            assert!(error.contains(requested), "{error}");
         }
         config.model = "company-fast-alias".into();
         validate_gateway_model(&config, "claude-haiku-4-5").unwrap();
@@ -3419,7 +3471,10 @@ mod tests {
 
     fn request_budget(request: &str) -> u64 {
         let body = request.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
-        serde_json::from_str::<serde_json::Value>(body).unwrap()["max_tokens"]
+        let body = serde_json::from_str::<serde_json::Value>(body).unwrap();
+        body.get("max_completion_tokens")
+            .or_else(|| body.get("max_tokens"))
+            .unwrap()
             .as_u64()
             .unwrap()
     }

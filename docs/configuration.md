@@ -477,6 +477,10 @@ Claude requests use Portkey's native `/messages` endpoint, retaining signed and
 redacted thinking blocks across tool calls. GPT and GLM keep `/chat/completions`;
 model discovery still uses the shared Portkey catalog. Both routes preserve the
 configured gateway URL, Config ID, credentials and session affinity headers.
+Portkey GPT-5 requests send the configured output limit as
+`max_completion_tokens`, since routes may drop `max_tokens` and otherwise apply
+their own default. This also preserves a smaller turn budget and the limit used
+by an output-truncation retry.
 
 A Config ID can route unknown model names to a default model. Oxide rejects a
 provider-reported model ID that contradicts a known picker model, while accepting
@@ -719,8 +723,10 @@ Unchanged text-file reads return a short reference to an earlier result still
 in context. The file's bytes and canonical path are checked, so external edits
 and symlink changes invalidate reuse; offset/limit are part of the key. Use
 `read` with `fresh: true` to retrieve full content again. Directories, attachments,
-files over 8 MiB and remote queries are read normally. A potentially mutating tool
-clears read reuse, and compaction drops references to removed or shortened results.
+files over 8 MiB and remote queries are read normally. Reuse survives unrelated
+writes and shell commands: each read checks the file's current digest, so changed
+content is returned in full. Compaction drops references to removed or shortened
+results.
 
 Once history reaches `pruneAboveTokens`, successful tool results older than the
 last `keepRecent` results are shortened to a head/tail excerpt. A pointer lets the

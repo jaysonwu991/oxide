@@ -4103,8 +4103,10 @@ mod tests {
         )
         .unwrap();
 
+        let mut ecosystem = ecosystem::load(&dir);
+        ecosystem.plugins.clear();
         let config = Config {
-            ecosystem: ecosystem::load(&dir),
+            ecosystem,
             ..Config::default()
         };
         let hooks = config.ecosystem.hooks.len();

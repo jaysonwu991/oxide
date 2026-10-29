@@ -298,10 +298,6 @@ impl ReadReuse {
         self.entries
             .retain(|_, (_, id)| available.contains(id.as_str()));
     }
-
-    pub fn clear(&mut self) {
-        self.entries.clear();
-    }
 }
 
 /// Only reclaim from the measured prefix; new results already shrink in the growth estimate.
