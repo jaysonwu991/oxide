@@ -291,7 +291,10 @@ pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Value>,
     pub stream: bool,
-    pub max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]

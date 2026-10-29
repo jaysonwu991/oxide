@@ -117,7 +117,12 @@ network is also retried once on its own before that hint is returned: `gh` read
 commands (`api` without a method or field, `pr view`, `search`, and the like), a
 GET-shaped `curl`, and `git ls-remote`, optionally piped through a text filter,
 so a transport failure does not cost the run a step, while anything that could
-change something is left alone. The recursive-search guard refuses a
+change something is left alone. A standalone literal recursive `grep` that can
+be represented by the search tool runs through its bounded, ignore-aware search
+without a failed call and model retry. The result names the substitution, and
+the requested path still passes the front-end's project boundary check. Shell
+pipelines, redirections, expansions, multiple paths and unsupported options are
+never dropped to make a call fit. The recursive-search guard refuses any other
 recursive `grep` that could
 walk a directory — no operand, a folder, an unresolved path, or an unverified glob —
 and steers it to the `grep` tool, which applies the repository's ignore rules

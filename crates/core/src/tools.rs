@@ -364,7 +364,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "edit",
-            "Edit a single file using targeted text replacement. Put the file path once in the top-level `path`; use separate calls for different files. Copy every edits[].oldText from a recent read of that same path, and read it again after a formatter or another tool changes it. Every target must be unique in the original file, before any replacements in this call. Omit edits whose oldText equals newText; they are still validated if supplied. The batch is atomic: if any edit fails, none are written, so correct and resend the whole batch. A match is exact first; trailing whitespace differences and the `N|` / `N+|` line numbers that `read` prints are tolerated. If the text has genuinely changed, read the reported region before retrying. Merge overlapping or nested changes into one replacement. Do not include large unchanged regions just to connect distant changes.",
+            "Edit one file: {\"path\":\"src/main.rs\",\"edits\":[{\"oldText\":\"before\",\"newText\":\"after\"}]}. Every call requires its own top-level `path`, even after a read or another edit. Use separate calls for different files. Copy oldText from a recent read; after a formatter or another change, use the current text. Every target must be unique in the original file. Matching tolerates trailing whitespace and copied `N|` / `N+|` read prefixes, but preserves leading indentation. The batch is atomic: if any edit fails, none are written. Correct every reported failure before resending the batch; a missing path must be supplied, and a stale target must use the reported current region. Merge overlapping edits, omit no-ops, and keep unchanged context small.",
             json!({
                 "type": "object",
                 "properties": {
@@ -398,7 +398,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "bash",
-            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Recursive shell `grep` is refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Recursive shell `grep` is refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Recursive shell `grep` is refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
+            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
             json!({
                 "type": "object",
                 "properties": {
@@ -576,7 +576,12 @@ pub async fn execute_with_scope(
         Err(message) => return ToolOutput::error(message),
     };
 
-    let canonical = name;
+    let search = (name == "bash")
+        .then(|| args.get("command").and_then(Value::as_str))
+        .flatten()
+        .and_then(|command| bounded_shell_grep(command, cwd));
+    let canonical = if search.is_some() { "grep" } else { name };
+    let args = search.unwrap_or(args);
     if let Err(error) = enforce_path_scope(cwd, canonical, &args, scope) {
         return ToolOutput::error(format!("{error:#}"));
     }
@@ -632,7 +637,12 @@ pub async fn execute_with_scope(
 
     match result {
         Ok(output) => ToolOutput {
-            text: if canonical == "bash" {
+            text: if name == "bash" && canonical == "grep" {
+                format!(
+                    "[executed with the bounded `grep` tool]\n{}",
+                    truncate(canonical, output.text)
+                )
+            } else if canonical == "bash" {
                 output.text
             } else {
                 truncate(canonical, output.text)
@@ -3672,6 +3682,18 @@ fn recursive_shell_grep_refusal(grep: &ShellGrep) -> String {
         message.push_str(&format!(". For this command that call is {call}"));
     }
     message
+}
+
+fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
+    // Translate only a standalone literal search. Compound commands, shell
+    // expansions and redirects must never disappear when repairing a call.
+    if command.contains(['|', ';', '&', '\n', '\r', '<', '>', '(', ')', '#'])
+        || grep_shell_words(command).first().copied() != Some("grep")
+    {
+        return None;
+    }
+    let grep = recursive_shell_grep(command, cwd)?;
+    serde_json::from_str(&grep.equivalent_call()?).ok()
 }
 
 /// Only expand a simple filename glob in a literal directory. Whether that
@@ -8281,6 +8303,72 @@ mod tests {
             assert!(!uses_recursive_shell_grep(command, &dir), "{command}");
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn standalone_recursive_grep_uses_bounded_search_and_checks_scope() {
+        let dir = std::env::temp_dir().join(format!("oxide_bounded_grep_{}", std::process::id()));
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("notes.md"), "needle\n").unwrap();
+        std::fs::write(dir.join("private.md"), "needle outside\n").unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+        for (command, expected) in [
+            ("grep -rn needle .", "notes.md:1: needle"),
+            ("grep -rFn 'needle' .", "notes.md:1: needle"),
+            ("grep -rn absent .", NO_MATCHES),
+        ] {
+            let output = execute_with_scope(
+                &call("bash", json!({"command": command})),
+                &project,
+                &mcp,
+                &progress,
+                PathScope::CurrentProject,
+            )
+            .await;
+            assert!(!output.is_error, "{command}: {}", output.text);
+            assert!(output.text.contains("bounded `grep`"), "{}", output.text);
+            assert!(output.text.contains(expected), "{}", output.text);
+        }
+        let denied = execute_with_scope(
+            &call("bash", json!({"command": "grep -rn needle .."})),
+            &project,
+            &mcp,
+            &progress,
+            PathScope::CurrentProject,
+        )
+        .await;
+        assert!(denied.is_error);
+        assert!(denied.text.contains("project boundary"), "{}", denied.text);
+        assert!(!denied.text.contains("needle outside"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bounded_grep_does_not_discard_shell_behavior() {
+        for command in [
+            "grep -rn needle . | head -5",
+            "grep -rn needle .; touch changed",
+            "grep -rn needle . && touch changed",
+            "grep -rn needle . > result",
+            "grep -rn needle . 2>/dev/null",
+            "grep -rn $(touch changed) .",
+            "grep -rn `touch changed` .",
+            "grep -rn needle . # comment",
+            "grep -rn needle .\ntouch changed",
+            "cd src && grep -rn needle .",
+            "LC_ALL=C grep -rn needle .",
+            "grep -rni needle .",
+            "grep -rn needle src docs",
+            "grep -rn 'a.*b' .",
+            "grep -rn needle $HOME",
+        ] {
+            assert!(
+                bounded_shell_grep(command, Path::new(".")).is_none(),
+                "{command}"
+            );
+        }
     }
 
     #[tokio::test]
