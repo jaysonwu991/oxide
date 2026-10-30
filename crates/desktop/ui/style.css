@@ -1738,7 +1738,6 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 }
 .sidebar-show-more:hover { background: var(--panel-2); color: var(--text); }
 .project-show-more { padding: 6px 8px 7px 32px; }
-.projects-show-more { padding: 8px 10px; margin-top: 2px; }
 
 .sidebar-recents { margin-top: 16px; display: flex; flex-direction: column; }
 .sidebar-section-title {

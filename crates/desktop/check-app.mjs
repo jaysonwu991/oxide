@@ -8228,9 +8228,9 @@ app.state.providers = [];
 // `open_url` answering with the state the other commands hold.
 // ---------- Codex-style sidebar disclosure ----------
 
-// The highlighted Codex sidebar shows five projects and five chats per project,
-// then makes each longer list an explicit operation instead of letting one
-// folder consume the whole sidebar.
+// The sidebar lists every registered project without a cap, but still caps
+// each project's chats to five and makes a longer chat list an explicit
+// operation instead of letting one folder consume the whole sidebar.
 const beforeDisclosureProjects = app.state.projects;
 const beforeDisclosureSessions = app.state.sessions;
 const beforeDisclosureProject = app.state.project;
@@ -8251,15 +8251,14 @@ app.state.sessions = Array.from({ length: 7 }, (_, index) => ({
   message_count: 1,
   preview: "",
 }));
-app.state.sidebarProjectsExpanded = false;
 app.state.expandedSidebarProjects.clear();
 await app.renderProjectsTree();
-const cappedProjectCount = elementFor("projects-tree").querySelectorAll(".project-group").length;
+const uncappedProjectCount = elementFor("projects-tree").querySelectorAll(".project-group").length;
 const projectsMore = elementFor("projects-tree").querySelector(".projects-show-more");
 check(
-  "capped the project list the way Codex does",
-  cappedProjectCount === 5 && Boolean(projectsMore) && projectsMore.title === "Show 1 more projects",
-  `${cappedProjectCount} / ${Boolean(projectsMore)} / ${projectsMore?.title}`,
+  "never caps the project list",
+  uncappedProjectCount === 6 && !projectsMore,
+  `${uncappedProjectCount} / ${Boolean(projectsMore)}`,
 );
 const cappedProjectSessions = elementFor("projects-tree").querySelector(".project-sessions");
 check(
@@ -8274,16 +8273,11 @@ check(
   elementFor("projects-tree").querySelector(".project-sessions").querySelectorAll(".session-item").length === 7,
   elementFor("projects-tree").outline(),
 );
-elementFor("projects-tree").querySelector(".projects-show-more").onclick();
-check(
-  "expanded the remaining projects from Show more",
-  elementFor("projects-tree").querySelectorAll(".project-group").length === 6,
-  elementFor("projects-tree").outline(),
-);
 
-// Opening from Recents crosses both caps at once: the sixth project contains a
-// chat that is sixth in its structural list but most recent chronologically.
-// The pick must reveal both rows before marking the chat active.
+// Opening from Recents crosses the chat cap even though the project itself is
+// always visible: the sixth project's chat is sixth in its structural list but
+// most recent chronologically. The pick must reveal that row before marking
+// the chat active.
 const hiddenProject = app.state.projects[5];
 const hiddenProjectSessions = Array.from({ length: 6 }, (_, index) => ({
   id: `hidden-thread-${index}`,
@@ -8299,7 +8293,6 @@ threads = hiddenProjectSessions;
 app.state.project = app.state.projects[0].path;
 app.state.projectName = app.state.projects[0].name;
 app.state.session = null;
-app.state.sidebarProjectsExpanded = false;
 app.state.expandedSidebarProjects.clear();
 await app.renderProjectsTree();
 const hiddenRecent = elementFor("projects-tree")
@@ -8313,9 +8306,8 @@ const revealedSession = revealedProject
   ?.querySelectorAll(".session-item")
   .find((row) => row.children[0].textContent === "Hidden thread 5");
 check(
-  "revealed a capped project and chat opened from Recents",
-  app.state.sidebarProjectsExpanded === true &&
-    app.state.expandedSidebarProjects.has(hiddenProject.id) &&
+  "revealed a capped chat opened from Recents",
+  app.state.expandedSidebarProjects.has(hiddenProject.id) &&
     revealedProject?.children[0].classList.contains("active") === true &&
     revealedSession?.classList.contains("active") === true,
   `${app.state.project} / ${app.state.session} / ${elementFor("projects-tree").outline()}`,
@@ -8326,7 +8318,6 @@ threads = existing;
 app.state.project = beforeDisclosureProject;
 app.state.projectName = beforeDisclosureProjectName;
 app.state.session = beforeDisclosureSession;
-app.state.sidebarProjectsExpanded = false;
 app.state.expandedSidebarProjects.clear();
 await app.renderProjectsTree();
 

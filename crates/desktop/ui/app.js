@@ -120,11 +120,11 @@ const SUGGESTIONS = [
   "Review the working tree changes and summarize the risks.",
 ];
 
-// The sidebar follows Codex's disclosure model: enough of every group to be
-// useful at a glance, with an explicit expansion instead of one unbounded wall
-// of projects and chats. Expansions live only for this window; the underlying
-// project order and complete session list are unchanged.
-const SIDEBAR_PROJECT_LIMIT = 5;
+// The sidebar follows Codex's disclosure model for a project's chats: enough
+// to be useful at a glance, with an explicit expansion instead of one
+// unbounded wall of chats. Expansions live only for this window; the
+// underlying project order and complete session list are unchanged. The
+// project list itself is never capped: every registered project is shown.
 const SIDEBAR_THREAD_LIMIT = 5;
 const SIDEBAR_RECENT_LIMIT = 5;
 
@@ -256,7 +256,6 @@ const state = {
   projects: [],
   projectName: "",
   sessions: [],
-  sidebarProjectsExpanded: false,
   expandedSidebarProjects: new Set(),
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
@@ -2003,11 +2002,6 @@ async function selectProject(project) {
   }
   state.project = project.path;
   state.projectName = project.name;
-  // A project reached through Recents or the picker must not become selected
-  // behind the five-row disclosure. Once the reader explicitly opens it, keep
-  // the project visible in the structural list too.
-  const sidebarIndex = state.projects.findIndex((candidate) => candidate.id === project.id);
-  if (sidebarIndex >= SIDEBAR_PROJECT_LIMIT) state.sidebarProjectsExpanded = true;
   state.session = null;
   state.trust = null;
   // The checkout belonged to the folder being left: a worktree of one project
@@ -8716,9 +8710,7 @@ async function renderProjectsTree() {
   
   // Group sessions by project
   const sessionsByProject = {};
-  const visibleProjects = state.sidebarProjectsExpanded
-    ? state.projects
-    : state.projects.slice(0, SIDEBAR_PROJECT_LIMIT);
+  const visibleProjects = state.projects;
 
   for (const project of visibleProjects) {
     sessionsByProject[project.path] = [];
@@ -8983,19 +8975,6 @@ async function renderProjectsTree() {
     projectGroup.appendChild(sessionsContainer);
     
     container.appendChild(projectGroup);
-  }
-
-  if (!state.sidebarProjectsExpanded && state.projects.length > SIDEBAR_PROJECT_LIMIT) {
-    const moreProjects = document.createElement("button");
-    moreProjects.type = "button";
-    moreProjects.className = "sidebar-show-more projects-show-more";
-    moreProjects.textContent = t("sidebar.showMore", "Show more");
-    moreProjects.title = t("ui.showMoreProjects", "Show {value0} more projects", { value0: state.projects.length - SIDEBAR_PROJECT_LIMIT });
-    moreProjects.onclick = () => {
-      state.sidebarProjectsExpanded = true;
-      renderProjectsTree();
-    };
-    container.appendChild(moreProjects);
   }
 
   // Codex keeps a project-independent way back to recent work below the
