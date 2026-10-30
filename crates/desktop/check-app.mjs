@@ -6414,6 +6414,17 @@ check(
   `${el("status").dataset.level} / ${el("status").hidden} / ${el("stop").title}`,
 );
 app.setIdle();
+// The transcript's clock is where a running turn is read, with the total it has
+// taken; the composer saying `Working…` beside it would be the same fact twice,
+// so the word is silence here even when it is left over from another thread.
+app.setStatus("Working\u2026");
+check(
+  "left the running turn's word to the transcript clock",
+  el("status").hidden === true &&
+    el("status-text").hidden === true &&
+    el("stop").title === "Stop the running turn",
+  `${el("status").hidden} / ${el("status-text").hidden} / ${el("stop").title}`,
+);
 app.setStatus("Queued as the next turn.");
 check(
   "kept the words of a status that has them",
