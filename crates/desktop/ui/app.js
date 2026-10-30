@@ -536,7 +536,7 @@ function authored(node, kind, value) {
 /// remembers the value for the dynamic strings (`t`) the page writes later.
 function applyLanguage(info) {
   const statusKey = state.statusText === idleStatus() ? "composer.ready"
-    : state.statusText === t("composer.working", "Working…") ? "composer.working" : null;
+    : state.statusText === workingStatus() ? "composer.working" : null;
   if (info?.language) state.language = info.language;
   if (Array.isArray(info?.languages)) state.languages = info.languages;
   state.strings = info?.strings || {};
@@ -781,11 +781,16 @@ function paintStatus() {
     el(id).dataset.level = level;
     el(id).setAttribute("aria-description", text || IDLE_STATUS);
   }
+  // A running turn is reported by the transcript's own clock, which counts it and
+  // keeps its total: the composer repeating the word would say the same thing a
+  // second time, so the working placeholder is nothing to say here — including
+  // the one another thread's turn left behind.
+  const silent = !text || text === idleStatus() || text === workingStatus();
   el("status-text").textContent = text;
-  el("status-text").hidden = text === idleStatus();
-  badge.hidden = busy || !text || text === idleStatus();
+  el("status-text").hidden = silent;
+  badge.hidden = busy || silent;
   const stopHint = t("composer.stopHint", "Stop the running turn");
-  el("stop").title = `${stopHint}${text && text !== idleStatus() ? ` · ${text}` : ""}`;
+  el("stop").title = `${stopHint}${silent ? "" : ` · ${text}`}`;
   el("stop").setAttribute("aria-label", el("stop").title);
   badge.title = text;
   badge.setAttribute("aria-label", text || IDLE_STATUS);
@@ -864,6 +869,11 @@ const IDLE_STATUS = t("composer.ready", "Ready");
 /// The idle word in the language on screen, which is what the status row
 /// compares against before it decides the row has nothing to say.
 const idleStatus = () => t("composer.ready", IDLE_STATUS);
+
+/// The word a turn used to be announced with in the composer. The row no longer
+/// wears it — the transcript's clock is where a running turn is read — and the
+/// value is still recognized so a stale one is treated as silence.
+const workingStatus = () => t("composer.working", "Working…");
 
 /// The tokens the CLI's footer abbreviates with, in its own steps: under a
 /// thousand as they are, then `1.2k`, `123k`, `1.2M`, `66M`. One rule for the
@@ -3984,8 +3994,7 @@ async function startPrompt(prompt, attachments, showBubble = true, thread = null
     startRunClock(record);
     paintRunningChrome();
     updateSendState();
-    paintStatus();
-    setStatus(t("composer.working", "Working…"));
+    setStatus(idleStatus());
   } else {
     record.runError = "";
     record.busy = true;
