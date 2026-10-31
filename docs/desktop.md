@@ -1397,9 +1397,9 @@ Each build writes to `crates/desktop/artifacts/`, named the way
 `Oxide-macos-<arch>.dmg`, a
 `Oxide-linux-<arch>-Setup.AppImage` and a
 `Oxide-linux-<arch>-Setup.tar.gz` for each Linux architecture, and a
-`Oxide-win-<arch>-Setup.exe`. None of them carries a version, unlike the CLI's
-archives: the same names are republished to the `desktop-latest` release, and
-the links `README.md` points at are those. electron-builder spells an AppImage's x64
+`Oxide-win-<arch>-Setup.exe`. None of them carries a version, exactly as the
+CLI's archives are named: the same names are republished to the
+`desktop-latest` release, and the links `install.md` publishes are those. electron-builder spells an AppImage's x64
 `x86_64` rather than `x64`, so the Linux x64 AppImage is
 `Oxide-linux-x86_64-Setup.AppImage` while its archive is
 `Oxide-linux-x64-Setup.tar.gz` — the spelling the build really writes,
