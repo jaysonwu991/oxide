@@ -127,12 +127,17 @@
         return $null
     }
 
-    function Resolve-Url([string]$Platform) {
+    function Resolve-Urls([string]$Platform) {
         $ext = if ($Platform -like "win-*") { "zip" } else { "tar.gz" }
 
         if ($Version) {
             $ver = $Version -replace "^v", ""
-            return "$BaseUrl/releases/download/v$ver/Oxide-$ver-$Platform.$ext"
+            # A release from before the names lost their version carries the
+            # versioned one; a pinned install of such a release still resolves.
+            return @(
+                "$BaseUrl/releases/download/v$ver/Oxide-$Platform.$ext",
+                "$BaseUrl/releases/download/v$ver/Oxide-$ver-$Platform.$ext"
+            )
         }
 
         Write-Info "fetching $ManifestName"
@@ -146,7 +151,7 @@
         if (-not $asset) {
             throw "no asset for $Platform; supported targets: macos-arm64, macos-x64, linux-x64, linux-arm64, win-x64"
         }
-        return "$BaseUrl/releases/download/$ver/$asset"
+        return @("$BaseUrl/releases/download/$ver/$asset")
     }
 
     function Test-Checksum([string]$File, [string]$SumsFile) {
@@ -181,16 +186,28 @@
     }
 
     $platform = Get-Platform
-    $url = Resolve-Url $platform
-    $archiveName = ($url -split "/")[-1]
+    $urls = Resolve-Urls $platform
 
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("oxide-install-" + [Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
     try {
+        $url = $null
+        foreach ($candidate in $urls) {
+            $candidateName = ($candidate -split "/")[-1]
+            Write-Info "downloading $candidateName for $platform"
+            try {
+                Get-Binary $candidate (Join-Path $tmp $candidateName)
+                $url = $candidate
+                break
+            } catch {
+            }
+        }
+        if (-not $url) {
+            throw "download failed for $platform; is a release published for it?"
+        }
+        $archiveName = ($url -split "/")[-1]
         $archivePath = Join-Path $tmp $archiveName
-        Write-Info "downloading $archiveName for $platform"
-        Get-Binary $url $archivePath
 
         $sumsPath = Join-Path $tmp "$archiveName.sha256"
         $haveSums = $true
