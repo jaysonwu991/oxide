@@ -84,9 +84,12 @@ page is the detail behind it, and the task-by-task guides live in
 
 The system prompt's Definition of Done requires the model to confirm the outcome
 of any state-changing action before claiming success — edits on disk and
-builds/tests, a pull request's CI and mergeability, posted comments and reviews,
-releases, and deployments. A code change made in response to a pull request or
-review is not delivered until it is committed and pushed to the branch under
+builds/tests, a raised pull request's own link, posted comments and reviews,
+releases, and deployments. A pull request is finished by handing over the URL the
+forge printed when it created it, not by a CI verdict: its checks can take a long
+time to finish, so neither they nor its mergeability are polled or waited for
+unless the user asks for the outcome. A code change made in response to a pull
+request or review is not delivered until it is committed and pushed to the branch under
 review, so a review reply is held until the fix is pushed and an uncommitted fix
 is never reported as an addressed review. A reply goes into the review comment's
 own thread (`gh api -X POST
@@ -109,9 +112,8 @@ with unconfirmed edits or unchecked side effects gets one hidden reminder to ver
 before it can summarize; a reminder the provider answers with nothing ends the
 run with the summary the model already wrote, rather than reporting an empty
 response on top of a finished answer. An explicit instruction from the user
-outranks those checks: ask for a pull request with "no need to check the PR's
-status" and none of it is run, and the reply says plainly what was left
-unverified instead.
+outranks those checks: ask for a branch and a patch instead of a pull request and
+no link is expected, and the reply says plainly what was left unverified instead.
 
 A separate Scope rule keeps commits limited to the task: blanket staging
 (`git add -A`, `git commit -a`) is held until the model reviews the staged files,

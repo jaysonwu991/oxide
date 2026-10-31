@@ -66,6 +66,15 @@ const GH_PENDING_EXIT: i32 = 8;
 /// rather than spelled out twice.
 pub(crate) const PENDING_CHECKS_NOTE: &str = "pull request checks are still pending, not failed";
 
+/// Appended to a `gh run view` that exited 1 because the run has not finished.
+/// `gh` refuses to serve logs for a run in progress, which is the same "come
+/// back later" answer [`PENDING_CHECKS_NOTE`] is, not a failure.
+pub(crate) const RUN_IN_PROGRESS_NOTE: &str = "the run is still in progress, not failed";
+
+/// What `gh run view` writes when asked for the logs of a run that has not
+/// finished. Its exit 1 is that message, not a failed job.
+const RUN_IN_PROGRESS_TEXT: &str = "is still in progress; logs will be available";
+
 /// Appended to a shell command that ran past its timeout. The usual cause is an
 /// unbounded search that walked build output, so the message steers the retry
 /// to a narrower command rather than letting the same one time out again.
@@ -4296,6 +4305,12 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         output.push_str(PENDING_CHECKS_NOTE);
         output.push(')');
     }
+    let run_pending = exit == 1 && run_still_in_progress(command, &output);
+    if run_pending {
+        output.push_str(" (");
+        output.push_str(RUN_IN_PROGRESS_NOTE);
+        output.push(')');
+    }
     if reader_closed {
         output.push_str(" (a command in the pipeline stopped because its reader closed)");
     }
@@ -4313,7 +4328,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         }
     }
     Ok(ToolOutput {
-        is_error: exit != 0 && !reader_closed && !no_matches && !checks_pending,
+        is_error: exit != 0 && !reader_closed && !no_matches && !checks_pending && !run_pending,
         ..ToolOutput::text(output)
     })
 }
@@ -4346,19 +4361,37 @@ fn bash_failure_hint(output: &str) -> Option<&'static str> {
 /// `None` for any other command. Only this shape can explain a
 /// [`GH_PENDING_EXIT`]; `8` from anything else is that command's own failure.
 fn gh_pr_checks_pipeline(command: &str) -> Option<Vec<&str>> {
-    let stages = simple_status_pipeline(command, GH_PENDING_EXIT)?;
-    let first = strip_redirections(stages[0]);
-    let words = grep_shell_words(&first);
-    let index = shell_command_index(&words)?;
-    let subcommand: Vec<&str> = words
-        .get(index + 1..index + 3)?
-        .iter()
-        .map(|word| word.trim_matches(['\'', '"']))
-        .collect();
-    (matches!(shell_word_name(words[index]), "gh" | "gh.exe")
-        && subcommand == ["pr", "checks"]
+    let stages = status_pipeline(command, GH_PENDING_EXIT)?;
+    (gh_subcommand(stages[0], ["pr", "checks"])
         && stages[1..].iter().all(|stage| text_filter_command(stage)))
     .then_some(stages)
+}
+
+/// Whether a pipeline stage runs `gh` with the given two-word subcommand.
+fn gh_subcommand(stage: &str, expected: [&str; 2]) -> bool {
+    let first = strip_redirections(stage);
+    let words = grep_shell_words(&first);
+    let Some(index) = shell_command_index(&words) else {
+        return false;
+    };
+    if !matches!(shell_word_name(words[index]), "gh" | "gh.exe") {
+        return false;
+    }
+    let Some(subcommand) = words.get(index + 1..index + 3) else {
+        return false;
+    };
+    subcommand
+        .iter()
+        .map(|word| word.trim_matches(['\'', '"']))
+        .eq(expected)
+}
+
+/// Whether an exit 1 is `gh run view` refusing to serve the logs of a run that
+/// has not finished, which is a result to come back to rather than a failure.
+fn run_still_in_progress(command: &str, output: &str) -> bool {
+    output.contains(RUN_IN_PROGRESS_TEXT)
+        && status_pipeline(command, 1)
+            .is_some_and(|stages| gh_subcommand(stages[0], ["run", "view"]))
 }
 
 /// Whether a [`GH_PENDING_EXIT`] came from `gh pr checks` itself. The pipeline's
@@ -4398,8 +4431,7 @@ fn pending_pr_checks(command: &str) -> bool {
 
 #[cfg(unix)]
 fn search_returned_no_matches(command: &str, text: &str) -> bool {
-    let Some(stages) = simple_search_pipeline(command).or_else(|| compound_search_tail(command))
-    else {
+    let Some(stages) = status_pipeline(command, 1) else {
         return false;
     };
     let Ok(statuses) = text
@@ -4445,9 +4477,148 @@ fn last_pipeline_is_search(command: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The pipeline whose own statuses explain an exit, or `None` for a command
+/// whose recorded statuses could not be matched to what was written.
+///
+/// A shell reports the last command's status, so a `;`- or newline-separated
+/// script of plain commands is read through its last command: `sleep 5; cd .
+/// && gh pr checks 1 | tail -3` carries the statuses of that pipeline, not of
+/// the commands before it.
+fn status_pipeline(command: &str, status: i32) -> Option<Vec<&str>> {
+    if let Some(stages) = simple_status_pipeline(command, status) {
+        return Some(stages);
+    }
+    #[cfg(unix)]
+    if let Some(stages) =
+        plain_script_tail(command).and_then(|tail| simple_status_pipeline(tail, status))
+    {
+        return Some(stages);
+    }
+    None
+}
+
+/// The last command of a `;`- or newline-separated script, when the script is
+/// nothing but plain commands.
+///
+/// Anything that could make the last command something other than what was
+/// written — a comment, a heredoc, a command word that is an expansion, or an
+/// earlier command that ends the shell (`exit`, `exec`, `return`, `set`,
+/// `trap`, `eval`, `source`) or backgrounds itself — keeps the
+/// ordinary failure behavior. The last segment's own form is left to the
+/// pipeline reader, which is where a leading `cd … &&` is understood.
 #[cfg(unix)]
-fn simple_search_pipeline(command: &str) -> Option<Vec<&str>> {
-    simple_status_pipeline(command, 1)
+fn plain_script_tail(command: &str) -> Option<&str> {
+    let command = command.trim();
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut chars = command.char_indices();
+    for (index, ch) in chars.by_ref() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some('\'') => {}
+            Some(_) if ch == '$' || ch == '`' => return None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch == ';' || ch == '\n' => {
+                segments.push(command[start..index].trim());
+                start = index + ch.len_utf8();
+            }
+            None => {}
+        }
+    }
+    if quote.is_some() || escaped {
+        return None;
+    }
+    segments.push(command[start..].trim());
+    let segments: Vec<&str> = segments
+        .into_iter()
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let (last, earlier) = segments.split_last()?;
+    if earlier
+        .iter()
+        .any(|segment| ends_the_shell(segment) || hides_the_next_command(segment))
+    {
+        return None;
+    }
+    Some(last)
+}
+
+/// Whether an earlier segment runs work of its own after it that a reader
+/// cannot follow — a background `&`, a comment, a heredoc, a command word that
+/// is itself an expansion, or a `&&`/`||` half that ends the shell.
+///
+/// An expansion in an argument (`echo status=$?`), a subshell or a brace group
+/// runs in a shell of its own or returns to the same one, so none of them can
+/// change which command the script's last status belongs to.
+#[cfg(unix)]
+fn hides_the_next_command(segment: &str) -> bool {
+    if chain_ends_the_shell(segment) || starts_with_expansion(segment) {
+        return true;
+    }
+    let mut quote = None;
+    let mut escaped = false;
+    let mut previous = None;
+    let mut chars = segment.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if escaped {
+            escaped = false;
+            previous = Some(ch);
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            previous = Some(ch);
+            continue;
+        }
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some('\'') => {}
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            // A redirection's `&` (`2>&1`, `&>out`) and a `&&` chain are not
+            // work left running beside the last command.
+            None if ch == '&'
+                && (previous == Some('>')
+                    || chars
+                        .peek()
+                        .is_some_and(|next| *next == '>' || *next == '&')) => {}
+            None if matches!(ch, '&' | '#' | '<' | '\r') => return true,
+            None => {}
+        }
+        previous = Some(ch);
+    }
+    false
+}
+
+/// Whether any command of a segment's `&&`/`||` chain ends the shell before the
+/// script's last command runs.
+#[cfg(unix)]
+fn chain_ends_the_shell(segment: &str) -> bool {
+    segment
+        .split("&&")
+        .flat_map(|part| part.split("||"))
+        .any(ends_the_shell)
+}
+
+/// Whether a segment's command word is an expansion, which can run anything at
+/// all — including the `exit` that keeps the last command from running.
+#[cfg(unix)]
+fn starts_with_expansion(segment: &str) -> bool {
+    segment
+        .split_whitespace()
+        .find(|word| !shell_assignment(word))
+        .is_some_and(|word| word.starts_with('$') || word.starts_with('`'))
 }
 
 /// The stages of a plain pipeline, or `None` for a command whose recorded
@@ -4527,88 +4698,6 @@ fn simple_status_pipeline(command: &str, status: i32) -> Option<Vec<&str>> {
         return None;
     }
     Some(stages)
-}
-
-/// The stages of the last command in a `;`- or newline-separated script, when
-/// the script is nothing but plain commands.
-///
-/// A shell reports the exit status of its last command, so an earlier command
-/// in a script is invisible to the status this tool reads: a script that ends
-/// in a search which matched nothing is the empty result a lone search is, and
-/// the last pipeline's own stage statuses are the evidence. Anything that could
-/// make the last command something other than what was written — a comment, a
-/// heredoc, a subshell, an expansion, `&&`/`||`, or an earlier command that
-/// ends the shell (`exit`, `exec`, `return`, `set`, `trap`, `eval`, `source`)
-/// — keeps the ordinary failure behavior.
-#[cfg(unix)]
-fn compound_search_tail(command: &str) -> Option<Vec<&str>> {
-    let command = command.trim();
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut quote = None;
-    let mut escaped = false;
-    let mut previous = None;
-    let mut chars = command.char_indices().peekable();
-    while let Some((index, ch)) = chars.next() {
-        if escaped {
-            escaped = false;
-            previous = Some(ch);
-            continue;
-        }
-        if ch == '\\' && quote != Some('\'') {
-            escaped = true;
-            previous = Some(ch);
-            continue;
-        }
-        match quote {
-            Some(open) if ch == open => quote = None,
-            Some('\'') => {}
-            Some(_) if ch == '$' || ch == '`' => return None,
-            Some(_) => {}
-            None if ch == '\'' || ch == '"' => quote = Some(ch),
-            // A redirection's `&` (`2>&1`, `&>out`) is not a control operator.
-            None if ch == '&'
-                && (previous == Some('>')
-                    || chars.peek().is_some_and(|(_, next)| *next == '>')) => {}
-            None if ch == ';' || ch == '\n' => {
-                segments.push(command[start..index].trim());
-                start = index + ch.len_utf8();
-            }
-            None if ch == '|' => {
-                if chars
-                    .peek()
-                    .is_some_and(|(_, next)| *next == '|' || *next == '&')
-                {
-                    return None;
-                }
-            }
-            None if matches!(
-                ch,
-                '&' | '\r' | '(' | ')' | '{' | '}' | '$' | '`' | '#' | '<'
-            ) =>
-            {
-                return None
-            }
-            None => {}
-        }
-        previous = Some(ch);
-    }
-    if quote.is_some() || escaped {
-        return None;
-    }
-    segments.push(command[start..].trim());
-    let mut segments: Vec<&str> = segments
-        .into_iter()
-        .filter(|segment| !segment.is_empty())
-        .collect();
-    if segments.len() < 2 {
-        return None;
-    }
-    let last = segments.pop()?;
-    if segments.iter().any(|segment| ends_the_shell(segment)) {
-        return None;
-    }
-    simple_search_pipeline(last)
 }
 
 /// Whether a segment could end the shell before the last command runs, which
@@ -4872,16 +4961,21 @@ pub fn bash_warning_preview(output: &str, limit: usize) -> Option<(String, usize
 
 fn finish_bash_output(stdout: StreamCapture, stderr: StreamCapture, exit: i32) -> Result<String> {
     let suffix = format!("[exit: {exit}]");
-    let marker_bytes = usize::from(stderr.lines > 0) * "[stderr]\n".len();
+    // The marker separates the two streams, so a command that wrote nothing to
+    // stdout has no boundary to draw: its stderr is the whole result.
+    let marked_stderr = stderr.lines > 0 && stdout.lines > 0;
+    let marker_bytes = usize::from(marked_stderr) * "[stderr]\n".len();
     let total_bytes = stdout.bytes + stderr.bytes + marker_bytes + suffix.len();
-    let total_lines = stdout.lines + stderr.lines + usize::from(stderr.lines > 0) + 1;
+    let total_lines = stdout.lines + stderr.lines + usize::from(marked_stderr) + 1;
     let (max_bytes, max_lines) = output_limits("bash");
 
     if total_bytes <= max_bytes && total_lines <= max_lines {
         let mut output =
             String::from_utf8_lossy(&std::fs::read(&stdout.path).unwrap_or_default()).into_owned();
         if stderr.lines > 0 {
-            output.push_str("[stderr]\n");
+            if marked_stderr {
+                output.push_str("[stderr]\n");
+            }
             output.push_str(&String::from_utf8_lossy(
                 &std::fs::read(&stderr.path).unwrap_or_default(),
             ));
@@ -4893,14 +4987,15 @@ fn finish_bash_output(stdout: StreamCapture, stderr: StreamCapture, exit: i32) -
 
     let mut preview = stdout.tail_text();
     if stderr.lines > 0 {
-        preview.push_str("[stderr]\n");
+        if marked_stderr {
+            preview.push_str("[stderr]\n");
+        }
         preview.push_str(&stderr.tail_text());
     }
     preview.push_str(&suffix);
     let preview = tail_preview(&preview, max_bytes, max_lines);
-    let saved = truncation_dir().and_then(|dir| {
-        save_bash_spool(&dir, &stdout.path, &stderr.path, stderr.lines > 0, &suffix)
-    });
+    let saved = truncation_dir()
+        .and_then(|dir| save_bash_spool(&dir, &stdout.path, &stderr.path, marked_stderr, &suffix));
     remove_stream_files(&[&stdout, &stderr]);
 
     let dropped_lines = total_lines.saturating_sub(preview.lines().count());
@@ -4957,7 +5052,7 @@ fn save_bash_spool(
     dir: &Path,
     stdout: &Path,
     stderr: &Path,
-    has_stderr: bool,
+    mark_stderr: bool,
     suffix: &str,
 ) -> Option<PathBuf> {
     std::fs::create_dir_all(dir).ok()?;
@@ -4966,7 +5061,7 @@ fn save_bash_spool(
     let path = dir.join(format!("tool_{}_{}.txt", now_millis(), id));
     let mut output = BufWriter::new(std::fs::File::create(&path).ok()?);
     std::io::copy(&mut std::fs::File::open(stdout).ok()?, &mut output).ok()?;
-    if has_stderr {
+    if mark_stderr {
         output.write_all(b"[stderr]\n").ok()?;
         std::io::copy(&mut std::fs::File::open(stderr).ok()?, &mut output).ok()?;
     }
@@ -7455,6 +7550,13 @@ mod tests {
             "printf 'build succeeded\\n'; grep '^error' input.txt",
             "printf 'a\\n' | head -1; printf 'build succeeded\\n' | grep '^error'",
             "printf 'x\\n'\nprintf 'build succeeded\\n' | grep '^error' | head -40",
+            // An expansion in an argument and a `&&` chain inside an earlier
+            // command are still the last command's status, which is how a
+            // checked result is printed before it is filtered.
+            "printf 'build succeeded\\n'; echo status=$?; grep '^error' input.txt | head -2",
+            "node --version >/dev/null 2>&1; echo shell=$?; grep '^error' input.txt | head",
+            "printf x; cd . && printf 'build succeeded\\n' | grep '^error' input.txt",
+            "printf x; printf 'a pass\\n' | grep -v pass | tail -5",
         ] {
             let out = execute(
                 &call("bash", json!({ "command": command })),
@@ -7487,6 +7589,9 @@ mod tests {
             "printf x; grep '[' input.txt",
             "printf x; grep '^error' input.txt # ; printf y",
             "printf x; $CMD; grep '^error' input.txt",
+            "printf x; `printf exit` 1; grep '^error' input.txt",
+            "printf x; find . -maxdepth 0 && exit 1; grep '^error' input.txt",
+            "printf x; sleep 0.1 & wait; grep '^error' input.txt",
             "printf x; bash -c 'exit 7'",
         ] {
             let out = execute(
@@ -7515,6 +7620,7 @@ mod tests {
             "gh pr checks --json name,bucket",
             "gh pr checks --watch",
             "cd . && '/opt/bin/gh' pr checks 250",
+            "sleep 270; cd . && gh pr checks 260 2>&1 | tail -12",
         ] {
             let statuses = if command.contains('|') {
                 "8\n8\n0\n"
@@ -7533,6 +7639,8 @@ mod tests {
             ("gh pr checks 252 && exit 8", "8\n8\n"),
             ("gh pr checks 252", "1\n1\n"),
             ("gh pr checks 252", "8\n"),
+            ("sleep 1 & gh pr checks 252", "8\n8\n"),
+            ("echo started | cat; gh pr checks 252 && exit 8", "8\n8\n"),
             // A quoted subcommand is still the command; a different one is not.
             ("gh pr diff 252", "8\n8\n"),
             ("gh 252 pr checks", "8\n8\n"),
@@ -7597,6 +7705,97 @@ mod tests {
             if !failed {
                 assert!(out.text.contains("[exit: 8]"), "{}", out.text);
             }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_still_in_progress_is_read_through_its_own_command() {
+        let text =
+            "run 41165810360 is still in progress; logs will be available when it is complete";
+        for command in [
+            "gh run view --job 9 --log-failed",
+            "sleep 90; cd . && gh run view --job 9 --log-failed 2>&1 | tail -40",
+        ] {
+            assert!(run_still_in_progress(command, text), "{command}");
+        }
+        for (command, output) in [
+            ("gh pr checks 9", text),
+            (
+                "gh run view --job 9 --log-failed",
+                "run 41165810360 has failed",
+            ),
+            ("echo 'is still in progress; logs will be available'", text),
+        ] {
+            assert!(!run_still_in_progress(command, output), "{command}");
+        }
+    }
+
+    /// A command that wrote nothing to stdout has no stream boundary to draw,
+    /// so its stderr is the whole result rather than a `[stderr]` section.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_marks_stderr_only_after_stdout() {
+        let dir = std::env::temp_dir().join(format!("oxide_bash_stderr_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (command, marked) in [
+            ("printf 'boom\\n' >&2; exit 1", false),
+            ("printf 'out\\n'; printf 'boom\\n' >&2", true),
+        ] {
+            let out = execute(
+                &call("bash", json!({ "command": command })),
+                &dir,
+                &McpRegistry::default(),
+                &Progress::default(),
+            )
+            .await;
+            assert!(out.text.contains("boom"), "{command}: {}", out.text);
+            assert_eq!(
+                out.text.contains("[stderr]"),
+                marked,
+                "{command}: {}",
+                out.text
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A `sleep` in front of the read is how a wait for CI is written, so the
+    /// two "come back later" exits are read through the command that produced
+    /// them rather than reported as failures.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_reads_a_script_prefix_for_pending_checks_and_run_logs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("oxide_pending_script_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            "#!/bin/sh\nif [ \"$1 $2\" = 'run view' ]; then\n  printf 'run 41165810360 is still in progress; logs will be available when it is complete\\n'\n  exit 1\nfi\nprintf 'build\\tpending\\t0\\n'\nexit \"${3:-8}\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (suffix, note, failed) in [
+            ("pr checks 8 2>&1 | tail -3", PENDING_CHECKS_NOTE, false),
+            (
+                "run view --job 9 --log-failed 2>&1 | tail -40",
+                RUN_IN_PROGRESS_NOTE,
+                false,
+            ),
+            ("pr checks 1 2>&1 | tail -3", PENDING_CHECKS_NOTE, true),
+        ] {
+            let command = format!("sleep 0; cd . && '{}' {suffix}", gh.display());
+            let out = execute(
+                &call("bash", json!({ "command": command })),
+                &dir,
+                &McpRegistry::default(),
+                &Progress::default(),
+            )
+            .await;
+            assert_eq!(out.is_error, failed, "{command}: {}", out.text);
+            assert_eq!(out.text.contains(note), !failed, "{command}: {}", out.text);
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

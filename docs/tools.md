@@ -90,17 +90,34 @@ On Unix, a shell search whose only unsuccessful stages are
 and adds `search returned no matches`, while the tool's error flag stays clear.
 That holds when the search is the last command of a `;`- or newline-separated
 script too, since a shell reports its last command's status: `git status; grep
--q TODO notes.md` is an empty search rather than a failed command. An
-unsuccessful producer, invalid regex, a failed leading `cd`, or anything that
-could hide which command ran last (a comment, a heredoc, a subshell, an
-expansion, `&&`/`||`, or an earlier `exit`/`exec`/`set -e`) still fails.
+-q TODO notes.md` is an empty search rather than a failed command, and so is
+`node check.mjs >/tmp/s.log 2>&1; echo shell=$?; grep -E '^  fail' /tmp/s.log |
+head` — an expansion in an argument and a `&&` half of an earlier command only
+decide that command's own word, not which command the status belongs to. An
+unsuccessful producer, invalid regex, a failed leading `cd`, or an earlier
+command that could hide the last one (a comment, a heredoc, a background `&`, a
+`&&`/`||` half that ends the shell with `exit`/`exec`/`set -e`, or a command
+word that is itself an expansion) still fails.
+
+The same script reader decides the pending `gh` exits below, so a wait written as
+`sleep 270; cd . && gh pr checks 260 2>&1 | tail -12` is still read through the
+`gh` command that produced the status.
+
+A command's two streams are shown in order under one `[stderr]` marker, and only
+when both have content: the marker is the boundary between them, so a command
+that wrote nothing to stdout — a failing script whose whole result is its
+traceback — is shown without one.
 
 `gh pr checks` exits 8 while its checks are still running, which is a documented
 state rather than a failure: no check has reported a failure yet (that is its
-exit 1). A `gh pr checks` run — on its own, or piped through text filters — that
+exit 1). A `gh pr checks` run — on its own, piped through text filters, or the
+last command of a `sleep …; cd … &&` script — that
 exits 8 keeps `[exit: 8]`, adds `pull request checks are still pending, not
 failed`, and leaves the tool's error flag clear, so the transcript shows a result
-instead of a red tool call while CI runs. On Unix the pipeline's own stage
+instead of a red tool call while CI runs. `gh run view` asked for the logs of a
+run that has not finished exits 1 with `is still in progress; logs will be
+available`; that is a result too, marked `the run is still in progress, not
+failed`. On Unix the pipeline's own stage
 statuses have to agree, so an unrelated failing command or a filter that exited 8
 is still a failure; Windows has neither `pipefail` nor `PIPESTATUS`, so only an
 unpiped run is read this way. Because such a read confirms no outcome, it does

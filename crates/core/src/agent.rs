@@ -2370,12 +2370,10 @@ const DONE_RULES: &[DoneRule] = &[
             "glab ci status",
             "pulls",
         ],
-        reminder: "You opened or updated a pull request but have not checked it. Run \
-                   `gh pr checks <url>` and `gh pr view <url> --json \
-                   state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup` (or the \
-                   `glab` equivalents), fix and push again if a check failed, and report it as a \
-                   link the user can click — `[#123](url)`, the URL from `gh pr view <url> \
-                   --json url` — with its final state.",
+        reminder: "You opened or updated a pull request but have not read it back. Report the \
+                   link the forge printed — `[#123](url)`, the URL from `gh pr view <url> --json \
+                   url` — and do not poll or wait for its checks: a CI run can take a long time, so \
+                   say plainly that they were still running if you mention them.",
     },
     DoneRule {
         key: "comment",
@@ -2762,7 +2760,11 @@ impl VerificationState {
                     // nothing yet: `gh pr checks` exits 8 while CI runs, which
                     // `tools::bash` reports as a result rather than a failure,
                     // so the rule has to stay pending until an outcome lands.
-                    if rule.checks.iter().any(|check| command.contains(check))
+                    // A pull request is confirmed by the link its own command
+                    // printed, which is all raising one needs: its CI is left to
+                    // run rather than watched.
+                    let linked = rule.key == "pull request" && reports_pull_request(output);
+                    if (linked || rule.checks.iter().any(|check| command.contains(check)))
                         && !reports_pending_checks(output)
                     {
                         self.pending.remove(rule.key);
@@ -2874,11 +2876,22 @@ fn same_path(a: &str, b: &str) -> bool {
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
 }
 
+/// Whether a command's own output carries a pull or merge request link, which
+/// is what a forge prints when it creates one. That link is the confirmation a
+/// raised PR needs: its checks are left to run instead of being watched.
+fn reports_pull_request(output: &str) -> bool {
+    output.split_whitespace().any(|word| {
+        let word = word.trim_matches(['<', '>', '(', ')', '[', ']', '"', '\'', '*', '`']);
+        word.contains("/pull/") || word.contains("/merge_requests/")
+    })
+}
+
 /// Whether a status read answered that the checks are still running, which is
-/// the note `tools::bash` appends to `gh pr checks`' documented pending exit.
-/// Such a read confirms no outcome, so it must not clear a pending rule.
+/// the note `tools::bash` appends to `gh pr checks`' documented pending exit and
+/// to a `gh run view` asked for the logs of a run that has not finished. Such a
+/// read confirms no outcome, so it must not clear a pending rule.
 fn reports_pending_checks(output: &str) -> bool {
-    output.contains(tools::PENDING_CHECKS_NOTE)
+    output.contains(tools::PENDING_CHECKS_NOTE) || output.contains(tools::RUN_IN_PROGRESS_NOTE)
 }
 
 /// Whether a tool result reports failure explicitly or by a non-zero shell
@@ -7824,7 +7837,7 @@ for line in sys.stdin:
 
     #[test]
     fn side_effects_are_confirmed_before_done() {
-        // A pull request is unconfirmed until its checks or state are read.
+        // A pull request is unconfirmed until its link is read back.
         let mut state = VerificationState::default();
         state.record(
             "bash",
@@ -7833,22 +7846,33 @@ for line in sys.stdin:
         );
         assert!(state.pending.contains("pull request"));
         let reminder = state.reminder().unwrap();
-        assert!(reminder.contains("gh pr checks"), "{reminder}");
+        assert!(reminder.contains("gh pr view <url> --json"), "{reminder}");
         // The reminder is the fallback for a run that missed the prompt's own
         // rule, so it asks for the link in its own words.
         assert!(reminder.contains("[#123](url)"), "{reminder}");
-        assert!(reminder.contains("--json url"), "{reminder}");
+        assert!(!reminder.contains("gh pr checks"), "{reminder}");
+        assert!(state.reminder().is_none());
+
+        // The link `gh pr create` printed is the confirmation, so raising a PR
+        // and handing it over needs no status read at all.
+        let mut state = VerificationState::default();
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "https://github.com/owner/repo/pull/42\n[exit: 0]",
+        );
+        assert!(state.pending.is_empty());
         assert!(state.reminder().is_none());
 
         let mut state = VerificationState::default();
         state.record(
             "bash",
             &json!({"command": "gh pr create --fill"}),
-            "[exit: 0]",
+            "https://gitlab.com/owner/repo/-/merge_requests/7",
         );
         state.record(
             "bash",
-            &json!({"command": "gh pr view 42 --json state"}),
+            &json!({"command": "gh pr view 42 --json url"}),
             "OPEN",
         );
         assert!(state.pending.is_empty());
