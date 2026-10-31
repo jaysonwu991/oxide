@@ -53,9 +53,11 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
 
 ## Install
 
-Download `oxide-vscode-<version>.vsix` from an `extension-v*`
-[release](https://github.com/jaysonwu991/oxide/releases) and run **Extensions:
-Install from VSIX…** in VS Code.
+Download `oxide-vscode.vsix` — the newest one sits at
+[`extension-latest`](https://github.com/jaysonwu991/oxide/releases/tag/extension-latest),
+and every `extension-v*`
+[release](https://github.com/jaysonwu991/oxide/releases) carries a copy — and run
+**Extensions: Install from VSIX…** in VS Code.
 
 ## Requirements
 
@@ -221,7 +223,7 @@ door, if you would rather use the picker there.
 pnpm install
 pnpm run compile   # tsc -p .
 pnpm test          # compile, then node --test out/test/
-pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
+pnpm run package   # vsce package -> oxide-vscode.vsix
 ```
 
 Press <kbd>F5</kbd> in VS Code with this folder open to launch an Extension

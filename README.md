@@ -76,6 +76,22 @@ bundle over itself, and the VS Code panel installs the newest `extension-v*`
 platforms, installer overrides, the desktop bundle, the VS Code VSIX, updating,
 and uninstalling are all covered in [docs/install.md](docs/install.md).
 
+## Installers
+
+The desktop app and the VS Code extension, always the newest build. Each link
+points at the `desktop-latest` or `extension-latest` release, whose files are
+replaced on every publish, so the links themselves never change; the versioned
+`desktop-v*` and `extension-v*` releases name the version a file is from.
+
+| Surface | Platform | Installer |
+| --- | --- | --- |
+| Desktop | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-arm64.dmg) |
+| Desktop | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-x64.dmg) |
+| Desktop | Windows x64 | [Oxide-win-x64-Setup.exe](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.exe) |
+| Desktop | Linux x64 | [Oxide-linux-x86_64-Setup.AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x86_64-Setup.AppImage) · [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
+| Desktop | Linux arm64 | [Oxide-linux-arm64-Setup.AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.AppImage) · [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
+| VS Code | any | [oxide-vscode.vsix](https://github.com/jaysonwu991/oxide/releases/download/extension-latest/oxide-vscode.vsix) |
+
 ## Quick start
 
 ```sh
@@ -139,8 +155,11 @@ pnpm run dist                # an installer for this platform
 ```
 
 The package is its own workspace (`exclude`d from the root one) with its own pnpm
-tree, so it is built from its own directory. Prebuilt installers are drafted under `desktop-v*`
-[releases](https://github.com/jaysonwu991/oxide/releases). See
+tree, so it is built from its own directory. Prebuilt installers are on the
+`desktop-v*` [releases](https://github.com/jaysonwu991/oxide/releases), and the
+newest of them sits at the permanent
+[desktop-latest](https://github.com/jaysonwu991/oxide/releases/tag/desktop-latest)
+links in [Installers](#installers). See
 [docs/desktop.md](docs/desktop.md) for the layout, approvals, change cards,
 shortcuts, signing, and packaging.
 

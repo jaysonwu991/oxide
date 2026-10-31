@@ -66,7 +66,22 @@ cargo install --path crates/cli
 ## Desktop app
 
 Prebuilt bundles are drafted under `desktop-v*` releases on the
-[releases page](https://github.com/jaysonwu991/oxide/releases). To build from
+[releases page](https://github.com/jaysonwu991/oxide/releases), and the newest
+of each platform is also on the `desktop-latest`
+[release](https://github.com/jaysonwu991/oxide/releases/tag/desktop-latest),
+whose files are replaced on every publish. Since `/releases/latest` names the
+newest release of the repository as a whole — which may be a CLI or extension
+one — `desktop-latest` is what a permanent link is built on:
+
+| Platform | File |
+| --- | --- |
+| macOS, Apple Silicon | `Oxide-macos-arm64.dmg` |
+| macOS, Intel | `Oxide-macos-x64.dmg` |
+| Windows x64 | `Oxide-win-x64-Setup.exe` |
+| Linux x64 | `Oxide-linux-x86_64-Setup.AppImage`, or `Oxide-linux-x64-Setup.tar.gz` |
+| Linux arm64 | `Oxide-linux-arm64-Setup.AppImage`, or `Oxide-linux-arm64-Setup.tar.gz` |
+
+To build from
 source:
 
 ```sh
@@ -85,8 +100,9 @@ See [desktop.md](desktop.md) for signing and packaging details.
 ## VS Code extension
 
 Install **Oxide** (`jaysonwu991.oxide-vscode`) by downloading
-`oxide-vscode-<version>.vsix` from an `extension-v*`
-[release](https://github.com/jaysonwu991/oxide/releases) and running
+`oxide-vscode.vsix` from
+`releases/download/extension-latest/oxide-vscode.vsix` (or any `extension-v*`
+[release](https://github.com/jaysonwu991/oxide/releases)) and running
 **Extensions: Install from VSIX…** in VS Code. The extension drives the `oxide`
 CLI, so install the CLI first. To build it from source:
 
@@ -95,7 +111,7 @@ cd editors/vscode
 pnpm install
 pnpm run compile   # tsc -p .
 pnpm test          # compile, then node --test out/test/
-pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
+pnpm run package   # vsce package -> oxide-vscode.vsix
 ```
 
 ## Updating in place

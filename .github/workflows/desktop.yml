@@ -210,11 +210,13 @@ jobs:
 
       # The installers `docs/desktop.md` lists under **Release assets**, named
       # the way `oxide_core::updates::Component::Desktop::assets()` resolves
-      # them: one artifact per platform, with the version and the platform in
-      # its name. electron-builder also writes its own `latest*.yml` metadata
-      # and a blockmap beside the installer; this app's updater resolves the
-      # release through GitHub itself, so metadata describing a feed it does not
-      # read is left out.
+      # them: one artifact per platform, with the platform and architecture in
+      # its name and no version, so the newest installers keep the same names
+      # from release to release and `README.md` can link to them permanently.
+      # electron-builder also writes its own `latest*.yml` metadata and a
+      # blockmap beside the installer; this app's updater resolves the release
+      # through GitHub itself, so metadata describing a feed it does not read is
+      # left out.
       - uses: actions/upload-artifact@v4
         with:
           name: oxide-desktop-${{ matrix.artifact }}
@@ -254,3 +256,25 @@ jobs:
           find release-assets -type f -print0 \
             | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
           gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
+
+      # `/releases/latest` is the newest release of the repository, and three
+      # components publish into it, so a permanent installer link cannot be
+      # built on `latest`. This alias release holds the files under a tag that
+      # never moves and is replaced on every publish — `README.md` links to
+      # `releases/download/desktop-latest/Oxide-<platform>` for that reason. It
+      # is marked a pre-release so `/releases/latest` keeps pointing at a
+      # versioned release, which is what the CLI's manifest is resolved from.
+      - name: Refresh the desktop-latest alias
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          alias_tag=desktop-latest
+          if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
+              --title "Oxide Desktop installers" \
+              --notes "The newest desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-v*\` release is the one that names a version."
+          fi
+          find release-assets -type f -print0 \
+            | xargs -0 gh release upload "$alias_tag" --repo "${GITHUB_REPOSITORY}" --clobber

@@ -409,7 +409,7 @@
     "watch": "node ../../scripts/prepare-diagrams.mjs vscode && tsc -p . -w",
     "check": "tsc -p . --noEmit",
     "test": "pnpm run compile && node --test \"out/test/*.test.js\"",
-    "package": "vsce package"
+    "package": "vsce package --out oxide-vscode.vsix"
   },
   "packageManager": "pnpm@12.8.1",
   "devDependencies": {

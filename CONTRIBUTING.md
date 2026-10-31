@@ -246,7 +246,7 @@ Releases are automated by GitHub Actions:
    macOS arm64, Linux x64 and arm64, and Windows x64 installers with
    electron-builder, and drafts a release.
 4. `vscode.yml` triggers on `extension-v*` tags, runs the extension's type
-   check and unit tests, builds `oxide-vscode-<version>.vsix`, and attaches it
+   check and unit tests, builds `oxide-vscode.vsix`, and attaches it
    to the matching GitHub Release.
 
 The CLI, the desktop app, and the VS Code extension release independently. A
@@ -258,7 +258,7 @@ need a new tag or release.
 Release notes are drafted on every push to `main`, one draft per component:
 `release-drafter.cli.yml` drafts the CLI release, `release-drafter.desktop.yml`
 the desktop release, and `release-drafter.vscode.yml` the VS Code extension
-release (published as `oxide-vscode-<version>.vsix`). Each config is pinned to
+release (published as `oxide-vscode.vsix`). Each config is pinned to
 its component's tag prefix (`v`, `desktop-v`, and `extension-v`), so a run only
 sees its own draft and resolves its next version from its own last release; the
 draft it produces already carries the tag to push. The extension prefix is
@@ -296,5 +296,15 @@ git push origin extension-vX.Y.Z
 ```
 
 The VS Code extension's release is attached by `vscode.yml`: it builds
-`oxide-vscode-<version>.vsix` with `pnpm run package` in `editors/vscode/` and
+`oxide-vscode.vsix` with `pnpm run package` in `editors/vscode/` and
 uploads it to the release the drafter already created for that tag.
+
+Both of those workflows also refresh an alias release — `desktop-latest` and
+`extension-latest` — with the same files under a tag that never moves, because
+`/releases/latest` names the newest release of the repository as a whole and
+three components publish into it, so it cannot address one component's
+installers. That is what the installer table in `README.md` links to, which is
+also why the app's and the extension's files carry no version in their names;
+the CLI's keep theirs, since the installers read the version out of the
+manifest. The alias release is a pre-release so `/releases/latest` keeps
+naming a versioned release.

@@ -1246,7 +1246,7 @@ are on screen, so nothing offered belongs to a step the reader has left:
   and the day it went out (`released_at`), with the facts under them: the version
   this app runs, the version it would install (`0.34.0`), the installation the
   app found itself in and its path, and the installer it would fetch —
-  `Oxide-0.34.0-macos-arm64.dmg` on this Mac, the `-Setup.AppImage` on Linux,
+  `Oxide-macos-arm64.dmg` on this Mac, the `-Setup.AppImage` on Linux,
   the `-Setup.exe` on Windows. **Update** appears only where this copy may be written
   over from inside the app; **Release notes** — the release page, in the system
   browser — appears where it may not, and where the release carried no notes to
@@ -1393,15 +1393,16 @@ carried beside them as `Resources/harness/oxide-desktop`
 binary so it is signed along with the bundle that runs it.
 
 Each build writes to `crates/desktop/artifacts/`, named the way
-`oxide_core::updates::Component::Desktop` resolves a release's assets — the
-version first, the way the CLI's own archives are named: a
-`Oxide-<version>-macos-<arch>.dmg`, a
-`Oxide-<version>-linux-<arch>-Setup.AppImage` and a
-`Oxide-<version>-linux-<arch>-Setup.tar.gz` for each Linux architecture, and a
-`Oxide-<version>-win-<arch>-Setup.exe`. electron-builder spells an AppImage's x64
+`oxide_core::updates::Component::Desktop` resolves a release's assets: a
+`Oxide-macos-<arch>.dmg`, a
+`Oxide-linux-<arch>-Setup.AppImage` and a
+`Oxide-linux-<arch>-Setup.tar.gz` for each Linux architecture, and a
+`Oxide-win-<arch>-Setup.exe`. None of them carries a version, unlike the CLI's
+archives: the same names are republished to the `desktop-latest` release, and
+the links `README.md` points at are those. electron-builder spells an AppImage's x64
 `x86_64` rather than `x64`, so the Linux x64 AppImage is
-`Oxide-<version>-linux-x86_64-Setup.AppImage` while its archive is
-`Oxide-<version>-linux-x64-Setup.tar.gz` — the spelling the build really writes,
+`Oxide-linux-x86_64-Setup.AppImage` while its archive is
+`Oxide-linux-x64-Setup.tar.gz` — the spelling the build really writes,
 which is the one the updater resolves. One artifact per platform is published,
 under the one name the updater resolves. electron-builder also writes its own `latest*.yml`
 metadata and a blockmap beside the installer; this app resolves its release
@@ -1527,19 +1528,19 @@ shell history.
 ## Release assets
 
 Each `desktop-v*` release carries installers for the five platforms the app is
-built for. Pick the asset whose platform matches the machine; each name carries
-the version and the platform, read off the release it belongs to, and each is
-published under that one name:
+built for. Pick the asset whose platform matches the machine; the name carries
+the platform and is the same from release to release, so the versioned release
+the file came from is the only place its version is written down:
 
 | Asset | Platform |
 | --- | --- |
-| `Oxide-<v>-macos-arm64.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
-| `Oxide-<v>-macos-x64.dmg` | macOS, Intel (`uname -m` → `x86_64`) |
-| `Oxide-<v>-linux-x86_64-Setup.AppImage` | Linux x64 (the file the app replaces itself with) |
-| `Oxide-<v>-linux-x64-Setup.tar.gz` | Linux x64, an archive to unpack by hand |
-| `Oxide-<v>-linux-arm64-Setup.AppImage` | Linux arm64 |
-| `Oxide-<v>-linux-arm64-Setup.tar.gz` | Linux arm64, an archive to unpack by hand |
-| `Oxide-<v>-win-x64-Setup.exe` | Windows x64 (a one-click, per-user install) |
+| `Oxide-macos-arm64.dmg` | macOS, Apple Silicon (`uname -m` → `arm64`) |
+| `Oxide-macos-x64.dmg` | macOS, Intel (`uname -m` → `x86_64`) |
+| `Oxide-linux-x86_64-Setup.AppImage` | Linux x64 (the file the app replaces itself with) |
+| `Oxide-linux-x64-Setup.tar.gz` | Linux x64, an archive to unpack by hand |
+| `Oxide-linux-arm64-Setup.AppImage` | Linux arm64 |
+| `Oxide-linux-arm64-Setup.tar.gz` | Linux arm64, an archive to unpack by hand |
+| `Oxide-win-x64-Setup.exe` | Windows x64 (a one-click, per-user install) |
 
 Both Apple Silicon and Intel Macs resolve their own disk image through
 `Component::Desktop`. electron-builder's own update metadata
@@ -1549,7 +1550,7 @@ resolves its release through GitHub itself and installs the artifact
 Linux the AppImage, Windows the setup — rather than a feed beside it.
 
 The CLI archives (`Oxide-<version>-<platform>.tar.gz` and
-`Oxide-<version>-win-x64.zip`) plus
+`Oxide-win-x64.zip`) plus
 `install.sh`/`install.ps1` live in the separate `v*` CLI releases, not here; see
 [install.md](install.md).
 
@@ -1559,6 +1560,9 @@ the release job: each build job uploads what it produced — `*.dmg`, `*.AppImag
 the only job granted `contents: write`, and the one that
 runs for a `desktop-v*` tag alone — preserves the existing draft's notes, uploads
 all installers and publishes the release. If no draft exists, it creates one
-with generated notes before uploading and publishing. A
+with generated notes before uploading and publishing. It then refreshes the
+`desktop-latest` alias release — the same files again, at a tag that never moves
+and is marked a pre-release so `/releases/latest` keeps naming a versioned
+release — which is what the installer table in `README.md` links to. A
 `workflow_dispatch` build publishes nothing and needs no more than a read-only
 token.

@@ -696,35 +696,33 @@ console.log("the release");
 // breaks, and a rename anybody could make by hand. electron-builder spells an
 // AppImage's x64 `x86_64`, so the arch the AppImage template is expanded with
 // is that spelling while the archive's is `x64`.
-const versioned = (name) => `Oxide-${packaged.version}-${name}`;
+// The names carry no version — the newest installers are also published to the
+// `desktop-latest` release that `README.md` links to, so a name that moved with
+// every release would break those links.
 const artifacts = [
-  { platform: "mac", arch: "arm64", ext: "dmg", asset: versioned("macos-arm64.dmg") },
-  { platform: "mac", arch: "x64", ext: "dmg", asset: versioned("macos-x64.dmg") },
+  { platform: "mac", arch: "arm64", ext: "dmg", asset: "Oxide-macos-arm64.dmg" },
+  { platform: "mac", arch: "x64", ext: "dmg", asset: "Oxide-macos-x64.dmg" },
   {
     platform: "linux",
     arch: "x86_64",
     ext: "AppImage",
-    asset: versioned("linux-x86_64-Setup.AppImage"),
+    asset: "Oxide-linux-x86_64-Setup.AppImage",
   },
   {
     platform: "linux",
     arch: "arm64",
     ext: "tar.gz",
-    asset: versioned("linux-arm64-Setup.tar.gz"),
+    asset: "Oxide-linux-arm64-Setup.tar.gz",
   },
-  { platform: "win", arch: "x64", ext: "exe", asset: versioned("win-x64-Setup.exe") },
+  { platform: "win", arch: "x64", ext: "exe", asset: "Oxide-win-x64-Setup.exe" },
 ];
 const named = artifacts.map(({ platform, arch, ext, asset }) => {
   const template = scalar(block(builder, platform), "artifactName");
   const expanded = template
     .replace("${arch}", arch)
     .replace("${ext}", ext)
-    .replace("${name}", "Oxide")
-    .replace("${version}", packaged.version);
-  // The core builds the name from the release's own version, so what it holds
-  // is the pattern rather than this build's placeholder version.
-  const pattern = asset.replace(`-${packaged.version}-`, "-{version}-");
-  return { asset, expanded, template, pattern };
+    .replace("${name}", "Oxide");
+  return { asset, expanded, template, pattern: asset };
 });
 const resolved = ({ pattern }) => coreUpdates.includes(`"${pattern}"`);
 check(
@@ -739,6 +737,27 @@ check(
         `${template} → ${expanded} ≠ ${asset} / ${pattern}`,
     )
     .join(" | "),
+);
+// The links `README.md` publishes are the other end of those names: each asks
+// for an artifact the core resolves, at a tag that never moves, and each
+// workflow refreshes that tag on every publish. A name renamed on one side, or
+// a tag the workflow stopped writing, is a dead download on the front page.
+const readme = text(`${root}README.md`);
+const aliases = [
+  ...readme.matchAll(/releases\/download\/(desktop|extension)-latest\/([^)\s]+)/g),
+];
+const workflows = {
+  desktop: text(`${root}.github/workflows/desktop.yml`),
+  extension: text(`${root}.github/workflows/vscode.yml`),
+};
+check(
+  "linked `README.md` at installers the alias releases really carry",
+  aliases.length > 0 &&
+    aliases.every(([, tag, name]) => workflows[tag] && coreUpdates.includes(`"${name}"`)) &&
+    Object.entries(workflows).every(([tag, workflow]) =>
+      workflow.includes(`alias_tag=${tag}-latest`),
+    ),
+  aliases.map(([, tag, name]) => `${tag}:${name}`).join(", "),
 );
 // A target list and the names are two halves of one release: a name for an
 // archive nothing builds is a download that is never there.

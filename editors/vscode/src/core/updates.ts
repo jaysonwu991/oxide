@@ -10,7 +10,7 @@
 /// One artifact a release carries, as `oxide_core::updates::Artifact`
 /// serializes it.
 export interface UpdateAsset {
-  /// The file's name on the release page (`oxide-vscode-0.34.0.vsix`).
+  /// The file's name on the release page (`oxide-vscode.vsix`).
   name: string;
   /// Where to fetch it.
   url: string;

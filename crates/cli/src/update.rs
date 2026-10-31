@@ -535,10 +535,10 @@ mod tests {
         assert!(!check.installable);
         assert!(check.path.is_empty());
         let asset = check.asset.as_ref().unwrap();
-        assert_eq!(asset.name, "Oxide-0.34.0-macos-arm64.dmg");
+        assert_eq!(asset.name, "Oxide-macos-arm64.dmg");
         assert_eq!(
             asset.url,
-            "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide-0.34.0-macos-arm64.dmg"
+            "https://github.com/jaysonwu991/oxide/releases/download/desktop-v0.34.0/Oxide-macos-arm64.dmg"
         );
         assert!(check
             .advice

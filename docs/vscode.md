@@ -1137,7 +1137,7 @@ none.
 **Oxide: Check for Updates...** (in the command palette, and on the panel's
 title where the other pane-level commands sit) reports the newest release of
 **this extension** and installs it. The extension releases from its own train
-(`extension-v*`) carrying `oxide-vscode-<version>.vsix`, and that is what the
+(`extension-v*`) carrying `oxide-vscode.vsix`, and that is what the
 panel offers: the check is `oxide update --check --json --component extension
 --current <the version loaded here>` (`core/updates.ts` composes the arguments
 and parses the answer, `core/dialogs.ts` composes the dialog, so the webview
@@ -1163,7 +1163,7 @@ about this extension alone, since its answer raises a notification rather than
 this dialog.
 
 A release resolved as a VSIX is a row — **Install 0.34.0**, naming
-`oxide-vscode-0.34.0.vsix` — and a release with nothing this panel can install
+`oxide-vscode.vsix` — and a release with nothing this panel can install
 (a train that published no `.vsix`) is reported with the check's own sentence
 naming the file to install by hand, with no row to press. **Release notes**
 opens the release page in the system browser through `openUrl`. The row's
@@ -1177,7 +1177,7 @@ that said in the dialog. The `.vsix` is then handed to VS Code itself —
 installing an extension means (where it goes, and whether the package is this
 extension at all), and the dialog reports what it put in place: `Oxide 0.34.0
 is installed`, `Was 0.33.0 · Installed 0.34.0 ·
-oxide-vscode-0.34.0.vsix`, with **Restart Window** (which reloads the window,
+oxide-vscode.vsix`, with **Restart Window** (which reloads the window,
 since the extension running here is the one that was there when it was
 replaced) and **Close**. The temporary directory does not outlive the install,
 whether it worked or not, and one install runs at a time.
@@ -1366,7 +1366,7 @@ cd editors/vscode
 pnpm install
 pnpm run compile   # tsc -p .
 pnpm test          # compile, then node --test out/test/
-pnpm run package   # vsce package -> oxide-vscode-<version>.vsix
+pnpm run package   # vsce package -> oxide-vscode.vsix
 ```
 
 Press <kbd>F5</kbd> with the folder open to launch an Extension Development
@@ -1519,7 +1519,11 @@ Release notes are drafted on every push to `main` by
 it resolves versions from its own releases only (the prefix avoids the CLI's
 `v*` tags and its drafter). The draft already carries the tag to push. Pushing
 that tag runs `.github/workflows/vscode.yml`, which builds the VSIX with
-`pnpm run package` and attaches `oxide-vscode-<version>.vsix` to the release.
+`pnpm run package` and attaches `oxide-vscode.vsix` to the release. It also
+refreshes the `extension-latest` alias release with the same file, which is the
+permanent download link `README.md` publishes — `/releases/latest` names the
+newest release of the repository as a whole, so it cannot address this
+component's file.
 
 ### Worktree lifecycle
 

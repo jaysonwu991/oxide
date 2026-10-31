@@ -67,7 +67,7 @@ describe("update download", () => {
     const server = await serve(vsix);
     try {
       const download = await downloadUpdate({
-        name: "oxide-vscode-0.34.0.vsix",
+        name: "oxide-vscode.vsix",
         url: `${server.url}/release.vsix`,
         digest,
       });
@@ -75,7 +75,7 @@ describe("update download", () => {
       assert.equal(download.bytes, vsix.length);
       assert.equal(fs.readFileSync(download.file).toString(), vsix.toString());
       // The file is named what it is, since VS Code installs it from its path.
-      assert.equal(path.basename(download.file), "oxide-vscode-0.34.0.vsix");
+      assert.equal(path.basename(download.file), "oxide-vscode.vsix");
       // And it sits in a directory of its own that only this user can read: an
       // extension package is not a file to leave in a shared temp directory.
       // Windows has no permission bits to read back — Node synthesizes a mode
@@ -97,7 +97,7 @@ describe("update download", () => {
     const server = await serve(vsix, "/start.vsix");
     try {
       const download = await downloadUpdate({
-        name: "oxide-vscode-0.34.0.vsix",
+        name: "oxide-vscode.vsix",
         url: `${server.url}/start.vsix`,
         digest,
       });
@@ -115,7 +115,7 @@ describe("update download", () => {
     try {
       await assert.rejects(
         downloadUpdate({
-          name: "oxide-vscode-0.34.0.vsix",
+          name: "oxide-vscode.vsix",
           url: `${server.url}/release.vsix`,
           digest,
         }),
@@ -136,7 +136,7 @@ describe("update download", () => {
     try {
       await assert.rejects(
         downloadUpdate({
-          name: "oxide-vscode-0.34.0.vsix",
+          name: "oxide-vscode.vsix",
           url: `${server.url}/missing.vsix`,
           digest,
         }),
@@ -155,7 +155,7 @@ describe("update download", () => {
     const server = await serve(vsix);
     try {
       const download = await downloadUpdate({
-        name: "oxide-vscode-0.34.0.vsix",
+        name: "oxide-vscode.vsix",
         url: `${server.url}/release.vsix`,
         digest: "",
       });
@@ -202,12 +202,12 @@ describe("update download", () => {
   });
 
   it("installs from a name VS Code can read, and never from a path", () => {
-    assert.equal(fileNameOf("oxide-vscode-0.34.0.vsix"), "oxide-vscode-0.34.0.vsix");
+    assert.equal(fileNameOf("oxide-vscode.vsix"), "oxide-vscode.vsix");
     // A release's file name is a file name: anything that looks like a path, or
     // that is not a VSIX at all, is replaced by a plain one rather than
     // followed out of the directory the download owns.
     assert.equal(fileNameOf("../../etc/passwd"), "oxide-vscode.vsix");
-    assert.equal(fileNameOf("oxide-vscode-0.34.0.zip"), "oxide-vscode.vsix");
+    assert.equal(fileNameOf("oxide-vscode.zip"), "oxide-vscode.vsix");
     assert.equal(fileNameOf(""), "oxide-vscode.vsix");
   });
 });

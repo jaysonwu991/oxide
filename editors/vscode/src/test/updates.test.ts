@@ -40,11 +40,11 @@ const answer = JSON.stringify(
     installable: false,
     path: "",
     advice:
-      "Update available: the Oxide extension for VS Code installs this release itself (Check for Updates…), or oxide-vscode-0.34.0.vsix is on the release page.",
+      "Update available: the Oxide extension for VS Code installs this release itself (Check for Updates…), or oxide-vscode.vsix is on the release page.",
     releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/extension-v0.34.0",
     asset: {
-      name: "oxide-vscode-0.34.0.vsix",
-      url: "https://github.com/jaysonwu991/oxide/releases/download/extension-v0.34.0/oxide-vscode-0.34.0.vsix",
+      name: "oxide-vscode.vsix",
+      url: "https://github.com/jaysonwu991/oxide/releases/download/extension-v0.34.0/oxide-vscode.vsix",
       digest: "sha256:e02cf08397c21fc2b6f35e1d1220ac1e68bc056dbdef2ae7eb181308146fc101",
     },
   },
@@ -66,8 +66,8 @@ describe("update check", () => {
     // Whether the CLI may replace itself says nothing about this panel, which
     // installs its own release: the check reports the artifact for that.
     assert.equal(check.installable, false);
-    assert.equal(check.asset?.name, "oxide-vscode-0.34.0.vsix");
-    assert.match(check.asset?.url ?? "", /extension-v0\.34\.0\/oxide-vscode-0\.34\.0\.vsix$/);
+    assert.equal(check.asset?.name, "oxide-vscode.vsix");
+    assert.match(check.asset?.url ?? "", /extension-v0\.34\.0\/oxide-vscode\.vsix$/);
     assert.match(check.asset?.digest ?? "", /^sha256:[0-9a-f]{64}$/);
   });
 
@@ -105,14 +105,14 @@ describe("update check", () => {
   it("picks the VSIX out of the release", () => {
     const check = parseUpdateCheck(answer);
     assert.ok(check);
-    assert.equal(updateVsix(check)?.name, "oxide-vscode-0.34.0.vsix");
+    assert.equal(updateVsix(check)?.name, "oxide-vscode.vsix");
     // Nothing to install means nothing to install: a release already current,
     // one whose artifact this platform cannot use, and one whose file is not a
     // VSIX at all are all refused here rather than handed to VS Code.
     assert.equal(updateVsix({ ...check, updateAvailable: false }), null);
     assert.equal(updateVsix({ ...check, asset: null }), null);
     assert.equal(
-      updateVsix({ ...check, asset: { ...check.asset!, name: "oxide-vscode-0.34.0.zip" } }),
+      updateVsix({ ...check, asset: { ...check.asset!, name: "oxide-vscode.zip" } }),
       null,
     );
   });
@@ -302,7 +302,7 @@ describe("the check a launch makes on its own", () => {
     // Code, so the row the notification raises is the one that fetches it: the
     // panel installs from that row rather than pointing at the release page.
     assert.deepEqual(action, { k: "install", vsix: check.asset });
-    assert.equal(action.k === "install" ? action.vsix.name : "", "oxide-vscode-0.34.0.vsix");
+    assert.equal(action.k === "install" ? action.vsix.name : "", "oxide-vscode.vsix");
   });
 
   it("points at a release it has no file for, and says nothing when there is none", () => {
@@ -314,7 +314,7 @@ describe("the check a launch makes on its own", () => {
     // offering an install that could not run.
     assert.deepEqual(backgroundAction({ ...check, asset: null }), { k: "offer" });
     assert.deepEqual(
-      backgroundAction({ ...check, asset: { ...check.asset!, name: "oxide-vscode-0.34.0.zip" } }),
+      backgroundAction({ ...check, asset: { ...check.asset!, name: "oxide-vscode.zip" } }),
       { k: "offer" },
     );
     // A release already current — which is also what a check pinned to a

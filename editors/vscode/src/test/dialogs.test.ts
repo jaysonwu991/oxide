@@ -797,11 +797,11 @@ describe("update dialog", () => {
     installable: false,
     path: "",
     advice:
-      "Update available: the Oxide extension for VS Code installs this release itself (Check for Updates…), or oxide-vscode-0.34.0.vsix is on the release page.",
+      "Update available: the Oxide extension for VS Code installs this release itself (Check for Updates…), or oxide-vscode.vsix is on the release page.",
     releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/extension-v0.34.0",
     asset: {
-      name: "oxide-vscode-0.34.0.vsix",
-      url: "https://github.com/jaysonwu991/oxide/releases/download/extension-v0.34.0/oxide-vscode-0.34.0.vsix",
+      name: "oxide-vscode.vsix",
+      url: "https://github.com/jaysonwu991/oxide/releases/download/extension-v0.34.0/oxide-vscode.vsix",
       digest: "sha256:e02cf08397c21fc2b6f35e1d1220ac1e68bc056dbdef2ae7eb181308146fc101",
     },
   };
@@ -820,7 +820,7 @@ describe("update dialog", () => {
     assert.match(dialog.subtitle, /this release of the extension/);
     assert.match(dialog.note, /Current 0\.32\.0/);
     assert.match(dialog.note, /Latest 0\.34\.0/);
-    assert.match(dialog.note, /oxide-vscode-0\.34\.0\.vsix/);
+    assert.match(dialog.note, /oxide-vscode\.vsix/);
     assert.deepEqual(
       dialog.rows.map((row) => row.label),
       ["Install 0.34.0", "Release notes", "Close"],
@@ -831,8 +831,8 @@ describe("update dialog", () => {
     );
     // The row installs the release that was checked, and the release page its
     // own URL; neither is looked up again when the click arrives.
-    assert.equal(dialog.rows[0].value, "oxide-vscode-0.34.0.vsix");
-    assert.equal(dialog.rows[0].detail, "Downloads and installs oxide-vscode-0.34.0.vsix");
+    assert.equal(dialog.rows[0].value, "oxide-vscode.vsix");
+    assert.equal(dialog.rows[0].detail, "Downloads and installs oxide-vscode.vsix");
     assert.equal(dialog.rows[1].value, check.releaseUrl);
     assert.equal(dialog.refreshLabel, "", "rechecking is the command, not a row");
   });
