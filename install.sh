@@ -108,12 +108,15 @@ fetch_manifest() {
         || fetch "${BASE_URL}/releases/download/${tag}/${LEGACY_MANIFEST_NAME}"
 }
 
-resolve_url() {
+resolve_urls() {
     platform="$1"
 
     if [ -n "$VERSION" ]; then
         ver="${VERSION#v}"
-        printf '%s/releases/download/v%s/Oxide-%s-%s.tar.gz' "$BASE_URL" "$ver" "$ver" "$platform"
+        printf '%s/releases/download/v%s/Oxide-%s.tar.gz\n' "$BASE_URL" "$ver" "$platform"
+        # A release from before the names lost their version carries the
+        # versioned one; a pinned install of such a release still resolves.
+        printf '%s/releases/download/v%s/Oxide-%s-%s.tar.gz\n' "$BASE_URL" "$ver" "$ver" "$platform"
         return
     fi
 
@@ -123,7 +126,7 @@ resolve_url() {
     ver="$(printf '%s\n' "$manifest" | awk -F': ' '/^version:/ {print $2; exit}')"
     [ -n "$ver" ] || err "could not read version from ${MANIFEST_NAME}"
     asset="$(manifest_asset "$manifest" "$platform")"
-    printf '%s/releases/download/%s/%s' "$BASE_URL" "$ver" "$asset"
+    printf '%s/releases/download/%s/%s\n' "$BASE_URL" "$ver" "$asset"
 }
 
 verify_checksum() {
@@ -152,14 +155,23 @@ main() {
     command -v mktemp >/dev/null 2>&1 || err "mktemp is required"
 
     platform="$(detect_platform)"
-    url="$(resolve_url "$platform")"
-    archive="${url##*/}"
+    urls="$(resolve_urls "$platform")"
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
-    info "downloading ${archive} for ${platform}"
-    download "$url" "${tmp}/${archive}" || err "download failed for ${archive}"
+    url=""
+    for candidate in $urls; do
+        candidate_name="${candidate##*/}"
+        info "downloading ${candidate_name} for ${platform}"
+        if download "$candidate" "${tmp}/${candidate_name}" 2>/dev/null; then
+            url="$candidate"
+            break
+        fi
+    done
+    [ -n "$url" ] \
+        || err "download failed for ${platform}; is a release published for it?"
+    archive="${url##*/}"
 
     if download "${url}.sha256" "${tmp}/${archive}.sha256" 2>/dev/null; then
         verify_checksum "${tmp}/${archive}" "${tmp}/${archive}.sha256"
