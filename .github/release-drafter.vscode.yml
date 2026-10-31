@@ -136,7 +136,7 @@ template: |
 
   ## Install
 
-  Download `oxide-vscode-$RESOLVED_VERSION.vsix` from the assets below, then in
+  Download `oxide-vscode.vsix` from the assets below, then in
   VS Code run **Extensions: Install from VSIX…**. An installed extension keeps
   itself current: **Oxide: Check for Updates...** downloads this train's newest
   `.vsix` and hands it to VS Code.

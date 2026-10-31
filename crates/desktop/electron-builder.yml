@@ -9,11 +9,13 @@
 #
 # The artifact names are not decoration. The app updates itself from its own
 # release, and `oxide_core::updates::Component::Desktop` resolves the assets a
-# release carries by name — `Oxide-<version>-macos-<arch>.dmg`,
-# `Oxide-<version>-linux-<arch>-Setup.<ext>`,
-# `Oxide-<version>-win-<arch>-Setup.exe` — so a release whose files are named
-# anything else is one the app cannot see. Renaming one here means renaming it
-# in `crates/core/src/updates.rs` too, which is what its own test holds.
+# release carries by name — `Oxide-macos-<arch>.dmg`,
+# `Oxide-linux-<arch>-Setup.<ext>`, `Oxide-win-<arch>-Setup.exe` — so a release
+# whose files are named anything else is one the app cannot see. Renaming one
+# here means renaming it in `crates/core/src/updates.rs` too, which is what its
+# own test holds. The names carry no version: the newest installers are also
+# published to the `desktop-latest` release, which is what `README.md` links to,
+# and a name that moved with every release would break those links.
 # electron-builder spells an AppImage's x64 as `x86_64` rather than `x64`, so
 # that one name carries the spelling the build really writes.
 appId: dev.oxide.desktop
@@ -35,7 +37,7 @@ mac:
   target:
     - target: dmg
       # Default to the host architecture locally; CI selects its matrix arch.
-  artifactName: Oxide-${version}-macos-${arch}.${ext}
+  artifactName: Oxide-macos-${arch}.${ext}
   icon: icons/icon.icns
   # A hardened runtime is what notarization requires; these are the two
   # exceptions Electron needs for its own JavaScript engine, and the third lets
@@ -57,7 +59,7 @@ win:
     - target: nsis
       arch:
         - x64
-  artifactName: Oxide-${version}-win-${arch}-Setup.${ext}
+  artifactName: Oxide-win-${arch}-Setup.${ext}
   icon: icons/icon.ico
   extraResources:
     - from: target/release/oxide-desktop.exe
@@ -85,7 +87,7 @@ linux:
       arch:
         - x64
         - arm64
-  artifactName: Oxide-${version}-linux-${arch}-Setup.${ext}
+  artifactName: Oxide-linux-${arch}-Setup.${ext}
   icon: icons/icon.png
   category: Development
   synopsis: An AI coding agent

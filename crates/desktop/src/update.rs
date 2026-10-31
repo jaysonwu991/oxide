@@ -830,7 +830,7 @@ mod tests {
         // The disk image is what replaces it, so the app installs the release
         // itself and there is nothing to advise instead.
         let check = check_for(
-            &release("Oxide-0.34.0-macos-arm64.dmg"),
+            &release("Oxide-macos-arm64.dmg"),
             &installation,
             "acme/oxide",
             "0.33.0",
@@ -848,7 +848,7 @@ mod tests {
         // Running the newest release has nothing to offer, whatever the
         // installation is.
         let fresh = check_for(
-            &release("Oxide-0.34.0-macos-arm64.dmg"),
+            &release("Oxide-macos-arm64.dmg"),
             &installation,
             "acme/oxide",
             "0.34.0",
@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(installation.path, None);
 
         let check = check_for(
-            &release("Oxide-0.34.0-macos-arm64.dmg"),
+            &release("Oxide-macos-arm64.dmg"),
             &installation,
             "acme/oxide",
             "0.0.0",
@@ -899,7 +899,7 @@ mod tests {
             .advice
             .as_deref()
             .unwrap()
-            .contains("Oxide-0.34.0-macos-arm64.dmg"));
+            .contains("Oxide-macos-arm64.dmg"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -913,7 +913,7 @@ mod tests {
         assert_eq!(installation.label, "installer");
         assert_eq!(installation.path.as_deref(), Some(directory.as_path()));
         assert!(installation.installable(
-            release("Oxide-0.34.0-win-x64-Setup.exe")
+            release("Oxide-win-x64-Setup.exe")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
@@ -921,7 +921,7 @@ mod tests {
         // this copy installs from, and the reader is told which download to
         // take instead.
         let check = check_for(
-            &release("Oxide-0.34.0-linux-x86_64-Setup.AppImage"),
+            &release("Oxide-linux-x86_64-Setup.AppImage"),
             &installation,
             "acme/oxide",
             "0.33.0",
@@ -952,7 +952,7 @@ mod tests {
         assert_eq!(installation.label, "source build");
 
         let check = check_for(
-            &release("Oxide-0.34.0-linux-x64-Setup.tar.gz"),
+            &release("Oxide-linux-x64-Setup.tar.gz"),
             &installation,
             "acme/oxide",
             "0.33.0",
@@ -962,7 +962,7 @@ mod tests {
             check
                 .advice
                 .unwrap()
-                .contains("Oxide-0.34.0-linux-x64-Setup.tar.gz"),
+                .contains("Oxide-linux-x64-Setup.tar.gz"),
             "the download is named"
         );
 
@@ -1012,12 +1012,12 @@ mod tests {
         assert_eq!(installation.path.as_deref(), Some(directory.as_path()));
         // The installer is what replaces the installation it made.
         assert!(installation.installable(
-            release("Oxide-0.34.0-win-x64-Setup.exe")
+            release("Oxide-win-x64-Setup.exe")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
         assert!(!installation.installable(
-            release("Oxide-0.34.0-macos-arm64.dmg")
+            release("Oxide-macos-arm64.dmg")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
@@ -1029,7 +1029,7 @@ mod tests {
         let source = installation_of(&checkout, "windows", Some(&data_root), None);
         assert_eq!(source.label, "source build");
         assert!(!source.installable(
-            release("Oxide-0.34.0-win-x64-Setup.exe")
+            release("Oxide-win-x64-Setup.exe")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
@@ -1163,7 +1163,7 @@ mod tests {
         // be the one the scratch cleanup cannot take away.
         let marks = root.join("installed.txt");
         let work = WorkDir::new().unwrap();
-        let download = work.path().join("Oxide-0.34.0-win-x64-Setup.exe");
+        let download = work.path().join("Oxide-win-x64-Setup.exe");
         fs::write(
             &download,
             format!("#!/bin/sh\necho installed > {}\n", marks.display()),
@@ -1196,7 +1196,7 @@ mod tests {
 
         // The program that was started is the staged copy, which outlives the
         // call and the scratch directory the download landed in.
-        let staged = staging.join("Oxide-0.34.0-win-x64-Setup.exe");
+        let staged = staging.join("Oxide-win-x64-Setup.exe");
         assert!(
             staged.is_file(),
             "the setup is staged beside the app's state"
@@ -1226,7 +1226,7 @@ mod tests {
         assert_eq!(installation.path.as_deref(), Some(image.as_path()));
         assert!(installation.replaces_itself(), "the app owns this file");
         assert!(installation.installable(
-            release("Oxide-0.34.0-linux-x86_64-Setup.AppImage")
+            release("Oxide-linux-x86_64-Setup.AppImage")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
@@ -1234,7 +1234,7 @@ mod tests {
         // is replaced with, since replacing a file with a directory is another
         // installation altogether.
         assert!(!installation.installable(
-            release("Oxide-0.34.0-linux-x64-Setup.tar.gz")
+            release("Oxide-linux-x64-Setup.tar.gz")
                 .artifact("acme/oxide")
                 .as_ref()
         ));
@@ -1302,11 +1302,7 @@ mod tests {
         let bundle = bundle_fixture(&root);
         let bundle_install =
             installation_of(&bundle.join("Contents/MacOS/Oxide"), "macos", None, None);
-        let notice = Notice::from_release(
-            &release("Oxide-0.34.0-macos-arm64.dmg"),
-            "acme/oxide",
-            1_000,
-        );
+        let notice = Notice::from_release(&release("Oxide-macos-arm64.dmg"), "acme/oxide", 1_000);
 
         // A bundle the user installed, with a newer release to hand: done
         // without asking, since the app is the one that put it there.
@@ -1319,7 +1315,7 @@ mod tests {
         let image = appimage(&root);
         let image_install = installation_of(&image, "linux", None, Some(&image));
         let image_notice = Notice::from_release(
-            &release("Oxide-0.34.0-linux-x86_64-Setup.AppImage"),
+            &release("Oxide-linux-x86_64-Setup.AppImage"),
             "acme/oxide",
             1_000,
         );
@@ -1341,11 +1337,8 @@ mod tests {
         let data_root = root.join("LocalAppData");
         let (_directory, binary) = installed_copy(&data_root, "Programs", "Oxide");
         let installed = installation_of(&binary, "windows", Some(&data_root), None);
-        let windows = Notice::from_release(
-            &release("Oxide-0.34.0-win-x64-Setup.exe"),
-            "acme/oxide",
-            1_000,
-        );
+        let windows =
+            Notice::from_release(&release("Oxide-win-x64-Setup.exe"), "acme/oxide", 1_000);
         assert!(!launch_installs(&windows, "0.33.0", &installed));
 
         fs::remove_dir_all(root).unwrap();

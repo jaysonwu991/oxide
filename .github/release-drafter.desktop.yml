@@ -133,16 +133,16 @@ template: |
   ## Install
 
   Download the installer for your platform from the assets below. The app is
-  built for Apple Silicon and for 64-bit Windows and Linux; there is no Intel
-  Mac build.
+  built for Apple Silicon, Intel and 64-bit Windows and Linux.
 
-  - **macOS, Apple Silicon** — `Oxide-<version>-macos-arm64.dmg`
-  - **Windows x64** — `Oxide-<version>-win-x64-Setup.exe`, a one-click install for the
+  - **macOS, Apple Silicon** — `Oxide-macos-arm64.dmg`
+  - **macOS, Intel** — `Oxide-macos-x64.dmg`
+  - **Windows x64** — `Oxide-win-x64-Setup.exe`, a one-click install for the
     user who runs it
-  - **Linux x64** — `Oxide-<version>-linux-x86_64-Setup.AppImage`, or
-    `Oxide-<version>-linux-x64-Setup.tar.gz` to unpack by hand
-  - **Linux arm64** — `Oxide-<version>-linux-arm64-Setup.AppImage`, or
-    `Oxide-<version>-linux-arm64-Setup.tar.gz` to unpack by hand
+  - **Linux x64** — `Oxide-linux-x86_64-Setup.AppImage`, or
+    `Oxide-linux-x64-Setup.tar.gz` to unpack by hand
+  - **Linux arm64** — `Oxide-linux-arm64-Setup.AppImage`, or
+    `Oxide-linux-arm64-Setup.tar.gz` to unpack by hand
 
   On macOS the app is notarized only when this release was built with both an
   Apple Developer certificate and an App Store Connect key configured; a build

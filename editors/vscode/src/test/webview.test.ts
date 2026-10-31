@@ -2650,8 +2650,8 @@ describe("webview dialogs", () => {
         advice: "",
         releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/extension-v0.33.0",
         asset: {
-          name: "oxide-vscode-0.33.0.vsix",
-          url: "https://github.com/jaysonwu991/oxide/releases/download/extension-v0.33.0/oxide-vscode-0.33.0.vsix",
+          name: "oxide-vscode.vsix",
+          url: "https://github.com/jaysonwu991/oxide/releases/download/extension-v0.33.0/oxide-vscode.vsix",
           digest: "sha256:e02cf08397c21fc2b6f35e1d1220ac1e68bc056dbdef2ae7eb181308146fc101",
         },
       },
@@ -2668,7 +2668,7 @@ describe("webview dialogs", () => {
     assert.deepEqual(last(posted), {
       k: "dialogAction",
       action: "updateInstall",
-      value: "oxide-vscode-0.33.0.vsix",
+      value: "oxide-vscode.vsix",
     });
     byId.get("dialog")!.fire("click", { target: rows[1] });
     assert.deepEqual(last(posted), {
@@ -2694,7 +2694,7 @@ describe("webview dialogs", () => {
           installation: "",
           installable: false,
           path: "",
-          advice: "Update available: oxide-vscode-0.33.0.vsix is on the release page.",
+          advice: "Update available: oxide-vscode.vsix is on the release page.",
           releaseUrl: "https://github.com/jaysonwu991/oxide/releases/tag/extension-v0.33.0",
           asset: null,
         },
