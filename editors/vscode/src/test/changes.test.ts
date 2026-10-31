@@ -239,7 +239,7 @@ describe("opening a change in VS Code's diff editor", () => {
 
   it("reads the baseline side through the CLI, out of the shadow snapshot", () => {
     assert.deepEqual(changeArgs("src/main.rs", "abc123", "/tmp/project"), [
-      "changes",
+      "change",
       "show",
       "src/main.rs",
       "--baseline",
@@ -254,7 +254,7 @@ describe("opening a change in VS Code's diff editor", () => {
 
   it("puts a turn back through the CLI's own restore", () => {
     assert.deepEqual(undoArgs("/tmp/project", "abc123", "def456"), [
-      "changes",
+      "change",
       "undo",
       "--baseline",
       "abc123",
@@ -266,7 +266,7 @@ describe("opening a change in VS Code's diff editor", () => {
     // A CLI too old to report the state it left behind still restores, taken at
     // its word rather than refusing every card.
     assert.deepEqual(undoArgs("/tmp/project", "abc123", ""), [
-      "changes",
+      "change",
       "undo",
       "--baseline",
       "abc123",

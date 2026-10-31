@@ -356,7 +356,7 @@ export class ChatController {
   private pathCache: { root: string; paths: string[] } | null = null;
   /// A read already in flight, so a burst of keystrokes shares one walk.
   private pathLoad: Promise<string[]> | null = null;
-  /// The CLI's own catalog for this project (`oxide commands --json`) — the
+  /// The CLI's own catalog for this project (`oxide command --json`) — the
   /// built-in commands and the project's own commands, prompt templates and
   /// skills. It is what the terminal's `/` menu and the desktop app's palette
   /// are built from, so the panel's palette offers what the CLI resolves, and a
@@ -1309,7 +1309,7 @@ export class ChatController {
 
   private async readCommands(root: string): Promise<CommandEntry[]> {
     if (this.folder()?.uri.fsPath !== root) return [];
-    const result = await runCapture(this.binary(), ["commands", "--json"], root);
+    const result = await runCapture(this.binary(), ["command", "--json"], root);
     if (result.error || result.code !== 0) {
       const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
       this.output.appendLine(`commands --json failed: ${detail}`);
@@ -1709,7 +1709,7 @@ export class ChatController {
     if (!message && !this.contextCount) return;
     // The built-ins are the panel's own draws — the footer's chips under another
     // name, and `/mcp` and `/session` beside them — and the catalog is what says
-    // so: `oxide commands --json` declares each one's name and the front-ends
+    // so: `oxide command --json` declares each one's name and the front-ends
     // that perform it, so the panel keeps no list of its own. A
     // client command it has no action for is answered here rather than shipped
     // to the model as a prompt, while a configured command or a skill is
@@ -1723,6 +1723,15 @@ export class ChatController {
       }
       if (route?.kind === "refused") {
         this.showNotice(this.t("extension.Value0IsNotOneThisPanelRunsUseTheTerminal", "/{value0} is not one this panel runs — use the terminal.", { value0: route.name }));
+        return;
+      }
+      if (route?.kind === "unknown") {
+        this.showNotice(
+          route.closest
+            ? this.t("commands.unknownDidYouMean", "unknown command `{name}`. Did you mean `{closest}`?", { name: `/${route.name}`, closest: `/${route.closest}` })
+            : this.t("commands.unknown", "unknown command `{name}`. Type `/help` to see the commands here", { name: `/${route.name}` }),
+          "error",
+        );
         return;
       }
     }
@@ -2489,7 +2498,7 @@ export class ChatController {
   }
 
   /// The stored conversation of the thread being resumed, read by the CLI from
-  /// its own session file (`oxide sessions show --json`) and pushed into the
+  /// its own session file (`oxide session show --json`) and pushed into the
   /// transcript as finished items — what was said, and the calls the thread
   /// made with the results that answered them, so a thread that is mostly tool
   /// steps does not reopen as a bubble or two. The totals come with it, so the
@@ -2572,7 +2581,7 @@ export class ChatController {
     }
     await this.syncSessions();
     const notice = action === "archive"
-      ? this.t("extension.ThreadArchivedToPermanentlyDeleteItsLogRunOxideSessionsDeleteValue0FromItsProjectFolderToRestoreItRu", "Thread archived. To permanently delete its log, run oxide sessions delete {value0} from its project folder. To restore it, run oxide sessions unarchive {value1}.", { value0: id, value1: id })
+      ? this.t("extension.ThreadArchivedToPermanentlyDeleteItsLogRunOxideSessionsDeleteValue0FromItsProjectFolderToRestoreItRu", "Thread archived. To permanently delete its log, run oxide session delete {value0} from its project folder. To restore it, run oxide session unarchive {value1}.", { value0: id, value1: id })
       : this.t(operation === "pin" ? "extension.pinnedThread" : "extension.unpinnedThread", operation === "pin" ? "Pinned {name}." : "Unpinned {name}.", { name: session.label || id });
     this.showNotice(notice);
     if (this.dialog?.kind === "sessions") this.showSessions(notice);
@@ -2740,7 +2749,7 @@ export class ChatController {
   }
 
   /// `/permissions`: the tools this project allows without prompting, listed
-  /// from the shared `approvals.json` through `oxide approvals`. The rules are
+  /// from the shared `approvals.json` through `oxide approval`. The rules are
   /// the ones an `Always allow` answer saved, wherever that answer was given.
   async showApprovals(): Promise<void> {
     const cwd = this.cwd();

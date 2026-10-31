@@ -135,12 +135,12 @@ describe("buildTurnArgs", () => {
   });
 
   it("lists sessions for the project", () => {
-    assert.deepEqual(sessionsListArgs(), ["sessions", "list", "--json"]);
+    assert.deepEqual(sessionsListArgs(), ["session", "list", "--json"]);
   });
 
   it("reads one session's stored conversation, and changes its sidebar state", () => {
     assert.deepEqual(sessionShowArgs("fe0031b1", 60), [
-      "sessions",
+      "session",
       "show",
       "fe0031b1",
       "--tail",
@@ -148,7 +148,7 @@ describe("buildTurnArgs", () => {
       "--json",
     ]);
     for (const action of ["pin", "unpin", "archive"] as const) {
-      assert.deepEqual(sessionActionArgs("fe0031b1", action), ["sessions", action, "fe0031b1"]);
+      assert.deepEqual(sessionActionArgs("fe0031b1", action), ["session", action, "fe0031b1"]);
     }
   });
 
@@ -1018,9 +1018,9 @@ describe("binary resolution", () => {
 
 describe("command spawning", () => {
   it("starts oxide itself directly, with no shell in the way", () => {
-    assert.deepEqual(spawnPlan("oxide", ["sessions", "show", "abc123", "--json"], "linux", {}), {
+    assert.deepEqual(spawnPlan("oxide", ["session", "show", "abc123", "--json"], "linux", {}), {
       file: "oxide",
-      args: ["sessions", "show", "abc123", "--json"],
+      args: ["session", "show", "abc123", "--json"],
       verbatim: false,
     });
     // A Windows install runs the same way; only a batch shim needs `cmd.exe`.
@@ -1035,7 +1035,7 @@ describe("command spawning", () => {
     // a shell, so the wrapper is the only way to reach the binary behind it.
     const plan = spawnPlan(
       "C:\\Users\\John Doe\\scoop\\shims\\oxide.cmd",
-      ["sessions", "show", "abc123", "--json"],
+      ["session", "show", "abc123", "--json"],
       "win32",
       { ComSpec: "C:\\Windows\\system32\\cmd.exe" },
     );
@@ -1044,7 +1044,7 @@ describe("command spawning", () => {
     assert.deepEqual(plan.args.slice(0, 3), ["/d", "/s", "/c"]);
     assert.equal(
       plan.args[3],
-      '""C:\\Users\\John Doe\\scoop\\shims\\oxide.cmd" sessions show abc123 --json"',
+      '""C:\\Users\\John Doe\\scoop\\shims\\oxide.cmd" session show abc123 --json"',
     );
     // Without `ComSpec` set, cmd is named the way Windows itself names it.
     assert.equal(
@@ -1073,9 +1073,9 @@ describe("command spawning", () => {
   });
 
   it("leaves a batch file alone on a platform that has no cmd.exe", () => {
-    assert.deepEqual(spawnPlan("oxide.cmd", ["sessions", "list", "--json"], "darwin", {}), {
+    assert.deepEqual(spawnPlan("oxide.cmd", ["session", "list", "--json"], "darwin", {}), {
       file: "oxide.cmd",
-      args: ["sessions", "list", "--json"],
+      args: ["session", "list", "--json"],
       verbatim: false,
     });
   });

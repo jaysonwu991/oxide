@@ -116,14 +116,20 @@ See [desktop.md](desktop.md) for signing and packaging details.
 
 ## VS Code extension
 
+**Install the CLI first** ([Prebuilt binary](#prebuilt-binary)): the extension is
+a front-end, so its panel, dialogs and editor actions are all runs of the `oxide`
+binary — there is nothing in the `.vsix` to answer a message on its own. `oxide
+--version` in an integrated terminal is the check that it is in place; the
+extension looks it up on `PATH` (then `~/.local/bin` and `~/.cargo/bin`) and
+takes `oxide.binaryPath` for one anywhere else.
+
 Install **Oxide** (`jaysonwu991.oxide-vscode`) by downloading
 [oxide-vscode.vsix](https://github.com/jaysonwu991/oxide/releases/download/extension-latest/oxide-vscode.vsix)
 (the newest build, from any `extension-v*`
 [release](https://github.com/jaysonwu991/oxide/releases)) and running
-**Extensions: Install from VSIX…** in VS Code. The extension drives the `oxide`
-CLI, so install the CLI first. **Oxide: Check for Updates…** in the panel
-installs a newer `.vsix` the same way; `oxide update` only ever installs the
-CLI. To build it from source:
+**Extensions: Install from VSIX…** in VS Code. **Oxide: Check for Updates…** in
+the panel installs a newer `.vsix` the same way; `oxide update` only ever
+installs the CLI. To build it from source:
 
 ```sh
 cd editors/vscode

@@ -140,7 +140,7 @@ oxide plugin install <name>[@marketplace]
 ```
 
 Keyboard shortcuts, the transcript layout, and copy behavior are in
-[docs/tui.md](docs/tui.md); print/JSON/RPC modes and `oxide sessions` are in
+[docs/tui.md](docs/tui.md); print/JSON/RPC modes and `oxide session` are in
 [docs/modes.md](docs/modes.md).
 
 ## Desktop app
@@ -169,6 +169,9 @@ shortcuts, signing, and packaging.
 
 ## VS Code extension
 
+Install the CLI first: the extension is a chat panel over your installed `oxide`
+binary and bundles no engine of its own.
+
 The `editors/vscode` package is a TypeScript extension (a separate pnpm package,
 not a Cargo workspace member) that drives the same `oxide` binary from a chat
 panel and from editor actions. It shells out to `oxide --mode rpc`, so it reads
@@ -194,7 +197,7 @@ setting tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 | [docs/features.md](docs/features.md) | The full feature list behind the highlights above. |
 | [docs/install.md](docs/install.md) | Install and update the CLI, the desktop app and the extension; supported platforms, `oxide update`, `oxide uninstall`. |
 | [docs/tui.md](docs/tui.md) | Terminal layout, keyboard shortcuts, copying. |
-| [docs/modes.md](docs/modes.md) | `-p/--print`, `--mode json`, `--mode rpc`, `oxide sessions`, a turn's changes. |
+| [docs/modes.md](docs/modes.md) | `-p/--print`, `--mode json`, `--mode rpc`, `oxide session`, a turn's changes. |
 | [docs/configuration.md](docs/configuration.md) | `config.json`, CLI flags, environment variables, providers, trust, themes, compaction, data locations. |
 | [docs/ecosystem.md](docs/ecosystem.md) | The `.oxide/` layout, Claude Code compatibility, built-in slash commands. |
 | [docs/tools.md](docs/tools.md) | Tool parameters, behavior, output caps, concurrency. |

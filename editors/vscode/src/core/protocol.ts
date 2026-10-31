@@ -234,7 +234,7 @@ export type ToolPatch = Partial<
   Pick<ToolItem, "output" | "diff" | "running" | "isError" | "name" | "args" | "startedAt" | "elapsed">
 >;
 
-/// One turn of a stored thread, as `oxide sessions show --json` reports it and
+/// One turn of a stored thread, as `oxide session show --json` reports it and
 /// as the transcript replays it (`core/history.ts` reads that answer into
 /// these). A reopened thread is shown as the thread it is: the calls it made
 /// are as much of it as what was said, and a thread whose tail is mostly tool

@@ -89,7 +89,13 @@ pulls them all back into the box. How many are handed over at once is set by
 [configuration](configuration.md#queued-messages)).
 
 Run `/hotkeys` for the in-app shortcut list and `/help` for commands, agents, and
-skills.
+skills. A `/word` that names no command at all — a retired spelling such as
+`/mcps`, a typo such as `/hlep` — is answered in place rather than sent to the
+agent, so a mistyped command costs nothing: the transcript shows
+`unknown command `/mcps`. Did you mean `/mcp`?` and the message box is cleared
+for the next attempt. The same rule runs before a turn starts in the desktop
+app, the VS Code panel and `-p`/`--mode rpc`, so the sentence is the same
+wherever the word was typed.
 
 ## Keyboard shortcuts
 

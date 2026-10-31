@@ -15,7 +15,7 @@
 // JavaScript. Every command it performs goes through the one command the app
 // answers on its bridge, so a check in this file that reaches a command by name is
 // reaching the same entry point the window does. The
-// catalog is read from the built CLI (`target/debug/oxide commands --json`)
+// catalog is read from the built CLI (`target/debug/oxide command --json`)
 // when that binary is present, so a client command the palette offers but the
 // app cannot answer is caught here rather than in the window.
 import { execFileSync } from "node:child_process";
@@ -57,7 +57,7 @@ if (cli) {
   writeFileSync(settings, JSON.stringify({ defaultProjectTrust: "always" }));
   try {
     catalog = JSON.parse(
-      execFileSync(cli, ["commands", "--json"], {
+      execFileSync(cli, ["command", "--json"], {
         cwd: root,
         env: { ...process.env, OXIDE_SETTINGS_FILE: settings },
         encoding: "utf8",
@@ -563,7 +563,7 @@ const providerRows = [
     credential: "none",
   },
 ];
-// The providers the core's own listing hands the dialog (`oxide providers
+// The providers the core's own listing hands the dialog (`oxide provider
 // --json`): a name to search on, a label, a description, the state the row
 // shows beside it, and where its credential comes from — a key kept here, one
 // the machine already has, or none at all. The table holds every provider a
@@ -7050,7 +7050,7 @@ check(
 );
 check(
   "kept project removal non-destructive and explained CLI cleanup",
-  elementFor("confirm-alt").hidden && /oxide sessions delete/.test(elementFor("confirm-message").textContent),
+  elementFor("confirm-alt").hidden && /oxide session delete/.test(elementFor("confirm-message").textContent),
 );
 calls.length = 0;
 elementFor("confirm-ok").onclick(press({ target: elementFor("confirm-ok") }));

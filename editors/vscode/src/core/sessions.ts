@@ -1,4 +1,4 @@
-// Parsing for `oxide sessions list` and `oxide --version`.
+// Parsing for `oxide session list` and `oxide --version`.
 //
 // The session picker reads the CLI's own listing rather than walking the
 // session tree itself, so the extension never has to agree with the core about
@@ -12,7 +12,7 @@ export interface SessionEntry {
   pinned?: boolean;
 }
 
-/// One line of `oxide sessions list`:
+/// One line of `oxide session list`:
 ///
 /// ```text
 /// 7c8031b1  just now       2 msg  say hi

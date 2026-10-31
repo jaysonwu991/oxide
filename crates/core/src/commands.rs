@@ -88,7 +88,7 @@ pub struct Builtin {
     /// The clients that perform it. A command only one client draws is named for
     /// that client alone: an agent picker is VS Code's, the theme picker and
     /// provider logout are the terminal's and the desktop app's. Provider login
-    /// is all three — each draws that picker over `oxide providers`.
+    /// is all three — each draws that picker over `oxide provider`.
     pub front_ends: &'static [FrontEnd],
 }
 
@@ -139,7 +139,7 @@ pub const BUILTINS: &[Builtin] = &[
         description: "Review the tools allowed without prompting",
         arguments: Some("on|off|list|clear"),
         // All three: the panel lists and clears the same `approvals.json`
-        // through `oxide approvals`, so a rule an `Always allow` saved here is
+        // through `oxide approval`, so a rule an `Always allow` saved here is
         // taken back where it was given rather than in another window.
         front_ends: FrontEnd::ALL,
     },
@@ -160,6 +160,15 @@ pub const BUILTINS: &[Builtin] = &[
         description: "Start a new session",
         arguments: None,
         front_ends: FrontEnd::ALL,
+    },
+    Builtin {
+        name: "init",
+        description: "Create or update AGENTS.md",
+        arguments: None,
+        // Only the terminal runs it: the app and the panel start their own
+        // sessions, and `/init` is the terminal's prompt for the file the
+        // project's future runs read.
+        front_ends: &[FrontEnd::Terminal],
     },
     Builtin {
         name: "usage",
@@ -325,6 +334,59 @@ pub fn canonical_slash(raw: &str) -> String {
     }
 }
 
+/// A slash word no front-end can run: not a built-in, not a project command, a
+/// prompt template or a skill. A composer reports one in place rather than
+/// sending it as a prompt, so a typo never becomes a question for the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSlash {
+    /// The word as typed, without its slash.
+    pub name: String,
+    /// The catalog's spelling of the singular, when a plural was typed.
+    pub closest: Option<String>,
+}
+
+/// What a composer makes of `prompt`: `Some` when it opens with a slash word
+/// this project cannot run, `None` for everything it can — a built-in, a
+/// command, a prompt template, a skill — and for ordinary prose, which may open
+/// with a path (`/etc/hosts is wrong`).
+pub fn unknown_slash(config: &crate::config::Config, prompt: &str) -> Option<UnknownSlash> {
+    let name = prompt
+        .trim()
+        .strip_prefix('/')?
+        .split(char::is_whitespace)
+        .next()?;
+    let is_name = !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':'));
+    if !is_name || builtin(name).is_some() || config.resolve_command(prompt).is_some() {
+        return None;
+    }
+    let knows = |name: &str| {
+        builtin(name).is_some() || config.resolve_command(&format!("/{name}")).is_some()
+    };
+    let closest = name
+        .strip_suffix('s')
+        .filter(|singular| !singular.is_empty() && knows(singular));
+    Some(UnknownSlash {
+        name: name.to_string(),
+        closest: closest.map(str::to_string),
+    })
+}
+
+/// The sentence a front-end shows for [`unknown_slash`], in the user's language.
+pub fn unknown_slash_notice(language: crate::i18n::Language, unknown: &UnknownSlash) -> String {
+    let name = format!("/{}", unknown.name);
+    match &unknown.closest {
+        Some(closest) => crate::i18n::tf(
+            language,
+            "commands.unknownDidYouMean",
+            &[("name", &name), ("closest", &format!("/{closest}"))],
+        ),
+        None => crate::i18n::tf(language, "commands.unknown", &[("name", &name)]),
+    }
+}
+
 /// Every entry a client shows for `cwd`: the built-ins, then the commands,
 /// prompt templates and skills visible from the project.
 pub fn palette(cwd: &Path) -> Vec<CommandEntry> {
@@ -469,7 +531,7 @@ fn takes_arguments(body: &str) -> bool {
         || body.contains("${")
 }
 
-/// The listing a client shows, or that a terminal user reads: `oxide commands`.
+/// The listing a client shows, or that a terminal user reads: `oxide command`.
 pub fn list(cwd: &Path, json: bool) -> anyhow::Result<()> {
     let entries = palette(cwd);
     if json {
@@ -553,6 +615,39 @@ mod tests {
         }
         for retired in ["mcps", "approvals", "access", "thinking", "sessions"] {
             assert!(builtin(retired).is_none(), "{retired}");
+        }
+    }
+
+    #[test]
+    fn a_slash_word_no_front_end_can_run_is_named_back_to_the_user() {
+        let config = crate::config::Config::default();
+        let lang = crate::i18n::Language::EnGb;
+        let unknown = unknown_slash(&config, "/mcps").unwrap();
+        assert_eq!(unknown.name, "mcps");
+        // A plural typed for a command the catalog carries points at it.
+        assert_eq!(unknown.closest.as_deref(), Some("mcp"));
+        assert_eq!(
+            unknown_slash_notice(lang, &unknown),
+            "unknown command `/mcps`. Did you mean `/mcp`?"
+        );
+        // A word with an argument is the same typo, and a bare unknown word is
+        // answered with the menu's own spelling of help.
+        assert_eq!(
+            unknown_slash(&config, "/mcps list")
+                .unwrap()
+                .closest
+                .as_deref(),
+            Some("mcp")
+        );
+        assert_eq!(
+            unknown_slash_notice(lang, &unknown_slash(&config, "/nope").unwrap()),
+            "unknown command `/nope`. Type `/help` to see the commands here"
+        );
+        assert!(unknown_slash(&config, "/nope").unwrap().closest.is_none());
+        // What a front-end runs, and prose that opens with a path, is not the
+        // guard's business: the same line reaches the agent as it always did.
+        for allowed in ["/mcp", "/model high", "/init", "/etc/hosts is wrong"] {
+            assert_eq!(unknown_slash(&config, allowed), None, "{allowed}");
         }
     }
 

@@ -53,6 +53,13 @@ and MCP servers as the terminal and the desktop app — nothing is reconfigured.
 
 ## Install
 
+**Install the CLI first.** The extension is a front-end to `oxide` — it runs `oxide
+--mode rpc` as a subprocess and holds no engine of its own — so a machine
+without the CLI has nothing for the panel to talk to, and the first message
+reports that the process could not start. Install the CLI from
+[the install guide](../../docs/install.md), confirm `oxide --version` prints a
+version in the integrated terminal, then:
+
 Download `oxide-vscode.vsix` — the newest one sits at
 [`extension-latest`](https://github.com/jaysonwu991/oxide/releases/tag/extension-latest),
 and every `extension-v*`
@@ -61,7 +68,9 @@ and every `extension-v*`
 
 ## Requirements
 
-The `oxide` binary on your `PATH` (or set `oxide.binaryPath`). Install it with:
+The `oxide` binary on your `PATH` (or set `oxide.binaryPath` to a binary
+somewhere else — a checkout's `target/debug/oxide`, for instance). Install it
+with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jaysonwu991/oxide/main/install.sh | sh

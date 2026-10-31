@@ -57,22 +57,22 @@ export function buildTurnArgs(options: TurnOptions): string[] {
   return args;
 }
 
-/// `oxide sessions list` for the current project.
+/// `oxide session list` for the current project.
 export function sessionsListArgs(): string[] {
-  return ["sessions", "list", "--json"];
+  return ["session", "list", "--json"];
 }
 
-/// `oxide sessions show <id> --json`: the stored conversation of one session,
+/// `oxide session show <id> --json`: the stored conversation of one session,
 /// which the panel paints when a thread is resumed. `tail` keeps the answer to
 /// the newest `n` messages, since a long thread's history is bigger than a side
 /// bar can show.
 export function sessionShowArgs(id: string, tail: number): string[] {
-  return ["sessions", "show", id, "--tail", String(tail), "--json"];
+  return ["session", "show", id, "--tail", String(tail), "--json"];
 }
 
 /// Pin and archive preferences are owned by the CLI and shared with Desktop.
 export function sessionActionArgs(id: string, action: "pin" | "unpin" | "archive"): string[] {
-  return ["sessions", action, id];
+  return ["session", action, id];
 }
 
 /// Splits a comma-separated tool list the way `--tools` expects, dropping the

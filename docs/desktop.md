@@ -774,7 +774,7 @@ recents and session picker. A thread owned by a running turn cannot be archived
 (`A turn is running; stop it before archiving this thread.`), and the archive
 notice is a toast with an **Undo** row that calls `unarchive_session`, so a
 thread put away by mistake is one click from the tree again. There is no GUI
-session deletion: `oxide sessions delete <id>` is the permanent one, and the
+session deletion: `oxide session delete <id>` is the permanent one, and the
 confirm that removes a project names it.
 
 A run is told about those projects, not just the one it starts in: the shared
@@ -1128,7 +1128,7 @@ it starts that thread's next turn once the current one ends.
 The composer answers a leading `/` with the client's own commands. Typing `/`
 opens a palette of them — the built-in list plus the commands, prompt templates
 and skills the project or its plugins load, from `oxide_core::commands`, the
-catalog `oxide commands --json` prints and the terminal's own autocomplete
+catalog `oxide command --json` prints and the terminal's own autocomplete
 mirrors. A name the app itself owns is performed here — the built-ins the catalog
 names the desktop app for, each with the one spelling the catalog declares: `/mcp`
 opens the **MCP servers** dialog, `/session` the **Sessions** dialog, and

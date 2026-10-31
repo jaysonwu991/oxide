@@ -1,5 +1,5 @@
 import { translate, type LanguageInfo } from "./i18n";
-// The provider table printed by `oxide providers --json`: the same rows the
+// The provider table printed by `oxide provider --json`: the same rows the
 // desktop app's Connect dialog searches, drawn from the one table the core's
 // `known_providers()` holds and the terminal's `/connect` dialog uses. A front-end
 // that only spawns the binary keeps no copy of it — the CLI owns which providers
@@ -18,7 +18,7 @@ import { parseObject } from "./json";
 /// - `none`: nothing to present; a model server on this machine.
 export type CredentialMode = "key" | "external" | "none";
 
-/// One row of `oxide providers --json`.
+/// One row of `oxide provider --json`.
 export interface ProviderView {
   name: string;
   label: string;
@@ -44,7 +44,7 @@ export function needsKey(provider: ProviderView): boolean {
 }
 
 export function providersListArgs(): string[] {
-  return ["providers", "--json"];
+  return ["provider", "--json"];
 }
 
 /// The arguments one login is run with. The key is never an argument — it would

@@ -8,7 +8,7 @@ describe("model catalog", () => {
     // Not `--active`: a model behind another provider is a row of the picker,
     // which is how the panel switches providers without the terminal. The CLI
     // fans the requests out at once, so the wait is the slowest one.
-    assert.deepEqual(modelsListArgs(), ["models", "--json"]);
+    assert.deepEqual(modelsListArgs(), ["model", "--json"]);
   });
 
   it("returns every provider's catalog, the one in use first", () => {

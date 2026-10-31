@@ -9108,7 +9108,7 @@ async function removeProject(project) {
   try {
     const choice = await confirmDialog(
       t("dialog.createProject.remove", "Remove project"),
-      t("ui.removeFromTheSidebarItsSessionsStayOnDiskUseOxideSessionsDeleteFromTheProjectFol", "Remove “{value0}” from the sidebar?\n\nIts sessions stay on disk. Use oxide sessions delete from the project folder to delete sessions permanently.", { value0: project.name }),
+      t("ui.removeFromTheSidebarItsSessionsStayOnDiskUseOxideSessionsDeleteFromTheProjectFol", "Remove “{value0}” from the sidebar?\n\nIts sessions stay on disk. Use oxide session delete from the project folder to delete sessions permanently.", { value0: project.name }),
       t("dialog.createProject.remove", "Remove project"),
     );
     if (!choice) return;

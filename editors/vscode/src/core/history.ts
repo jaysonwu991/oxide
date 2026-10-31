@@ -1,4 +1,4 @@
-// The stored conversation of one session, read from `oxide sessions show
+// The stored conversation of one session, read from `oxide session show
 // <id> --json`.
 //
 // Resuming a thread in the panel sets the session the next turn continues, but

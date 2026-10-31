@@ -7,6 +7,23 @@ and no `oxide-core` link, and it inherits the CLI's provider logins,
 `config.json`, `settings.json`, project trust, sessions, `AGENTS.md`, agents,
 skills, plugins, and MCP servers exactly as they are.
 
+## Before it runs
+
+**The CLI is installed first; the extension is installed onto it.** There is no
+engine in the `.vsix`: every turn, listing and dialog is a run of `oxide --mode
+rpc` or a one-shot subcommand, so a machine without the CLI has a panel with
+nothing behind it — the first message reports the process could not start, and
+`oxide --version` in the integrated terminal is the check that it is in place
+(see [install.md](install.md#vs-code-extension)).
+
+The binary is looked up on `PATH`, then in `~/.local/bin` and `~/.cargo/bin`, so
+`install.sh` and `cargo install --path crates/cli` are both found without
+configuration. `oxide.binaryPath` names one anywhere else — a release build in a
+checkout at `target/release/oxide`, a wrapper script, a version pinned beside a
+project. A binary that is too old is not an error: each surface asks for what it
+needs and reports the version it found, which is why the panel's update check
+and the CLI's own `oxide update` can disagree until the CLI is updated.
+
 ## Workspace
 
 ```
@@ -37,8 +54,8 @@ editors/vscode/
       palette.ts      the `/` palette's catalog rows and their routing
       dialogs.ts      the panel's own dialogs, composed as data
       mcps.ts         `oxide mcp list --json` parsing
-      providers.ts    `oxide providers --json` parsing
-      models.ts       `oxide models --json` parsing
+      providers.ts    `oxide provider --json` parsing
+      models.ts       `oxide model --json` parsing
       reasoning.ts    `oxide reasoning --json` (the model's own levels)
       context.ts      `oxide context --json` (the window a run resolves)
       updates.ts      `oxide update --check --json` parsing
@@ -49,11 +66,11 @@ editors/vscode/
       git.ts          the branch, read from .git/HEAD
       agents.ts       agent names for `--agent`
       plugins.ts      installed plugins, whose agents `--agent` also resolves
-      permissions.ts  `oxide approvals` — the saved "always allow" rules
+      permissions.ts  `oxide approval` — the saved "always allow" rules
       json.ts         a tolerant JSON object reader
       project.ts      the on-disk state the footer reports
       footer.ts       footer chips, usage line and context gauge
-      sessions.ts     `oxide sessions list` / `oxide --version` parsing
+      sessions.ts     `oxide session list` / `oxide --version` parsing
     test/             node:test suites for src/core and the manifest
   media/
     main.js           dependency-free webview renderer (Markdown, diffs, …)
@@ -266,7 +283,7 @@ button's own `aria-expanded` says — the panel is part of the column rather tha
 window over it, so it is opened and put away the same way. Reading the store is
 all opening does: the rows that switch threads refuse while a turn owns the
 session file, so the listing itself can be read mid-turn. **Oxide: Session
-History** and `/session` in the composer reach the same listing — the listing `oxide sessions list --json` prints, painted in the panel rather
+History** and `/session` in the composer reach the same listing — the listing `oxide session list --json` prints, painted in the panel rather
 than in a QuickPick. The command is the button's own control under another name,
 while `/session` typed in the composer opens the listing (or repaints it if it is
 already up) rather than closing it: a command that names the history should not
@@ -294,8 +311,8 @@ shared through the CLI (`sessions list --json`, `sessions pin`, `sessions unpin`
 and `sessions archive`), with pinned threads listed first. Archive hides a thread
 and closes it if it is on screen; its session file stays on disk. A thread owned
 by a running turn cannot be archived. The archive notice tells the user to run
-`oxide sessions delete <id>` from its project folder for permanent deletion, or
-`oxide sessions unarchive <id>` to restore it. Neither interface deletes session
+`oxide session delete <id>` from its project folder for permanent deletion, or
+`oxide session unarchive <id>` to restore it. Neither interface deletes session
 logs.
 
 A project can hold hundreds of threads, so the listing carries a search box
@@ -311,7 +328,7 @@ says so; the box's own ✕ clears it.
 
 Picking a row resumes that thread here: the CLI is launched with `--session
 <id>`, and the title in the header follows. Resuming also fills the transcript
-with what the thread already holds — `oxide sessions show <id> --tail 60 --json`
+with what the thread already holds — `oxide session show <id> --tail 60 --json`
 is read back through `core/history.ts` and its turns are painted followed by a
 note saying the thread was resumed — so a resumed thread reads like the thread it
 is instead of an empty panel that answers nothing. A turn is what was said and
@@ -337,7 +354,7 @@ footer's usage line and context gauge come from the same answer's usage totals.
 list`.
 
 The listing is unchanged from the native picker it replaces (`core/sessions.ts`
-parses `oxide sessions list`), so the panel and the terminal agree on which
+parses `oxide session list`), so the panel and the terminal agree on which
 threads exist and what they are called. Sessions are per project: the dialog
 lists the folder that is open.
 
@@ -454,13 +471,13 @@ turns is closed after ten minutes.
   decides for the terminal and the desktop app.
   What is already allowed is a listing of its own: `/permissions` in the composer
   (and the same command in the catalog this panel draws) reads the project's
-  rules through `oxide approvals list --project <folder> --json` and paints them
-  in a card, with a **Clear all** row that runs `oxide approvals clear`. The
+  rules through `oxide approval list --project <folder> --json` and paints them
+  in a card, with a **Clear all** row that runs `oxide approval clear`. The
   rules are the shared store's, so one an `Always allow` here saved is listed
   here, and one the terminal saved can be taken back here — no front-end has to
   be left to review what it agreed to.
   The same goes for signing out: `/logout` lists the providers this machine holds
-  a credential for — from `oxide providers --json`, the table `/connect` draws —
+  a credential for — from `oxide provider --json`, the table `/connect` draws —
   and a row runs `oxide logout <name>`, which is the call the terminal's own
   `/logout` makes, switching to another logged-in provider when the one being
   signed out was in use.
@@ -744,7 +761,7 @@ repeats the chips it went with — the picture where the attachment had one, the
 file's name otherwise — and a picture opens the same full-size preview the
 composer's chip does, so a screenshot in a conversation is read rather than
 scrolled past as a file name. A thread replayed out of the store carries them
-too: `oxide sessions show --json` reports what each stored message carried under
+too: `oxide session show --json` reports what each stored message carried under
 `name` and `dataUrl`, the same two field names the desktop app's own view of a
 stored thread uses, so a resumed conversation shows its pictures rather than a
 list of file names. Only a picture this webview can paint keeps its bytes — a
@@ -769,7 +786,7 @@ permissions inside a project the user did not trust. Installed plugins are read
 too, from the CLI's own plugin state (`plugins/config.json`, enabled entries
 with a live directory and manifest), because `ecosystem::load_enabled_plugins`
 loads their `agents/` ahead of project resources — the order is project, then
-plugins, then the global directories. The model picker asks `oxide models --json`
+plugins, then the global directories. The model picker asks `oxide model --json`
 for every logged-in provider's normalized catalog, the same source as the TUI's
 and the desktop app's pickers: the models of the provider in use come first, each
 row names the provider it belongs to, and taking a row from another one switches
@@ -878,7 +895,7 @@ what it writes is about that file.
 ## The `/` palette
 
 Typing `/` at the start of the composer offers what the CLI itself offers: the
-catalog `oxide commands --json` prints — `oxide_core::commands::palette`, the
+catalog `oxide command --json` prints — `oxide_core::commands::palette`, the
 same listing the terminal's `/` menu and the desktop app's palette draw. The host
 reads it through the installed binary rather than walking `.oxide/commands`,
 `.oxide/prompts` and `.oxide/skills` itself, so the panel cannot disagree with
@@ -917,8 +934,16 @@ completion, labelled *Commands and skills*.
   terminal.`) rather than sent to the model as the text `/theme`, which the CLI
   would hand the agent as a prompt. A CLI that predates the field prints
   `desktop_only` instead, which is what a released extension falls back to.
+- A word the catalog does not carry at all is a typo, and is answered in the
+  transcript rather than sent: `/mcps` reports "unknown command `/mcps`. Did you
+  mean `/mcp`?" through the `commands.unknownDidYouMean` string the terminal and
+  the desktop app draw, and an unrelated word such as `/nope` names `/help`
+  instead (`commands.unknown`). `core/palette.ts::routeCommand` carries the rule
+  beside `oxide_core::commands::unknown_slash`, so the panel, the app and the
+  terminal agree on what exists before any of them starts a run; a line that
+  opens with a path (`/etc/hosts is wrong`) is prose in all three.
 - `/connect` opens the provider table in the panel: every
-  provider a client can connect, read from the CLI's own `oxide providers --json`
+  provider a client can connect, read from the CLI's own `oxide provider --json`
   so the panel keeps no copy of it, with a search box over it and a `In use`,
   `Stored`, `No key needed` or `Machine credential` word on the rows that have
   something to say. Taking a row runs `oxide login <provider> --json` through the
@@ -1050,7 +1075,7 @@ for a file inside the workspace, so the panel cannot be used to read outside it.
 VS Code's own diff editor draws a finished turn's changes; the panel renders no
 diff of its own. The CLI emits `turn_changes` when a run ends — the folder it
 ran in, the revision it started from, the state it left behind and the files it
-changed, the same listing the desktop app's change card shows and `oxide changes
+changed, the same listing the desktop app's change card shows and `oxide change
 show` reads, built from the project's shadow snapshot so a file a shell command
 or a formatter wrote is listed beside the ones a tool call named. A run that
 changed nothing sends no frame.
@@ -1066,7 +1091,7 @@ just showed; a row goes to `vscode.diff`, on that one file.
 
 The left side of a diff is the file as the run found it, which is nowhere on
 disk: it is read out of the shadow snapshot by the CLI's own read —
-`oxide changes show <path> --baseline <rev> --project <root>` — and served to
+`oxide change show <path> --baseline <rev> --project <root>` — and served to
 VS Code by a content provider registered for the `oxide-changes` scheme, with
 the project and the revision in the URI's query (`snapshotQuery`, since the
 provider is handed the URI alone). Both sides therefore come from the card's own
@@ -1095,7 +1120,7 @@ past `visible`, so a fold cannot disagree with the listing it folds.
 A card also carries **Undo**, which puts the turn's files back to how the run
 found them. It asks first, in the panel's own dialog: `undoChangesDialog`
 composes a row naming the card and a row that keeps it, and only the first of
-them restores. The restore is the CLI's — `oxide changes undo --baseline <rev>
+them restores. The restore is the CLI's — `oxide change undo --baseline <rev>
 --after <after> --project <root>` — which is the same `Snapshots::restore` the
 desktop app's Undo and the terminal's `/undo` perform, so the panel needs no
 snapshot code of its own. `--after` is the state the turn left, which the CLI
@@ -1345,7 +1370,7 @@ chip click and from the palette, so the two entry points never drift. Session
 history stays in the header (and is also reachable through `/session` and the
 command palette), rather than duplicating another control in the footer. The
 header carries the two controls that belong to the panel rather than to the
-message — the tools it allows without asking (`oxide approvals`) and its
+message — the tools it allows without asking (`oxide approval`) and its
 keyboard shortcuts — after a rule of their own: the composer's bottom row is one
 line at every width, and four glyphs beside a model name left the name cut to
 `deepse…` in a narrow side bar.
@@ -1470,7 +1495,7 @@ writes to, a session's age and size, the row that closes the open thread and the
 `Current` mark on it, the panel edge each listing opens on, the rows' own
 actions — is covered in
 `test/dialogs.test.ts`, which needs neither a webview nor a CLI. What a resumed
-thread reads back — `oxide sessions show --json` parsed into the turns the panel
+thread reads back — `oxide session show --json` parsed into the turns the panel
 replays, a call paired with the result that answered it, the media a stored
 message carried with it, and the totals the footer shows, including the output of
 a CLI that answered with nothing — is covered in `test/history.test.ts`.
