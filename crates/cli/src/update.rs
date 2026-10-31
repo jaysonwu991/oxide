@@ -203,7 +203,7 @@ async fn run_for(options: Options, executable: &Path, repo: &str) -> Result<()> 
     }
 
     let work = WorkDir::new()?;
-    let (url, bytes) = archive(&client, repo, &release, component, platform).await?;
+    let (url, bytes) = archive(&client, repo, &release).await?;
     let download = work.path().join(&release.asset);
     fs::write(&download, &bytes).with_context(|| format!("writing {}", download.display()))?;
     match updates::fetch(&client, &format!("{url}.sha256"), None).await? {
@@ -282,33 +282,21 @@ async fn archive(
     client: &reqwest::Client,
     repo: &str,
     release: &Release,
-    component: Component,
-    platform: &str,
 ) -> Result<(String, Vec<u8>)> {
-    // The name the release is resolved by comes first; a release published
-    // before the names lost their version carries the versioned one behind it,
-    // so a `--version` naming one of those still installs.
-    let mut names = component.assets(&release.tag, platform);
-    names.retain(|name| !name.is_empty());
-    if let Some(index) = names.iter().position(|name| *name == release.asset) {
-        names.remove(index);
-        names.insert(0, release.asset.clone());
+    let name = &release.asset;
+    let url = format!(
+        "https://github.com/{repo}/releases/download/{}/{name}",
+        release.tag
+    );
+    println!("Downloading {name}");
+    match updates::fetch(client, &url, None).await? {
+        Some(bytes) => Ok((url, bytes)),
+        None => bail!(
+            "{} is not published for {}; see https://github.com/{repo}/releases",
+            release.asset,
+            release.version
+        ),
     }
-    for name in names {
-        let url = format!(
-            "https://github.com/{repo}/releases/download/{}/{name}",
-            release.tag
-        );
-        println!("Downloading {name}");
-        if let Some(bytes) = updates::fetch(client, &url, None).await? {
-            return Ok((url, bytes));
-        }
-    }
-    bail!(
-        "{} is not published for {}; see https://github.com/{repo}/releases",
-        release.asset,
-        release.version
-    )
 }
 
 /// Checks a downloaded archive against the `.sha256` file published beside it,
@@ -489,7 +477,7 @@ mod tests {
 
     #[test]
     fn a_stale_asset_is_refused_before_it_replaces_the_binary() {
-        let asset = "Oxide-linux-x64.tar.gz";
+        let asset = "Oxide-0.27.0-linux-x64.tar.gz";
         refuse_version_mismatch(asset, "0.27.0", "0.27.0").unwrap();
         let error = refuse_version_mismatch(asset, "0.26.0", "0.27.0").unwrap_err();
         assert!(
@@ -641,12 +629,11 @@ mod tests {
         assert_eq!(release.tag, "v0.26.0");
         assert_eq!(release.version, "0.26.0");
         // One archive per platform, named the way the release that carries it is
-        // built: the version-less name, with the versioned one a release from
-        // before the rename carries behind it.
-        assert_eq!(release.asset, "Oxide-linux-x64.tar.gz");
+        // built — nothing is published under a second name.
+        assert_eq!(release.asset, "Oxide-0.26.0-linux-x64.tar.gz");
         assert_eq!(
             release.url("jaysonwu991/oxide"),
-            "https://github.com/jaysonwu991/oxide/releases/download/v0.26.0/Oxide-linux-x64.tar.gz"
+            "https://github.com/jaysonwu991/oxide/releases/download/v0.26.0/Oxide-0.26.0-linux-x64.tar.gz"
         );
     }
 
@@ -688,7 +675,7 @@ mod tests {
         );
         assert_eq!(
             value["asset"]["name"],
-            serde_json::json!("Oxide-linux-x64.tar.gz")
+            serde_json::json!("Oxide-0.27.0-linux-x64.tar.gz")
         );
         // This binary is the workspace's `0.0.0` placeholder, which is older
         // than the release and so leaves an update to offer.

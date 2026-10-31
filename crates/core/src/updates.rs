@@ -119,29 +119,19 @@ impl Component {
     /// The artifacts this platform installs from, most preferred first: the one
     /// an in-place install uses, then the downloads a user would pick by hand.
     ///
-    /// The CLI's archive is `Oxide-<platform>.<ext>` — the name `cli.yml`
-    /// writes and the installers read out of the manifest — and the app and the
-    /// panel publish `Oxide-macos-<arch>.dmg`,
+    /// The CLI's archive carries its version — `Oxide-<version>-<platform>.<ext>`,
+    /// the name `cli.yml` writes and the installers read out of the manifest.
+    /// The app and the panel do not, because their names are also the permanent
+    /// links `README.md` points at: `Oxide-macos-<arch>.dmg`,
     /// `Oxide-linux-<arch>-Setup.{AppImage,tar.gz}`, `Oxide-win-<arch>-Setup.exe`
     /// and `oxide-vscode.vsix`, the names `electron-builder.yml` and the
-    /// extension's `vsce package` write. None of them carries a version, so the
-    /// newest file of each kind keeps one name from release to release, which is
-    /// what the permanent `desktop-latest`/`extension-latest` links `README.md`
-    /// publishes are built on. A release published before the names lost their
-    /// version carries the versioned ones, which follow the current names here
-    /// so a pinned install of such a release still resolves. electron-builder spells
+    /// extension's `vsce package` write. electron-builder spells
     /// x64 as `x86_64` for an AppImage, so that name carries the spelling the
     /// build really writes rather than the one this code would prefer. On Linux
     /// the AppImage the app replaces itself with comes before the archive a user
     /// unpacks by hand. Both macOS architectures use a disk image.
     pub fn assets(self, tag: &str, platform: &str) -> Vec<String> {
-        let mut names = self.named(platform);
-        names.extend(self.versioned(&release_version(tag), platform));
-        names
-    }
-
-    /// The names a release of this component publishes today.
-    fn named(self, platform: &str) -> Vec<String> {
+        let version = release_version(tag);
         match self {
             Self::Cli => {
                 let extension = if platform.starts_with("win") {
@@ -149,7 +139,7 @@ impl Component {
                 } else {
                     "tar.gz"
                 };
-                vec![format!("Oxide-{platform}.{extension}")]
+                vec![format!("Oxide-{version}-{platform}.{extension}")]
             }
             Self::Desktop => match platform {
                 "macos-arm64" => vec!["Oxide-macos-arm64.dmg".to_string()],
@@ -166,35 +156,6 @@ impl Component {
                 _ => Vec::new(),
             },
             Self::Extension => vec!["oxide-vscode.vsix".to_string()],
-        }
-    }
-
-    /// The names a release of `version` carried before they lost the version.
-    fn versioned(self, version: &str, platform: &str) -> Vec<String> {
-        match self {
-            Self::Cli => {
-                let extension = if platform.starts_with("win") {
-                    "zip"
-                } else {
-                    "tar.gz"
-                };
-                vec![format!("Oxide-{version}-{platform}.{extension}")]
-            }
-            Self::Desktop => match platform {
-                "macos-arm64" => vec![format!("Oxide-{version}-macos-arm64.dmg")],
-                "macos-x64" => vec![format!("Oxide-{version}-macos-x64.dmg")],
-                "linux-x64" => vec![
-                    format!("Oxide-{version}-linux-x86_64-Setup.AppImage"),
-                    format!("Oxide-{version}-linux-x64-Setup.tar.gz"),
-                ],
-                "linux-arm64" => vec![
-                    format!("Oxide-{version}-linux-arm64-Setup.AppImage"),
-                    format!("Oxide-{version}-linux-arm64-Setup.tar.gz"),
-                ],
-                "win-x64" => vec![format!("Oxide-{version}-win-x64-Setup.exe")],
-                _ => Vec::new(),
-            },
-            Self::Extension => vec![format!("oxide-vscode-{version}.vsix")],
         }
     }
 
@@ -1031,26 +992,22 @@ mod tests {
     #[test]
     fn releases_are_downloaded_by_the_artifact_their_platform_installs() {
         let cli = Release::new(Component::Cli, "v0.26.0", None, "macos-arm64");
-        assert_eq!(cli.asset, "Oxide-macos-arm64.tar.gz");
+        assert_eq!(cli.asset, "Oxide-0.26.0-macos-arm64.tar.gz");
         assert_eq!(cli.version, "0.26.0");
         assert_eq!(
             cli.url("jaysonwu991/oxide"),
-            "https://github.com/jaysonwu991/oxide/releases/download/v0.26.0/Oxide-macos-arm64.tar.gz"
+            "https://github.com/jaysonwu991/oxide/releases/download/v0.26.0/Oxide-0.26.0-macos-arm64.tar.gz"
         );
         assert_eq!(
             Release::new(Component::Cli, "v0.26.0", None, "win-x64").asset,
-            "Oxide-win-x64.zip"
+            "Oxide-0.26.0-win-x64.zip"
         );
         // One artifact per platform, named the way the release that carries it
-        // is built: the version-less name first, then the versioned one a
-        // release from before the rename carries, so a pinned install of that
-        // release still resolves to the file it really published.
+        // is built: nothing is published under a second name for a copy that
+        // resolved its own release by one.
         assert_eq!(
             Component::Cli.assets("v0.26.0", "macos-arm64"),
-            [
-                "Oxide-macos-arm64.tar.gz",
-                "Oxide-0.26.0-macos-arm64.tar.gz"
-            ]
+            ["Oxide-0.26.0-macos-arm64.tar.gz"]
         );
 
         let desktop = Release::new(Component::Desktop, "desktop-v0.34.0", None, "macos-arm64");
@@ -1082,9 +1039,7 @@ mod tests {
             Component::Desktop.assets("desktop-v0.34.0", "linux-x64"),
             [
                 "Oxide-linux-x86_64-Setup.AppImage",
-                "Oxide-linux-x64-Setup.tar.gz",
-                "Oxide-0.34.0-linux-x86_64-Setup.AppImage",
-                "Oxide-0.34.0-linux-x64-Setup.tar.gz",
+                "Oxide-linux-x64-Setup.tar.gz"
             ]
         );
         assert!(Component::Desktop

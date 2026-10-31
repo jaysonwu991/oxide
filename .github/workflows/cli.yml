@@ -88,11 +88,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The name carries the platform alone: the newest archive of each
-          # platform keeps one name from release to release, which is what the
-          # permanent links are built on.
+          # The name carries the version, so the tag's `v` (and the `cli-` a
+          # component-prefixed tag may wear) comes off it.
+          ver="${GITHUB_REF_NAME#cli-}"
+          ver="${ver#v}"
           ext="${{ matrix.archive_ext }}"
-          asset="Oxide-${{ matrix.platform }}.${ext}"
+          asset="Oxide-${ver}-${{ matrix.platform }}.${ext}"
           binary="oxide"
           [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ] && binary="oxide.exe"
           staged="$(mktemp -d)"
@@ -139,6 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           ver="${GITHUB_REF_NAME#cli-}"
+          ver_nov="${ver#v}"
           {
             printf 'version: %s\n' "${ver}"
             # One key per platform: the token a release is named after, and the
@@ -146,7 +148,7 @@ jobs:
             for platform in macos-arm64 macos-x64 linux-x64 linux-arm64 win-x64; do
               ext="tar.gz"
               [ "${platform}" = "win-x64" ] && ext="zip"
-              printf '%s: Oxide-%s.%s\n' "${platform}" "${platform}" "${ext}"
+              printf '%s: Oxide-%s-%s.%s\n' "${platform}" "${ver_nov}" "${platform}" "${ext}"
             done
           } > assets/Oxide-manifest
           cat assets/Oxide-manifest

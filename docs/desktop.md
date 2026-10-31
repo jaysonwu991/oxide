@@ -1549,7 +1549,8 @@ resolves its release through GitHub itself and installs the artifact
 `Component::Desktop::assets()` names for this platform — macOS the disk image,
 Linux the AppImage, Windows the setup — rather than a feed beside it.
 
-The CLI archives (`Oxide-<platform>.tar.gz` and `Oxide-win-x64.zip`) plus
+The CLI archives (`Oxide-<version>-<platform>.tar.gz` and
+`Oxide-win-x64.zip`) plus
 `install.sh`/`install.ps1` live in the separate `v*` CLI releases, not here; see
 [install.md](install.md).
 
