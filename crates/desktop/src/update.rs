@@ -1302,11 +1302,7 @@ mod tests {
         let bundle = bundle_fixture(&root);
         let bundle_install =
             installation_of(&bundle.join("Contents/MacOS/Oxide"), "macos", None, None);
-        let notice = Notice::from_release(
-            &release("Oxide-macos-arm64.dmg"),
-            "acme/oxide",
-            1_000,
-        );
+        let notice = Notice::from_release(&release("Oxide-macos-arm64.dmg"), "acme/oxide", 1_000);
 
         // A bundle the user installed, with a newer release to hand: done
         // without asking, since the app is the one that put it there.
@@ -1341,11 +1337,8 @@ mod tests {
         let data_root = root.join("LocalAppData");
         let (_directory, binary) = installed_copy(&data_root, "Programs", "Oxide");
         let installed = installation_of(&binary, "windows", Some(&data_root), None);
-        let windows = Notice::from_release(
-            &release("Oxide-win-x64-Setup.exe"),
-            "acme/oxide",
-            1_000,
-        );
+        let windows =
+            Notice::from_release(&release("Oxide-win-x64-Setup.exe"), "acme/oxide", 1_000);
         assert!(!launch_installs(&windows, "0.33.0", &installed));
 
         fs::remove_dir_all(root).unwrap();
