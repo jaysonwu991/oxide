@@ -92,6 +92,17 @@ replaced on every publish, so the links themselves never change; the versioned
 | Desktop | Linux arm64 | [Oxide-linux-arm64-Setup.AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.AppImage) · [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
 | VS Code | any | [oxide-vscode.vsix](https://github.com/jaysonwu991/oxide/releases/download/extension-latest/oxide-vscode.vsix) |
 
+On macOS, an app that was not notarized — a build made without both the
+Developer ID certificate and the App Store Connect key — opens as **damaged**
+once the browser quarantines it. Clear the flag and open it again:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Oxide.app
+```
+
+Drag the app into `/Applications` first if it is still on the disk image. A
+notarized release needs none of this.
+
 ## Quick start
 
 ```sh
