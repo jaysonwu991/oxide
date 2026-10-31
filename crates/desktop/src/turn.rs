@@ -61,6 +61,19 @@ pub async fn start_turn(
     }
     config.require_api_key()?;
 
+    // A turn that opens with a word no command matches is answered here: the
+    // desktop's own `/` menu and the terminal's agree on what exists, so a typo
+    // reports the same sentence in both rather than reaching the model.
+    if let Some(unknown) = oxide_core::commands::unknown_slash(&config, prompt) {
+        return Err(anyhow::anyhow!(
+            "{}",
+            oxide_core::commands::unknown_slash_notice(
+                oxide_core::i18n::resolve(project),
+                &unknown
+            )
+        ));
+    }
+
     // A leading `/command` is resolved here exactly as the CLI resolves it for
     // `-p` and rpc, so a command from the `/` menu (or typed by hand) reaches
     // the agent as its expanded prompt, with the agent routing its frontmatter

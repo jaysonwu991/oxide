@@ -1,4 +1,4 @@
-// The saved "Always allow" rules, read through `oxide approvals`: the arguments
+// The saved "Always allow" rules, read through `oxide approval`: the arguments
 // name the folder rather than inheriting the process's own, so a listing always
 // describes the project the panel is showing, and a malformed answer reads as no
 // rules rather than throwing in the middle of a click.
@@ -11,14 +11,14 @@ import { approvalsArgs, approvalsClearArgs, parseApprovals } from "../core/permi
 describe("approvalsArgs", () => {
   it("names the project it lists and the one it clears", () => {
     assert.deepEqual(approvalsArgs("/work/oxide"), [
-      "approvals",
+      "approval",
       "list",
       "--json",
       "--project",
       "/work/oxide",
     ]);
     assert.deepEqual(approvalsClearArgs("/work/oxide"), [
-      "approvals",
+      "approval",
       "clear",
       "--json",
       "--project",

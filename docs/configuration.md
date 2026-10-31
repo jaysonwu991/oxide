@@ -141,7 +141,7 @@ a later reasoning choice is shared by every front-end.
 oxide [OPTIONS] [@files...] [PROMPT...]
 oxide mcp <COMMAND>
 oxide plugin <COMMAND>
-oxide sessions <COMMAND>
+oxide session <COMMAND>
 oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
 oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION>] [--version <VERSION>] [--force] [--json]
 ```
@@ -150,19 +150,19 @@ These print what a front-end draws, through the same core the terminal uses, so
 a client that cannot link `oxide-core` keeps no copy of the tables:
 
 ```
-oxide commands [--json]                 # the slash-command catalog
-oxide models [--json] [--active]        # the catalogs of the logged-in providers
-oxide providers [--json]                # every provider, with its credential state
+oxide command [--json]                  # the slash-command catalog
+oxide model [--json] [--active]         # the catalogs of the logged-in providers
+oxide provider [--json]                 # every provider, with its credential state
 oxide reasoning [--json] [--refresh] [--model <MODEL>]
 oxide context [--json] [--model <MODEL>] # the window a run resolves, and the key facts
 oxide login <provider> [--key-stdin] [--model <MODEL>] [--base-url <URL>] [--json]
 oxide logout [provider] [--json]
 oxide select --model <MODEL> [--provider <PROVIDER>] | --reasoning <LEVEL>
 oxide language [show|set <en-GB|zh-CN>] [--json]
-oxide approvals list|clear [--project <dir>] [--json]
+oxide approval list|clear [--project <dir>] [--json]
 oxide trust show|set <trusted|untrusted> [--project <dir>] [--json]
-oxide changes show <path> --baseline <rev> [--project <dir>]
-oxide changes undo --baseline <rev> [--after <rev>] [--project <dir>]
+oxide change show <path> --baseline <rev> [--project <dir>]
+oxide change undo --baseline <rev> [--after <rev>] [--project <dir>]
 oxide worktree list|create|remove [name] [--project <dir>] [--json]
 oxide worktree branch <name> <branch> | handoff <id> --source <dir> [--to-worktree]
 oxide clipboard --json
@@ -781,7 +781,7 @@ Compaction triggers above `contextWindow - reserveTokens`, where the window is
 override the file settings. Each compaction is appended to the session log as a
 `compaction` entry anchored at `firstKeptEntryId` and replayed on resume, so the
 model sees the same compacted view. Manual compaction is `/compact [focus]` in
-the TUI or `oxide sessions compact`.
+the TUI or `oxide session compact`.
 
 Branching summarizes the path being abandoned with the same structured format and
 appends it as a `branch_summary` entry. `/tree <n>` branches the current session

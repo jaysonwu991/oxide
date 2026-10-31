@@ -5,7 +5,7 @@
 // webview stays a dumb renderer and never decides what a click means: a row
 // carries the action it posts back, exactly like a footer chip carries its
 // control id. The listing itself comes from the CLI (`oxide mcp list --json`,
-// `oxide sessions list`), so the rows here say what the terminal's `/mcp` and
+// `oxide session list`), so the rows here say what the terminal's `/mcp` and
 // `/session` say about the same project.
 //
 // Rendering them in the panel instead of a `showQuickPick` keeps the flow in
@@ -218,7 +218,7 @@ export interface ModelChoice {
 /// `auth.json` and `config.json` the terminal's `/connect` writes, so what the
 /// panel connects is what the next turn runs on.
 ///
-/// The rows come from the CLI (`oxide providers --json`), so which providers
+/// The rows come from the CLI (`oxide provider --json`), so which providers
 /// exist, which are stored and which one is in use is the core's answer rather
 /// than a copy kept here.
 export function providerDialog(
@@ -472,7 +472,7 @@ export function reasoningDialog(current: string, levels: readonly string[], info
 }
 
 /// The `/permissions` dialog: the tools this project allows without prompting,
-/// read from the shared `approvals.json` through `oxide approvals`. The rows are
+/// read from the shared `approvals.json` through `oxide approval`. The rows are
 /// the rules an `Always allow` saved, wherever it was answered — the terminal,
 /// the desktop app or this panel — so a rule given here is visible here and a
 /// rule given elsewhere can be taken back here.

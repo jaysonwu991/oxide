@@ -972,7 +972,7 @@ impl SessionLog {
     }
 
     /// Replaces the on-disk entry list with a linear sequence of messages. Used
-    /// by `oxide sessions compact` after summarizing a session in place.
+    /// by `oxide session compact` after summarizing a session in place.
     pub fn rewrite(&self, messages: &[Message]) -> Result<()> {
         let selected_tools = self.selected_tools();
         let dir = self.path.parent().unwrap_or_else(|| Path::new("."));

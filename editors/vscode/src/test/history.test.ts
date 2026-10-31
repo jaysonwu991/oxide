@@ -1,4 +1,4 @@
-// `oxide sessions show <id> --json` is how the panel learns what a thread it is
+// `oxide session show <id> --json` is how the panel learns what a thread it is
 // resuming already holds. The reader is tolerant like the others here: a field
 // that is missing or of the wrong type reads as empty rather than throwing in
 // the middle of a resume.
@@ -64,7 +64,7 @@ describe("stored session history", () => {
   });
 
   it("keeps the media a stored message carried", () => {
-    // `oxide sessions show --json` reports what a message carried under the same
+    // `oxide session show --json` reports what a message carried under the same
     // two field names the desktop app's own view of a stored thread uses, so a
     // resumed conversation shows the pictures in it rather than a list of names.
     const history = parseSessionHistory(

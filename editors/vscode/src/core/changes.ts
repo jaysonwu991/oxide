@@ -157,7 +157,7 @@ export function diffPlan(baseline: string, change: ChangeLike): DiffPlan {
 /// The CLI read behind the provider above: one file as the run's baseline
 /// recorded it, printed byte for byte.
 export function changeArgs(path: string, baseline: string, project: string): string[] {
-  return ["changes", "show", path, "--baseline", baseline, "--project", project];
+  return ["change", "show", path, "--baseline", baseline, "--project", project];
 }
 
 /// The CLI put-back behind a card's Undo: the project is restored to the state
@@ -166,7 +166,7 @@ export function changeArgs(path: string, baseline: string, project: string): str
 /// refuses a card whose turn is not the newest one instead of taking a later
 /// change with it.
 export function undoArgs(project: string, baseline: string, after: string): string[] {
-  const args = ["changes", "undo", "--baseline", baseline, "--project", project];
+  const args = ["change", "undo", "--baseline", baseline, "--project", project];
   if (after) args.push("--after", after);
   return args;
 }

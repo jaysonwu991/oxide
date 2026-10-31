@@ -1662,6 +1662,15 @@ fn handle_key(
                 return;
             }
             let init = raw == "/init";
+            if let Some(unknown) = crate::commands::unknown_slash(config, &raw) {
+                app.clear_input();
+                refresh_suggestions(app, config);
+                app.items
+                    .push(ChatItem::Error(crate::commands::unknown_slash_notice(
+                        app.lang, &unknown,
+                    )));
+                return;
+            }
             app.clear_input();
             refresh_suggestions(app, config);
             if config.api_key.trim().is_empty() {
@@ -2049,11 +2058,6 @@ const TERMINAL_HELP_ROWS: &[(&str, &str, &str)] = &[
         "/reload",
         "terminal.help.reload",
         "Reload config, commands, and skills",
-    ),
-    (
-        "/init",
-        "terminal.help.init",
-        "Create or update AGENTS.md for this project",
     ),
     (
         "/models [filter]",
@@ -3433,7 +3437,6 @@ fn terminal_only_commands(lang: crate::i18n::Language) -> Vec<CommandHint> {
         hint("status", "Show this session's file and id"),
         hint("export", "Export the session to HTML"),
         hint("reload", "Reload config and skills"),
-        hint("init", "Create or update AGENTS.md"),
         hint("models", "Choose a model from any connected provider"),
         hint("plugins", "Manage plugins and marketplaces"),
         hint("marketplaces", "Browse and manage plugin marketplaces"),

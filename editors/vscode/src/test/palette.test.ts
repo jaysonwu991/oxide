@@ -16,7 +16,7 @@ import {
   type CommandEntry,
 } from "../core/palette";
 
-/// The catalog `oxide commands --json` prints, reduced to what the tests use.
+/// The catalog `oxide command --json` prints, reduced to what the tests use.
 const CATALOG = `[
   {
     "name": "model",
@@ -334,10 +334,33 @@ describe("panel commands", () => {
     // Arguments are the agent's, so `/connect anthropic` stays a message: the
     // command itself is what the panel performs.
     assert.equal(routeCommand(entries, "/connect anthropic"), null);
-    // A retired spelling is nobody's command: with nothing in the catalog to
-    // refuse, it is a message the CLI expands like any other.
-    assert.equal(routeCommand(entries, "/mcps"), null);
-    assert.equal(routeCommand(entries, "/approvals"), null);
+    // A retired spelling is nobody's command: the catalog carries the singular,
+    // so the plural is reported in place — with the spelling it meant — rather
+    // than sent to the model as a prompt.
+    assert.deepEqual(routeCommand(entries, "/mcps"), {
+      kind: "unknown",
+      name: "mcps",
+      closest: "mcp",
+    });
+    assert.deepEqual(routeCommand(entries, "/sessions"), {
+      kind: "unknown",
+      name: "sessions",
+      closest: "session",
+    });
+    // Arguments change neither answer: one word of typo, one report.
+    assert.deepEqual(routeCommand(entries, "/mcps list"), {
+      kind: "unknown",
+      name: "mcps",
+      closest: "mcp",
+    });
+    assert.deepEqual(routeCommand(entries, "/nope"), {
+      kind: "unknown",
+      name: "nope",
+      closest: null,
+    });
+    // A catalog that could not be read is no list at all, so the word is left
+    // to the CLI rather than called unknown by a panel that knows nothing.
+    assert.equal(routeCommand([], "/mcps"), null);
     // The desktop's own command is refused: the panel cannot pick a theme.
     assert.deepEqual(routeCommand(entries, "/theme"), { kind: "refused", name: "theme" });
   });
@@ -354,5 +377,8 @@ describe("panel commands", () => {
     assert.equal(routeCommand(entries, "/"), null);
     // A skill the CLI has by another name is not a client command either.
     assert.equal(routeCommand(entries, "/skill:oxide-architecture"), null);
+    // A path typed as prose is not a command name, and a message with a word
+    // the catalog does carry stays the agent's whatever follows it.
+    assert.equal(routeCommand(entries, "/etc/hosts is wrong"), null);
   });
 });

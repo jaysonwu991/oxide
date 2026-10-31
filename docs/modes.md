@@ -47,22 +47,22 @@ the decision before starting its RPC process.
 ## Session management
 
 ```sh
-oxide sessions list                        # current project
-oxide sessions list --all                  # every project
-oxide sessions list --older-than 30        # stale active sessions only
-oxide sessions list --archived             # archived sessions for this project
-oxide sessions list --json                 # shared metadata, including pinned
-oxide sessions pin <id>                    # pin in Desktop and the extension
-oxide sessions unpin <id>
-oxide sessions archive <id>                # hide it; keep the log
-oxide sessions unarchive <id>              # restore it
-oxide sessions show <id>                   # print one saved conversation
-oxide sessions delete <id>                 # delete one (prompts)
-oxide sessions delete --older-than 30 --force
-oxide sessions compact <id>                # summarize older history, keep recent tail
-oxide sessions compact --all               # refresh every session in this project
-oxide sessions merge <a> <b>               # concatenate two sessions into a new one
-oxide sessions merge <a> <b> --summarize   # summarize the second session first
+oxide session list                         # current project
+oxide session list --all                   # every project
+oxide session list --older-than 30         # stale active sessions only
+oxide session list --archived              # archived sessions for this project
+oxide session list --json                  # shared metadata, including pinned
+oxide session pin <id>                     # pin in Desktop and the extension
+oxide session unpin <id>
+oxide session archive <id>                 # hide it; keep the log
+oxide session unarchive <id>               # restore it
+oxide session show <id>                    # print one saved conversation
+oxide session delete <id>                  # delete one (prompts)
+oxide session delete --older-than 30 --force
+oxide session compact <id>                 # summarize older history, keep recent tail
+oxide session compact --all                # refresh every session in this project
+oxide session merge <a> <b>                # concatenate two sessions into a new one
+oxide session merge <a> <b> --summarize    # summarize the second session first
 ```
 
 `delete` is token-free. `compact` and `merge --summarize` make one LLM
@@ -86,8 +86,8 @@ A finished run can report what it changed, and a front-end that draws its own
 diff reads the side that is nowhere on disk through the CLI:
 
 ```sh
-oxide changes show src/main.rs --baseline <rev> --project <root>
-oxide changes undo --baseline <rev> --after <rev> --project <root>
+oxide change show src/main.rs --baseline <rev> --project <root>
+oxide change undo --baseline <rev> --after <rev> --project <root>
 ```
 
 See [A turn's changes](cli.md#a-turns-changes).
@@ -96,10 +96,10 @@ See [A turn's changes](cli.md#a-turns-changes).
 
 ```sh
 oxide mcp list --json       # the server listing a front-end draws
-oxide commands --json       # the slash-command catalog
-oxide models --json         # normalized provider catalogs
+oxide command --json        # the slash-command catalog
+oxide model --json          # normalized provider catalogs
 oxide context --json        # the window a run resolves for the active model
-oxide providers --json      # every provider, and which are stored or in use
+oxide provider --json       # every provider, and which are stored or in use
 oxide login openai --json --key-stdin <key   # connect one (key on stdin)
 oxide language --json       # the interface language and the catalog it draws
 ```

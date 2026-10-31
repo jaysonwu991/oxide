@@ -16,7 +16,7 @@ import {
   providerState,
 } from "../core/providers";
 
-/// What `oxide providers --json` prints, reduced to what the tests use.
+/// What `oxide provider --json` prints, reduced to what the tests use.
 const LISTING = JSON.stringify({
   active: "openai",
   providers: [
@@ -156,7 +156,7 @@ describe("provider search", () => {
 
 describe("provider login", () => {
   it("asks for the table, and for one login", () => {
-    assert.deepEqual(providersListArgs(), ["providers", "--json"]);
+    assert.deepEqual(providersListArgs(), ["provider", "--json"]);
     assert.deepEqual(providerLoginArgs("openai", false), ["login", "openai", "--json"]);
     // A key is never an argument — it would be visible in the process listing —
     // so it goes on stdin and the flag is what says so.

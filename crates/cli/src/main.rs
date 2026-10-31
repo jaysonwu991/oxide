@@ -221,9 +221,9 @@ enum Command {
         current: Option<String>,
     },
     /// Manage saved sessions
-    Sessions {
+    Session {
         #[command(subcommand)]
-        action: SessionsAction,
+        action: SessionAction,
     },
     /// Manage Claude Code-style plugins and marketplaces
     Plugin {
@@ -231,19 +231,20 @@ enum Command {
         action: PluginAction,
     },
     /// List the slash commands a client can offer
+    #[command(name = "command")]
     Commands {
         /// Print the listing as JSON
         #[arg(long)]
         json: bool,
     },
     /// Review the tools a project allows without prompting
-    Approvals {
+    Approval {
         #[command(subcommand)]
-        action: ApprovalsAction,
+        action: ApprovalAction,
     },
     /// Forget a provider's stored credentials
     Logout {
-        /// Provider name, as `oxide providers` lists it (the active one by
+        /// Provider name, as `oxide provider` lists it (the active one by
         /// default)
         provider: Option<String>,
         /// Print the result as JSON
@@ -256,7 +257,7 @@ enum Command {
         action: TrustAction,
     },
     /// List models available from connected providers
-    Models {
+    Model {
         /// Print provider catalogs as JSON
         #[arg(long)]
         json: bool,
@@ -288,14 +289,14 @@ enum Command {
         model: Option<String>,
     },
     /// List the providers a client can connect
-    Providers {
+    Provider {
         /// Print the listing as JSON
         #[arg(long)]
         json: bool,
     },
     /// Connect a provider, storing its credential
     Login {
-        /// Provider name, as `oxide providers` lists it
+        /// Provider name, as `oxide provider` lists it
         provider: String,
         /// Read the API key from stdin (one line)
         #[arg(long)]
@@ -311,9 +312,9 @@ enum Command {
         json: bool,
     },
     /// Read the files a run changed, from its shadow snapshots
-    Changes {
+    Change {
         #[command(subcommand)]
-        action: ChangesAction,
+        action: ChangeAction,
     },
     /// Manage the git worktrees a conversation can run in
     Worktree {
@@ -419,7 +420,7 @@ enum WorktreeAction {
 }
 
 #[derive(Subcommand, Debug)]
-enum ApprovalsAction {
+enum ApprovalAction {
     /// List the tools this project allows without prompting
     List {
         /// Project directory (defaults to the current one)
@@ -465,7 +466,7 @@ enum TrustAction {
 }
 
 #[derive(Subcommand, Debug)]
-enum ChangesAction {
+enum ChangeAction {
     /// Print one file as a run's baseline recorded it
     Show {
         /// Path relative to the project
@@ -493,7 +494,7 @@ enum ChangesAction {
 }
 
 #[derive(Subcommand, Debug)]
-enum SessionsAction {
+enum SessionAction {
     /// List saved sessions
     List {
         /// Include sessions from every project
@@ -838,38 +839,38 @@ async fn run() -> Result<()> {
                 })
                 .await
             }
-            Command::Sessions { action } => {
+            Command::Session { action } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 match action {
-                    SessionsAction::List {
+                    SessionAction::List {
                         all,
                         older_than,
                         archived,
                         json,
                     } => sessions::list(&current_dir, all, older_than, archived, json),
-                    SessionsAction::Pin { id } => sessions::set_state(&current_dir, &id, "pin"),
-                    SessionsAction::Unpin { id } => sessions::set_state(&current_dir, &id, "unpin"),
-                    SessionsAction::Archive { id } => {
+                    SessionAction::Pin { id } => sessions::set_state(&current_dir, &id, "pin"),
+                    SessionAction::Unpin { id } => sessions::set_state(&current_dir, &id, "unpin"),
+                    SessionAction::Archive { id } => {
                         sessions::set_state(&current_dir, &id, "archive")
                     }
-                    SessionsAction::Unarchive { id } => {
+                    SessionAction::Unarchive { id } => {
                         sessions::set_state(&current_dir, &id, "unarchive")
                     }
-                    SessionsAction::Show { id, tail, json } => {
+                    SessionAction::Show { id, tail, json } => {
                         sessions::show(&current_dir, &id, tail, json)
                     }
-                    SessionsAction::Delete {
+                    SessionAction::Delete {
                         id,
                         all,
                         older_than,
                         force,
                     } => sessions::delete(&current_dir, id, all, older_than, force),
-                    SessionsAction::Compact { id, all } => {
+                    SessionAction::Compact { id, all } => {
                         let config = Config::load(&current_dir, None, None, None, None)?;
                         config.require_api_key()?;
                         sessions::compact_sessions(&current_dir, &config, id, all).await
                     }
-                    SessionsAction::Merge { a, b, summarize } => {
+                    SessionAction::Merge { a, b, summarize } => {
                         let config = if summarize {
                             let config = Config::load(&current_dir, None, None, None, None)?;
                             config.require_api_key()?;
@@ -921,11 +922,11 @@ async fn run() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 commands::list(&current_dir, json)
             }
-            Command::Approvals { action } => match action {
-                ApprovalsAction::List { project, json } => {
+            Command::Approval { action } => match action {
+                ApprovalAction::List { project, json } => {
                     list_approvals(project_dir(project)?, json)
                 }
-                ApprovalsAction::Clear { project, json } => {
+                ApprovalAction::Clear { project, json } => {
                     clear_approvals(project_dir(project)?, json)
                 }
             },
@@ -976,7 +977,7 @@ async fn run() -> Result<()> {
                 }
                 Ok(())
             }
-            Command::Models { json, active } => {
+            Command::Model { json, active } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 list_models(&current_dir, json, active).await
             }
@@ -992,7 +993,7 @@ async fn run() -> Result<()> {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
                 show_context(&current_dir, json, model)
             }
-            Command::Providers { json } => list_providers(json),
+            Command::Provider { json } => list_providers(json),
             Command::Language {
                 json,
                 project,
@@ -1118,8 +1119,8 @@ async fn run() -> Result<()> {
                 base_url,
                 json,
             } => connect_provider(&provider, key_stdin, model, base_url, json).await,
-            Command::Changes { action } => match action {
-                ChangesAction::Show {
+            Command::Change { action } => match action {
+                ChangeAction::Show {
                     path,
                     baseline,
                     project,
@@ -1133,7 +1134,7 @@ async fn run() -> Result<()> {
                     io::stdout().write_all(&content)?;
                     Ok(())
                 }
-                ChangesAction::Undo {
+                ChangeAction::Undo {
                     baseline,
                     after,
                     project,
@@ -1921,6 +1922,14 @@ async fn run_print(
 ) -> Result<()> {
     config.require_api_key()?;
     config.tool_filter = tool_filter.clone();
+    // A bare command the project does not hold is a typo, not a prompt: `-p
+    // "/mcps"` fails here rather than costing a run to be told the same thing.
+    if let Some(unknown) = commands::unknown_slash(&config, &prompt) {
+        anyhow::bail!(
+            "{}",
+            commands::unknown_slash_notice(i18n::resolve(&cwd), &unknown)
+        );
+    }
     let resolved = runner::resolve_command(&config, &prompt);
     let prompt = resolved.text;
     let command_agent = resolved.agent;
@@ -2236,6 +2245,17 @@ async fn run_rpc_mode(
             let RpcRequest::Prompt { text, images } = request else {
                 continue;
             };
+            // The terminal's own answer to a word no command matches: the run
+            // never starts, and the client is told why instead of waiting for
+            // a turn that would only repeat it.
+            if let Some(unknown) = commands::unknown_slash(&config, &text) {
+                let _ = frame_tx.send(serde_json::json!({
+                    "type": "error",
+                    "message": commands::unknown_slash_notice(i18n::resolve(&cwd), &unknown),
+                }));
+                let _ = frame_tx.send(serde_json::json!({ "type": "agent_end", "messages": [] }));
+                continue;
+            }
             if log.is_none() && !ephemeral {
                 log = Some(SessionLog::create(&cwd)?);
             }
@@ -2422,7 +2442,7 @@ async fn turn_changes(
 mod tests {
     use super::{
         context_view, parse_mode, parse_trust_decision, resolve_auto_approve, turn_changes,
-        worktree_name, ApprovalsAction, Cli, Command, LanguageAction, MarketplaceAction,
+        worktree_name, ApprovalAction, Cli, Command, LanguageAction, MarketplaceAction,
         PluginAction, TrustAction,
     };
     use oxide_core::config::Config;
@@ -2722,10 +2742,10 @@ mod tests {
 
     #[test]
     fn parses_model_catalog_output() {
-        let cli = Cli::try_parse_from(["oxide", "models", "--json", "--active"]).unwrap();
+        let cli = Cli::try_parse_from(["oxide", "model", "--json", "--active"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Models {
+            Some(Command::Model {
                 json: true,
                 active: true
             })
@@ -2737,11 +2757,11 @@ mod tests {
     /// provider's credential, and a project's trust decision.
     #[test]
     fn parses_the_commands_a_front_end_takes_back_with() {
-        let cli = Cli::try_parse_from(["oxide", "approvals", "list", "--json"]).unwrap();
+        let cli = Cli::try_parse_from(["oxide", "approval", "list", "--json"]).unwrap();
         match cli.command {
-            Some(Command::Approvals {
+            Some(Command::Approval {
                 action:
-                    ApprovalsAction::List {
+                    ApprovalAction::List {
                         json: true,
                         project,
                     },
@@ -2749,11 +2769,11 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
 
-        let cli = Cli::try_parse_from(["oxide", "approvals", "clear", "--project", "/work/oxide"])
+        let cli = Cli::try_parse_from(["oxide", "approval", "clear", "--project", "/work/oxide"])
             .unwrap();
         match cli.command {
-            Some(Command::Approvals {
-                action: ApprovalsAction::Clear { project, .. },
+            Some(Command::Approval {
+                action: ApprovalAction::Clear { project, .. },
             }) => assert_eq!(project.unwrap().to_str(), Some("/work/oxide")),
             other => panic!("unexpected {other:?}"),
         }
@@ -2792,10 +2812,10 @@ mod tests {
 
     #[test]
     fn parses_a_provider_listing_and_a_login() {
-        let cli = Cli::try_parse_from(["oxide", "providers", "--json"]).unwrap();
+        let cli = Cli::try_parse_from(["oxide", "provider", "--json"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Providers { json: true })
+            Some(Command::Provider { json: true })
         ));
 
         let cli = Cli::try_parse_from([

@@ -57,7 +57,7 @@ pub enum CredentialMode {
 
 /// One provider as a front-end's picker draws it: the table's own words, plus
 /// whether a credential is stored for it and whether it is the one in use. The
-/// desktop app, the VS Code panel and `oxide providers --json` all draw this
+/// desktop app, the VS Code panel and `oxide provider --json` all draw this
 /// listing rather than reading the provider table themselves.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ProviderView {

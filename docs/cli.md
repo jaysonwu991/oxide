@@ -11,7 +11,7 @@ For the reference tables rather than the task guides, see
 variables, providers, data locations), [ecosystem.md](ecosystem.md) (the `.oxide/`
 layout), [tools.md](tools.md) (tool parameters and output caps),
 [tui.md](tui.md) (keyboard shortcuts) and [modes.md](modes.md)
-(non-interactive runs and `oxide sessions`).
+(non-interactive runs and `oxide session`).
 
 ## Scopes and precedence
 
@@ -420,21 +420,27 @@ Focus: $ARGUMENTS
   `/attach`, `/language`, `/connect` and `/logout` — and `/theme` in the desktop
   app, `/agent` in the panel — while
   the rest are the terminal's own. The catalog holds one spelling per command, so
-  `/help` and the autocomplete list each name once and a word that is not one —
-  `/mcps` for `/mcp`, `/login` for `/connect` — is an ordinary message rather
-  than a second way to reach a command. After a space,
+  `/help` and the autocomplete list each name once and a word that is not one is
+  never a second way to reach a command. `/mcps` for `/mcp` is reported in place
+  (`unknown command `/mcps`. Did you mean `/mcp`?`) by the terminal, the desktop
+  app and the VS Code panel alike, and `-p`/`--mode rpc` answer with an error
+  rather than spending a run to be told the same thing; the rule and its
+  sentence live in `commands::unknown_slash`. A line that opens with a path
+  rather than a name (`/etc/hosts is wrong`) stays an ordinary message, and so
+  does a known command with words after it (`/session auth is broken`), which is
+  the agent's. After a space,
   the built-in commands autocomplete their fixed arguments too
   (`/notify sound`, `/permissions on`, `/spend currency usd`, `/updates off`,
   `/plugins marketplace update`, and providers for `/connect`); Tab accepts the
   highlighted suggestion.
 - **Remove** a command by deleting its file.
-- `oxide models [--json] [--active]` reads the same normalized provider catalogs as the
+- `oxide model [--json] [--active]` reads the same normalized provider catalogs as the
   TUI's `/models` picker. The JSON form is for clients such as the VS Code
   extension; it includes the active provider, current model, each connected
   provider's models, and any provider-specific catalog error. `--active` queries
   only the active provider, so a latency-sensitive client is not held up by a
   slow inactive provider it will not display.
-- `oxide commands [--json]` prints the catalog a client offers: the built-in
+- `oxide command [--json]` prints the catalog a client offers: the built-in
   names, each with its argument hint, their `kind` (`client` for a
   command a front-end answers itself, like `/mcp`; `prompt` for one it runs by
   sending `/name args`; `skill` for a skill, which is listed under its own name —
@@ -752,8 +758,8 @@ permission:
   which every front-end reads — the TUI included — so the question does not come
   back for that tool in that repository. An answer that never arrives is denied
   after five minutes so a turn cannot hang.
-- `oxide approvals list [--project <dir>] [--json]` prints the tools a project
-  allows without prompting, and `oxide approvals clear [--project <dir>]`
+- `oxide approval list [--project <dir>] [--json]` prints the tools a project
+  allows without prompting, and `oxide approval clear [--project <dir>]`
   forgets every one of them. That is the same store the prompts write, so a rule
   saved anywhere can be reviewed and taken back anywhere — including from a
   front-end that cannot link `oxide-core`, which is why the command exists.
@@ -1198,7 +1204,7 @@ in `config.json` overrides it.
 `OXIDE_COMPACTION_ENABLED`, `OXIDE_COMPACTION_RESERVE_TOKENS`, and
 `OXIDE_COMPACTION_KEEP_RECENT_TOKENS` override the file settings, and
 `OXIDE_CONTEXT_LIMIT` overrides `context_window`. Manual compaction is available
-with `/compact [focus]` in the TUI or `oxide sessions compact`.
+with `/compact [focus]` in the TUI or `oxide session compact`.
 
 Branching with `/tree <n>` or `/fork <n>` summarizes the abandoned branch with
 the same structured format and appends it as a `branch_summary` entry.
@@ -1264,13 +1270,13 @@ The desktop app's **Connect** dialog and the VS Code panel's Connect Provider
 command draw the same table the TUI's picker does, from one definition:
 
 ```console
-oxide providers --json          # every provider, and the state of each
+oxide provider --json           # every provider, and the state of each
 oxide login openai --json --key-stdin <key
 oxide login ollama              # a stored credential, or one that needs none
 oxide login bedrock             # a credential this machine already has
 ```
 
-`oxide providers --json` prints `{ "active": <name|null>, "providers": [...] }`,
+`oxide provider --json` prints `{ "active": <name|null>, "providers": [...] }`,
 where each row carries the `name` a login takes, the `label` and `description` a
 picker paints, the `keyUrl` a key is issued at, and `local`, `stored` and `active`
 — the state a row shows beside it. Its `credential` says where a credential comes
@@ -1606,7 +1612,7 @@ taking a later edit with it. The terminal is not one of them: its
 change card in the transcript.
 
   ```sh
-  oxide changes show src/main.rs --baseline <rev> --project <root>
+  oxide change show src/main.rs --baseline <rev> --project <root>
   ```
 
 - A front-end that draws its own diff reads the left side through the CLI, since
@@ -1736,7 +1742,7 @@ Global ecosystem resources can additionally live under `~/.oxide/` and
 `~/.claude.json`.
 
 Deleting a session file removes that conversation; `/session` can also delete
-(Ctrl+D) or rename (Ctrl+R) sessions from the picker. `oxide sessions` offers
+(Ctrl+D) or rename (Ctrl+R) sessions from the picker. `oxide session` offers
 non-interactive management: `list` (with `--all` or `--older-than`), `show
 <id>` (print one saved conversation — `--tail <n>` for just its newest
 messages, `--json` for the object a front-end draws: id, name, cwd, path, how

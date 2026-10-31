@@ -809,7 +809,7 @@ describe("command contributions", () => {
     const actions = chat.slice(chat.indexOf("private async changeSession("), chat.indexOf("// ---------- dialogs ----------"));
     assert.ok(actions.includes('action === "archive" && running'));
     assert.ok(actions.includes('sessionActionArgs(id, operation)'));
-    assert.ok(actions.includes("oxide sessions delete {value0}"));
+    assert.ok(actions.includes("oxide session delete {value0}"));
     assert.ok(!chat.includes("sessionDeleteArgs") && !chat.includes("confirmDeleteSession"));
   });
 
@@ -986,7 +986,7 @@ describe("command contributions", () => {
       chat.indexOf("private async readCommands("),
       chat.indexOf("private async workspacePathList("),
     );
-    assert.ok(read.includes('["commands", "--json"]'), "the catalog is the CLI's own answer");
+    assert.ok(read.includes('["command", "--json"]'), "the catalog is the CLI's own answer");
     assert.ok(read.includes("parseCommandList("), "parsed into the panel's shape");
     assert.ok(read.includes("this.commandCache = { root, entries }"), "and remembered per project");
     assert.ok(

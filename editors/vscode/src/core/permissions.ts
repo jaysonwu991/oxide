@@ -1,4 +1,4 @@
-// The saved "Always allow" rules, as `oxide approvals` reports them. Distinct
+// The saved "Always allow" rules, as `oxide approval` reports them. Distinct
 // from `approvals.ts`, which is the request the CLI emits while a turn runs and
 // is waiting for an answer: this is the store a past answer left behind.
 //
@@ -21,13 +21,13 @@ export interface ApprovalsListing {
 /// working directory, so the listing always describes the project the panel is
 /// showing.
 export function approvalsArgs(project: string): string[] {
-  return ["approvals", "list", "--json", "--project", project];
+  return ["approval", "list", "--json", "--project", project];
 }
 
 /// Forgetting every rule for this project, which is what the listing's own row
 /// does.
 export function approvalsClearArgs(project: string): string[] {
-  return ["approvals", "clear", "--json", "--project", project];
+  return ["approval", "clear", "--json", "--project", project];
 }
 
 /// Reads the listing. Anything that is not a list of names — a CLI too old to

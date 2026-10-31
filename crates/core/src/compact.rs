@@ -793,7 +793,7 @@ pub async fn summarize_branch(
 }
 
 /// Compacts a message list into `[summary, ...kept]` for callers that rewrite
-/// history rather than keeping compaction records (`oxide sessions compact`
+/// history rather than keeping compaction records (`oxide session compact`
 /// and the manual `/compact` command).
 pub async fn compact_messages(
     config: &Config,

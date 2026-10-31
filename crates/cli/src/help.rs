@@ -141,17 +141,17 @@ mod tests {
         assert!(help.contains("用法："));
         assert!(help.contains("使用的模型"));
         assert!(help.contains("--ask-approvals"));
-        let args = ["oxide", "--model", "test", "sessions", "list", "--json"];
+        let args = ["oxide", "--model", "test", "session", "list", "--json"];
         let translated =
             crate::Cli::from_arg_matches(&cli.try_get_matches_from(args).unwrap()).unwrap();
         let original = crate::Cli::try_parse_from(args).unwrap();
         assert_eq!(format!("{translated:?}"), format!("{original:?}"));
         let matches = command(crate::Cli::command(), Language::ZhCn)
-            .try_get_matches_from(["oxide", "sessions", "list", "--json"])
+            .try_get_matches_from(["oxide", "session", "list", "--json"])
             .unwrap();
         assert!(matches!(
             crate::Cli::from_arg_matches(&matches).unwrap().command,
-            Some(crate::Command::Sessions { .. })
+            Some(crate::Command::Session { .. })
         ));
     }
 

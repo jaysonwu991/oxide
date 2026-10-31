@@ -1,6 +1,6 @@
 // The `/` palette the composer offers while a slash command is being typed.
 //
-// The rows come from the CLI's own catalog — `oxide commands --json`, which is
+// The rows come from the CLI's own catalog — `oxide command --json`, which is
 // the same listing the terminal's `/` menu is built from and the desktop app's
 // palette draws (`oxide_core::commands::palette`) — so the project's commands,
 // prompt templates and skills are offered here by the name the CLI resolves,
@@ -14,7 +14,7 @@
 //
 // Like the rest of `src/core/`, this imports nothing from `vscode`.
 
-/// One row of `oxide commands --json`.
+/// One row of `oxide command --json`.
 export interface CommandEntry {
   name: string;
   description: string;
@@ -216,7 +216,7 @@ export function panelCommand(name: string): PanelAction | null {
     case "logout":
       return "logout";
     // The saved "Always allow" rules live in the shared `approvals.json`; the
-    // panel lists and clears them through `oxide approvals`, the way it reads
+    // panel lists and clears them through `oxide approval`, the way it reads
     // the rest of the store rather than keeping a copy.
     case "permissions":
       return "permissions";
@@ -247,32 +247,71 @@ export function panelCommand(name: string): PanelAction | null {
 
 /// What the panel does with a message before it is sent.
 ///
-/// A bare `/name` naming a client command never reaches the model: the panel
+/// A `/name` naming a client command never reaches the model: the panel
 /// performs it, or — for one it has no action for, like the desktop app's
 /// `/theme` — says so, rather than sending text the CLI would hand the agent as
 /// a prompt. `null` for everything else, which is what the CLI expands: a
 /// configured command, a skill, or an ordinary message.
 ///
-/// Only a bare name routes, so `/session auth is broken` stays a message the
-/// agent has something to say about, as it does in the terminal.
+/// A `/name` the catalog does not carry at all is a `unknown`, the same answer
+/// `oxide_core::commands::unknown_slash` gives the terminal and the app, so a
+/// typo is reported in place rather than asked of the model. An argument changes
+/// neither answer: `/session auth is broken` stays a message the agent has
+/// something to say about, as it does in the terminal, while `/mcps list` is the
+/// typo `/mcps` was.
 export type CommandRoute =
   | { kind: "action"; action: PanelAction }
-  | { kind: "refused"; name: string };
+  | { kind: "refused"; name: string }
+  | { kind: "unknown"; name: string; closest: string | null };
 
 export function routeCommand(
   entries: readonly CommandEntry[],
   text: string,
 ): CommandRoute | null {
   const trimmed = text.trim();
-  if (!trimmed.startsWith("/") || /\s/.test(trimmed)) return null;
-  const name = canonicalCommand(trimmed.slice(1), entries);
-  if (!name) return null;
-  const action = panelCommand(name);
+  if (!trimmed.startsWith("/")) return null;
+  const [word = ""] = trimmed.slice(1).split(/\s+/);
+  // A word shaped like a name is what a command can be called; `/etc/hosts is
+  // wrong` is prose that happens to open with a path, and stays a message.
+  if (!COMMAND_NAME.test(word)) return null;
+  const name = word.toLowerCase();
+  // A catalog that could not be read answers for nothing, so the word is left
+  // to the CLI rather than reported as unknown by a panel that has no list.
+  const unknown = (): CommandRoute | null =>
+    entries.length && !knownCommand(entries, name)
+      ? { kind: "unknown", name: word, closest: closestCommand(entries, name) }
+      : null;
+  if (/\s/.test(trimmed)) return unknown();
+  const canonical = canonicalCommand(word, entries);
+  const action = panelCommand(canonical);
   if (action) return { kind: "action", action };
   const entry = entries.find(
-    (candidate) => candidate.kind === "client" && candidate.name.toLowerCase() === name,
+    (candidate) => candidate.kind === "client" && candidate.name.toLowerCase() === canonical,
   );
-  return entry ? { kind: "refused", name: entry.name } : null;
+  return entry ? { kind: "refused", name: entry.name } : unknown();
+}
+
+/// What a word has to look like to be a command name at all: the same shape
+/// `oxide_core::commands::unknown_slash` accepts, so both front-ends keep a path
+/// typed as prose apart from a typo.
+const COMMAND_NAME = /^[A-Za-z0-9_:-]+$/;
+
+/// Whether the catalog carries `name` as typed — a built-in, a project command,
+/// a prompt template or a skill, whose `/skill:<name>` spelling the terminal
+/// adds to the bare one.
+function knownCommand(entries: readonly CommandEntry[], name: string): boolean {
+  const bare = name.startsWith("skill:") ? name.slice("skill:".length) : name;
+  return entries.some((entry) => {
+    const candidate = entry.name.toLowerCase();
+    return candidate === name || candidate === bare;
+  });
+}
+
+/// The singular the catalog carries when a plural was typed for it.
+function closestCommand(entries: readonly CommandEntry[], name: string): string | null {
+  if (!name.endsWith("s")) return null;
+  const singular = name.slice(0, -1);
+  return singular && knownCommand(entries, singular) ? singular : null;
 }
 
 function stringOf(value: unknown): string {

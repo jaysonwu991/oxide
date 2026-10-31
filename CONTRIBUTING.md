@@ -88,7 +88,7 @@ relative to the repository root.
 | `crates/core/src/ecosystem/` | Discovery of the Oxide and Claude Code config ecosystems, including context files, prompt templates, trust-gated project resources, and plugin-packaged MCP servers (manifest `mcpServers` or a plugin-root `.mcp.json`). |
 | `crates/core/src/permission.rs` | Permission rule parsing and decisions (allow/ask/deny, flat rules and wildcard patterns). |
 | `crates/core/src/session.rs` | Pi-compatible JSONL session trees (`id`/`parentId` entries, compaction, branch summaries) and forking (`/fork`, `/clone`). |
-| `crates/core/src/sessions.rs` | Non-interactive session management behind `oxide sessions list/delete/compact/merge`. |
+| `crates/core/src/sessions.rs` | Non-interactive session management behind `oxide session list/delete/compact/merge`. |
 | `crates/core/src/snapshots.rs` | Shadow-git snapshots backing `/undo` and `/redo`, and the baseline/listing a finished turn's changes are read from (`changes_since`, `content_at`, `restore_turn`). |
 | `crates/core/src/compact.rs` | Pi-style context compaction and branch summarization. |
 | `crates/core/src/pricing.rs` | Model price table for the footer's `$cost` segment, overlaid by `modelPrices` in `settings.json`. |

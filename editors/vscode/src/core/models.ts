@@ -1,4 +1,4 @@
-// The model catalogs printed by `oxide models --json`. The CLI owns provider
+// The model catalogs printed by `oxide model --json`. The CLI owns provider
 // authentication, endpoints, bundled fallbacks and catalog normalization; the
 // extension only validates the small view it needs to paint.
 //
@@ -28,7 +28,7 @@ export function modelsListArgs(): string[] {
   // slowest provider rather than the sum of them. `--active` narrows this to the
   // one in use, which is what a caller that only wants the current catalog's
   // name should ask for instead.
-  return ["models", "--json"];
+  return ["model", "--json"];
 }
 
 /// A model's id as a **choice**: qualified by the provider that serves it, since
