@@ -69,12 +69,10 @@ From source (stable Rust, edition 2021):
 cargo install --path crates/cli
 ```
 
-A prebuilt install keeps itself current with `oxide update`, and each released
-surface updates its own train: the desktop app installs the newest `desktop-v*`
-bundle over itself, and the VS Code panel installs the newest `extension-v*`
-`.vsix` — so updating one never pulls a release meant for another. Supported
-platforms, installer overrides, the desktop bundle, the VS Code VSIX, updating,
-and uninstalling are all covered in [docs/install.md](docs/install.md).
+A prebuilt install keeps current with `oxide update`, and each released surface
+updates its own train, so updating one never pulls a release meant for another.
+Supported platforms, the installer overrides, the desktop build, `oxide update`
+and `oxide uninstall` are in [docs/install.md](docs/install.md).
 
 ## Installers
 
@@ -94,14 +92,14 @@ replaced on every publish, so the links themselves never change; the versioned
 
 On macOS, an app that was not notarized — a build made without both the
 Developer ID certificate and the App Store Connect key — opens as **damaged**
-once the browser quarantines it. Clear the flag and open it again:
+once the browser quarantines it. Drag the app into `/Applications` first if it
+is still on the disk image, then clear the flag and open it again:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Oxide.app
 ```
 
-Drag the app into `/Applications` first if it is still on the disk image. A
-notarized release needs none of this.
+A notarized release needs none of this.
 
 ## Quick start
 
@@ -158,19 +156,14 @@ cross-repo view of recent ones. Chat runs the same agent loop through
 `oxide-core`, streaming text, tool calls, and token usage over the window's own
 bridge to the engine beside it.
 
+The package is its own workspace (`exclude`d from the root one) with its own pnpm
+tree, so it is built from its own directory:
+
 ```sh
-cd crates/desktop
-pnpm install
-pnpm start                   # build the engine and the window, and open it
-pnpm run dist                # an installer for this platform
+cd crates/desktop && pnpm install && pnpm start
 ```
 
-The package is its own workspace (`exclude`d from the root one) with its own pnpm
-tree, so it is built from its own directory. Prebuilt installers are on the
-`desktop-v*` [releases](https://github.com/jaysonwu991/oxide/releases), and the
-newest of them sits at the permanent
-[desktop-latest](https://github.com/jaysonwu991/oxide/releases/tag/desktop-latest)
-links in [Installers](#installers). See
+Prebuilt installers are in [Installers](#installers). See
 [docs/desktop.md](docs/desktop.md) for the layout, approvals, change cards,
 shortcuts, signing, and packaging.
 
@@ -199,7 +192,7 @@ setting tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 | Guide | Contents |
 | --- | --- |
 | [docs/features.md](docs/features.md) | The full feature list behind the highlights above. |
-| [docs/install.md](docs/install.md) | Installers, supported platforms, `oxide update`, `oxide uninstall`. |
+| [docs/install.md](docs/install.md) | Install and update the CLI, the desktop app and the extension; supported platforms, `oxide update`, `oxide uninstall`. |
 | [docs/tui.md](docs/tui.md) | Terminal layout, keyboard shortcuts, copying. |
 | [docs/modes.md](docs/modes.md) | `-p/--print`, `--mode json`, `--mode rpc`, `oxide sessions`, a turn's changes. |
 | [docs/configuration.md](docs/configuration.md) | `config.json`, CLI flags, environment variables, providers, trust, themes, compaction, data locations. |
@@ -224,9 +217,7 @@ The workspace members are `crates/core` (shared agent core) and `crates/cli` (th
 `oxide` terminal binary). `crates/desktop` is a workspace of its own — excluded
 from the root one, because its binary is packaged by electron-builder and
 versioned with the app — so the plain workspace build stays free of the window's
-dependencies;
-the VS Code extension is a separate pnpm
-package:
+dependencies; the VS Code extension is a separate pnpm package:
 
 ```sh
 cd crates/desktop && pnpm install && cargo test
