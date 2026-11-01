@@ -467,6 +467,7 @@
       <div class="panel-tabs" role="tablist" aria-label="Panel tabs" data-i18n-aria="panel.tabs">
         <button id="panel-tab-review" class="panel-tab" role="tab" aria-selected="true" aria-controls="review-modal" data-panel="review" data-i18n="panel.review">Review</button>
         <button id="panel-tab-terminal" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-terminal" data-panel="terminal" data-i18n="panel.terminal">Terminal</button>
+        <button id="panel-tab-pulls" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-pulls" data-panel="pulls" data-i18n="panel.pulls">Pull requests</button>
         <button id="panel-close" class="icon panel-close" title="Hide the panel" aria-label="Hide the panel" data-i18n-title="panel.hide" data-i18n-aria="panel.hide"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
       </div>
       <div class="panel-bodies">
@@ -495,6 +496,12 @@
         </div>
       </div>
     </aside>
+        <div id="panel-pulls" class="panel-pulls" hidden>
+          <div id="pulls-list" class="pulls-list" role="list" aria-label="Pull requests" data-i18n-aria="panel.pulls"></div>
+          <div id="pull-detail" class="pull-detail">
+            <p class="dialog-sub" data-i18n="pulls.pickOne">Pick a request to read what it changed, what its checks say and what has been said about it.</p>
+          </div>
+        </div>
         <div id="panel-terminal" class="panel-terminal" hidden>
           <div id="terminal-surface" class="terminal-surface" tabindex="0" role="log" aria-live="polite" aria-label="Terminal" data-i18n-aria="terminal.title"></div>
           <div id="terminal-state" class="terminal-state" hidden></div>
@@ -855,6 +862,15 @@
               data-i18n="settings.appearance"
             >Appearance</button>
             <button
+              id="settings-tab-memories"
+              class="settings-tab"
+              role="tab"
+              aria-selected="false"
+              aria-controls="settings-page-memories"
+              data-settings-section="memories"
+              data-i18n="settings.memories"
+            >Memories</button>
+            <button
               id="settings-tab-keyboard"
               class="settings-tab"
               role="tab"
@@ -943,6 +959,17 @@
                   <span data-i18n="settings.showSidebar">Show the sidebar</span>
                 </label>
               </div>
+            </section>
+            <section
+              id="settings-page-memories"
+              class="settings-page"
+              role="tabpanel"
+              aria-labelledby="settings-tab-memories"
+              data-settings-page="memories"
+              hidden
+            >
+              <div class="settings-hint" data-i18n="memories.hint">What the agent was asked to remember for this project and for you. A memory it wrote is kept until it is forgotten here.</div>
+              <div id="memory-list" class="memory-list"></div>
             </section>
             <section
               id="settings-page-keyboard"

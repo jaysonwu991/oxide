@@ -1078,6 +1078,54 @@ pub async fn shape_change(
     Ok(())
 }
 
+// ---------- memories ----------
+
+/// What the agent has been told to remember for this project and for this reader:
+/// the entries the memories tool wrote, newest first, so a settings section can
+/// show them and take one back.
+pub async fn memories(project: Option<String>) -> CmdResult<Vec<oxide_core::memory::MemoryEntry>> {
+    let cwd = oxide_core::memory::MemoryStore::load(&language_cwd(project));
+    Ok(cwd.list(oxide_core::memory::QueryScope::All, 200))
+}
+
+/// Forgets one entry. A memory is the reader's, so this is the one thing a
+/// settings section may do to it.
+pub async fn forget_memory(id: String, project: Option<String>) -> CmdResult<bool> {
+    let store = oxide_core::memory::MemoryStore::load(&language_cwd(project));
+    store.forget(&id).map_err(err)
+}
+
+// ---------- the repository's pull requests ----------
+
+/// The repository's requests, as the forge lists them. The CLI is shelled out to,
+/// so the call comes off the worker the window's other commands share.
+pub async fn pull_requests(
+    project: String,
+    state: &DesktopState,
+) -> CmdResult<Vec<oxide_desktop::review::PullRequest>> {
+    let _ = state;
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || oxide_desktop::review::list(&root, 20))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+/// One request with what a reviewer reads: its body, its checks, its comments and
+/// the files it touches.
+pub async fn pull_request(
+    project: String,
+    number: u64,
+    state: &DesktopState,
+) -> CmdResult<oxide_desktop::review::PullDetail> {
+    let _ = state;
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || oxide_desktop::review::view(&root, number))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
 // ---------- the terminal ----------
 
 /// Starts a shell in the thread's folder and hands the window the id it writes
@@ -1904,6 +1952,14 @@ pub async fn dispatch(
             )
             .await,
         ),
+        "memories" => command_value(memories(optional_arg(&args, "project")?).await),
+        "forget_memory" => {
+            command_value(forget_memory(arg(&args, "id")?, optional_arg(&args, "project")?).await)
+        }
+        "pull_requests" => command_value(pull_requests(arg(&args, "project")?, &state).await),
+        "pull_request" => {
+            command_value(pull_request(arg(&args, "project")?, arg(&args, "number")?, &state).await)
+        }
         "terminal_open" => command_value(
             terminal_open(
                 arg(&args, "project")?,

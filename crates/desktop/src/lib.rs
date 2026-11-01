@@ -18,6 +18,7 @@ pub mod manager;
 pub mod prefs;
 pub mod pulls;
 pub mod repository;
+pub mod review;
 pub mod search;
 pub mod staging;
 pub mod terminal;

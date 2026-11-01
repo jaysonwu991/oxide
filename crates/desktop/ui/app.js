@@ -8019,6 +8019,7 @@ function closeSettings() {
 const SETTINGS_SECTIONS = {
   general: { tab: "settings-tab-general", page: "settings-page-general" },
   appearance: { tab: "settings-tab-appearance", page: "settings-page-appearance" },
+  memories: { tab: "settings-tab-memories", page: "settings-page-memories" },
   keyboard: { tab: "settings-tab-keyboard", page: "settings-page-keyboard" },
 };
 
@@ -8032,6 +8033,7 @@ function showSettingsSection(section) {
     el(parts.page).hidden = !active;
   }
   if (chosen === "keyboard") renderShortcuts();
+  if (chosen === "memories") void renderMemories();
 }
 
 /// The controls the sheet shows, read from the preferences in force rather than
@@ -8139,6 +8141,68 @@ function recordShortcut(event) {
   return true;
 }
 
+/// The memories page: what the agent was told to keep, read from the store the
+/// memory tool writes, with the one action a reader has over an entry.
+async function renderMemories() {
+  const list = el("memory-list");
+  if (!list) return;
+  list.replaceChildren();
+  let entries = [];
+  try {
+    entries = (await invoke("memories", { project: state.project || null })) || [];
+  } catch (error) {
+    const failed = document.createElement("div");
+    failed.className = "dialog-empty";
+    failed.textContent = t("memories.failed", "Could not read the memories: {value0}", {
+      value0: error,
+    });
+    list.appendChild(failed);
+    return;
+  }
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "dialog-empty";
+    empty.textContent = t("memories.empty", "Nothing has been remembered yet.");
+    list.appendChild(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "memory-row";
+    row.dataset.memory = entry.id;
+    const body = document.createElement("div");
+    body.className = "memory-content";
+    body.textContent = entry.content;
+    row.appendChild(body);
+    const meta = document.createElement("div");
+    meta.className = "memory-meta";
+    meta.textContent = [
+      String(entry.scope || "").toLowerCase(),
+      ...(entry.tags || []).map((tag) => `#${tag}`),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    row.appendChild(meta);
+    const forget = document.createElement("button");
+    forget.type = "button";
+    forget.className = "memory-forget";
+    forget.dataset.forget = entry.id;
+    forget.textContent = t("memories.forget", "Forget");
+    forget.onclick = async () => {
+      try {
+        await invoke("forget_memory", { id: entry.id, project: state.project || null });
+        await renderMemories();
+      } catch (error) {
+        showToast(t("memories.failedToForget", "Could not forget that: {value0}", {
+          value0: error,
+        }), "error");
+      }
+    };
+    row.appendChild(forget);
+    list.appendChild(row);
+  }
+}
+
 // ---------- the command menu ----------
 
 /// Every action the command menu offers: the window's own, each naming the
@@ -8159,6 +8223,7 @@ function commandActions() {
     { id: "panel", label: t("menu.panel", "Show or hide the panel"), hint: "mod+j", run: () => togglePanel() },
     { id: "terminal", label: t("menu.terminal", "Terminal"), hint: "ctrl+`", run: () => void openTerminal() },
     { id: "review", label: t("menu.review", "Review the changes"), hint: null, run: () => openRepositoryChanges() },
+    { id: "pulls", label: t("menu.pulls", "Pull requests…"), hint: null, run: () => void openPulls() },
     { id: "find", label: t("menu.findInChat", "Find in this chat"), hint: "mod+f", run: () => openFind() },
     { id: "activity", label: t("menu.activity", "Activity…"), hint: null, run: () => openActivity() },
     { id: "archived", label: t("menu.archivedChats", "Archived chats…"), hint: null, run: () => openArchived() },
@@ -8171,6 +8236,7 @@ function commandActions() {
     { id: "theme", label: t("menu.theme", "Theme…"), hint: null, run: () => openThemes() },
     { id: "language", label: t("menu.language", "Language…"), hint: null, run: () => openLanguage() },
     { id: "settings", label: t("menu.settings", "Settings…"), hint: "mod+,", run: () => openSettings() },
+    { id: "memories", label: t("menu.memories", "Memories…"), hint: null, run: () => openSettings("memories") },
     { id: "shortcuts", label: t("menu.shortcuts", "Keyboard shortcuts…"), hint: "ctrl+/", run: () => toggleHelp() },
     { id: "larger-text", label: t("menu.largerText", "Larger text"), hint: "mod+=", run: () => resizeText(1) },
     { id: "smaller-text", label: t("menu.smallerText", "Smaller text"), hint: "mod+-", run: () => resizeText(-1) },
@@ -8746,9 +8812,13 @@ function paintFindCount() {
 const PANEL_TABS = {
   review: { tab: "panel-tab-review", body: "review-modal" },
   terminal: { tab: "panel-tab-terminal", body: "panel-terminal" },
+  pulls: { tab: "panel-tab-pulls", body: "panel-pulls" },
 };
 
 state.panelTab = "review";
+state.pulls = [];
+state.pullError = "";
+state.pullOpen = null;
 state.terminal = {
   id: null,
   cwd: "",
@@ -8798,6 +8868,218 @@ function togglePanel(tab = state.panelTab) {
   if (el("bottom-panel").hidden) openPanel(tab);
   else if (state.panelTab === tab) hidePanel();
   else openPanel(tab);
+}
+
+// ---------- the repository's pull requests ----------
+
+/// The list is read when the tab is opened rather than kept warm: the forge
+/// answers with what is true now, and a listing that is an hour old is a listing
+/// that lies about a request that merged since.
+async function openPulls(number = null) {
+  openPanel("pulls");
+  if (!state.pulls.length && !state.pullError) await readPulls();
+  if (number != null) await readPull(number);
+}
+
+async function readPulls() {
+  const project = runFolder();
+  if (!project) {
+    state.pullError = t("pulls.noProject", "Open a project to read its requests.");
+    renderPulls();
+    return;
+  }
+  try {
+    state.pulls = (await invoke("pull_requests", { project })) || [];
+    state.pullError = "";
+  } catch (error) {
+    state.pulls = [];
+    state.pullError = t("pulls.failed", "Could not read the repository's requests: {value0}", {
+      value0: error,
+    });
+  }
+  renderPulls();
+}
+
+function renderPulls() {
+  const list = el("pulls-list");
+  if (!list) return;
+  list.replaceChildren();
+  if (state.pullError) {
+    const failed = document.createElement("p");
+    failed.className = "dialog-sub";
+    failed.textContent = state.pullError;
+    list.appendChild(failed);
+    return;
+  }
+  if (!state.pulls.length) {
+    const empty = document.createElement("p");
+    empty.className = "dialog-sub";
+    empty.textContent = t("pulls.empty", "This repository has no open requests.");
+    list.appendChild(empty);
+    return;
+  }
+  for (const pull of state.pulls) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "pull-row" + (pull.number === state.pullOpen ? " active" : "");
+    row.setAttribute("role", "listitem");
+    row.dataset.pull = String(pull.number);
+    const head = document.createElement("span");
+    head.className = "pull-row-head";
+    const number = document.createElement("span");
+    number.className = "pull-number";
+    number.textContent = `#${pull.number}`;
+    const title = document.createElement("span");
+    title.className = "pull-row-title";
+    title.textContent = pull.title;
+    head.append(number, title);
+    row.appendChild(head);
+    const meta = document.createElement("span");
+    meta.className = "pull-row-meta";
+    meta.textContent = [
+      pull.state === "opened" ? "open" : pull.state,
+      pull.draft ? t("pulls.draft", "draft") : "",
+      pull.head,
+      pull.review ? pull.review.toLowerCase().replace("_", " ") : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    row.appendChild(meta);
+    row.onclick = () => void readPull(pull.number);
+    list.appendChild(row);
+  }
+}
+
+async function readPull(number) {
+  const project = runFolder();
+  if (!project) return;
+  state.pullOpen = number;
+  const detail = el("pull-detail");
+  detail.replaceChildren(reviewNote(t("pulls.reading", "Reading #{value0}…", { value0: number })));
+  renderPulls();
+  let pull = null;
+  try {
+    pull = await invoke("pull_request", { project, number });
+  } catch (error) {
+    detail.replaceChildren(
+      reviewNote(t("pulls.failedOne", "Could not read #{value0}: {value1}", { value0: number, value1: error })),
+    );
+    return;
+  }
+  detail.replaceChildren(...pullDetailNodes(pull));
+}
+
+/// What a reviewer reads on one request: what it says, what its checks said, what
+/// has been said about it, and the files it touches.
+function pullDetailNodes(pull) {
+  const nodes = [];
+  const title = document.createElement("h3");
+  title.className = "pull-title";
+  title.textContent = `#${pull.number} ${pull.title}`;
+  nodes.push(title);
+
+  const meta = document.createElement("div");
+  meta.className = "pull-meta";
+  meta.textContent = [
+    pull.state === "opened" ? "open" : pull.state,
+    pull.head && pull.base ? `${pull.head} → ${pull.base}` : "",
+    pull.author ? `@${pull.author}` : "",
+    pull.additions || pull.deletions ? `+${pull.additions} −${pull.deletions}` : "",
+    pull.changed_files ? t("pulls.fileCount", "{count} files", { count: pull.changed_files }) : "",
+    pull.mergeable && pull.mergeable !== "unknown" ? pull.mergeable : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  nodes.push(meta);
+
+  if (pull.url) {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "panel-action";
+    open.id = "pull-open-browser";
+    open.textContent = t("pulls.openInBrowser", "Open on the forge");
+    open.onclick = () => void invoke("open_url", { url: pull.url }).catch(() => {});
+    nodes.push(open);
+  }
+
+  if (pull.body && pull.body.trim()) {
+    nodes.push(pullSection(t("pulls.description", "Description"), [textBlock(pull.body.trim())]));
+  }
+  if (pull.checks?.length) {
+    nodes.push(
+      pullSection(
+        t("pulls.checks", "Checks"),
+        pull.checks.map((check) => {
+          const row = document.createElement("div");
+          row.className = `pull-check state-${check.state}`;
+          const mark = document.createElement("span");
+          mark.className = "pull-check-mark";
+          mark.textContent = check.state === "pass" ? "✔" : check.state === "fail" ? "✖" : "·";
+          const name = document.createElement("span");
+          name.className = "pull-check-name";
+          name.textContent = check.name || t("pulls.unnamedCheck", "a check");
+          row.append(mark, name);
+          return row;
+        }),
+      ),
+    );
+  }
+  if (pull.comments?.length) {
+    nodes.push(
+      pullSection(
+        t("pulls.comments", "Comments"),
+        pull.comments.map((comment) => {
+          const row = document.createElement("div");
+          row.className = "pull-comment";
+          const who = document.createElement("div");
+          who.className = "pull-comment-head";
+          who.textContent = [comment.author ? `@${comment.author}` : "", comment.review || ""]
+            .filter(Boolean)
+            .join(" · ");
+          row.appendChild(who);
+          if (comment.body.trim()) row.appendChild(textBlock(comment.body.trim()));
+          return row;
+        }),
+      ),
+    );
+  }
+  if (pull.files?.length) {
+    nodes.push(
+      pullSection(
+        t("pulls.files", "Files"),
+        pull.files.map((file) => {
+          const row = document.createElement("div");
+          row.className = "pull-file";
+          const path = document.createElement("span");
+          path.className = "pull-file-path";
+          path.textContent = file.path;
+          const stats = document.createElement("span");
+          stats.className = "pull-file-stats";
+          stats.textContent = `+${file.additions} −${file.deletions}`;
+          row.append(path, stats);
+          return row;
+        }),
+      ),
+    );
+  }
+  return nodes;
+}
+
+function pullSection(title, body) {
+  const section = document.createElement("section");
+  section.className = "pull-section";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  section.appendChild(heading);
+  section.append(...body);
+  return section;
+}
+
+function textBlock(text) {
+  const block = document.createElement("p");
+  block.className = "pull-text";
+  block.textContent = text;
+  return block;
 }
 
 // ---------- the terminal ----------
@@ -9900,6 +10182,7 @@ function init() {
   el("review-stage-all").onclick = () => void shapeChange("stage-all");
   el("review-unstage-all").onclick = () => void shapeChange("unstage-all");
   el("panel-tab-terminal").onclick = () => void openTerminal();
+  el("panel-tab-pulls").onclick = () => void openPulls();
   el("panel-close").onclick = hidePanel;
   // The shell gets the keys: the panel is a terminal, not a text box, so every
   // press that means something to the shell is sent rather than drawn here.

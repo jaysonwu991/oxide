@@ -1240,6 +1240,38 @@ backspace and tabs, erasing a line or the screen, and moving the cursor. A
 program that paints a full-screen interface is outside that, and a terminal panel
 is not the place for one.
 
+## Reviewing a pull request
+
+The panel's third tab reads the repository's requests through its forge's own
+CLI — `gh` on GitHub, `glab` on a repository carrying `.gitlab-ci.yml` — and
+paints one: what it says, what its checks said, what has been said about it and
+the files it touches. `pull_requests` lists what the forge lists, `pull_request`
+reads the one the reader picked, and both come off the worker the window's other
+commands share, since a CLI that has to reach the network is not something a
+listing should wait on.
+
+`src/review.rs` owns the narrowing. The two forges spell the same request
+differently — `headRefName` against a nested `source_branch`, `url` against
+`web_url`, a check run's `conclusion` against a status context's `state` — so the
+shapes are read in one place and the window is handed one shape: a request, its
+checks reduced to `pass`/`fail`/`pending` (anything unfinished is pending, which
+is neither a pass nor a failure), the comments with the review verdicts among
+them, and the files with their line counts. A CLI that is missing, logged out or
+offline is one answer the pane shows in the forge's own words rather than a
+listing that reads empty.
+
+The pane is deliberately read-only for now: it does not comment, approve or
+merge. Those write to somebody else's pull request, and the confirmation a
+reader deserves before one is a design of its own.
+
+## Memories
+
+Settings gained a **Memories** page: what the agent was asked to remember, read
+from the same store the `memory` tool writes (`memories`), newest first, with the
+scope and tags each entry carries, and one action — **Forget** — which is the
+one thing a reader has over a memory. The page reads when it is shown rather than
+being kept warm, so it is what the store holds now.
+
 ## Finding a thread again
 
 Four ways, each answering a different question.
