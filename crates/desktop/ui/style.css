@@ -665,6 +665,16 @@ body.resizing { cursor: col-resize; user-select: none; }
 #details-project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .details-row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 9px 0; border: 0; background: none; color: var(--text); text-align: left; font: inherit; font-size: 12.5px; }
 button.details-row:hover { color: var(--accent); }
+button.details-row { cursor: pointer; }
+button.details-row:disabled { cursor: default; }
+button.details-row:disabled:hover { color: var(--text); }
+/* The request the thread on screen reported, named on the branch row it was
+   opened from: the row opens it, so the row carries what it opens and the
+   state the forge last gave. */
+.details-pull { margin-left: auto; flex: none; padding: 1px 7px; border: 1px solid currentColor; border-radius: 999px; font-size: 11px; color: var(--faint); }
+.details-pull.state-open { color: var(--success); }
+.details-pull.state-merged { color: var(--accent); }
+.details-pull.state-closed { color: var(--error); }
 #details-changes-icon svg { width: 17px; height: 17px; display: block; }
 #details-stats { margin-left: auto; white-space: nowrap; }
 #details-branch { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; color: var(--faint); }
@@ -1827,6 +1837,37 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .row-more:hover, .row-pin:hover, .row-archive:hover { background: var(--panel-3); color: var(--text); }
 .row-pin.active { color: var(--accent); }
 .row-more svg, .row-pin svg, .row-archive svg, .row-add svg { width: 14px; height: 14px; }
+
+/* The pull request a thread reported sits at the row's own right edge, in the
+   state the forge last reported: a row that has one keeps the badge there and
+   the pin and archive beside it, so the mark is readable and clickable whether
+   or not the pointer is on the row. */
+.session-pull {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  z-index: 1;
+  transition: background 0.12s, color 0.12s;
+}
+.session-pull:hover { background: var(--panel-3); color: var(--text); }
+.session-pull svg { width: 14px; height: 14px; }
+.session-pull.state-open { color: var(--success); }
+.session-pull.state-merged { color: var(--accent); }
+.session-pull.state-closed { color: var(--error); }
+.session-item.has-pull .row-pin { right: 50px; }
+.session-item.has-pull .row-archive { right: 28px; }
 
 .sidebar-floating-card {
   position: fixed;

@@ -8332,6 +8332,120 @@ app.state.session = beforeDisclosureSession;
 app.state.expandedSidebarProjects.clear();
 await app.renderProjectsTree();
 
+// ---------- a thread's pull request ----------
+
+// A thread that opened a pull request carries it on its row, colored by the
+// state the forge last reported. The mark is the link, so a click opens the
+// request in the machine's browser instead of opening the thread.
+console.log("a thread's pull request");
+const pullThread = {
+  id: "pull-thread",
+  name: "Installer links in root README",
+  cwd: "/tmp/sidebar-0",
+  created_at: 5,
+  modified_at: 5,
+  message_count: 2,
+  preview: "",
+  pulls: [
+    { url: "https://github.com/jaysonwu991/oxide/pull/266", label: "#266", state: "merged" },
+  ],
+};
+const beforePullState = {
+  projects: app.state.projects,
+  sessions: app.state.sessions,
+  project: app.state.project,
+  projectName: app.state.projectName,
+  session: app.state.session,
+  git: app.state.git,
+};
+app.state.projects = [{ id: "/tmp/sidebar-0", path: "/tmp/sidebar-0", name: "sidebar-0", registered: true }];
+app.state.sessions = [pullThread];
+threads = [pullThread];
+app.state.project = "/tmp/sidebar-0";
+app.state.projectName = "sidebar-0";
+app.state.session = null;
+app.state.expandedSidebarProjects.clear();
+await app.renderProjectsTree();
+const pullRow = elementFor("projects-tree").querySelectorAll(".session-item")[0];
+const pullMark = pullRow?.querySelector(".session-pull");
+check(
+  "drew the request a thread reported on its row, in its state",
+  pullMark?.classList.contains("state-merged") === true &&
+    pullMark.title === "Pull request #266 · Merged" &&
+    pullRow.classList.contains("has-pull"),
+  `${pullMark?.className} / ${pullMark?.title}`,
+);
+calls.length = 0;
+pullMark.onclick(press({ target: pullMark, stopPropagation() {} }));
+check(
+  "opened that request through the app rather than the thread",
+  calls.length === 1 &&
+    calls[0][0] === "open_url" &&
+    calls[0][1]?.url === "https://github.com/jaysonwu991/oxide/pull/266" &&
+    app.state.session === null,
+  JSON.stringify(calls),
+);
+check(
+  "left a thread that reported no request without a mark",
+  [...elementFor("projects-tree").querySelectorAll(".session-item")].filter((row) =>
+    row.classList.contains("has-pull"),
+  ).length === 1,
+  elementFor("projects-tree").outline(),
+);
+
+// The project card's branch row is where a thread's request is opened from: it
+// names the branch and the request, and a thread with no request leaves the row
+// as the branch readout it was.
+app.state.session = "pull-thread";
+app.state.git = { repo: true, branch: "release-versionless-installer-links", detached: "" };
+calls.length = 0;
+await app.refreshProjectDetails();
+const branchRow = elementFor("details-branch");
+check(
+  "named the thread's request on the branch row it was opened from",
+  branchRow.hidden === false &&
+    branchRow.disabled === false &&
+    branchRow.title === "Pull request #266 · Merged" &&
+    branchRow.innerHTML.includes('class="details-pull state-merged"') &&
+    branchRow.innerHTML.includes("#266"),
+  `${branchRow.hidden} / ${branchRow.disabled} / ${branchRow.title} / ${branchRow.innerHTML}`,
+);
+branchRow.onclick(press({ target: branchRow }));
+check(
+  "opened that request from the card, through the app",
+  projectCalls("open_url").length === 1 &&
+    projectCalls("open_url")[0][1]?.url === "https://github.com/jaysonwu991/oxide/pull/266",
+  JSON.stringify(calls),
+);
+app.state.session = null;
+await app.refreshProjectDetails();
+check(
+  "kept the branch row a readout for a thread with no request",
+  elementFor("details-branch").disabled === true &&
+    !elementFor("details-branch").innerHTML.includes("details-pull") &&
+    elementFor("details-branch").title === "Current branch: release-versionless-installer-links",
+  `${elementFor("details-branch").disabled} / ${elementFor("details-branch").title}`,
+);
+
+// A state read from the forge lands after the sidebar was drawn, so the app is
+// told and asks for the listing again.
+app.state.git = beforePullState.git;
+calls.length = 0;
+await emit("pulls-updated", {});
+check(
+  "listed the threads again when a request's state arrived",
+  projectCalls("all_sessions").length === 1,
+  JSON.stringify(calls),
+);
+app.state.projects = beforePullState.projects;
+app.state.sessions = beforePullState.sessions;
+app.state.project = beforePullState.project;
+app.state.projectName = beforePullState.projectName;
+app.state.session = beforePullState.session;
+threads = existing;
+app.state.expandedSidebarProjects.clear();
+await app.renderProjectsTree();
+
 // ---------- the arrangement the sidebar is dragged into ----------
 
 // A project's row is the handle for the order the sidebar lists its folders in:

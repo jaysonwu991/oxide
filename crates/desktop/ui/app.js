@@ -202,6 +202,15 @@ const ICONS = {
     16,
   ),
   gear: glyph('<circle cx="12" cy="12" r="3" ' + STROKE_24 + '/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" ' + STROKE_24 + '/>'),
+  // A pull request a thread reported. The row colors it with the state the
+  // forge last answered with, so the mark is the state as well as the link.
+  pull: glyph(
+    '<circle cx="3.6" cy="3" r="1.6" ' + STROKE_16 + '/>' +
+      '<circle cx="3.6" cy="13" r="1.6" ' + STROKE_16 + '/>' +
+      '<circle cx="12.4" cy="13" r="1.6" ' + STROKE_16 + '/>' +
+      '<path d="M3.6 4.6v6.8M12.4 11.4V6.2a1.4 1.4 0 0 0-1.4-1.4H5.4" ' + STROKE_16 + '/>',
+    16,
+  ),
   check: glyph('<path d="m5.6 8 1.5 1.5 3.5-3.5" ' + STROKE_16 + '/>', 16),
   caret: glyph(`<path d="M5.5 8.6 12 14.8l6.5-6.2" ${STROKE_24}/>`),
   power: glyph(
@@ -4958,8 +4967,24 @@ async function refreshProjectDetails() {
   el("details-stats").innerHTML = changes?.project === project ? statsHtml(changes.added, changes.removed) : "";
   el("details-changes").disabled = !project;
   el("details-more").disabled = !project;
-  el("details-branch").hidden = !state.git?.repo || !project;
-  el("details-branch").innerHTML = ICONS.branch + `<span>${escapeHtml(project ? state.git?.branch || state.git?.detached || "" : "")}</span>`;
+  const branchRow = el("details-branch");
+  const branch = project ? state.git?.branch || state.git?.detached || "" : "";
+  // The request the thread on screen reported: the branch row is where the
+  // reader looks for the checkout's own work, so it is also what opens the
+  // request, in the state it was last seen in.
+  const pull = threadPull();
+  branchRow.hidden = !state.git?.repo || !project;
+  branchRow.innerHTML =
+    ICONS.branch +
+    `<span>${escapeHtml(branch)}</span>` +
+    (pull ? `<span class="details-pull state-${pull.state || "unknown"}">${escapeHtml(pull.label)}</span>` : "");
+  branchRow.disabled = !pull;
+  branchRow.title = pull
+    ? pullTitle(pull)
+    : t("ui.currentBranch", "Current branch: {value0}", { value0: branch });
+  branchRow.onclick = () => {
+    if (pull) openExternal(pull.url);
+  };
   el("details-sources").textContent = project ? t("ui.loadingSources", "Loading sources…") : t("ui.selectAProjectToSeeItsSources", "Select a project to see its sources.");
   if (!project) return;
   const current = () => read === detailsRead && project === runFolder();
@@ -6851,6 +6876,58 @@ function renderSessions() {
   }
 }
 
+/// The pull request a thread reported, as its row draws it.
+function pullOf(session) {
+  return (session.pulls || [])[0] || null;
+}
+
+/// The request the thread on screen reported, if any.
+function threadPull() {
+  const session = (state.sessions || []).find((entry) => entry.id === state.session);
+  return session ? pullOf(session) : null;
+}
+
+/// The words a state is drawn in before the catalog is asked for them.
+const PULL_STATES = { open: "Open", merged: "Merged", closed: "Closed" };
+
+/// A request's state in the reader's language, or nothing while the forge has
+/// not been read.
+function pullStateLabel(pull) {
+  return pull.state
+    ? t(`pull.state.${pull.state}`, PULL_STATES[pull.state] || pull.state)
+    : "";
+}
+
+function pullTitle(pull) {
+  const request = t("ui.pullRequest", "Pull request {value0}", { value0: pull.label });
+  const state = pullStateLabel(pull);
+  return state ? `${request} · ${state}` : request;
+}
+
+/// Opens a link in the machine's browser: the window cannot navigate to a
+/// remote page itself.
+function openExternal(url) {
+  invoke("open_url", { url }).catch((error) =>
+    showToast(t("ui.couldNotOpenLink", "Could not open link: {value0}", { value0: error }), "error"),
+  );
+}
+
+/// The mark a thread's row carries for its pull request: colored by state,
+/// named by its label, and a click that opens the request.
+function pullButton(pull) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `session-pull state-${pull.state || "unknown"}`;
+  button.title = pullTitle(pull);
+  button.setAttribute("aria-label", button.title);
+  button.innerHTML = ICONS.pull;
+  button.onclick = (event) => {
+    event.stopPropagation();
+    openExternal(pull.url);
+  };
+  return button;
+}
+
 /// How long ago a thread was last written, in the shape the CLI's own picker
 /// uses for the same number.
 function sessionAge(seconds) {
@@ -7473,6 +7550,12 @@ async function initEvents() {
     paintUsage();
     await loadSessions();
     await startNextPendingSend(record);
+  });
+  // The requests a thread reported are read from a forge off the listing's own
+  // thread, so a state that landed after the sidebar was drawn is what this
+  // listens for: the rows are listed again with the states that are known now.
+  await listen("pulls-updated", async () => {
+    await loadSessions();
   });
   el("review-modal").onkeydown = reviewKey;
   await listen("approval-request", (event) => showApproval(event.payload || {}));
@@ -8912,6 +8995,15 @@ async function renderProjectsTree() {
         session.worktree ? `${label} — worktree ${session.worktree}` : label
       }${running ? " — a turn is running" : ""}`;
       sessionItem.appendChild(sessionName);
+
+      // A thread that opened a pull request carries it on its row, in the state
+      // the forge last reported: the row is the one place the reader can see a
+      // conversation's request without opening it, and the mark is the link.
+      const pull = pullOf(session);
+      if (pull) {
+        sessionItem.classList.add("has-pull");
+        sessionItem.appendChild(pullButton(pull));
+      }
 
       if (running) {
         const mark = document.createElement("span");

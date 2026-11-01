@@ -963,6 +963,35 @@ A chat can run in an isolated Git checkout while the project’s local folder st
 
 The store lives under the config directory at `worktrees/<project>/<name>/`. Desktop and the VS Code extension share `oxide_core::worktree`; the extension reaches it through `oxide worktree` commands.
 
+## Pull requests
+
+A chat that opened a pull or merge request says so on its row. The link is read
+from the thread's own log — the URL the forge CLI printed — so nothing has to be
+recorded by hand.
+
+- The sidebar row carries the request's mark: green for an open request, accent
+  for a merged one, red for a closed one, and grey while the forge has not
+  answered yet. Its tooltip names the request and the state, and a press opens it
+  in the system browser through `open_url` rather than opening the thread.
+- The project card's branch row names the same request beside the branch and
+  opens it the same way; a thread that reported none leaves the row a branch
+  readout that does not press.
+- `crates/core/src/pulls.rs` reads a link out of text and asks the forge's CLI
+  for its state (`gh pr view <url> --json state`, `glab mr view <url> --output
+  json`), with a timeout so a slow or offline forge reports nothing rather than
+  hanging. `crates/desktop/src/pulls.rs` keeps what each thread reported beside
+  the registry in `pulls.json`: a thread is read again only when its log moved,
+  and a state stands for five minutes. The listing itself never waits for the
+  forge — the read happens off the command's own thread and the window is told
+  with `pulls-updated` when a state lands, then lists the threads again.
+- Reading the log is a local read and needs no network; a state needs the forge's
+  own CLI to be installed and logged in. Without it, the mark is drawn without a
+  state and the link still opens in the browser.
+
+The link's shape, its forge, and the state vocabulary (`OPEN` from `gh`,
+`opened` from `glab`) live in the core module, so another front-end that lists a
+thread can annotate it the same way.
+
 ## Models and reasoning
 
 The composer's own chips expose the same controls the CLI has:

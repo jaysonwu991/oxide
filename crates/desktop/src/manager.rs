@@ -68,6 +68,11 @@ pub struct SessionView {
     /// checkout would otherwise become. `None` means the `cwd` is the project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The pull requests this thread reported, in the order its log first named
+    /// them: the sidebar draws the newest of them beside the thread and the
+    /// project card opens it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pulls: Vec<crate::pulls::PullView>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -138,6 +143,7 @@ impl ProjectRegistry {
 pub struct DesktopManager {
     registry: ProjectRegistry,
     store: PathBuf,
+    pulls: std::sync::Arc<crate::pulls::PullStore>,
 }
 
 impl DesktopManager {
@@ -149,7 +155,24 @@ impl DesktopManager {
 
     pub fn load_from(store: PathBuf) -> Result<Self> {
         let registry = ProjectRegistry::load_from(&store)?;
-        Ok(Self { registry, store })
+        Ok(Self::with_registry(registry, store))
+    }
+
+    fn with_registry(registry: ProjectRegistry, store: PathBuf) -> Self {
+        let pulls = std::sync::Arc::new(crate::pulls::PullStore::open_at(
+            store.with_file_name("pulls.json"),
+        ));
+        Self {
+            registry,
+            store,
+            pulls,
+        }
+    }
+
+    /// The pull requests the listed threads reported, shared with the reads
+    /// that happen off a command's own thread.
+    pub fn pulls(&self) -> std::sync::Arc<crate::pulls::PullStore> {
+        self.pulls.clone()
     }
 
     /// Loads the registry the way the app starts: a `projects.json` that cannot
@@ -164,17 +187,14 @@ impl DesktopManager {
 
     pub fn load_lossy_from(store: PathBuf) -> Self {
         match ProjectRegistry::load_from(&store) {
-            Ok(registry) => Self { registry, store },
+            Ok(registry) => Self::with_registry(registry, store),
             Err(error) => {
                 eprintln!("oxide: {error:#}");
                 let backup = store.with_extension("json.bak");
                 if std::fs::rename(&store, &backup).is_ok() {
                     eprintln!("oxide: kept the unreadable file at {}", backup.display());
                 }
-                Self {
-                    registry: ProjectRegistry::default(),
-                    store,
-                }
+                Self::with_registry(ProjectRegistry::default(), store)
             }
         }
     }
@@ -401,10 +421,16 @@ impl DesktopManager {
                     pinned: state.pinned(&summary.id),
                     worktree: worktree.as_ref().map(|entry| entry.name.clone()),
                     project: worktree.map(|entry| entry.project),
+                    pulls: Vec::new(),
                     summary,
                 }
             })
             .collect();
+        let summaries: Vec<_> = views.iter().map(|view| view.summary.clone()).collect();
+        let reported = self.pulls.annotate(&summaries);
+        for view in &mut views {
+            view.pulls = reported.get(&view.summary.id).cloned().unwrap_or_default();
+        }
         views.sort_by_cached_key(|view| (Reverse(view.pinned), Reverse(view.summary.modified_at)));
         Ok(views)
     }
@@ -743,6 +769,73 @@ mod tests {
         // Persisted across reloads.
         let reloaded = DesktopManager::load_from(store).unwrap();
         assert_eq!(reloaded.registered().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+        let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
+    }
+
+    /// A thread is listed with the pull requests its own log named, in the
+    /// state the cache beside the registry holds — never by asking a forge the
+    /// sidebar would have to wait for.
+    #[test]
+    fn a_thread_carries_the_request_its_log_named() {
+        let store = temp_store();
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        let dir = std::env::temp_dir().join(format!("oxide_pulls_proj_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = store.with_file_name("thread.jsonl");
+        std::fs::write(&log, "done: https://github.com/owner/repo/pull/42\n").unwrap();
+        let thread = SessionSummary {
+            id: "pull-thread".to_string(),
+            name: None,
+            cwd: dir.to_string_lossy().to_string(),
+            created_at: 5,
+            modified_at: 5,
+            message_count: 2,
+            preview: "opened".to_string(),
+            path: log.clone(),
+        };
+
+        let mut manager = DesktopManager::load_from(store.clone()).unwrap();
+        manager.add_project(&dir).unwrap();
+        let views = manager.session_views(vec![thread.clone()]).unwrap();
+        assert_eq!(
+            views[0].pulls,
+            vec![crate::pulls::PullView {
+                url: "https://github.com/owner/repo/pull/42".to_string(),
+                label: "#42".to_string(),
+                state: String::new(),
+            }]
+        );
+
+        // The state a refresh read is what the next listing shows, and the link
+        // is not read from the log again: the cache has it against the log's own
+        // timestamp.
+        std::fs::write(
+            store.with_file_name("pulls.json"),
+            serde_json::json!({
+                "sessions": {
+                    "pull-thread": {
+                        "modified_at": 5,
+                        "urls": ["https://github.com/owner/repo/pull/42"]
+                    }
+                },
+                "states": {
+                    "https://github.com/owner/repo/pull/42": {
+                        "state": "merged",
+                        "checked_at": now_secs()
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::remove_file(&log).unwrap();
+        let viewed = DesktopManager::load_from(store)
+            .unwrap()
+            .session_views(vec![thread])
+            .unwrap();
+        assert_eq!(viewed[0].pulls[0].state, "merged");
 
         std::fs::remove_dir_all(&dir).ok();
         let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
