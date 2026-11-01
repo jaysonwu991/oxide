@@ -399,6 +399,13 @@ let predictAnswer = "Run the tests again";
 let predictError = null;
 const predictedFor = [];
 const forked = [];
+// What the window asked the system to say or do.
+const notified = [];
+// What a file the conversation produced reads as.
+let fileAnswer = { path: "notes.md", kind: "markdown", text: "# Title\n\nBody", data_url: "", truncated: false };
+let fileError = null;
+const badges = [];
+const awakeCalls = [];
 let repositoryStates = [];
 // What `search_sessions` and `archived_sessions` answer with, and the phrases the
 // window asked about.
@@ -1031,6 +1038,18 @@ const invoke = async (command, args = {}) => {
       worktrees = worktrees.filter((entry) => entry.name !== args.name);
       return { ...target };
     }
+    case "file_view":
+      if (fileError) throw fileError;
+      return { ...fileAnswer };
+    case "notify":
+      notified.push({ ...args });
+      return null;
+    case "set_badge":
+      badges.push(args.count);
+      return null;
+    case "set_awake":
+      awakeCalls.push(args.on);
+      return null;
     case "predict":
       predictedFor.push({ ...args });
       if (predictError) throw predictError;
@@ -1241,6 +1260,8 @@ vm.runInThisContext(
     " PANEL_TABS, changeActions, shapeChange, readRepositoryIndex," +
     " openPulls, readPulls, renderPulls, readPull, pullDetailNodes, renderMemories," +
     " maybePredict, showPrediction, clearPrediction, acceptPrediction, runSlashCommand," +
+    " notifyFinished, notifyWaiting, notificationsAllowed, paintBadge, paintAwake," +
+    " openFile, closeFile, paintFile, csvTable," +
     " threads, SHORTCUTS, SETTINGS_SECTIONS, DEFAULT_PREFS, pushNav, navBack, navForward, reopenClosedTab, closeOtherTabs, clearUnread };\n",
 );
 
@@ -9944,6 +9965,149 @@ check(
 );
 app.state.session = "s31";
 
+console.log("a file the conversation produced");
+await app.openFile("notes.md");
+check(
+  "opened a file the conversation produced",
+  elementFor("file-modal").hidden === false &&
+    elementFor("file-title").textContent === "notes.md" &&
+    elementFor("file-body").children[0].className === "file-rendered" &&
+    elementFor("file-body").children[0].innerHTML.includes("Title"),
+  `${elementFor("file-modal").hidden} / ${elementFor("file-body").children[0]?.className}`,
+);
+check(
+  "offered the source of a file it renders",
+  elementFor("file-mode").hidden === false && elementFor("file-mode").textContent === "Source",
+  String(elementFor("file-mode").textContent),
+);
+elementFor("file-mode").onclick();
+check(
+  "showed the text when the reader asked for it",
+  elementFor("file-body").children[0].className === "file-source" &&
+    elementFor("file-body").children[0].textContent.includes("Body") &&
+    elementFor("file-mode").textContent === "Preview",
+  `${elementFor("file-body").children[0]?.className} / ${elementFor("file-mode").textContent}`,
+);
+fileAnswer = { path: "shot.png", kind: "image", text: "", data_url: "data:image/png;base64,AAA", truncated: false };
+await app.openFile("shot.png");
+check(
+  "painted an image as a picture and offered no source of it",
+  elementFor("file-body").children[0].tagName === "IMG" &&
+    elementFor("file-body").children[0].src === "data:image/png;base64,AAA" &&
+    elementFor("file-mode").hidden === true,
+  `${elementFor("file-body").children[0]?.tagName} / ${elementFor("file-mode").hidden}`,
+);
+const table = app.csvTable("name,count\nalpha,2\nbeta,3");
+check(
+  "read a CSV as a table with its first row in the head",
+  table.children.length === 3 &&
+    table.children[0].children[0].tagName === "TH" &&
+    table.children[1].children[1].textContent === "2",
+  `${table.children.length} / ${table.children[0].children[0]?.tagName}`,
+);
+fileAnswer = { path: "big.log", kind: "text", text: "a line", data_url: "", truncated: true };
+await app.openFile("big.log");
+check(
+  "said a file was cut where the viewer stops",
+  elementFor("file-body").children.length === 2 &&
+    /cut here/.test(String(elementFor("file-body").children[1].textContent)),
+  String(elementFor("file-body").children[1]?.textContent),
+);
+fileError = "the file is gone";
+await app.openFile("missing.md");
+check(
+  "reported a file it could not read",
+  /the file is gone/.test(String(elementFor("file-body").children[0].textContent)),
+  String(elementFor("file-body").children[0].textContent),
+);
+fileError = null;
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+check("put the viewer away on Escape", elementFor("file-modal").hidden === true);
+
+console.log("the system's own notifications");
+notified.length = 0;
+document.hasFocus = () => true;
+app.state.prefs.notifications = "background";
+app.notifyFinished("the login fix");
+check(
+  "left a turn in the background unannounced while the window is in front",
+  notified.length === 0,
+  JSON.stringify(notified),
+);
+document.hasFocus = () => false;
+app.notifyFinished("the login fix");
+check(
+  "announced a finished turn while the window was behind something",
+  notified.length === 1 && notified[0].body === "the login fix is ready.",
+  JSON.stringify(notified),
+);
+notified.length = 0;
+document.hasFocus = () => true;
+app.state.prefs.notifications = "always";
+app.notifyFinished("the login fix");
+check(
+  "announced every turn when that is what the reader chose",
+  notified.length === 1,
+  JSON.stringify(notified),
+);
+notified.length = 0;
+app.state.prefs.notifications = "off";
+document.hasFocus = () => false;
+app.notifyFinished("the login fix");
+check("never announced a turn when the reader said never", notified.length === 0, JSON.stringify(notified));
+// A tool waiting for approval and a question waiting for an answer have their own
+// switches, and are announced even with turn notifications off.
+notified.length = 0;
+app.state.prefs.notify_approvals = true;
+app.showApproval({ id: 1, tool: "bash", detail: "rm -rf" });
+check(
+  "announced the tool the window is holding for an answer",
+  notified.length === 1 && notified[0].title === "A tool is waiting for approval" && notified[0].body === "bash",
+  JSON.stringify(notified),
+);
+notified.length = 0;
+app.state.prefs.notify_approvals = false;
+app.showApproval({ id: 2, tool: "bash" });
+check("kept quiet about an approval when that switch is off", notified.length === 0, JSON.stringify(notified));
+elementFor("approval").hidden = true;
+app.state.pendingApproval = null;
+app.state.prefs.notify_approvals = true;
+// The badge is the threads that finished unread, and the same number is not sent
+// twice.
+badges.length = 0;
+app.state.badge = -1;
+for (const record of app.threads.values()) record.unread = false;
+app.paintBadge();
+badges.length = 0;
+const unreadRecord = app.threads.get([...app.threads.keys()][0]);
+if (unreadRecord) unreadRecord.unread = true;
+app.paintBadge();
+app.paintBadge();
+check(
+  "put the unread count on the dock once",
+  badges.length === 1 && badges[0] === 1,
+  JSON.stringify(badges),
+);
+if (unreadRecord) unreadRecord.unread = false;
+app.paintBadge();
+check("cleared it when nothing was unread", badges.at(-1) === 0, JSON.stringify(badges));
+// A turn keeps the machine awake only if the reader asked, and only while it runs.
+awakeCalls.length = 0;
+app.state.prefs.keep_awake = false;
+app.state.busy = true;
+app.paintAwake();
+check("let the machine sleep when the reader did not ask", awakeCalls.length === 0, JSON.stringify(awakeCalls));
+app.state.prefs.keep_awake = true;
+app.paintAwake();
+app.state.busy = false;
+app.paintAwake();
+check(
+  "held the machine awake for the turn and let go after it",
+  awakeCalls.join(",") === "true,false",
+  JSON.stringify(awakeCalls),
+);
+app.state.prefs.notifications = "background";
+
 console.log("memories");
 memoryRows = [
   { id: "m1", content: "Prefers small, focused commits", tags: ["style"], scope: "Project", created_at: 1 },
@@ -10088,8 +10252,8 @@ const freshActions = app.changeActions({ path: "fresh.md" });
 const labelsOf = (node) => node.children.map((child) => child.textContent).join(",");
 check(
   "offered the action each file's state allows",
-  labelsOf(stagedActions) === "Stage,Unstage,Revert" &&
-    labelsOf(freshActions) === "Stage",
+  labelsOf(stagedActions) === "Stage,Unstage,Revert,Open" &&
+    labelsOf(freshActions) === "Stage,Open",
   `${labelsOf(stagedActions)} / ${labelsOf(freshActions)}`,
 );
 shaped.length = 0;

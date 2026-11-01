@@ -28,6 +28,10 @@ pub const SEND_KEYS: [&str; 2] = ["enter", "mod-enter"];
 /// steer the one in flight.
 pub const FOLLOW_UP_BEHAVIORS: [&str; 2] = ["queue", "steer"];
 
+/// When the window raises a system notification: never, only while it is in the
+/// background, or every time a turn finishes.
+pub const NOTIFICATION_MODES: [&str; 3] = ["off", "background", "always"];
+
 /// The action a shortcut is bound to, in the shape both halves of the app use.
 /// The window's own table is the list of these; this side only carries the
 /// reader's overrides, so a name that means nothing yet is still kept.
@@ -47,6 +51,17 @@ pub struct Prefs {
     /// Off by default: it is a model call after every turn.
     #[serde(default)]
     pub predictions: bool,
+    /// When a finished turn reaches the reader through the system.
+    #[serde(default = "default_notifications")]
+    pub notifications: String,
+    /// Whether a tool waiting for approval is announced, and a question with it.
+    #[serde(default = "default_true")]
+    pub notify_approvals: bool,
+    #[serde(default = "default_true")]
+    pub notify_questions: bool,
+    /// Whether the machine may sleep while a turn is running.
+    #[serde(default)]
+    pub keep_awake: bool,
     #[serde(default)]
     pub shortcuts: Shortcuts,
     /// Everything this build does not name — a preference a newer window wrote.
@@ -66,6 +81,10 @@ fn default_font_scale() -> f64 {
     1.0
 }
 
+fn default_notifications() -> String {
+    "background".to_string()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -78,6 +97,10 @@ impl Default for Prefs {
             font_scale: default_font_scale(),
             sidebar_visible: true,
             predictions: false,
+            notifications: default_notifications(),
+            notify_approvals: true,
+            notify_questions: true,
+            keep_awake: false,
             shortcuts: Shortcuts::new(),
             extra: Map::new(),
         }
@@ -142,6 +165,10 @@ impl Prefs {
                 "font_scale" => self.font_scale = scale(value)?,
                 "sidebar_visible" => self.sidebar_visible = boolean(key, value)?,
                 "predictions" => self.predictions = boolean(key, value)?,
+                "notifications" => self.notifications = choice(key, value, &NOTIFICATION_MODES)?,
+                "notify_approvals" => self.notify_approvals = boolean(key, value)?,
+                "notify_questions" => self.notify_questions = boolean(key, value)?,
+                "keep_awake" => self.keep_awake = boolean(key, value)?,
                 "shortcuts" => self.set_shortcuts(value)?,
                 _ => {
                     self.extra.insert(key.clone(), value.clone());
@@ -182,6 +209,9 @@ impl Prefs {
         }
         if !FOLLOW_UP_BEHAVIORS.contains(&self.follow_up.as_str()) {
             self.follow_up = default_follow_up();
+        }
+        if !NOTIFICATION_MODES.contains(&self.notifications.as_str()) {
+            self.notifications = default_notifications();
         }
         if !self.font_scale.is_finite() {
             self.font_scale = default_font_scale();
@@ -227,6 +257,10 @@ pub fn describe(prefs: &Prefs) -> Value {
         "font_scale": prefs.font_scale,
         "sidebar_visible": prefs.sidebar_visible,
         "predictions": prefs.predictions,
+        "notifications": prefs.notifications,
+        "notify_approvals": prefs.notify_approvals,
+        "notify_questions": prefs.notify_questions,
+        "keep_awake": prefs.keep_awake,
         "shortcuts": prefs.shortcuts,
     })
 }

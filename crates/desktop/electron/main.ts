@@ -23,7 +23,7 @@
 /// Nothing here is loaded from the network: the page is this crate's `ui/`
 /// directory, read from disk (or from the app's own archive once packaged), and
 /// the window may not navigate anywhere else.
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, Menu, Notification, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -37,6 +37,10 @@ const TO_PAGE = "oxide:to-page";
 /// composer's own column — kept as the window's own minimum, so the frame the
 /// reader leaves behind is one the app can still paint.
 const MIN_SIZE = { width: 820, height: 560 };
+
+/// The sleep blocker this process started for a running turn, so the same one is
+/// stopped rather than a second being counted.
+let awakeHolder = 0;
 
 /// Electron keeps its own browser state — the Chromium profile, the GPU cache,
 /// the cookies of nothing at all — under `app.getPath("userData")`, which by
@@ -263,7 +267,16 @@ interface PagePacket {
   id?: number | string;
   params?: {
     command?: string;
-    args?: { url?: unknown; strings?: unknown; scale?: unknown; bindings?: unknown };
+    args?: {
+      url?: unknown;
+      strings?: unknown;
+      scale?: unknown;
+      bindings?: unknown;
+      title?: unknown;
+      body?: unknown;
+      count?: unknown;
+      on?: unknown;
+    };
   };
 }
 
@@ -321,6 +334,33 @@ ipcMain.on(TO_HOST, (event, message: unknown) => {
       window.webContents.setZoomFactor(Math.min(1.6, Math.max(0.7, scale)));
     }
     answerRequest(window, request.id, null);
+    return;
+  }
+  if (request.params?.command === "notify" && typeof request.id === "number") {
+    const title = typeof request.params.args?.title === "string" ? request.params.args.title : "";
+    const body = typeof request.params.args?.body === "string" ? request.params.args.body : "";
+    // The page decides whether a turn reaches the reader — it is the half that
+    // knows whether the window is in front — and this process only speaks.
+    if (title.trim() && Notification.isSupported()) {
+      new Notification({ title, body }).show();
+    }
+    answerRequest(BrowserWindow.fromWebContents(event.sender), request.id, null);
+    return;
+  }
+  if (request.params?.command === "set_badge" && typeof request.id === "number") {
+    const count = Number(request.params.args?.count);
+    if (Number.isFinite(count)) app.setBadgeCount(Math.max(0, Math.round(count)));
+    answerRequest(BrowserWindow.fromWebContents(event.sender), request.id, null);
+    return;
+  }
+  if (request.params?.command === "set_awake" && typeof request.id === "number") {
+    const wanted = Boolean(request.params.args?.on);
+    if (wanted && !awakeHolder) awakeHolder = powerSaveBlocker.start("prevent-app-suspension");
+    if (!wanted && awakeHolder) {
+      if (powerSaveBlocker.isStarted(awakeHolder)) powerSaveBlocker.stop(awakeHolder);
+      awakeHolder = 0;
+    }
+    answerRequest(BrowserWindow.fromWebContents(event.sender), request.id, null);
     return;
   }
   if (request.params?.command === "set_native_shortcuts" && typeof request.id === "number") {

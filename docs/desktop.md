@@ -1292,6 +1292,44 @@ asked beside, and the thread it started from is untouched — going back is the 
 you came from. It is one command and one rename rather than a mode: the fork is a
 session like any other, so it can be resumed, archived or searched like one.
 
+## A file the conversation produced
+
+A change row in the review carries **Open**, and the viewer it opens reads the
+file through `file_view` (`src/preview.rs`). What comes back is shaped by what the
+file is: an image — png, jpg, gif, webp, avif — as a `data:` URL, because the
+page's own policy paints `data:` pictures and nothing from the disk; everything
+else as text, capped at 512 KiB with the cut said out loud rather than drawn as a
+half file.
+
+The window decides how to draw it: markdown through the same renderer a reply
+uses, so a document reads like a message; a CSV as a table with its first row in
+the head; an image as the picture; anything else as source. A rendered file has
+**Source** one press away, and **Preview** to come back. An HTML file is shown as
+its text: the page draws no frames at all (`frame-ancestors 'none'`, no
+`frame-src`), and giving a generated page its own sandbox is a decision about the
+window's policy rather than a thing to slip in beside a viewer. A PDF is the same
+kind of decision — Electron shows one in a window of its own, not in a page.
+
+A path is checked before it is read: relative, inside the project, no `..`, so a
+row can only open a file the project holds.
+
+## Notifications
+
+The window can reach the reader through the system: never, only while it is not
+in front, or every time a turn finishes — **Settings → Notifications**. The page
+decides, because it is the half that knows whether the window is in front
+(`document.hasFocus`), and the Electron window speaks (`notify`). A tool waiting
+for approval and a question waiting for an answer have their own switches and are
+announced whether or not the window is in front: nothing moves until they are
+answered, so "in the background only" would be the one case where the window is
+already in front and the reader is still blocked.
+
+Two more of the system's own are in the same section: the dock or task bar number
+(`set_badge`) is the threads that finished unread — the same count the sidebar's
+dots and the bell show, kept in step by the one function that computes it — and
+**keep the machine awake while a turn runs** holds a
+`powerSaveBlocker` for exactly as long as a turn is in flight.
+
 ## Memories
 
 Settings gained a **Memories** page: what the agent was asked to remember, read

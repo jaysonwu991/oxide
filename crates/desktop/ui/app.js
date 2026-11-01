@@ -3454,6 +3454,7 @@ function paintRunningChrome() {
   paintLiveChanges();
   paintDockToggles();
   paintChatTabs();
+  paintAwake();
 }
 
 function setBusy() {
@@ -4831,6 +4832,18 @@ function changeActions(file) {
   if (entry && !entry.untracked) {
     actions.appendChild(button(t("review.revert", "Revert"), t("review.revertHint", "Discard the change to {value0}", { value0: file.path }), "revert"));
   }
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "change-action";
+  open.dataset.open = file.path;
+  open.textContent = t("file.open", "Open");
+  open.title = t("file.openHint", "Open {value0}", { value0: file.path });
+  open.setAttribute("aria-label", open.title);
+  open.onclick = (event) => {
+    event.stopPropagation?.();
+    void openFile(file.path);
+  };
+  actions.appendChild(open);
   return actions.children.length ? actions : null;
 }
 
@@ -5367,6 +5380,7 @@ function handleEvent(event) {
 // ---------- approvals ----------
 
 function showApproval(request) {
+  notifyWaiting("approval", request.tool);
   state.pendingApproval = request.id;
   el("approval-tool").textContent = request.tool;
   el("approval-detail").textContent = request.detail || "";
@@ -5394,7 +5408,13 @@ async function answerApproval(decision) {
 // stay built, so stepping back keeps what was already answered.
 function showQuestion(request) {
   const questions = Array.isArray(request.questions) ? request.questions : [];
+  // A request with nothing in it is not a question: the dialog stays shut and
+  // nothing is announced.
   if (!questions.length) return;
+  notifyWaiting(
+    "question",
+    request.title || request.prompt || questions[0]?.question || questions[0]?.header || "",
+  );
   state.pendingQuestion = { id: request.id, questions, index: 0 };
   const body = el("question-body");
   body.replaceChildren();
@@ -5616,6 +5636,7 @@ const OVERLAYS = [
   "search-modal",
   "activity-modal",
   "archived-modal",
+  "file-modal",
   "add-menu",
 ];
 
@@ -7608,6 +7629,10 @@ const DEFAULT_PREFS = {
   font_scale: 1,
   sidebar_visible: true,
   predictions: false,
+  notifications: "background",
+  notify_approvals: true,
+  notify_questions: true,
+  keep_awake: false,
   shortcuts: {},
 };
 
@@ -7639,6 +7664,10 @@ function normalizePrefs(raw) {
   prefs.font_scale = clampFontScale(raw.font_scale);
   if (typeof raw.sidebar_visible === "boolean") prefs.sidebar_visible = raw.sidebar_visible;
   if (typeof raw.predictions === "boolean") prefs.predictions = raw.predictions;
+  if (["off", "background", "always"].includes(raw.notifications)) prefs.notifications = raw.notifications;
+  if (typeof raw.notify_approvals === "boolean") prefs.notify_approvals = raw.notify_approvals;
+  if (typeof raw.notify_questions === "boolean") prefs.notify_questions = raw.notify_questions;
+  if (typeof raw.keep_awake === "boolean") prefs.keep_awake = raw.keep_awake;
   if (raw.shortcuts && typeof raw.shortcuts === "object") {
     for (const [action, chord] of Object.entries(raw.shortcuts)) {
       const text = typeof chord === "string" ? chord.trim().toLowerCase() : "";
@@ -8041,6 +8070,7 @@ function closeSettings() {
 const SETTINGS_SECTIONS = {
   general: { tab: "settings-tab-general", page: "settings-page-general" },
   appearance: { tab: "settings-tab-appearance", page: "settings-page-appearance" },
+  notifications: { tab: "settings-tab-notifications", page: "settings-page-notifications" },
   memories: { tab: "settings-tab-memories", page: "settings-page-memories" },
   keyboard: { tab: "settings-tab-keyboard", page: "settings-page-keyboard" },
 };
@@ -8076,6 +8106,16 @@ function paintSettingsControls() {
   }
   if (el("settings-sidebar")) el("settings-sidebar").checked = state.prefs.sidebar_visible;
   if (el("settings-predictions")) el("settings-predictions").checked = Boolean(state.prefs.predictions);
+  for (const mode of ["off", "background", "always"]) {
+    const node = el(`settings-notify-${mode}`);
+    if (!node) continue;
+    const on = state.prefs.notifications === mode;
+    node.classList.toggle("active", on);
+    node.setAttribute("aria-checked", String(on));
+  }
+  if (el("settings-notify-approvals")) el("settings-notify-approvals").checked = state.prefs.notify_approvals;
+  if (el("settings-notify-questions")) el("settings-notify-questions").checked = state.prefs.notify_questions;
+  if (el("settings-keep-awake")) el("settings-keep-awake").checked = state.prefs.keep_awake;
   el("settings").setAttribute("aria-expanded", String(!el("settings-modal").hidden));
 }
 
@@ -8638,6 +8678,7 @@ function paintActivityDot() {
   const waiting = Boolean(state.pendingApproval || state.pendingQuestion);
   dot.hidden = !(busy || waiting);
   el("activity").classList.toggle("asking", waiting);
+  paintBadge();
   if (!el("activity-modal").hidden) renderActivity();
 }
 
@@ -8891,6 +8932,158 @@ function togglePanel(tab = state.panelTab) {
   if (el("bottom-panel").hidden) openPanel(tab);
   else if (state.panelTab === tab) hidePanel();
   else openPanel(tab);
+}
+
+// ---------- a file the conversation produced ----------
+
+state.file = { view: null, source: false };
+
+/// Opens one file in the viewer. A markdown or HTML file is drawn and its source
+/// is a toggle away; a CSV is a table; an image is the picture; anything else is
+/// text.
+async function openFile(path) {
+  const project = runFolder() || state.project;
+  if (!project) return;
+  el("file-title").textContent = path;
+  el("file-body").replaceChildren(reviewNote(t("file.reading", "Reading {value0}…", { value0: path })));
+  el("file-mode").hidden = true;
+  closeOverlays("file-modal");
+  el("file-modal").hidden = false;
+  let view = null;
+  try {
+    view = await invoke("file_view", { project, path });
+  } catch (error) {
+    el("file-body").replaceChildren(
+      reviewNote(t("file.failed", "Could not read {value0}: {value1}", { value0: path, value1: error })),
+    );
+    return;
+  }
+  state.file = { view, source: false };
+  paintFile();
+  el("file-close").focus();
+}
+
+function closeFile() {
+  el("file-modal").hidden = true;
+  state.file = { view: null, source: false };
+}
+
+function paintFile() {
+  const { view, source } = state.file;
+  const body = el("file-body");
+  if (!view) return;
+  const toggle = el("file-mode");
+  const rendered = view.kind === "markdown" || view.kind === "html";
+  toggle.hidden = !rendered;
+  toggle.textContent = source ? t("file.preview", "Preview") : t("file.source", "Source");
+  if (view.kind === "image") {
+    const image = document.createElement("img");
+    image.className = "file-image";
+    image.src = view.data_url;
+    image.alt = view.path;
+    body.replaceChildren(image);
+    return;
+  }
+  if (view.kind === "csv" && !source) {
+    body.replaceChildren(csvTable(view.text));
+    return;
+  }
+  if (rendered && !source) {
+    const preview = document.createElement("div");
+    preview.className = "file-rendered";
+    // Markdown through the window's own renderer, so a document reads the way a
+    // reply does; an HTML file is shown as its text until a sandbox for it is
+    // decided, since the page's policy draws no frames at all.
+    preview.innerHTML = view.kind === "markdown" ? renderMarkdown(view.text, true) : escapeHtml(view.text);
+    body.replaceChildren(preview);
+    if (view.kind === "html") {
+      body.appendChild(reviewNote(t("file.htmlNotRendered", "An HTML file is shown as its text: this window draws no frames.")));
+    }
+  } else {
+    const pre = document.createElement("pre");
+    pre.className = "file-source";
+    pre.textContent = view.text;
+    body.replaceChildren(pre);
+  }
+  if (view.truncated) {
+    body.appendChild(reviewNote(t("file.truncated", "This file is longer than the viewer reads, so it is cut here.")));
+  }
+}
+
+function csvTable(text) {
+  const table = document.createElement("table");
+  table.className = "file-table";
+  const rows = String(text)
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .slice(0, 500)
+    .map((line) => line.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map((cell) => cell.replace(/^"|"$/g, "")));
+  for (const [index, cells] of rows.entries()) {
+    const row = document.createElement("tr");
+    for (const cell of cells) {
+      const node = document.createElement(index === 0 ? "th" : "td");
+      node.textContent = cell;
+      row.appendChild(node);
+    }
+    table.appendChild(row);
+  }
+  return table;
+}
+
+// ---------- the system's own notifications ----------
+
+state.badge = -1;
+state.awake = false;
+
+/// Whether a finished turn should reach the reader through the system: never,
+/// only while the window is not in front, or always. The page is the half that
+/// knows whether the window is in front, so it decides and the window speaks.
+function notificationsAllowed() {
+  if (state.prefs.notifications === "always") return true;
+  if (state.prefs.notifications !== "background") return false;
+  return typeof document.hasFocus !== "function" || !document.hasFocus();
+}
+
+function notifyFinished(label) {
+  if (!notificationsAllowed()) return;
+  void invoke("notify", {
+    title: t("notify.finishedTitle", "Oxide finished a turn"),
+    body: t("notify.finishedBody", "{value0} is ready.", { value0: label }),
+  }).catch(() => {});
+}
+
+/// A tool waiting for approval or a question waiting for an answer is not a
+/// finished turn: it has separate switches, and it is announced whether or not
+/// the window is in front, since nothing moves until it is answered.
+function notifyWaiting(kind, detail) {
+  const enabled =
+    kind === "approval" ? state.prefs.notify_approvals : state.prefs.notify_questions;
+  if (!enabled) return;
+  void invoke("notify", {
+    title:
+      kind === "approval"
+        ? t("notify.approvalTitle", "A tool is waiting for approval")
+        : t("notify.questionTitle", "A question is waiting for an answer"),
+    body: detail || "",
+  }).catch(() => {});
+}
+
+/// The number on the dock or task bar is the threads that finished unread — the
+/// same count the sidebar's dots and the bell are showing.
+function paintBadge() {
+  const unread = [...threads.values()].filter((record) => record.unread).length;
+  if (unread === state.badge) return;
+  state.badge = unread;
+  void invoke("set_badge", { count: unread }).catch(() => {});
+}
+
+/// A running turn keeps the machine awake when the reader asked it to, and lets
+/// it sleep again when the turn ends.
+function paintAwake() {
+  const on = Boolean(state.busy && state.prefs.keep_awake);
+  if (on === state.awake) return;
+  state.awake = on;
+  void invoke("set_awake", { on }).catch(() => {});
 }
 
 // ---------- the next message, offered as a draft ----------
@@ -9681,6 +9874,9 @@ async function initEvents() {
     // The turn is over and the next one has not been queued, so the window may
     // ask what the reader would say next.
     if (visible && !payload.error) void maybePredict();
+    // And the system may say it finished, if the reader asked for that and is
+    // not looking at it.
+    if (!payload.error) notifyFinished(record.runTitle || t("notify.untitled", "the chat"));
   });
   // The requests a thread reported are read from a forge off the listing's own
   // thread, so a state that landed after the sidebar was drawn is what this
@@ -10197,6 +10393,18 @@ function init() {
     void savePrefs({ predictions: Boolean(event.target?.checked) });
     if (!event.target?.checked) clearPrediction();
   };
+  for (const mode of ["off", "background", "always"]) {
+    const node = el(`settings-notify-${mode}`);
+    if (node) node.onclick = () => void savePrefs({ notifications: mode });
+  }
+  el("settings-notify-approvals").onchange = (event) =>
+    savePrefs({ notify_approvals: Boolean(event.target?.checked) });
+  el("settings-notify-questions").onchange = (event) =>
+    savePrefs({ notify_questions: Boolean(event.target?.checked) });
+  el("settings-keep-awake").onchange = (event) => {
+    void savePrefs({ keep_awake: Boolean(event.target?.checked) });
+    paintAwake();
+  };
   el("command-input").addEventListener("input", () => {
     state.commandIndex = 0;
     renderCommandMenu();
@@ -10267,6 +10475,11 @@ function init() {
   el("find-next").onclick = () => stepFind(1);
   el("find-prev").onclick = () => stepFind(-1);
   el("find-close").onclick = closeFind;
+  el("file-close").onclick = closeFile;
+  el("file-mode").onclick = () => {
+    state.file.source = !state.file.source;
+    paintFile();
+  };
   el("panel-tab-review").onclick = () => openPanel("review");
   el("review-stage-all").onclick = () => void shapeChange("stage-all");
   el("review-unstage-all").onclick = () => void shapeChange("unstage-all");
@@ -10575,6 +10788,7 @@ function init() {
     "settings-modal": "settings-close",
     "activity-modal": "activity-close",
     "archived-modal": "archived-close",
+    "file-modal": "file-close",
     "themes-modal": "themes-close",
     "update-modal": "update-close",
   };
@@ -10677,6 +10891,7 @@ function init() {
       closeArchived();
       closeSearch();
       closeFind();
+      closeFile();
       if (!el("confirm-modal").hidden) resolveConfirm(false);
       if (!el("rename-modal").hidden) resolveRename(null);
       // A question dismissed with Escape is answered as unanswered rather than

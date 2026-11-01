@@ -3053,3 +3053,26 @@ body.sidebar-hidden .sidebar-resizer { display: none; }
   font-size: 10.5px;
   color: var(--faint);
 }
+
+/* ---------- a file the conversation produced ---------- */
+
+.file-view { width: min(860px, calc(100vw - 80px)); max-height: min(80vh, 760px); display: flex; flex-direction: column; }
+.image-head { display: flex; align-items: center; gap: 8px; min-height: 40px; }
+.image-head h2 { margin: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.file-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding-top: 8px; }
+.file-image { max-width: 100%; height: auto; border-radius: 8px; display: block; }
+.file-source {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.file-rendered { font-size: 13px; line-height: 1.6; }
+.file-table { border-collapse: collapse; font-size: 12.5px; }
+.file-table th, .file-table td { border: 1px solid var(--border); padding: 4px 9px; text-align: left; vertical-align: top; }
+.file-table th { background: var(--panel-2); font-weight: 600; }

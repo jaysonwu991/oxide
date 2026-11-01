@@ -863,6 +863,15 @@
               data-i18n="settings.appearance"
             >Appearance</button>
             <button
+              id="settings-tab-notifications"
+              class="settings-tab"
+              role="tab"
+              aria-selected="false"
+              aria-controls="settings-page-notifications"
+              data-settings-section="notifications"
+              data-i18n="settings.notifications"
+            >Notifications</button>
+            <button
               id="settings-tab-memories"
               class="settings-tab"
               role="tab"
@@ -970,6 +979,41 @@
               </div>
             </section>
             <section
+              id="settings-page-notifications"
+              class="settings-page"
+              role="tabpanel"
+              aria-labelledby="settings-tab-notifications"
+              data-settings-page="notifications"
+              hidden
+            >
+              <div class="settings-field">
+                <div class="settings-label" data-i18n="settings.notifyTurns">When a turn finishes</div>
+                <div class="settings-segments" role="radiogroup" aria-label="Turn notifications" data-i18n-aria="settings.notifyTurns">
+                  <button id="settings-notify-off" class="settings-segment" role="radio" aria-checked="false" data-notify-mode="off" data-i18n="settings.notifyOff">Never</button>
+                  <button id="settings-notify-background" class="settings-segment" role="radio" aria-checked="true" data-notify-mode="background" data-i18n="settings.notifyBackground">In the background</button>
+                  <button id="settings-notify-always" class="settings-segment" role="radio" aria-checked="false" data-notify-mode="always" data-i18n="settings.notifyAlways">Always</button>
+                </div>
+                <div class="settings-hint" data-i18n="settings.notifyHint">A turn that finishes while you are elsewhere is announced by the system rather than only in the window.</div>
+              </div>
+              <div class="settings-field">
+                <div class="settings-label" data-i18n="settings.notifyRequests">While a turn waits for you</div>
+                <label class="settings-switch">
+                  <input id="settings-notify-approvals" type="checkbox" checked />
+                  <span data-i18n="settings.notifyApprovals">Announce a tool waiting for approval</span>
+                </label>
+                <label class="settings-switch">
+                  <input id="settings-notify-questions" type="checkbox" checked />
+                  <span data-i18n="settings.notifyQuestions">Announce a question waiting for an answer</span>
+                </label>
+              </div>
+              <div class="settings-field">
+                <label class="settings-switch">
+                  <input id="settings-keep-awake" type="checkbox" />
+                  <span data-i18n="settings.keepAwake">Keep the machine awake while a turn runs</span>
+                </label>
+              </div>
+            </section>
+            <section
               id="settings-page-memories"
               class="settings-page"
               role="tabpanel"
@@ -1019,6 +1063,31 @@
           data-i18n-placeholder="menu.placeholder"
         />
         <div id="command-list" class="command-list" role="listbox" aria-label="Commands" data-i18n-aria="menu.title"></div>
+      </div>
+    </div>
+
+    <div
+      id="file-modal"
+      class="overlay"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="file-title"
+    >
+      <div class="dialog file-view">
+        <div class="image-head">
+          <h2 id="file-title" data-i18n="file.title">File</h2>
+          <button id="file-mode" class="panel-action" type="button" hidden data-i18n="file.source">Source</button>
+          <button
+            id="file-close"
+            class="icon"
+            title="Close"
+            aria-label="Close"
+            data-i18n-title="common.close"
+            data-i18n-aria="common.close"
+          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        </div>
+        <div id="file-body" class="file-body"></div>
       </div>
     </div>
 

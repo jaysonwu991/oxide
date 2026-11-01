@@ -17,6 +17,7 @@ pub mod git;
 pub mod manager;
 pub mod predict;
 pub mod prefs;
+pub mod preview;
 pub mod pulls;
 pub mod repository;
 pub mod review;

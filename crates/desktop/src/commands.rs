@@ -1078,6 +1078,21 @@ pub async fn shape_change(
     Ok(())
 }
 
+// ---------- a file the conversation produced ----------
+
+/// Reads one file of the project for the viewer: an image as a data URL the page
+/// can paint, anything else as text it can draw or show as source.
+pub async fn file_view(
+    project: String,
+    path: String,
+) -> CmdResult<oxide_desktop::preview::FileView> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || oxide_desktop::preview::read(&root, &path))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
 // ---------- the next message, and side chats ----------
 
 /// Asks the configured model for the message the reader is likely to send next.
@@ -1988,6 +2003,7 @@ pub async fn dispatch(
             )
             .await,
         ),
+        "file_view" => command_value(file_view(arg(&args, "project")?, arg(&args, "path")?).await),
         "predict" => command_value(predict(arg(&args, "project")?, arg(&args, "id")?).await),
         "fork_session" => command_value(
             fork_session(
