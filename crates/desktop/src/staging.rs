@@ -305,6 +305,10 @@ mod tests {
             vec!["init", "-q", "-b", "main"],
             vec!["config", "user.email", "t@example.com"],
             vec!["config", "user.name", "T"],
+            // The tests compare the bytes git writes back, and a Windows runner
+            // checks files out with CRLF unless the repository says otherwise:
+            // the checkout policy is the machine's, so the fixture pins it.
+            vec!["config", "core.autocrlf", "false"],
         ] {
             assert!(Command::new("git")
                 .arg("-C")
@@ -329,6 +333,13 @@ mod tests {
 
     fn status(root: &Path) -> String {
         String::from_utf8(git(root, &["status", "--porcelain=v1"]).unwrap()).unwrap()
+    }
+
+    /// A file's contents as the branch holds them: the line endings a checkout
+    /// writes are the machine's, so a comparison of what git restored is made
+    /// one way on every platform.
+    fn body(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap().replace("\r\n", "\n")
     }
 
     #[test]
@@ -376,10 +387,7 @@ mod tests {
         let root = repo("revert");
         std::fs::write(root.join("notes.md"), "one\ntwo\nthree\nfour\n").unwrap();
         revert(&root, "notes.md").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root.join("notes.md")).unwrap(),
-            "one\ntwo\nthree\n"
-        );
+        assert_eq!(body(&root.join("notes.md")), "one\ntwo\nthree\n");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -399,10 +407,7 @@ mod tests {
         std::fs::write(root.join("notes.md"), "changed\n").unwrap();
         std::fs::write(root.join("fresh.md"), "new\n").unwrap();
         revert_all(&root).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root.join("notes.md")).unwrap(),
-            "one\ntwo\nthree\n"
-        );
+        assert_eq!(body(&root.join("notes.md")), "one\ntwo\nthree\n");
         assert!(root.join("fresh.md").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
