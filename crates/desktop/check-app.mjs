@@ -385,6 +385,15 @@ const terminalWrites = [];
 const terminalResizes = [];
 const terminalClosed = [];
 const shaped = [];
+// The forge's answers, as the pane reads them.
+let pullsList = [];
+let pullsDetail = {};
+let pullsError = null;
+const pullAsked = [];
+// The memories the agent wrote, as the settings section lists them.
+let memoryRows = [];
+let memoriesError = null;
+const forgotten = [];
 let repositoryStates = [];
 // What `search_sessions` and `archived_sessions` answer with, and the phrases the
 // window asked about.
@@ -1017,6 +1026,24 @@ const invoke = async (command, args = {}) => {
       worktrees = worktrees.filter((entry) => entry.name !== args.name);
       return { ...target };
     }
+    case "memories":
+      if (memoriesError) throw memoriesError;
+      return memoryRows.map((row) => ({ ...row }));
+    case "forget_memory": {
+      forgotten.push(args.id);
+      memoryRows = memoryRows.filter((row) => row.id !== args.id);
+      return true;
+    }
+    case "pull_requests":
+      if (pullsError) throw pullsError;
+      return pullsList.map((pull) => ({ ...pull }));
+    case "pull_request": {
+      if (pullsError) throw pullsError;
+      const found = pullsList.find((pull) => pull.number === args.number);
+      if (!found) throw `no request #${args.number}`;
+      pullAsked.push(args.number);
+      return { ...found, ...pullsDetail };
+    }
     case "shape_change":
       shaped.push({ ...args });
       return null;
@@ -1191,6 +1218,7 @@ vm.runInThisContext(
     " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal," +
     " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
     " PANEL_TABS, changeActions, shapeChange, readRepositoryIndex," +
+    " openPulls, readPulls, renderPulls, readPull, pullDetailNodes, renderMemories," +
     " threads, SHORTCUTS, SETTINGS_SECTIONS, DEFAULT_PREFS, pushNav, navBack, navForward, reopenClosedTab, closeOtherTabs, clearUnread };\n",
 );
 
@@ -9827,6 +9855,137 @@ app.togglePanel("review");
 check("brought the panel back", elementFor("bottom-panel").hidden === false);
 app.hidePanel();
 check("put it away again", elementFor("bottom-panel").hidden === true);
+
+console.log("memories");
+memoryRows = [
+  { id: "m1", content: "Prefers small, focused commits", tags: ["style"], scope: "Project", created_at: 1 },
+  { id: "m2", content: "Runs tests before pushing", tags: [], scope: "User", created_at: 2 },
+];
+app.openSettings("memories");
+await new Promise((resolve) => setTimeout(resolve, 0));
+const memoryList = elementFor("memory-list");
+check(
+  "listed what the agent was asked to remember",
+  elementFor("settings-page-memories").hidden === false &&
+    memoryList.children.length === 2 &&
+    memoryList.children[0].children[0].textContent === "Prefers small, focused commits" &&
+    memoryList.children[0].children[1].textContent === "project · #style",
+  `${elementFor("settings-page-memories").hidden} / ${memoryList.children.length}`,
+);
+forgotten.length = 0;
+memoryList.children[1].children[2].onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "forgot one, and repainted without it",
+  forgotten.join(",") === "m2" && elementFor("memory-list").children.length === 1,
+  `${forgotten.join(",")} / ${elementFor("memory-list").children.length}`,
+);
+memoryRows = [];
+await app.renderMemories();
+check(
+  "said nothing has been remembered rather than showing an empty list",
+  elementFor("memory-list").children[0].textContent === "Nothing has been remembered yet.",
+  String(elementFor("memory-list").children[0].textContent),
+);
+memoriesError = "the memory store is unreadable";
+await app.renderMemories();
+check(
+  "reported memories it could not read",
+  /the memory store is unreadable/.test(String(elementFor("memory-list").children[0].textContent)),
+  String(elementFor("memory-list").children[0].textContent),
+);
+memoriesError = null;
+app.closeSettings();
+
+console.log("the repository's pull requests");
+pullsList = [
+  {
+    number: 12,
+    title: "Add a terminal",
+    state: "open",
+    draft: false,
+    url: "https://github.com/o/r/pull/12",
+    head: "feat/terminal",
+    base: "main",
+    review: "APPROVED",
+    author: "jayson",
+  },
+];
+pullsDetail = {
+  body: "What this does",
+  additions: 120,
+  deletions: 4,
+  changed_files: 1,
+  mergeable: "mergeable",
+  checks: [
+    { name: "desktop (macos-latest)", state: "pass", url: "" },
+    { name: "desktop (windows-latest)", state: "fail", url: "" },
+  ],
+  comments: [
+    { author: "reviewer", body: "Looks good", created_at: "2026-01-02T00:00:00Z", review: "changes_requested" },
+  ],
+  files: [{ path: "crates/desktop/src/terminal.rs", additions: 100, deletions: 2 }],
+};
+await app.openPulls();
+check(
+  "listed the repository's open requests",
+  elementFor("bottom-panel").hidden === false &&
+    elementFor("panel-pulls").hidden === false &&
+    elementFor("pulls-list").children.length === 1 &&
+    elementFor("pulls-list").children[0].children[0].children[1].textContent === "Add a terminal",
+  `${elementFor("pulls-list").children.length}`,
+);
+await app.readPull(12);
+const detailChildren = elementFor("pull-detail").children;
+const sectionTitles = detailChildren
+  .filter((node) => node.className === "pull-section")
+  .map((node) => node.children[0].textContent);
+check(
+  "read one request into what a reviewer needs",
+  pullAsked.join(",") === "12" &&
+    detailChildren[0].textContent === "#12 Add a terminal" &&
+    detailChildren[1].textContent.includes("feat/terminal → main") &&
+    sectionTitles.join(",") === "Description,Checks,Comments,Files" &&
+    detailChildren.some((node) => node.id === "pull-open-browser"),
+  `${pullAsked.join(",")} / ${sectionTitles.join(",")}`,
+);
+const checksSection = detailChildren.find(
+  (node) => node.className === "pull-section" && node.children[0].textContent === "Checks",
+);
+check(
+  "drew each check in the state it is in",
+  checksSection.children[1].className === "pull-check state-pass" &&
+    checksSection.children[1].children[0].textContent === "✔" &&
+    checksSection.children[2].className === "pull-check state-fail" &&
+    checksSection.children[2].children[0].textContent === "✖",
+  `${checksSection.children[1].className} / ${checksSection.children[2].className}`,
+);
+const openButton = detailChildren.find((node) => node.id === "pull-open-browser");
+calls.length = 0;
+openButton.onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "opened the request on the forge through the window's own command",
+  calls.some(([name, args]) => name === "open_url" && args.url === "https://github.com/o/r/pull/12"),
+  JSON.stringify(calls),
+);
+pullsList = [];
+app.state.pullOpen = null;
+await app.readPulls();
+check(
+  "said a repository has no open requests rather than an empty list",
+  elementFor("pulls-list").children[0].textContent === "This repository has no open requests.",
+  String(elementFor("pulls-list").children[0].textContent),
+);
+pullsError = "gh: not logged in";
+await app.readPulls();
+check(
+  "reported a forge that could not be read",
+  /not logged in/.test(String(elementFor("pulls-list").children[0].textContent)),
+  String(elementFor("pulls-list").children[0].textContent),
+);
+pullsError = null;
+pullsDetail = {};
 
 console.log("staging a change from the review");
 // The action a row offers is the one that applies: a staged change can be taken
