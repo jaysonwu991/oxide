@@ -864,6 +864,23 @@ const invoke = async (command, args = {}) => {
           : `Oxide ${version} is in ${path}. Quit Oxide and open it again to run the new version.`,
       };
     }
+    case "download_update": {
+      if (installError) throw installError;
+      if (installCancelled) {
+        installCancelled = false;
+        return { ok: false, cancelled: true };
+      }
+      const name = updateAnswer.asset ? updateAnswer.asset.name : "Oxide.dmg";
+      return {
+        ok: true,
+        version: updateAnswer.latest,
+        tag: updateAnswer.tag,
+        asset: name,
+        bytes: 1024,
+        path: `/Users/me/Downloads/${name}`,
+        text: `Oxide ${updateAnswer.latest} is in /Users/me/Downloads/${name}. Open it to install the update.`,
+      };
+    }
     case "cancel_update": {
       if (cancelError) throw cancelError;
       const token = String((args && args.token) || "");
@@ -7321,6 +7338,7 @@ const updateNote = () => String(elementFor("update-note").textContent);
 const changelog = () => elementFor("update-changelog");
 const changelogHtml = () => String(elementFor("update-changelog").innerHTML);
 const installButton = elementFor("update-install");
+const downloadButton = elementFor("update-download");
 const restartButton = elementFor("update-restart");
 const closeButton = elementFor("update-close");
 const laterButton = elementFor("update-later");
@@ -7674,6 +7692,30 @@ check(
   projectCalls("open_url")[0]?.[1]?.url === updateAnswer.releaseUrl &&
     updateAnswer.releaseUrl.includes("desktop-v0.34.0"),
   JSON.stringify(projectCalls("open_url")),
+);
+await app.openUpdate();
+calls.length = 0;
+check(
+  "offered the download itself for a copy the app cannot replace",
+  offered(downloadButton) && downloadButton.className === "primary",
+  `${downloadButton.hidden} / ${downloadButton.className}`,
+);
+await downloadButton.onclick();
+check(
+  "downloaded the installer into the reader's Downloads folder",
+  projectCalls("download_update").length === 1 &&
+    updateTitle() === "Oxide 0.34.0 is downloaded",
+  `${projectCalls("download_update").length} / ${updateTitle()}`,
+);
+check(
+  "named where the installer landed",
+  updateBody().includes("/Users/me/Downloads/Oxide-macos-arm64.dmg"),
+  updateBody(),
+);
+check(
+  "offered no restart for a release that was not put in place",
+  !offered(restartButton) && !offered(installButton) && offered(closeButton),
+  `${restartButton.hidden} / ${installButton.hidden} / ${closeButton.hidden}`,
 );
 
 // An install that fails reports the app's own error, and the dialog goes back

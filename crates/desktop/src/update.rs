@@ -510,6 +510,107 @@ pub async fn install_reporting(token: &str, report: impl Fn(Progress)) -> Result
     }))
 }
 
+/// Downloads the newest release's installer into the reader's Downloads folder,
+/// reporting each step to `report`.
+///
+/// This is the path for a copy the app cannot put in place itself — a
+/// distribution's package, a checkout's build, an installation an administrator
+/// owns — where the dialog offers the download rather than an Update button. It
+/// is the same verified file an install would use, under the name the release
+/// gives it, so opening it from Downloads is the install the release page's is.
+/// `token` is the download's own name, which is what a reader's cancel
+/// addresses, the way it does for an install.
+pub async fn download_reporting(token: &str, report: impl Fn(Progress)) -> Result<Value> {
+    let _installing = InstallGuard::take()?;
+    if cancelled(token) {
+        bail!(CANCELLED);
+    }
+    report(Progress::step("checking", ""));
+    let client = updates::client()?;
+    let repo = updates::repo();
+    let release = resolve(&client, &repo).await?;
+    let current = current_version();
+    if !updates::is_newer(&release.version, current) {
+        bail!("Oxide {current} is the newest release, so there is nothing to download");
+    }
+    let folder = downloads_folder();
+    fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
+    let download = folder.join(&release.asset);
+    // The bytes land beside the name until they have verified, so a download
+    // that stopped leaves no half file where the reader's installer should be.
+    let partial = folder.join(format!(".{}.part", release.asset));
+    report(Progress::step("downloading", release.version.clone()));
+    let mut reported = 0u64;
+    let bytes =
+        updates::download_reporting(&client, &release.url(&repo), &partial, |received, total| {
+            let step = total.map(|total| (total / 100).max(1)).unwrap_or(1 << 20);
+            if received / step != reported / step {
+                reported = received;
+                report(Progress {
+                    stage: "downloading",
+                    version: release.version.clone(),
+                    received,
+                    total,
+                });
+            }
+            !cancelled(token)
+        })
+        .await;
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(_) if cancelled(token) => {
+            remove(&partial);
+            bail!(CANCELLED)
+        }
+        Err(error) => {
+            remove(&partial);
+            return Err(error);
+        }
+    };
+    let mut notes = Vec::new();
+    report(Progress::step("verifying", release.version.clone()));
+    match release.digest.as_deref() {
+        Some(digest) => {
+            if let Err(error) = updates::verify_sha256(&partial, digest) {
+                remove(&partial);
+                return Err(error);
+            }
+        }
+        None => notes.push("no checksum was published for this release".to_string()),
+    }
+    if cancelled(token) {
+        remove(&partial);
+        bail!(CANCELLED);
+    }
+    // Windows will not rename over an existing file, and each release publishes
+    // the same name, so a previous installer is replaced rather than kept.
+    remove(&download);
+    fs::rename(&partial, &download)
+        .with_context(|| format!("moving {} to {}", partial.display(), download.display()))?;
+    notes.push(format!(
+        "Oxide {} is in {}. Open it to install the update.",
+        release.version,
+        download.display()
+    ));
+    Ok(json!({
+        "ok": true,
+        "version": release.version,
+        "tag": release.tag,
+        "asset": release.asset,
+        "bytes": bytes,
+        "path": download.display().to_string(),
+        "text": notes.join(" "),
+    }))
+}
+
+/// Where a download the reader asked for lands: the folder their platform keeps
+/// downloads in, and this machine's home folder when it names none.
+fn downloads_folder() -> PathBuf {
+    dirs::download_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 /// What an install left: the note a dialog shows, and whether the release is in
 /// place at all. Only a Windows installer can leave that in doubt — it is
 /// started as its own process, which this app cannot outlive reporting on.
