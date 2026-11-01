@@ -236,6 +236,9 @@ function setCheck(node, on) {
   node.innerHTML = on ? ICONS.check : "";
 }
 
+/// The follow-up behavior the window is built with, read before the preference
+/// store has answered: `loadPrefs` replaces it with the stored answer as soon as
+/// the window can ask, so this only decides how the first moments behave.
 function savedFollowUpBehavior() {
   try {
     return window.localStorage?.getItem("oxide.followUpBehavior") === "steer" ? "steer" : "queue";
@@ -382,6 +385,9 @@ function threadRecord(key) {
       contextLimits: [],
       contextWindow: 0,
       repositoryChanges: null,
+  /// What the index holds for each file the working tree differs in, as
+  /// `repository_status` last answered: which staging action applies.
+  repositoryIndex: null,
       runSession: null,
       runProject: null,
       runTitle: "",
@@ -1114,6 +1120,7 @@ function paintChatTabs() {
   }
   el("transcript").setAttribute("aria-labelledby", list.hidden ? "thread-title" : `chat-tab-${activeTabId}`);
   if (!list.hidden) el(`chat-tab-${activeTabId}`)?.parentNode?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  paintActivityDot();
 }
 
 async function activateChatTab(id) {
@@ -1187,31 +1194,28 @@ async function closeChatTab(id) {
   if (tabChangeBlocked()) return;
   const index = chatTabs.findIndex((tab) => tab.id === id);
   if (index < 0) return;
+  const closing = chatTabs[index];
   if (chatTabs.length === 1) {
     await newChatTab();
   } else if (activeTabId === id) {
     await activateChatTab(chatTabs[index - 1]?.id ?? chatTabs[index + 1].id);
   }
   chatTabs.splice(chatTabs.findIndex((tab) => tab.id === id), 1);
+  // What the tab was showing is kept, so the shortcut that brings a closed tab
+  // back reopens the thread rather than an empty one.
+  if (closing) {
+    const session = closing.session
+      ? state.sessions.find((entry) => entry.id === closing.session) || null
+      : null;
+    state.closedTabs.push({ session, draft: closing.snapshot?.draft || "" });
+    if (state.closedTabs.length > 10) state.closedTabs.shift();
+  }
   paintChatTabs();
 }
 
 function initChatTabs() {
   paintChatTabs();
   el("new-tab").onclick = newChatTab;
-  document.addEventListener("keydown", (event) => {
-    if (event.defaultPrevented || state.handingOff) return;
-    const key = event.key.toLowerCase();
-    if ((event.metaKey || event.ctrlKey) && key === "t" && !event.shiftKey && !event.altKey) {
-      event.preventDefault(); newChatTab();
-    } else if ((event.metaKey || event.ctrlKey) && key === "w" && !event.shiftKey && !event.altKey) {
-      event.preventDefault(); closeChatTab(activeTabId);
-    } else if (event.ctrlKey && key === "tab") {
-      event.preventDefault();
-      const index = chatTabs.findIndex((tab) => tab.id === activeTabId);
-      activateChatTab(chatTabs[(index + (event.shiftKey ? -1 : 1) + chatTabs.length) % chatTabs.length].id);
-    }
-  });
 }
 
 function messageSummary(node) {
@@ -2737,6 +2741,7 @@ function repaintWelcome() {
 let sessionRead = 0;
 async function openSession(session) {
   if (state.handingOff && !state.applyingHandoff) return;
+  pushNav(session);
   const read = ++sessionRead;
   const ownerTab = activeChatTab();
   if (ownerTab) ownerTab.pendingSession = session;
@@ -3332,12 +3337,11 @@ function updateSendState() {
 }
 
 function setFollowUpBehavior(mode) {
-  state.followUpBehavior = mode === "steer" ? "steer" : "queue";
-  try {
-    window.localStorage?.setItem("oxide.followUpBehavior", state.followUpBehavior);
-  } catch {
-    // The preference still applies for this window when storage is unavailable.
-  }
+  const next = mode === "steer" ? "steer" : "queue";
+  state.followUpBehavior = next;
+  // The window's own preference is the store's to keep, so the next launch reads
+  // the same answer the settings sheet shows.
+  if (state.prefs?.follow_up !== next) void savePrefs({ follow_up: next });
   paintQueue();
   paintLiveChanges();
   updateSendState();
@@ -4738,7 +4742,7 @@ function openReview(card, index = 0) {
   el("review-title").textContent = t("ui.changes", "Changes");
   el("review-total").innerHTML = statsHtml(card.added, card.removed);
   closeOverlays("review-modal");
-  el("review-modal").hidden = false;
+  openPanel("review");
   el("review-scope").value = "turn";
   paintDockToggles();
   paintReview();
@@ -4749,6 +4753,7 @@ function openReview(card, index = 0) {
 function closeReview() {
   reviewState = null;
   el("review-modal").hidden = true;
+  syncPanel();
   return paintDockToggles();
 }
 
@@ -4758,6 +4763,11 @@ function paintReview() {
   const { card } = reviewState;
   el("review-title").textContent = t("ui.changes", "Changes");
   el("review-total").innerHTML = statsHtml(card.added, card.removed);
+  // Staging is the repository's to offer: a turn's own card is what the turn did,
+  // and the files it names are already what the working tree holds.
+  for (const id of ["review-stage-all", "review-unstage-all"]) {
+    if (el(id)) el(id).hidden = !card.repository;
+  }
   const list = el("review-files");
   list.innerHTML = "";
   if (!card.files.length) {
@@ -4777,6 +4787,8 @@ function paintReview() {
       paintReview();
     };
     list.appendChild(row);
+    const actions = card.repository ? changeActions(file) : null;
+    if (actions) list.appendChild(actions);
     if (reviewState.openFiles.has(file.path)) {
       const body = document.createElement("div");
       body.className = "review-inline-diff";
@@ -4785,6 +4797,78 @@ function paintReview() {
       paintReviewFile(file, body);
     }
   });
+}
+
+/// The buttons one file in the review carries: stage what the working tree holds,
+/// take a staged change back, or revert to the branch's copy. Reverting throws
+/// work away, so it is the one that asks first.
+function changeActions(file) {
+  const entry = state.repositoryIndex?.get(file.path) || null;
+  const canStage = !entry || entry.worktree || entry.untracked;
+  const canUnstage = !entry || entry.staged;
+  const actions = document.createElement("div");
+  actions.className = "change-actions";
+  const button = (label, title, action) => {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "change-action";
+    node.dataset.shape = `${action}:${file.path}`;
+    node.textContent = label;
+    node.title = title;
+    node.setAttribute("aria-label", title);
+    node.onclick = (event) => {
+      event.stopPropagation?.();
+      void shapeChange(action, file.path);
+    };
+    return node;
+  };
+  if (canStage) {
+    actions.appendChild(button(t("review.stage", "Stage"), t("review.stageHint", "Stage {value0}", { value0: file.path }), "stage"));
+  }
+  if (canUnstage) {
+    actions.appendChild(button(t("review.unstage", "Unstage"), t("review.unstageHint", "Take {value0} back out of the index", { value0: file.path }), "unstage"));
+  }
+  if (entry && !entry.untracked) {
+    actions.appendChild(button(t("review.revert", "Revert"), t("review.revertHint", "Discard the change to {value0}", { value0: file.path }), "revert"));
+  }
+  return actions.children.length ? actions : null;
+}
+
+/// Runs one staging action and repaints what git now holds, so the pane never
+/// shows the change the reader thought they made.
+async function shapeChange(action, path, hunk = null) {
+  const project = reviewState?.card?.project || runFolder();
+  if (!project) return;
+  if (action === "revert" || action === "revert-all" || action === "revert-hunk") {
+    const confirmed = await confirmDialog(
+      t("review.revertTitle", "Revert the change?"),
+      path
+        ? t("review.revertFile", "{value0} goes back to what the branch has. The work is lost.", { value0: path })
+        : t("review.revertEverything", "Every tracked file goes back to what the branch has. The work is lost."),
+      t("review.revert", "Revert"),
+    );
+    if (!confirmed) return;
+  }
+  const args = { project, action };
+  if (path) args.path = path;
+  if (hunk) args.hunk = hunk;
+  try {
+    await invoke("shape_change", args);
+  } catch (error) {
+    showToast(t("review.shapeFailed", "Git refused: {value0}", { value0: error }), "error");
+    return;
+  }
+  await readRepositoryIndex(project);
+  await readProjectChanges(project);
+}
+
+async function readRepositoryIndex(project) {
+  try {
+    const states = await invoke("repository_status", { project });
+    state.repositoryIndex = new Map((states || []).map((entry) => [entry.path, entry]));
+  } catch {
+    state.repositoryIndex = null;
+  }
 }
 
 function paintReviewFile(file, target) {
@@ -5135,7 +5219,7 @@ function showRepositoryCard(card) {
 
 async function openRepositoryChanges() {
   if (!hasChat()) return;
-  el("review-modal").hidden = false;
+  openPanel("review");
   el("review-scope").value = "repository";
   el("review-title").textContent = t("ui.changes", "Changes");
   el("review-total").innerHTML = "";
@@ -5143,6 +5227,7 @@ async function openRepositoryChanges() {
   paintDockToggles();
   const project = runFolder();
   reviewState = { card: { repository: true, project, files: [] } };
+  await readRepositoryIndex(project);
   await readProjectChanges(project);
 }
 
@@ -5526,6 +5611,12 @@ const OVERLAYS = [
   "sessions-modal",
   "update-modal",
   "help-modal",
+  "settings-modal",
+  "command-menu",
+  "search-modal",
+  "activity-modal",
+  "archived-modal",
+  "add-menu",
 ];
 
 function closeOverlays(except) {
@@ -7486,6 +7577,1605 @@ function paletteKey(event) {
   return false;
 }
 
+// ---------- preferences, shortcuts and the command menu ----------
+
+/// What the window behaves like before the store has answered, and what a
+/// preference this build has no control for falls back to. The names are the
+/// store's own, so a patch travels to `write_prefs` untouched.
+const DEFAULT_PREFS = {
+  send_key: "enter",
+  follow_up: "queue",
+  font_scale: 1,
+  sidebar_visible: true,
+  shortcuts: {},
+};
+
+const MIN_FONT_SCALE = 0.7;
+const MAX_FONT_SCALE = 1.6;
+
+state.prefs = { ...DEFAULT_PREFS };
+state.commandRows = [];
+state.commandIndex = 0;
+state.shortcutRecording = null;
+state.navStack = [];
+state.navIndex = -1;
+state.navigating = false;
+state.closedTabs = [];
+
+function clampFontScale(value) {
+  const scale = Math.round(Number(value) * 10) / 10;
+  if (!Number.isFinite(scale)) return 1;
+  return Math.min(MAX_FONT_SCALE, Math.max(MIN_FONT_SCALE, scale));
+}
+
+/// The store's answer, made safe to paint: a field this build cannot use is
+/// left at the value the window ships with rather than drawn as it arrived.
+function normalizePrefs(raw) {
+  const prefs = { ...DEFAULT_PREFS, shortcuts: {} };
+  if (!raw || typeof raw !== "object") return prefs;
+  if (raw.send_key === "mod-enter" || raw.send_key === "enter") prefs.send_key = raw.send_key;
+  if (raw.follow_up === "steer" || raw.follow_up === "queue") prefs.follow_up = raw.follow_up;
+  prefs.font_scale = clampFontScale(raw.font_scale);
+  if (typeof raw.sidebar_visible === "boolean") prefs.sidebar_visible = raw.sidebar_visible;
+  if (raw.shortcuts && typeof raw.shortcuts === "object") {
+    for (const [action, chord] of Object.entries(raw.shortcuts)) {
+      const text = typeof chord === "string" ? chord.trim().toLowerCase() : "";
+      if (action.trim() && text) prefs.shortcuts[action] = text;
+    }
+  }
+  return prefs;
+}
+
+async function loadPrefs() {
+  let answer = null;
+  try {
+    answer = await invoke("read_prefs", {});
+  } catch {
+    answer = null;
+  }
+  state.prefs = normalizePrefs(answer);
+  state.followUpBehavior = state.prefs.follow_up;
+  applyPrefs();
+}
+
+/// Puts the preferences into the window: the sidebar's own state, the scale the
+/// whole page is drawn at, and the controls the settings sheet shows. The store
+/// is written beside this, so what is painted is what the next launch reads.
+async function savePrefs(patch) {
+  const shortcuts = { ...state.prefs.shortcuts };
+  for (const [action, chord] of Object.entries(patch.shortcuts || {})) {
+    if (chord === null || chord === undefined) delete shortcuts[action];
+    else shortcuts[action] = String(chord).trim().toLowerCase();
+  }
+  state.prefs = normalizePrefs({ ...state.prefs, ...patch, shortcuts });
+  if (Object.prototype.hasOwnProperty.call(patch, "follow_up")) {
+    state.followUpBehavior = state.prefs.follow_up;
+    paintQueue();
+    paintLiveChanges();
+    updateSendState();
+  }
+  applyPrefs();
+  try {
+    const answer = await invoke("write_prefs", { patch });
+    if (answer) {
+      state.prefs = normalizePrefs(answer);
+      applyPrefs();
+    }
+  } catch (error) {
+    showToast(
+      t("settings.couldNotSave", "Could not save that setting: {value0}", { value0: error }),
+      "error",
+    );
+  }
+}
+
+function applyPrefs() {
+  document.body.classList.toggle("sidebar-hidden", !state.prefs.sidebar_visible);
+  void invoke("set_zoom", { scale: state.prefs.font_scale }).catch(() => {});
+  paintSettingsControls();
+}
+
+function resizeText(step) {
+  void savePrefs({ font_scale: step === 0 ? 1 : clampFontScale(state.prefs.font_scale + step * 0.1) });
+}
+
+function toggleSidebar() {
+  void savePrefs({ sidebar_visible: !state.prefs.sidebar_visible });
+}
+
+/// The actions the window performs from the keyboard, in the order the settings
+/// sheet lists them. `chords` are the bindings it ships with and the reader's
+/// override replaces them whole, so this table is the only list: the sheet, the
+/// dispatcher and the menu the window asks for all read it.
+const SHORTCUTS = [
+  {
+    id: "command-menu",
+    key: "settings.actionCommandMenu",
+    fallback: "Command menu",
+    chords: ["mod+k", "mod+shift+p"],
+    run: () => openCommandMenu(),
+  },
+  {
+    id: "settings",
+    key: "settings.actionSettings",
+    fallback: "Open settings",
+    chords: ["mod+,"],
+    run: () => openSettings(),
+  },
+  {
+    id: "find",
+    key: "settings.actionFind",
+    fallback: "Find in this chat",
+    chords: ["mod+f"],
+    run: () => openFind(),
+  },
+  {
+    id: "search-chats",
+    key: "settings.actionSearchChats",
+    fallback: "Search chats",
+    chords: ["mod+shift+f"],
+    run: () => openSearch(),
+  },
+  {
+    id: "new-tab",
+    key: "settings.actionNewTab",
+    fallback: "New tab",
+    chords: ["mod+t"],
+    run: () => newChatTab(),
+  },
+  {
+    id: "close-tab",
+    key: "settings.actionCloseTab",
+    fallback: "Close tab",
+    chords: ["mod+w"],
+    run: () => closeChatTab(activeTabId),
+  },
+  {
+    id: "reopen-tab",
+    key: "settings.actionReopenTab",
+    fallback: "Reopen closed tab",
+    chords: ["mod+shift+t"],
+    run: () => reopenClosedTab(),
+  },
+  {
+    id: "close-other-tabs",
+    key: "settings.actionCloseOtherTabs",
+    fallback: "Close other tabs",
+    chords: ["mod+alt+w"],
+    run: () => closeOtherTabs(),
+  },
+  {
+    id: "next-tab",
+    key: "settings.actionNextTab",
+    fallback: "Next tab",
+    chords: ["ctrl+tab"],
+    run: () => walkTabs(1),
+  },
+  {
+    id: "previous-tab",
+    key: "settings.actionPreviousTab",
+    fallback: "Previous tab",
+    chords: ["ctrl+shift+tab"],
+    run: () => walkTabs(-1),
+  },
+  {
+    id: "toggle-panel",
+    key: "settings.actionTogglePanel",
+    fallback: "Show or hide the panel",
+    chords: ["mod+j"],
+    run: () => togglePanel(),
+  },
+  {
+    id: "terminal",
+    key: "settings.actionTerminal",
+    fallback: "Open the terminal",
+    chords: ["ctrl+`"],
+    run: () => openTerminal(),
+  },
+  {
+    id: "toggle-sidebar",
+    key: "settings.actionToggleSidebar",
+    fallback: "Show or hide the sidebar",
+    chords: ["mod+b"],
+    run: () => toggleSidebar(),
+  },
+  {
+    id: "back",
+    key: "settings.actionBack",
+    fallback: "Back to the previous chat",
+    chords: ["mod+["],
+    run: () => navBack(),
+  },
+  {
+    id: "forward",
+    key: "settings.actionForward",
+    fallback: "Forward to the next chat",
+    chords: ["mod+]"],
+    run: () => navForward(),
+  },
+  {
+    id: "open-folder",
+    key: "settings.actionOpenFolder",
+    fallback: "Open a folder",
+    chords: ["mod+o"],
+    run: () => openProjects(),
+  },
+  {
+    id: "font-larger",
+    key: "settings.actionLargerText",
+    fallback: "Larger text",
+    chords: ["mod+=", "mod+shift+="],
+    run: () => resizeText(1),
+  },
+  {
+    id: "font-smaller",
+    key: "settings.actionSmallerText",
+    fallback: "Smaller text",
+    chords: ["mod+-"],
+    run: () => resizeText(-1),
+  },
+  {
+    id: "font-reset",
+    key: "settings.actionResetText",
+    fallback: "Reset text size",
+    chords: ["mod+0"],
+    run: () => resizeText(0),
+  },
+  {
+    id: "cycle-reasoning",
+    key: "settings.actionCycleReasoning",
+    fallback: "Cycle reasoning effort",
+    chords: ["ctrl+r"],
+    run: () => cycleReasoning(),
+  },
+  {
+    id: "shortcut-help",
+    key: "settings.actionShortcutHelp",
+    fallback: "Keyboard shortcuts",
+    chords: ["ctrl+/"],
+    run: () => toggleHelp(),
+  },
+  {
+    id: "clear-unread",
+    key: "settings.actionClearUnread",
+    fallback: "Clear unread marks",
+    chords: ["shift+escape"],
+    run: () => clearUnread(),
+  },
+];
+
+/// How a binding is spelled in the store: the modifiers in one order, then the
+/// key. `mod` is what every shortcut has always meant here — ⌘ on a Mac and
+/// Ctrl everywhere else, either of them accepted — so a binding recorded with
+/// Ctrl keeps working with ⌘.
+function parseChord(chord) {
+  const parts = String(chord).trim().toLowerCase().split("+");
+  const key = parts.pop() || "";
+  const parsed = { mod: false, ctrl: false, shift: false, alt: false, key };
+  for (const part of parts) {
+    if (part === "mod") parsed.mod = true;
+    else if (part === "ctrl" || part === "control") parsed.ctrl = true;
+    else if (part === "shift") parsed.shift = true;
+    else if (part === "alt" || part === "opt" || part === "option") parsed.alt = true;
+  }
+  return parsed;
+}
+
+function canonicalChord(chord) {
+  const parts = parseChord(chord);
+  return `${parts.mod ? 1 : 0}${parts.ctrl ? 1 : 0}${parts.shift ? 1 : 0}${parts.alt ? 1 : 0}:${parts.key}`;
+}
+
+function isMac() {
+  return /mac/i.test(navigator.userAgentData?.platform || navigator.platform || "");
+}
+
+/// A chord as the reader reads it: `⌘⇧K` on a Mac, `Ctrl+Shift+K` elsewhere.
+function formatChord(chord) {
+  const parts = parseChord(chord);
+  const mac = isMac();
+  const keys = { escape: "Esc", tab: "Tab", enter: "Enter", space: "Space", "[": "[", "]": "]" };
+  const label = keys[parts.key] || (parts.key.length === 1 ? parts.key.toUpperCase() : parts.key);
+  const tokens = [];
+  if (parts.ctrl) tokens.push(mac ? "⌃" : "Ctrl");
+  if (parts.mod) tokens.push(mac ? "⌘" : "Ctrl");
+  if (parts.alt) tokens.push(mac ? "⌥" : "Alt");
+  if (parts.shift) tokens.push(mac ? "⇧" : "Shift");
+  tokens.push(label);
+  return mac ? tokens.join("") : tokens.join("+");
+}
+
+function chordMatches(chord, event) {
+  const parts = parseChord(chord);
+  if (!parts.key) return false;
+  const mod = Boolean(event.metaKey || event.ctrlKey);
+  // `mod` is either of the platform's modifiers; a chord that names `ctrl`
+  // itself asks for that one key, so `Ctrl+R` and `⌘R` stay different bindings.
+  if (parts.mod && !mod) return false;
+  if (!parts.mod && !parts.ctrl && mod) return false;
+  if (parts.ctrl && !event.ctrlKey) return false;
+  if (parts.alt !== Boolean(event.altKey)) return false;
+  if (parts.shift !== Boolean(event.shiftKey)) return false;
+  return String(event.key).toLowerCase() === parts.key;
+}
+
+function shortcutChords(action) {
+  const override = state.prefs.shortcuts[action.id];
+  return override ? [override] : action.chords;
+}
+
+/// The action a key event performs, or `null` when nothing in the table claims
+/// it — which leaves the composer's own keys and the platform's text editing
+/// alone.
+function matchShortcut(event) {
+  for (const action of SHORTCUTS) {
+    for (const chord of shortcutChords(action)) {
+      if (chordMatches(chord, event)) return action;
+    }
+  }
+  return null;
+}
+
+function shortcutConflict(chord, exceptId) {
+  const wanted = canonicalChord(chord);
+  for (const action of SHORTCUTS) {
+    if (action.id === exceptId) continue;
+    for (const other of shortcutChords(action)) {
+      if (canonicalChord(other) === wanted) return action;
+    }
+  }
+  return null;
+}
+
+/// The binding a key press should be recorded as, or `null` for the modifiers on
+/// their own and for Escape, which leaves the row as it was.
+function chordFromEvent(event) {
+  const key = String(event.key).toLowerCase();
+  if (!key || ["meta", "control", "shift", "alt", "escape"].includes(key)) return null;
+  const parts = [];
+  if (event.metaKey || event.ctrlKey) parts.push("mod");
+  if (event.altKey) parts.push("alt");
+  if (event.shiftKey) parts.push("shift");
+  parts.push(key === " " ? "space" : key);
+  return parts.join("+");
+}
+
+/// What the window's menu bar should show beside each item. The page is the one
+/// that knows which binding is in force, so it tells the window rather than the
+/// menu keeping a second copy of the table.
+function announceShortcuts() {
+  const bindings = {};
+  for (const action of SHORTCUTS) {
+    const chord = shortcutChords(action)[0];
+    if (chord) bindings[action.id] = chord;
+  }
+  void invoke("set_native_shortcuts", { bindings }).catch(() => {});
+}
+
+// ---------- navigation history ----------
+
+/// The chats this window has shown, in the order it showed them, so `⌘[` and
+/// `⌘]` walk back and forth the way a browser does. Only a thread is a place:
+/// a draft tab has nothing to go back to.
+function pushNav(session) {
+  if (state.navigating || !session?.id) return;
+  const current = state.navStack[state.navIndex];
+  if (current?.id === session.id) return;
+  state.navStack = state.navStack.slice(0, state.navIndex + 1);
+  state.navStack.push(session);
+  if (state.navStack.length > 40) state.navStack.shift();
+  state.navIndex = state.navStack.length - 1;
+}
+
+async function navTo(index) {
+  const session = state.navStack[index];
+  if (!session) return;
+  state.navIndex = index;
+  state.navigating = true;
+  try {
+    await openSession(session);
+  } finally {
+    state.navigating = false;
+  }
+}
+
+function navBack() {
+  if (state.navIndex > 0) void navTo(state.navIndex - 1);
+}
+
+function navForward() {
+  if (state.navIndex < state.navStack.length - 1) void navTo(state.navIndex + 1);
+}
+
+function clearUnread() {
+  for (const session of state.sessions) session.unread = false;
+  for (const record of threads.values()) record.unread = false;
+  renderProjectsTree();
+  paintChatTabs();
+  paintActivityDot();
+}
+
+// ---------- the settings sheet ----------
+
+function openSettings(section = "general") {
+  closeOverlays("settings-modal");
+  el("settings-modal").hidden = false;
+  el("settings").setAttribute("aria-expanded", "true");
+  showSettingsSection(section);
+  paintSettingsControls();
+}
+
+function closeSettings() {
+  if (el("settings-modal").hidden) return;
+  state.shortcutRecording = null;
+  el("settings-modal").hidden = true;
+  el("settings").setAttribute("aria-expanded", "false");
+  el("settings").focus();
+}
+
+/// The sheet's sections, by the controls that open and show each one. Naming
+/// them here rather than walking the markup is what lets a control be checked
+/// as wired: every id in this table has a listener by name.
+const SETTINGS_SECTIONS = {
+  general: { tab: "settings-tab-general", page: "settings-page-general" },
+  appearance: { tab: "settings-tab-appearance", page: "settings-page-appearance" },
+  keyboard: { tab: "settings-tab-keyboard", page: "settings-page-keyboard" },
+};
+
+function showSettingsSection(section) {
+  const chosen = SETTINGS_SECTIONS[section] ? section : "general";
+  for (const [name, parts] of Object.entries(SETTINGS_SECTIONS)) {
+    const active = name === chosen;
+    const tab = el(parts.tab);
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    el(parts.page).hidden = !active;
+  }
+  if (chosen === "keyboard") renderShortcuts();
+}
+
+/// The controls the sheet shows, read from the preferences in force rather than
+/// from what a click hoped to store.
+function paintSettingsControls() {
+  if (!el("settings-modal")) return;
+  const mark = (node, on) => {
+    if (!node) return;
+    node.classList.toggle("active", on);
+    node.setAttribute("aria-checked", String(on));
+  };
+  mark(el("settings-send-enter"), state.prefs.send_key === "enter");
+  mark(el("settings-send-mod-enter"), state.prefs.send_key === "mod-enter");
+  mark(el("settings-follow-queue"), state.prefs.follow_up === "queue");
+  mark(el("settings-follow-steer"), state.prefs.follow_up === "steer");
+  if (el("settings-font-value")) {
+    el("settings-font-value").textContent = `${Math.round(state.prefs.font_scale * 100)}%`;
+  }
+  if (el("settings-sidebar")) el("settings-sidebar").checked = state.prefs.sidebar_visible;
+  el("settings").setAttribute("aria-expanded", String(!el("settings-modal").hidden));
+}
+
+/// The keyboard page: every action in the table, the binding in force, and how
+/// to put it back. The row being recorded says so instead of its keys.
+function renderShortcuts() {
+  const list = el("shortcut-list");
+  if (!list) return;
+  list.replaceChildren();
+  for (const action of SHORTCUTS) {
+    const row = document.createElement("div");
+    row.className = "shortcut-row";
+    row.dataset.action = action.id;
+    const name = document.createElement("span");
+    name.className = "shortcut-name";
+    name.textContent = t(action.key, action.fallback);
+    row.appendChild(name);
+    const binding = document.createElement("button");
+    binding.type = "button";
+    binding.className = "shortcut-binding" + (state.shortcutRecording === action.id ? " recording" : "");
+    binding.dataset.record = action.id;
+    binding.textContent = state.shortcutRecording === action.id
+      ? t("settings.pressKeys", "Press keys…")
+      : formatChord(shortcutChords(action)[0] || "");
+    binding.title = t("settings.recordHint", "Press the keys this action should listen for");
+    binding.setAttribute("aria-label", `${t(action.key, action.fallback)}: ${binding.textContent}`);
+    binding.onclick = () => {
+      state.shortcutRecording = state.shortcutRecording === action.id ? null : action.id;
+      renderShortcuts();
+    };
+    row.appendChild(binding);
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "icon shortcut-reset";
+    reset.dataset.reset = action.id;
+    reset.title = t("settings.resetShortcut", "Use the shortcut this action ships with");
+    reset.setAttribute("aria-label", reset.title);
+    reset.innerHTML = ICONS.undo || "";
+    reset.hidden = !state.prefs.shortcuts[action.id];
+    reset.onclick = () => {
+      state.shortcutRecording = null;
+      void savePrefs({ shortcuts: { [action.id]: null } }).then(() => {
+        renderShortcuts();
+        announceShortcuts();
+      });
+    };
+    row.appendChild(reset);
+    list.appendChild(row);
+  }
+}
+
+/// Records the key press a row is waiting for. The sheet does not take a binding
+/// another action already answers to, so a recorded key is always one the
+/// window can act on.
+function recordShortcut(event) {
+  const actionId = state.shortcutRecording;
+  if (!actionId) return false;
+  if (event.key === "Escape") {
+    state.shortcutRecording = null;
+    renderShortcuts();
+    return true;
+  }
+  const chord = chordFromEvent(event);
+  if (!chord) return false;
+  const action = SHORTCUTS.find((entry) => entry.id === actionId);
+  const taken = shortcutConflict(chord, actionId);
+  if (taken) {
+    showToast(
+      t("settings.shortcutTaken", "{value0} is already {value1}", {
+        value0: formatChord(chord),
+        value1: t(taken.key, taken.fallback),
+      }),
+      "error",
+    );
+    return true;
+  }
+  state.shortcutRecording = null;
+  void savePrefs({ shortcuts: { [actionId]: chord } }).then(() => {
+    renderShortcuts();
+    announceShortcuts();
+    if (action) setStatus(t("settings.shortcutSaved", "{value0} is now {value1}", {
+      value0: t(action.key, action.fallback),
+      value1: formatChord(chord),
+    }));
+  });
+  return true;
+}
+
+// ---------- the command menu ----------
+
+/// Every action the command menu offers: the window's own, each naming the
+/// binding it also answers to. A row that needs a project or a thread says so by
+/// doing nothing rather than by opening an empty dialog.
+function commandActions() {
+  const hasProject = Boolean(state.project);
+  const actions = [
+    { id: "new-chat", label: t("menu.newChat", "New chat"), hint: "mod+t", run: () => newChatTab() },
+    { id: "new-tab", label: t("menu.newTab", "New tab"), hint: null, run: () => newChatTab() },
+    { id: "reopen-tab", label: t("menu.reopenTab", "Reopen closed tab"), hint: "mod+shift+t", run: () => reopenClosedTab() },
+    { id: "close-tab", label: t("menu.closeTab", "Close tab"), hint: "mod+w", run: () => closeChatTab(activeTabId) },
+    { id: "toggle-sidebar", label: t("menu.toggleSidebar", "Show or hide the sidebar"), hint: "mod+b", run: () => toggleSidebar() },
+    { id: "back", label: t("menu.back", "Back to the previous chat"), hint: "mod+[", run: () => navBack() },
+    { id: "forward", label: t("menu.forward", "Forward to the next chat"), hint: "mod+]", run: () => navForward() },
+    { id: "open-folder", label: t("menu.openFolder", "Open a folder…"), hint: "mod+o", run: () => openProjects() },
+    { id: "search", label: t("menu.searchChats", "Search chats…"), hint: "mod+shift+f", run: () => openSearch() },
+    { id: "panel", label: t("menu.panel", "Show or hide the panel"), hint: "mod+j", run: () => togglePanel() },
+    { id: "terminal", label: t("menu.terminal", "Terminal"), hint: "ctrl+`", run: () => void openTerminal() },
+    { id: "review", label: t("menu.review", "Review the changes"), hint: null, run: () => openRepositoryChanges() },
+    { id: "find", label: t("menu.findInChat", "Find in this chat"), hint: "mod+f", run: () => openFind() },
+    { id: "activity", label: t("menu.activity", "Activity…"), hint: null, run: () => openActivity() },
+    { id: "archived", label: t("menu.archivedChats", "Archived chats…"), hint: null, run: () => openArchived() },
+    { id: "projects", label: t("menu.projects", "Manage projects…"), hint: null, run: () => openProjects() },
+    { id: "threads", label: t("menu.threads", "All threads…"), hint: null, run: () => openSessions() },
+    { id: "model", label: t("menu.model", "Choose a model…"), hint: null, run: () => openModels() },
+    { id: "reasoning", label: t("menu.reasoning", "Reasoning effort…"), hint: null, run: () => openReasoning() },
+    { id: "permissions", label: t("menu.permissions", "Tool permissions…"), hint: null, run: () => openPermissions() },
+    { id: "mcps", label: t("menu.mcps", "MCP servers…"), hint: null, run: () => openMcps() },
+    { id: "theme", label: t("menu.theme", "Theme…"), hint: null, run: () => openThemes() },
+    { id: "language", label: t("menu.language", "Language…"), hint: null, run: () => openLanguage() },
+    { id: "settings", label: t("menu.settings", "Settings…"), hint: "mod+,", run: () => openSettings() },
+    { id: "shortcuts", label: t("menu.shortcuts", "Keyboard shortcuts…"), hint: "ctrl+/", run: () => toggleHelp() },
+    { id: "larger-text", label: t("menu.largerText", "Larger text"), hint: "mod+=", run: () => resizeText(1) },
+    { id: "smaller-text", label: t("menu.smallerText", "Smaller text"), hint: "mod+-", run: () => resizeText(-1) },
+    { id: "reset-text", label: t("menu.resetText", "Reset text size"), hint: "mod+0", run: () => resizeText(0) },
+    { id: "clear-unread", label: t("menu.clearUnread", "Clear unread marks"), hint: "shift+escape", run: () => clearUnread() },
+    { id: "updates", label: t("menu.checkUpdates", "Check for updates…"), hint: null, run: () => openUpdate() },
+  ];
+  // A row whose action needs a folder is offered only where there is one.
+  return actions.filter((action) => hasProject || !["threads", "mcps", "model"].includes(action.id));
+}
+
+function commandMatches() {
+  const query = String(el("command-input")?.value || "").trim().toLowerCase();
+  const all = commandActions();
+  if (!query) return all;
+  return all.filter((action) => action.label.toLowerCase().includes(query));
+}
+
+function openCommandMenu() {
+  closeOverlays("command-menu");
+  el("command-menu").hidden = false;
+  el("command-input").value = "";
+  state.commandIndex = 0;
+  renderCommandMenu();
+  el("command-input").focus();
+}
+
+function closeCommandMenu() {
+  if (el("command-menu").hidden) return;
+  el("command-menu").hidden = true;
+}
+
+function renderCommandMenu() {
+  const list = el("command-list");
+  if (!list) return;
+  const rows = commandMatches();
+  state.commandRows = rows;
+  if (state.commandIndex >= rows.length) state.commandIndex = 0;
+  list.replaceChildren();
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "command-empty";
+    empty.textContent = t("menu.empty", "No command matches that");
+    list.appendChild(empty);
+    return;
+  }
+  rows.forEach((action, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "command-row" + (index === state.commandIndex ? " active" : "");
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(index === state.commandIndex));
+    row.dataset.command = action.id;
+    const label = document.createElement("span");
+    label.className = "command-label";
+    label.textContent = action.label;
+    row.appendChild(label);
+    if (action.hint) {
+      const hint = document.createElement("span");
+      hint.className = "command-hint";
+      hint.textContent = formatChord(action.hint);
+      row.appendChild(hint);
+    }
+    row.onclick = () => runCommand(action);
+    list.appendChild(row);
+  });
+}
+
+function runCommand(action) {
+  closeCommandMenu();
+  if (action) void action.run();
+}
+
+function walkTabs(step) {
+  if (chatTabs.length < 2 || tabChangeBlocked()) return;
+  const index = chatTabs.findIndex((tab) => tab.id === activeTabId);
+  if (index < 0) return;
+  const next = chatTabs[(index + step + chatTabs.length) % chatTabs.length];
+  if (next) void activateChatTab(next.id);
+}
+
+function reopenClosedTab() {
+  const closed = state.closedTabs.pop();
+  if (!closed) {
+    setStatus(t("tab.nothingToReopen", "No closed tab to reopen."));
+    return Promise.resolve();
+  }
+  return newChatTab().then(async (id) => {
+    const tab = chatTabs.find((entry) => entry.id === id);
+    if (!tab) return;
+    if (closed.session) {
+      await openSession(closed.session);
+    } else if (closed.draft) {
+      el("prompt").value = closed.draft;
+      updateSendState();
+    }
+  });
+}
+
+async function closeOtherTabs() {
+  for (const tab of [...chatTabs]) {
+    if (tab.id !== activeTabId) await closeChatTab(tab.id);
+  }
+}
+
+// ---------- the add menu, search, activity and the archive ----------
+
+state.searchRows = [];
+state.searchIndex = 0;
+state.searchSeq = 0;
+state.searchError = "";
+state.searchTimer = 0;
+state.archived = [];
+state.findHits = [];
+state.findIndex = -1;
+
+/// The menu under the sidebar's plus: the ways into a thread that already
+/// exists, and the two ways into a new one.
+function openAddMenu() {
+  closeOverlays("add-menu");
+  const menu = el("add-menu");
+  menu.hidden = false;
+  el("sidebar-add").setAttribute("aria-expanded", "true");
+  const anchor = el("sidebar-add").getBoundingClientRect();
+  menu.style.left = `${Math.round(anchor.left)}px`;
+  menu.style.top = `${Math.round(anchor.bottom + 6)}px`;
+}
+
+function closeAddMenu() {
+  if (el("add-menu").hidden) return;
+  el("add-menu").hidden = true;
+  el("sidebar-add").setAttribute("aria-expanded", "false");
+}
+
+// ---------- searching chats ----------
+
+function openSearch() {
+  closeOverlays("search-modal");
+  el("search-modal").hidden = false;
+  el("search-input").value = "";
+  state.searchRows = [];
+  state.searchIndex = 0;
+  state.searchSeq += 1;
+  state.searchError = "";
+  renderSearchResults();
+  el("search-input").focus();
+}
+
+function closeSearch() {
+  if (el("search-modal").hidden) return;
+  el("search-modal").hidden = true;
+  // A search still on its way is dropped: its answer must not repaint a box that
+  // has been put away (or one reopened on another phrase).
+  state.searchSeq += 1;
+}
+
+/// How long the reader has to stop typing before the store is read: each scan
+/// opens every stored thread, so a phrase in the middle of being typed is not
+/// worth one.
+const SEARCH_SETTLE_MS = 150;
+
+/// Searches the store for a phrase, once the reader has settled on one. Every
+/// keystroke would be a read of every stored thread, so the scan waits for a
+/// pause, and an answer that is no longer the newest is dropped rather than
+/// racing the one that is.
+function searchSoon(query) {
+  state.searchSeq += 1;
+  const seq = state.searchSeq;
+  const phrase = String(query || "").trim();
+  clearTimeout(state.searchTimer);
+  if (!phrase) {
+    state.searchRows = [];
+    state.searchIndex = 0;
+    state.searchError = "";
+    renderSearchResults();
+    return;
+  }
+  state.searchTimer = setTimeout(() => void requestSearch(phrase, seq), SEARCH_SETTLE_MS);
+}
+
+async function requestSearch(phrase, seq) {
+  let answer = [];
+  try {
+    answer = (await invoke("search_sessions", { query: phrase })) || [];
+    state.searchError = "";
+  } catch (error) {
+    answer = [];
+    state.searchError = t("search.failed", "Could not search the stored threads: {value0}", {
+      value0: error,
+    });
+  }
+  if (seq !== state.searchSeq) return;
+  state.searchRows = answer;
+  state.searchIndex = 0;
+  renderSearchResults();
+}
+
+function renderSearchResults() {
+  const list = el("search-results");
+  if (!list) return;
+  list.replaceChildren();
+  if (state.searchError) {
+    const failed = document.createElement("div");
+    failed.className = "command-empty";
+    failed.textContent = state.searchError;
+    list.appendChild(failed);
+    return;
+  }
+  if (!state.searchRows.length) {
+    const empty = document.createElement("div");
+    empty.className = "command-empty";
+    empty.textContent = el("search-input")?.value?.trim()
+      ? t("search.empty", "No chat carries that")
+      : t("search.hint", "Type a phrase from a chat, or a name");
+    list.appendChild(empty);
+    return;
+  }
+  state.searchRows.forEach((hit, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "command-row search-row" + (index === state.searchIndex ? " active" : "");
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(index === state.searchIndex));
+    row.dataset.search = String(index);
+    const text = document.createElement("span");
+    text.className = "search-text";
+    const title = document.createElement("span");
+    title.className = "search-title";
+    title.textContent = sessionLabel(hit);
+    text.appendChild(title);
+    if (hit.snippet) {
+      const snippet = document.createElement("span");
+      snippet.className = "search-snippet";
+      snippet.textContent = hit.snippet;
+      text.appendChild(snippet);
+    } else if (hit.in_title) {
+      const why = document.createElement("span");
+      why.className = "search-snippet";
+      why.textContent = t("search.matchedName", "The chat's own name carries it");
+      text.appendChild(why);
+    }
+    row.appendChild(text);
+    if (hit.matches > 0) {
+      const count = document.createElement("span");
+      count.className = "command-hint";
+      count.textContent = t("search.matchCount", "{count} matches", { count: hit.matches });
+      row.appendChild(count);
+    }
+    row.onclick = () => openSearchRow(hit);
+    list.appendChild(row);
+  });
+}
+
+function openSearchRow(hit) {
+  if (!hit) return;
+  closeSearch();
+  void selectSessionFromTree(hit);
+}
+
+// ---------- activity ----------
+
+/// What is asking for the reader: the dialog the window is holding for them, the
+/// threads still writing, and the ones that finished while they were elsewhere.
+function activityGroups() {
+  const groups = [];
+  if (state.pendingApproval || state.pendingQuestion) {
+    const waiting = state.pendingApproval
+      ? t("activity.waitingApproval", "A tool is waiting for your approval")
+      : t("activity.waitingQuestion", "A question is waiting for your answer");
+    groups.push({
+      key: "activity.waitingForYou",
+      title: t("activity.waitingForYou", "Waiting for you"),
+      rows: [{ id: "pending", title: waiting, detail: "", open: () => closeActivity() }],
+    });
+  }
+  const records = [...threads.values()];
+  const running = records.filter((record) => (record.busy || record.runId) && record.session);
+  if (running.length) {
+    groups.push({
+      key: "activity.running",
+      title: t("activity.running", "Running"),
+      rows: running.map((record) => activityRow(record, t("activity.turnInFlight", "A turn is running"))),
+    });
+  }
+  const unread = records.filter((record) => record.unread && record.session);
+  if (unread.length) {
+    groups.push({
+      key: "activity.unread",
+      title: t("activity.unread", "Finished while you were away"),
+      rows: unread.map((record) => activityRow(record, "")),
+      action: { label: t("activity.clear", "Clear these marks"), run: () => clearUnread() },
+    });
+  }
+  return groups;
+}
+
+function activityRow(record, detail) {
+  const session = state.sessions.find((entry) => entry.id === record.session);
+  return {
+    id: record.session,
+    title: session ? sessionLabel(session) : record.session,
+    detail: detail || (session ? projectNameOf(sessionProject(session)) : ""),
+    session,
+    open: () => {
+      closeActivity();
+      if (session) void selectSessionFromTree(session);
+    },
+  };
+}
+
+function openActivity() {
+  closeOverlays("activity-modal");
+  el("activity-modal").hidden = false;
+  el("activity").setAttribute("aria-expanded", "true");
+  renderActivity();
+}
+
+function closeActivity() {
+  if (el("activity-modal").hidden) return;
+  el("activity-modal").hidden = true;
+  el("activity").setAttribute("aria-expanded", "false");
+}
+
+function renderActivity() {
+  const body = el("activity-body");
+  if (!body) return;
+  body.replaceChildren();
+  const groups = activityGroups();
+  if (!groups.length) {
+    const quiet = document.createElement("p");
+    quiet.className = "dialog-sub";
+    quiet.textContent = t("activity.quiet", "Nothing is waiting on you.");
+    body.appendChild(quiet);
+    return;
+  }
+  for (const group of groups) {
+    const heading = document.createElement("h3");
+    heading.className = "activity-heading";
+    heading.textContent = t(group.key, group.title);
+    body.appendChild(heading);
+    for (const row of group.rows) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "activity-row";
+      button.dataset.activityRow = String(row.id);
+      const title = document.createElement("span");
+      title.className = "activity-row-title";
+      title.textContent = row.title;
+      button.appendChild(title);
+      if (row.detail) {
+        const detail = document.createElement("span");
+        detail.className = "activity-row-detail";
+        detail.textContent = row.detail;
+        button.appendChild(detail);
+      }
+      button.onclick = row.open;
+      body.appendChild(button);
+    }
+    if (group.action) {
+      const action = document.createElement("button");
+      action.type = "button";
+      action.className = "activity-clear";
+      action.textContent = group.action.label;
+      action.onclick = group.action.run;
+      body.appendChild(action);
+    }
+  }
+}
+
+/// The dot on the bell: something the window holds or a thread that is working
+/// or finished unread, which is what the view behind it would list.
+function paintActivityDot() {
+  const dot = el("activity-dot");
+  if (!dot) return;
+  const busy = [...threads.values()].some((record) => record.busy || record.unread);
+  const waiting = Boolean(state.pendingApproval || state.pendingQuestion);
+  dot.hidden = !(busy || waiting);
+  el("activity").classList.toggle("asking", waiting);
+  if (!el("activity-modal").hidden) renderActivity();
+}
+
+// ---------- archived chats ----------
+
+function openArchived() {
+  closeOverlays("archived-modal");
+  el("archived-modal").hidden = false;
+  void renderArchived();
+}
+
+function closeArchived() {
+  el("archived-modal").hidden = true;
+}
+
+async function renderArchived() {
+  const list = el("archived-list");
+  if (!list) return;
+  list.replaceChildren();
+  let rows = [];
+  try {
+    rows = (await invoke("archived_sessions")) || [];
+  } catch (error) {
+    const failed = document.createElement("div");
+    failed.className = "dialog-empty";
+    failed.textContent = t("archived.failed", "Could not read the archive: {value0}", {
+      value0: error,
+    });
+    list.appendChild(failed);
+    return;
+  }
+  state.archived = rows;
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "dialog-empty";
+    empty.textContent = t("archived.empty", "Nothing archived in this window yet.");
+    list.appendChild(empty);
+    return;
+  }
+  for (const session of rows) {
+    const row = document.createElement("div");
+    row.className = "session-item archived-row";
+    row.dataset.session = session.id;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "archived-open";
+    open.title = t("archived.open", "Open this chat");
+    open.setAttribute("aria-label", open.title);
+    const title = document.createElement("span");
+    title.className = "archived-title";
+    title.textContent = sessionLabel(session);
+    open.appendChild(title);
+    const detail = document.createElement("span");
+    detail.className = "archived-detail";
+    detail.textContent = `${projectNameOf(sessionProject(session))} · ${sessionAge(session.modified_at)}`;
+    open.appendChild(detail);
+    open.onclick = () => {
+      closeArchived();
+      void selectSessionFromTree(session);
+    };
+    row.appendChild(open);
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.className = "archived-restore";
+    restore.dataset.unarchive = session.id;
+    restore.textContent = t("archived.unarchive", "Unarchive");
+    restore.onclick = async () => {
+      try {
+        state.sessions = await invoke("unarchive_session", { id: session.id, pinned: Boolean(session.pinned) });
+        await loadSessions();
+        await renderArchived();
+      } catch (error) {
+        showToast(t("archived.failedToUnarchive", "Could not unarchive the chat: {value0}", {
+          value0: error,
+        }), "error");
+      }
+    };
+    row.appendChild(restore);
+    list.appendChild(row);
+  }
+}
+
+// ---------- find in chat ----------
+
+function openFind() {
+  const bar = el("find-bar");
+  if (!bar) return;
+  bar.hidden = false;
+  const input = el("find-input");
+  input.focus();
+  input.select?.();
+  stepFind(0);
+}
+
+function closeFind() {
+  const bar = el("find-bar");
+  if (!bar || bar.hidden) return;
+  bar.hidden = true;
+  state.findHits = [];
+  state.findIndex = -1;
+  // The phrase stays in the box for the next time it is opened; the count is
+  // the bar's, and it goes with the bar rather than reading a stale number.
+  if (el("find-count")) el("find-count").textContent = "";
+  // The highlight is a selection, so putting the bar away drops it rather than
+  // leaving a word marked in a conversation nobody is searching.
+  window.getSelection?.()?.removeAllRanges?.();
+  el("prompt").focus();
+}
+
+/// The text a search can land in: the conversation's own text nodes, which is
+/// what the reader sees, in the order they see it. A DOM without a walker (the
+/// stub the checks run against) has no hits rather than an error.
+function transcriptTextNodes() {
+  const root = el("transcript");
+  if (!root || typeof document.createTreeWalker !== "function") return [];
+  const walker = document.createTreeWalker(root, 4, null);
+  const nodes = [];
+  while (walker.nextNode()) {
+    const text = walker.currentNode.nodeValue;
+    if (text && text.trim()) nodes.push(walker.currentNode);
+  }
+  return nodes;
+}
+
+function findHits(query) {
+  const needle = String(query || "").toLowerCase();
+  if (!needle) return [];
+  const hits = [];
+  for (const node of transcriptTextNodes()) {
+    const text = node.nodeValue.toLowerCase();
+    let from = 0;
+    while (hits.length < 500) {
+      const at = text.indexOf(needle, from);
+      if (at < 0) break;
+      hits.push({ node, start: at, end: at + needle.length });
+      from = at + Math.max(1, needle.length);
+    }
+  }
+  return hits;
+}
+
+function stepFind(step) {
+  if (el("find-bar").hidden) return;
+  state.findHits = findHits(el("find-input").value);
+  if (!state.findHits.length) {
+    state.findIndex = -1;
+    paintFindCount();
+    window.getSelection?.()?.removeAllRanges?.();
+    return;
+  }
+  const base = state.findIndex < 0 ? (step < 0 ? 0 : -1) : state.findIndex;
+  state.findIndex = (base + step + state.findHits.length) % state.findHits.length;
+  selectFindHit();
+  paintFindCount();
+}
+
+/// Marks the match on screen with the window's own selection: nothing in the
+/// conversation is rewritten, so a reply still streaming is not disturbed and
+/// the highlight goes away with the bar.
+function selectFindHit() {
+  const hit = state.findHits[state.findIndex];
+  if (!hit) return;
+  const selection = window.getSelection?.();
+  if (selection && typeof document.createRange === "function") {
+    try {
+      const range = document.createRange();
+      range.setStart(hit.node, hit.start);
+      range.setEnd(hit.node, hit.end);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } catch {
+      // A node that has been repainted since the scan is simply not marked.
+    }
+  }
+  hit.node.parentElement?.scrollIntoView?.({ block: "center" });
+}
+
+function paintFindCount() {
+  const count = el("find-count");
+  if (!count) return;
+  if (!el("find-input")?.value) count.textContent = "";
+  else if (!state.findHits.length) count.textContent = t("find.noMatches", "No matches");
+  else {
+    count.textContent = t("find.position", "{index} of {count}", {
+      index: state.findIndex + 1,
+      count: state.findHits.length,
+    });
+  }
+}
+
+// ---------- the bottom panel: Review and the terminal ----------
+
+/// The panel's two bodies, by tab. Both are children of the dock, so a tab is a
+/// body made visible and the other put away.
+const PANEL_TABS = {
+  review: { tab: "panel-tab-review", body: "review-modal" },
+  terminal: { tab: "panel-tab-terminal", body: "panel-terminal" },
+};
+
+state.panelTab = "review";
+state.terminal = {
+  id: null,
+  cwd: "",
+  cols: 80,
+  rows: 20,
+  screen: null,
+  pending: "",
+  exited: false,
+  paintTimer: 0,
+};
+
+function openPanel(tab) {
+  const chosen = PANEL_TABS[tab] ? tab : "review";
+  state.panelTab = chosen;
+  for (const [name, parts] of Object.entries(PANEL_TABS)) {
+    const active = name === chosen;
+    el(parts.tab).classList.toggle("active", active);
+    el(parts.tab).setAttribute("aria-selected", String(active));
+    el(parts.body).hidden = !active;
+  }
+  el("bottom-panel").hidden = false;
+  if (chosen === "terminal") {
+    fitTerminal();
+    el("terminal-surface").focus();
+  }
+}
+
+/// Hides the panel and everything in it. The shell goes with it: a terminal the
+/// reader cannot see must not keep a process alive.
+function hidePanel() {
+  el("bottom-panel").hidden = true;
+  el("review-modal").hidden = true;
+  el("panel-terminal").hidden = true;
+  void stopTerminal();
+}
+
+/// The panel is only there while one of its bodies is: closing the review with
+/// the keyboard or its own button puts the dock away too, unless the terminal is
+/// what is showing.
+function syncPanel() {
+  if (el("review-modal").hidden && el("panel-terminal").hidden) {
+    el("bottom-panel").hidden = true;
+  }
+}
+
+function togglePanel(tab = state.panelTab) {
+  if (el("bottom-panel").hidden) openPanel(tab);
+  else if (state.panelTab === tab) hidePanel();
+  else openPanel(tab);
+}
+
+// ---------- the terminal ----------
+
+function terminalStyle() {
+  return { fg: "", bg: "", bold: false, dim: false, underline: false, inverse: false };
+}
+
+function newTerminalScreen(cols, rows) {
+  return {
+    cols: Math.max(20, cols),
+    rows: Math.max(4, rows),
+    lines: [{ cells: [] }],
+    row: 0,
+    col: 0,
+    style: terminalStyle(),
+    pending: "",
+  };
+}
+
+function terminalCell(screen, col) {
+  const line = screen.lines[screen.row];
+  while (line.cells.length < col) line.cells.push({ ch: " ", style: terminalStyle() });
+  if (!line.cells[col]) line.cells[col] = { ch: " ", style: terminalStyle() };
+  return line.cells[col];
+}
+
+function ensureTerminalRow(screen, row) {
+  while (screen.lines.length <= row) screen.lines.push({ cells: [] });
+  return screen.lines[row];
+}
+
+function writeTerminalCell(screen, ch) {
+  if (screen.col >= 400) return;
+  ensureTerminalRow(screen, screen.row);
+  const cell = terminalCell(screen, screen.col);
+  cell.ch = ch;
+  cell.style = { ...screen.style };
+  screen.col += 1;
+}
+
+/// One escape sequence, from the `ESC` at `at`: how many characters it took, or
+/// zero when the sequence is still arriving and the bytes wait for the rest.
+function readTerminalEscape(screen, input, at) {
+  const rest = input.slice(at);
+  if (rest.length < 2) return 0;
+  const kind = rest[1];
+  if (kind === "[") {
+    const match = /^\x1b\[([0-9;?]*)([A-Za-z])/.exec(rest);
+    if (!match) return rest.length < 4 ? 0 : 2;
+    applyTerminalCsi(screen, match[1], match[2]);
+    return match[0].length;
+  }
+  if (kind === "]") {
+    // An operating-system command (a window title): it is read to its end and
+    // dropped, since nothing here draws a title.
+    const end = rest.slice(2).search(/[\x07\x1b]/);
+    if (end < 0) return 0;
+    const tail = rest.slice(2 + end);
+    return 2 + end + (tail.startsWith("\x1b\\") ? 2 : 1);
+  }
+  if (kind === "(" || kind === ")") return Math.min(rest.length, 3);
+  return 2;
+}
+
+function applyTerminalCsi(screen, params, final) {
+  const numbers = params
+    .split(";")
+    .map((value) => (value === "" ? 0 : Number(value)))
+    .filter((value) => Number.isFinite(value));
+  const first = numbers[0] ?? 0;
+  if (final === "m") {
+    for (let index = 0; index < numbers.length; index += 1) {
+      const value = numbers[index];
+      if (value === 0) screen.style = terminalStyle();
+      else if (value === 1) screen.style.bold = true;
+      else if (value === 2) screen.style.dim = true;
+      else if (value === 22) {
+        screen.style.bold = false;
+        screen.style.dim = false;
+      } else if (value === 4) screen.style.underline = true;
+      else if (value === 24) screen.style.underline = false;
+      else if (value === 7) screen.style.inverse = true;
+      else if (value === 27) screen.style.inverse = false;
+      else if (value === 39) screen.style.fg = "";
+      else if (value === 49) screen.style.bg = "";
+      else if ((value >= 30 && value <= 37) || (value >= 90 && value <= 97)) {
+        screen.style.fg = String(value);
+      } else if ((value >= 40 && value <= 47) || (value >= 100 && value <= 107)) {
+        screen.style.bg = String(value);
+      } else if (value === 38 || value === 48) {
+        const target = value === 38 ? "fg" : "bg";
+        if (numbers[index + 1] === 5) {
+          screen.style[target] = String(256 + (numbers[index + 2] ?? 0));
+          index += 2;
+        } else if (numbers[index + 1] === 2) {
+          screen.style[target] = `rgb(${numbers[index + 2] ?? 0},${numbers[index + 3] ?? 0},${numbers[index + 4] ?? 0})`;
+          index += 4;
+        }
+      }
+    }
+    return;
+  }
+  if (final === "K") {
+    const line = ensureTerminalRow(screen, screen.row);
+    if (first === 2) line.cells = [];
+    else if (first === 1) line.cells = line.cells.slice(screen.col);
+    else line.cells = line.cells.slice(0, screen.col);
+    return;
+  }
+  if (final === "J") {
+    if (first === 2) {
+      screen.lines = [{ cells: [] }];
+      screen.row = 0;
+      screen.col = 0;
+    } else {
+      ensureTerminalRow(screen, screen.row).cells = ensureTerminalRow(screen, screen.row).cells.slice(
+        0,
+        screen.col,
+      );
+      screen.lines = screen.lines.slice(0, screen.row + 1);
+    }
+    return;
+  }
+  if (final === "H" || final === "f") {
+    screen.row = Math.max(0, (numbers[0] ?? 1) - 1);
+    screen.col = Math.max(0, (numbers[1] ?? 1) - 1);
+    ensureTerminalRow(screen, screen.row);
+    return;
+  }
+  if (final === "A") screen.row = Math.max(0, screen.row - Math.max(1, first));
+  else if (final === "B") {
+    screen.row += Math.max(1, first);
+    ensureTerminalRow(screen, screen.row);
+  } else if (final === "C") screen.col += Math.max(1, first);
+  else if (final === "D") screen.col = Math.max(0, screen.col - Math.max(1, first));
+  else if (final === "G") screen.col = Math.max(0, first - 1);
+}
+
+/// Feeds the shell's output into the screen: the small part of a terminal's
+/// language a shell's own output uses — carriage return, line feed, backspace,
+/// tabs, colours, erasing and moving the cursor. A program that paints a
+/// full-screen interface is outside that, and is not what this panel is for.
+function terminalFeed(text) {
+  const screen = state.terminal.screen;
+  if (!screen || !text) return;
+  const input = screen.pending + text;
+  screen.pending = "";
+  let index = 0;
+  while (index < input.length) {
+    const ch = input[index];
+    if (ch === "\x1b") {
+      const consumed = readTerminalEscape(screen, input, index);
+      if (consumed === 0) {
+        screen.pending = input.slice(index);
+        break;
+      }
+      index += consumed;
+      continue;
+    }
+    if (ch === "\r") screen.col = 0;
+    else if (ch === "\n") {
+      screen.row += 1;
+      screen.col = 0;
+      ensureTerminalRow(screen, screen.row);
+    } else if (ch === "\b") screen.col = Math.max(0, screen.col - 1);
+    else if (ch === "\t") screen.col = Math.min(400, screen.col + (8 - (screen.col % 8)));
+    else if (ch === "\x07") {
+      // The bell has nothing to draw.
+    } else if (ch >= " ") writeTerminalCell(screen, ch);
+    index += 1;
+  }
+  // The scrollback is the panel's history, not the whole session's: a shell that
+  // has printed for an hour is not kept to the byte.
+  const overflow = screen.lines.length - 600;
+  if (overflow > 0) {
+    screen.lines.splice(0, overflow);
+    screen.row = Math.max(0, screen.row - overflow);
+  }
+  scheduleTerminalPaint();
+}
+
+/// The sixteen colours a shell names first, then the cube and the ramp. A
+/// terminal's palette is the reader's to choose in their own terminal; this is
+/// the one the window draws with.
+function terminalColor(name) {
+  const base = [
+    "#3b3b3b", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#d7d7d7",
+    "#7b7b7b", "#ff8b93", "#b7e08f", "#ffd68a", "#8bc4ff", "#e0a2f5", "#7ad6e0", "#ffffff",
+  ];
+  const value = Number(name);
+  if (!Number.isFinite(value)) return name;
+  if (value >= 256) {
+    const index = Math.max(0, Math.min(255, value - 256));
+    if (index < 16) return base[index];
+    if (index < 232) {
+      const step = (offset) => {
+        const level = Math.floor(index / offset) % 6;
+        return level === 0 ? 0 : 55 + level * 40;
+      };
+      const r = step(36);
+      const g = step(6);
+      const b = step(1);
+      return `rgb(${r},${g},${b})`;
+    }
+    const grey = 8 + (index - 232) * 10;
+    return `rgb(${grey},${grey},${grey})`;
+  }
+  if (value >= 90 && value <= 97) return base[value - 90 + 8];
+  if (value >= 30 && value <= 37) return base[value - 30];
+  if (value >= 100 && value <= 107) return base[value - 100 + 8];
+  if (value >= 40 && value <= 47) return base[value - 40];
+  return name;
+}
+
+function scheduleTerminalPaint() {
+  if (state.terminal.paintTimer) return;
+  state.terminal.paintTimer = setTimeout(() => {
+    state.terminal.paintTimer = 0;
+    paintTerminal();
+  }, 16);
+}
+
+function paintTerminal() {
+  const surface = el("terminal-surface");
+  const screen = state.terminal.screen;
+  if (!surface || !screen) return;
+  const rows = [];
+  for (const line of screen.lines) {
+    const row = document.createElement("div");
+    row.className = "term-line";
+    let run = null;
+    let text = "";
+    const flush = () => {
+      if (!run) return;
+      const span = document.createElement("span");
+      span.textContent = text;
+      if (run.fg) span.style.color = terminalColor(run.fg);
+      if (run.bg) span.style.backgroundColor = terminalColor(run.bg);
+      if (run.bold) span.style.fontWeight = "600";
+      if (run.dim) span.style.opacity = "0.7";
+      if (run.underline) span.style.textDecoration = "underline";
+      if (run.inverse) {
+        span.style.color = run.bg ? terminalColor(run.bg) : "var(--bg)";
+        span.style.backgroundColor = run.fg ? terminalColor(run.fg) : "var(--text)";
+      }
+      row.appendChild(span);
+      run = null;
+      text = "";
+    };
+    for (const cell of line.cells) {
+      const key = `${cell.style.fg}|${cell.style.bg}|${cell.style.bold}|${cell.style.dim}|${cell.style.underline}|${cell.style.inverse}`;
+      if (!run || run.key !== key) {
+        flush();
+        run = { ...cell.style, key };
+      }
+      text += cell.ch;
+    }
+    flush();
+    rows.push(row);
+  }
+  surface.replaceChildren(...rows);
+  if (state.panelTab === "terminal") surface.scrollTop = surface.scrollHeight;
+}
+
+/// The room the panel gives the shell, in characters. A surface that has not been
+/// laid out yet (the stub the checks run against) reports the default size.
+function fitTerminal() {
+  const surface = el("terminal-surface");
+  if (!surface) return;
+  const rect = surface.getBoundingClientRect?.() || { width: 0, height: 0 };
+  const cols = rect.width ? Math.max(20, Math.floor(rect.width / 7.3)) : 100;
+  const rows = rect.height ? Math.max(4, Math.floor(rect.height / 17.4)) : 24;
+  if (cols === state.terminal.cols && rows === state.terminal.rows) return;
+  state.terminal.cols = cols;
+  state.terminal.rows = rows;
+  if (state.terminal.screen) {
+    state.terminal.screen.cols = cols;
+    state.terminal.screen.rows = rows;
+  }
+  if (state.terminal.id != null) {
+    void invoke("terminal_resize", { id: state.terminal.id, cols, rows }).catch(() => {});
+  }
+}
+
+async function startTerminal() {
+  const project = state.worktree || state.project;
+  if (!project) {
+    setStatus(t("composer.selectProject", "Select a project first."));
+    askForProject();
+    return;
+  }
+  fitTerminal();
+  try {
+    const answer = await invoke("terminal_open", {
+      project,
+      cols: state.terminal.cols,
+      rows: state.terminal.rows,
+    });
+    state.terminal.id = answer?.id ?? null;
+    state.terminal.cwd = answer?.cwd || project;
+    state.terminal.exited = false;
+    state.terminal.screen = newTerminalScreen(state.terminal.cols, state.terminal.rows);
+    el("terminal-state").hidden = true;
+    paintTerminal();
+  } catch (error) {
+    state.terminal.screen = null;
+    el("terminal-state").hidden = false;
+    el("terminal-state").textContent = t("terminal.failed", "Could not open a shell: {value0}", {
+      value0: error,
+    });
+  }
+}
+
+async function stopTerminal() {
+  const id = state.terminal.id;
+  state.terminal.id = null;
+  state.terminal.screen = null;
+  if (id != null) await invoke("terminal_close", { id }).catch(() => {});
+}
+
+async function openTerminal() {
+  openPanel("terminal");
+  if (state.terminal.id == null) await startTerminal();
+  else el("terminal-surface").focus();
+}
+
+function terminalWrite(data) {
+  if (state.terminal.id == null) return;
+  void invoke("terminal_write", { id: state.terminal.id, data }).catch((error) => {
+    el("terminal-state").hidden = false;
+    el("terminal-state").textContent = t("terminal.writeFailed", "The shell is not answering: {value0}", {
+      value0: error,
+    });
+  });
+}
+
+const TERMINAL_KEYS = {
+  Enter: "\r",
+  Backspace: "\x7f",
+  Tab: "\t",
+  Escape: "\x1b",
+  ArrowUp: "\x1b[A",
+  ArrowDown: "\x1b[B",
+  ArrowRight: "\x1b[C",
+  ArrowLeft: "\x1b[D",
+  Home: "\x1b[H",
+  End: "\x1b[F",
+  Delete: "\x1b[3~",
+  PageUp: "\x1b[5~",
+  PageDown: "\x1b[6~",
+};
+
+/// What a key press means to the shell. The shell does its own line editing, so
+/// the window sends the keys and paints what comes back rather than keeping a
+/// buffer of its own.
+function terminalKey(event) {
+  if (state.terminal.id == null) return false;
+  if (event.metaKey) return false;
+  if (event.ctrlKey && event.key.length === 1) {
+    const code = event.key.toUpperCase().charCodeAt(0);
+    if (code >= 64 && code <= 95) {
+      terminalWrite(String.fromCharCode(code - 64));
+      return true;
+    }
+  }
+  const mapped = TERMINAL_KEYS[event.key];
+  if (mapped) {
+    terminalWrite(mapped);
+    return true;
+  }
+  if (event.key.length === 1 && !event.altKey) {
+    terminalWrite(event.key);
+    return true;
+  }
+  return false;
+}
+
 // ---------- wiring ----------
 
 function toggleHelp() {
@@ -7637,6 +9327,35 @@ async function initEvents() {
   // window for the dialog the sidebar's own button opens.
   await listen("check-updates", () => openUpdate());
   await listen("chat-tab", (event) => event.payload?.action === "close" ? closeChatTab(activeTabId) : newChatTab());
+  // The menu bar and the window's own buttons end in the same place: the menu
+  // has no page of its own, so it asks the window for the settings sheet, the
+  // command menu and the text size rather than keeping a second copy of them.
+  await listen("terminal-output", (event) => {
+    const payload = event.payload || {};
+    if (payload.terminal !== state.terminal.id) return;
+    terminalFeed(String(payload.data || ""));
+  });
+  await listen("terminal-exit", (event) => {
+    const payload = event.payload || {};
+    if (payload.terminal !== state.terminal.id) return;
+    state.terminal.exited = true;
+    el("terminal-state").hidden = false;
+    el("terminal-state").textContent = t(
+      "terminal.exited",
+      "The shell has exited. Open the panel again for a new one.",
+    );
+  });
+  await listen("toggle-panel", () => togglePanel());
+  await listen("open-terminal", () => void openTerminal());
+  await listen("open-settings", () => openSettings());
+  await listen("command-menu", () => openCommandMenu());
+  await listen("toggle-sidebar", () => toggleSidebar());
+  await listen("history", (event) =>
+    event.payload?.action === "forward" ? navForward() : navBack());
+  await listen("zoom", (event) => {
+    const action = event.payload?.action;
+    resizeText(action === "reset" ? 0 : action === "in" ? 1 : -1);
+  });
   // The install this process is running reports itself here, whether it is the
   // launch's own or one the window asked for, and the dialog is its surface: the
   // release that is out, the download as it happens, and the restart that runs
@@ -8093,6 +9812,112 @@ function init() {
   el("permissions").onclick = openPermissions;
   el("help").onclick = toggleHelp;
   el("connect").onclick = openConnect;
+  el("settings").onclick = () => (el("settings-modal").hidden ? openSettings() : closeSettings());
+  el("settings-close").onclick = closeSettings;
+  for (const [section, parts] of Object.entries(SETTINGS_SECTIONS)) {
+    el(parts.tab).onclick = () => showSettingsSection(section);
+  }
+  el("settings-send-enter").onclick = () => savePrefs({ send_key: "enter" });
+  el("settings-send-mod-enter").onclick = () => savePrefs({ send_key: "mod-enter" });
+  el("settings-follow-queue").onclick = () => savePrefs({ follow_up: "queue" });
+  el("settings-follow-steer").onclick = () => savePrefs({ follow_up: "steer" });
+  el("settings-font-smaller").onclick = () => resizeText(-1);
+  el("settings-font-reset").onclick = () => resizeText(0);
+  el("settings-font-larger").onclick = () => resizeText(1);
+  el("settings-sidebar").onchange = (event) =>
+    savePrefs({ sidebar_visible: Boolean(event.target?.checked) });
+  el("command-input").addEventListener("input", () => {
+    state.commandIndex = 0;
+    renderCommandMenu();
+  });
+  el("command-menu").onclick = (event) => {
+    // The box is the dialog; a click on the field around it puts it away.
+    if (event.target === el("command-menu")) closeCommandMenu();
+  };
+  el("search-modal").onclick = (event) => {
+    if (event.target === el("search-modal")) closeSearch();
+  };
+  // The add menu hangs beside the sidebar rather than over it, so a press
+  // anywhere else puts it away — including the one that opens another dialog.
+  document.addEventListener("mousedown", (event) => {
+    if (el("add-menu").hidden) return;
+    const target = event.target;
+    if (target === el("sidebar-add") || target?.closest?.("#add-menu")) return;
+    closeAddMenu();
+  });
+  el("sidebar-add").onclick = () => (el("add-menu").hidden ? openAddMenu() : closeAddMenu());
+  el("add-new-chat").onclick = () => {
+    closeAddMenu();
+    void newChatTab();
+  };
+  el("add-new-project").onclick = () => {
+    closeAddMenu();
+    openCreateProject();
+  };
+  el("add-open-folder").onclick = () => {
+    closeAddMenu();
+    openProjects();
+  };
+  el("add-search").onclick = () => {
+    closeAddMenu();
+    openSearch();
+  };
+  el("add-activity").onclick = () => {
+    closeAddMenu();
+    openActivity();
+  };
+  el("add-archived").onclick = () => {
+    closeAddMenu();
+    openArchived();
+  };
+  el("search-chats").onclick = openSearch;
+  el("search-input").addEventListener("input", () => {
+    state.searchIndex = 0;
+    searchSoon(el("search-input").value);
+  });
+  el("activity").onclick = () => (el("activity-modal").hidden ? openActivity() : closeActivity());
+  el("activity-close").onclick = closeActivity;
+  el("archived-close").onclick = closeArchived;
+  // The find bar's own keys: Enter walks forward, Shift+Enter back, and Escape
+  // puts the bar away without the conversation losing its place.
+  el("find-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      stepFind(event.shiftKey ? -1 : 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeFind();
+    }
+  });
+  el("find-input").addEventListener("input", () => {
+    state.findIndex = -1;
+    stepFind(1);
+  });
+  el("find-next").onclick = () => stepFind(1);
+  el("find-prev").onclick = () => stepFind(-1);
+  el("find-close").onclick = closeFind;
+  el("panel-tab-review").onclick = () => openPanel("review");
+  el("review-stage-all").onclick = () => void shapeChange("stage-all");
+  el("review-unstage-all").onclick = () => void shapeChange("unstage-all");
+  el("panel-tab-terminal").onclick = () => void openTerminal();
+  el("panel-close").onclick = hidePanel;
+  // The shell gets the keys: the panel is a terminal, not a text box, so every
+  // press that means something to the shell is sent rather than drawn here.
+  el("terminal-surface").addEventListener("keydown", (event) => {
+    if (!terminalKey(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  el("terminal-surface").addEventListener("click", () => el("terminal-surface").focus());
+  window.addEventListener("resize", () => {
+    if (!el("panel-terminal").hidden) fitTerminal();
+  });
+  // The preferences are read before anything else asks what the window should
+  // look like, since the sidebar and the scale are drawn from them.
+  void loadPrefs().then(() => {
+    announceShortcuts();
+    paintSettingsControls();
+  });
 
   el("send").onclick = () => send(false);
   el("live-changes").onclick = openRepositoryChanges;
@@ -8375,6 +10200,9 @@ function init() {
     "permissions-modal": "permissions-close",
     "question": "question-dismiss",
     "rename-modal": "rename-cancel",
+    "settings-modal": "settings-close",
+    "activity-modal": "activity-close",
+    "archived-modal": "archived-close",
     "themes-modal": "themes-close",
     "update-modal": "update-close",
   };
@@ -8432,18 +10260,27 @@ function init() {
       closePalette();
       return;
     }
-    if (event.key === "Enter" && state.busy && event.shiftKey && (event.metaKey || event.ctrlKey)) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      send(true);
+      send(Boolean(event.shiftKey) && state.busy);
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
+      // Which key sends is the window's own preference: with ⌘Enter sending,
+      // Enter is the newline Shift+Enter is in the other mode.
+      if (state.prefs.send_key === "mod-enter") return;
       event.preventDefault();
       send(false);
     }
   });
 
   document.addEventListener("keydown", (event) => {
+    // A key pressed into a row that is waiting for one is that row's binding,
+    // not an action: the sheet says what it heard instead of doing it.
+    if (recordShortcut(event)) {
+      event.preventDefault();
+      return;
+    }
     if (event.defaultPrevented) return;
     if (event.key === "Escape") {
       el("message-preview").hidden = true;
@@ -8452,6 +10289,13 @@ function init() {
       closeImage();
       closeReasoning();
       closeModels();
+      closeSettings();
+      closeCommandMenu();
+      closeAddMenu();
+      closeActivity();
+      closeArchived();
+      closeSearch();
+      closeFind();
       if (!el("confirm-modal").hidden) resolveConfirm(false);
       if (!el("rename-modal").hidden) resolveRename(null);
       // A question dismissed with Escape is answered as unanswered rather than
@@ -8473,17 +10317,34 @@ function init() {
       cycleReasoning();
       return;
     }
-    if (!event.ctrlKey && !event.metaKey) return;
-    if (event.key === "r") {
+    // The command menu takes the arrows and Enter while it is up, and its input
+    // takes everything else as a search.
+    if (!el("command-menu").hidden) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const rows = state.commandRows;
+        if (rows.length) {
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          state.commandIndex = (state.commandIndex + step + rows.length) % rows.length;
+          renderCommandMenu();
+        }
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runCommand(state.commandRows[state.commandIndex]);
+        return;
+      }
+    }
+    const action = matchShortcut(event);
+    if (action) {
       event.preventDefault();
-      cycleReasoning();
-    } else if (event.key === "k") {
-      event.preventDefault();
-      openModels();
-    } else if (event.key === "/") {
-      event.preventDefault();
-      toggleHelp();
-    } else if (event.key >= "1" && event.key <= "9") {
+      void action.run();
+      return;
+    }
+    // The numbered rows are the tree's, not the table's: they follow the order
+    // the sidebar lists, which changes as threads arrive.
+    if ((event.metaKey || event.ctrlKey) && event.key >= "1" && event.key <= "9") {
       const session = orderedSessions()[Number(event.key) - 1];
       if (session) {
         event.preventDefault();

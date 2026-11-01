@@ -10,7 +10,10 @@ The repository is a Cargo workspace. Shared agent code lives in
 `crates/core/`; the terminal binary in `crates/cli/` (`main.rs`, `tui/`,
 `theme.rs`, `uninstall.rs`); the Electron desktop app in `crates/desktop/`
 (`electron/` is the window — the main process, the preload and the packaging —
-and `src/` the Rust harness it starts: `manager.rs`/`turn.rs`, the window's own
+and `src/` the Rust harness it starts: `manager.rs`/`turn.rs`, `prefs.rs` for
+the window's own preferences, `search.rs` for finding a phrase across the stored
+threads, `staging.rs`/`terminal.rs` for shaping the change and running the
+reader's shell, the window's own
 command layer, and a single `oxide_invoke` command the page reaches through the
 preload's bridge, one JSON packet per line between the two halves). The Cargo
 package names are `oxide-core`, `oxide` (the CLI), and `oxide-desktop`. The VS

@@ -399,6 +399,13 @@ impl DesktopManager {
         self.session_views_with(sessions, &Worktrees::open())
     }
 
+    /// The threads the reader has archived: the same views, over the sessions
+    /// the sidebar leaves out, so the listing that puts one back draws the row it
+    /// took away — its name, its folder and when it last ran.
+    pub fn archived_views(&self, sessions: Vec<SessionSummary>) -> Result<Vec<SessionView>> {
+        self.views_with(sessions, &Worktrees::open(), true)
+    }
+
     /// The same views over an explicit worktree store, so the checkout a thread
     /// is listed under can be held by a test with its own.
     pub(crate) fn session_views_with(
@@ -406,13 +413,22 @@ impl DesktopManager {
         sessions: Vec<SessionSummary>,
         worktrees: &Worktrees,
     ) -> Result<Vec<SessionView>> {
+        self.views_with(sessions, worktrees, false)
+    }
+
+    fn views_with(
+        &self,
+        sessions: Vec<SessionSummary>,
+        worktrees: &Worktrees,
+        archived: bool,
+    ) -> Result<Vec<SessionView>> {
         let state = oxide_core::session_state::SessionState::load_from(
             &self.store.with_file_name("sessions.json"),
         )?;
         let mut views: Vec<_> = sessions
             .into_iter()
             .filter(|summary| {
-                !state.archived(&summary.id)
+                state.archived(&summary.id) == archived
                     && !self.registry.removed_projects.contains(&summary.cwd)
             })
             .map(|summary| {
@@ -1020,6 +1036,34 @@ mod tests {
         let _ = worktrees.remove(&project, "topic");
         std::fs::remove_dir_all(&project).ok();
         let _ = std::fs::remove_dir_all(worktrees.root());
+        let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
+    }
+
+    #[test]
+    fn archived_views_list_the_threads_the_sidebar_leaves_out() {
+        let store = temp_store();
+        let mut manager = DesktopManager::load_from(store).unwrap();
+        let kept = summary("/tmp/oxide-archived", 10);
+        let taken = summary("/tmp/oxide-archived", 20);
+        manager.archive_session(&taken.id).unwrap();
+
+        let listed = manager
+            .session_views(vec![kept.clone(), taken.clone()])
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].summary.id, kept.id);
+
+        let archived = manager
+            .archived_views(vec![kept.clone(), taken.clone()])
+            .unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].summary.id, taken.id);
+        // The row has what putting the thread back needs: where it ran and when.
+        assert_eq!(archived[0].summary.cwd, taken.cwd);
+        assert_eq!(archived[0].summary.modified_at, taken.modified_at);
+
+        manager.unarchive_session(&taken.id, false).unwrap();
+        assert!(manager.archived_views(vec![taken]).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(manager.store_path().parent().unwrap());
     }
 

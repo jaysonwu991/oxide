@@ -210,10 +210,12 @@ and every control's words live in its tooltip and its `aria-label`, as the
 extension's do. The characters the window still types are text in a line rather
 than a control's drawing: a tool card's `✔`/`✖` and the `☐`/`☑` of an assistant's
 task list, which the panel's own renderer types too, the `✦` that opens a
-thinking block, which the terminal's does, the `⌘` naming a shortcut in words,
-the `·` a line of derived facts is joined with, and the image preview's head-row
-`✕`. Drawing one here and typing it there would make the two front-ends read the
-same state two ways, so `check-app.mjs` pins the set the window's own strings
+thinking block, which the terminal's does, the `⌘`/`⇧`/`⌃`/`⌥` naming a shortcut
+in words — a binding is whatever the reader recorded, so the letter beside it
+comes from the machine's font either way — the `·` a line of derived facts is
+joined with, and the image preview's head-row `✕`. Drawing one here and typing it
+there would make the two front-ends read the same state two ways, so
+`check-app.mjs` pins the set the window's own strings
 carry — a character a control could wear cannot appear under cover of them. It
 also holds the paths the two front-ends share beside the extension's own
 sources, so chrome drawn one way in the panel and another in this window fails
@@ -238,12 +240,15 @@ The regions, top to bottom:
 - **Sidebar** — **+ New Chat** at the top, opening a thread in the project the
   window is in and, when nothing is open yet, the folder picker that asks which
   project to start in — a folder is never picked for the reader, and with no
-  project at all the same button offers the Add-project dialog; the **Projects**
+  project at all the same button offers the Add-project dialog; beside it the
+  three ways into a thread that already exists — **Add** (its own menu), **Search
+  chats** and **Activity**, whose bell carries a dot while something is running,
+  unread or waiting for an answer; the **Projects**
   tree, and a footer pinned
   to the bottom with the three controls that belong to the window rather than to
   a message: the theme, the interface language and the check for updates, an
   icon button each (a half-filled circle, a globe, and the same refresh arrow the
-  extension's own check carries). The tree groups each project's sessions
+  extension's own check carries), with the settings gear last. The tree groups each project's sessions
   under it. Project options and **New task**, and a stored thread's pin and
   archive actions, appear when their row is hovered or holds keyboard focus,
   matching Codex's quiet resting tree. The key a thread answers to is nowhere
@@ -356,9 +361,9 @@ The regions, top to bottom:
   button wearing the fact's own text — the glyph with the checkout's name beside
   it while a thread writes to a copy, in the accent so the row says which copy at
   a glance, and the glyph alone otherwise — while every other setting stays where
-  it was — the theme, the language and the release check in
-  the sidebar's foot, the rest in the box's own row — rather than being gathered
-  onto the bar as well. While the thread on screen is the one a turn is running
+  it was — the theme, the language, the release check and the settings sheet's
+  gear in the sidebar's foot, the rest in the box's own row — rather than being
+  gathered onto the bar as well. While the thread on screen is the one a turn is running
   in (`body.running`), the bar steps aside so the box keeps the room its phase
   and Stop need, and it is back once the run ends. The
   box's own row is icon-first, the
@@ -1136,21 +1141,175 @@ the header's strip (or its sidebar row) is how the reader goes back to read it.
 A message queued in a thread keeps its place there even when the reader moves on:
 it starts that thread's next turn once the current one ends.
 
+## Settings
+
+The window's own preferences live in one store beside the project registry —
+`<config>/Oxide/desktop/prefs.json`, the directory `projects.json` already
+occupies — read once at launch and written whenever a control changes
+something. The file is the shared configuration's, not this window's private
+notebook: the fields are named for the whole front-end (`send_key`, `follow_up`,
+`font_scale`, `sidebar_visible`, `shortcuts`), and a key this build does not know
+is kept as it was written so a preference from a newer window survives a save
+from an older one. A known key holding a value the window cannot use is refused
+by name rather than quietly replaced; a value the window *can* read but not use —
+a scale outside `0.7`–`1.6`, a word from a newer build — falls back to the value
+the window shipped with, so a hand-edited file never stops the window opening.
+
+**Settings** is one sheet, opened from the gear in the sidebar's foot, the app
+menu's **Settings…** (`⌘,`) or the command menu. Its sections are named by id so
+every control the markup declares is a control the page wired, and it paints what
+the store answered rather than what a click hoped to store:
+
+- **General** — the key that sends (`Enter` sends and `Shift+Enter` is a newline,
+or `⌘Enter` sends and `Enter` is a newline), and what a message sent while a turn
+runs does (wait for the next run, or steer the one in flight). The follow-up
+choice is the same state the composer's badge and its `⌘⇧Enter` override read.
+- **Appearance** — the text size, as a scale the window applies to its own web
+contents (`set_zoom`, never a stylesheet edit), and whether the sidebar is shown
+at all.
+- **Keyboard** — every action in the window's shortcut table with the binding in
+force, the binding it ships with behind a reset, and a recorder: pick a row, press
+the keys, and a chord another action already answers to is refused by naming
+that action. `mod` is the modifier every shortcut has always meant here — `⌘` on a
+Mac, `Ctrl` everywhere else, either accepted — so a binding recorded with `Ctrl`
+keeps working with `⌘`, and the four modifier symbols are text in the row the way
+the terminal names a chord.
+
+The bindings are the page's, so the menu bar is told them rather than keeping a
+second table: the page sends `set_native_shortcuts` with the chord in force for
+each action, and the window draws its menu accelerators from that — which is why
+remapping an action moves the menu item with it.
+
+## The command menu
+
+`⌘K` / `⌘⇧P` opens the window's own command menu: a filterable list of actions —
+chats and tabs, the sidebar and the history, the settings and the pickers, the
+text size, the update check — with each row's binding beside it. It is not the
+composer's `/` palette: that lists the agent's commands, prompt templates and
+skills, while this lists what the window does itself, so a row here never becomes
+a message. A row needing a folder is left out when there is none.
+
+`⌘K` used to be the model picker. The picker is the model chip and `/model` now,
+which is where Codex keeps it too.
+
+## The bottom panel: Review and the terminal
+
+The window's dock sits under the conversation and spans it, with two tabs and
+`⌘J` to show or hide it. It is only there while one of its bodies is: closing the
+review with `Escape` puts the dock away too, unless the terminal is what is
+showing. The review pane still reads what it always did — a turn's card, or the
+repository's uncommitted changes — and gained what it writes.
+
+**Review.** In the repository scope each file now carries the staging action its
+state allows, from `repository_status` (which files the index holds, which the
+working tree still holds, which git has never tracked): **Stage** a working-tree
+change, **Unstage** a staged one, **Revert** a tracked one, plus **Stage all**
+and **Unstage all** in the head. Every action goes through one command,
+`shape_change`, whose `action` names what to do and whose `path` (and, for a
+hunk, `hunk`) names what to do it to. The pane repaints from git's answer rather
+than from what it asked for, so a refusal — a file that changed under the reader,
+a path the branch never had — leaves the listing telling the truth.
+
+`crates/desktop/src/staging.rs` holds the work, and each action is a `git` call
+in the project's repository: `add`, `restore --staged`, `restore --worktree`,
+`add --all`, and `apply --cached/--reverse --recount` for a hunk. A revert is the
+one destructive action, so the window confirms it first and the module refuses it
+for a file the branch never had — "revert" there could only mean deleting work.
+`revert all` restores every tracked file and leaves a turn's new files alone. A
+hunk is described to the module as the lines the diff already holds (a kind, the
+text, where it starts on each side) rather than as a patch the window hands over:
+the patch is built here, so a path is one this module checked — relative, inside
+the repository, no `..` — and `--recount` lets git fix the counts from the lines.
+Hunk-level staging is in the harness and covered by tests; the pane's buttons are
+per file for now.
+
+**Terminal.** Each conversation can open a shell in the folder it runs in — the
+project, or the worktree it was handed to — through `terminal_open`, which starts
+a real pseudoterminal (`crates/desktop/src/terminal.rs`, `portable-pty`) running
+`$SHELL` at the size the panel reports. Output arrives as `terminal-output`
+events from a thread of its own, decoded across chunk boundaries so a character
+split between two reads is not painted twice, and a shell that exits is
+announced as `terminal-exit` rather than leaving a prompt that no longer answers.
+The window sends keys rather than keeping a line buffer — the shell does its own
+editing, so arrows, `Tab`, `Backspace`, `Ctrl`-letters and the rest are the bytes
+a terminal expects — and closes the shell with the panel, because a terminal
+nobody can see must not keep a process alive. Output is drawn by the window's own
+reader for the small part of a terminal's language a shell uses: colours (the
+sixteen, the 256-colour cube and the ramp), carriage returns and line feeds,
+backspace and tabs, erasing a line or the screen, and moving the cursor. A
+program that paints a full-screen interface is outside that, and a terminal panel
+is not the place for one.
+
+## Finding a thread again
+
+Four ways, each answering a different question.
+
+**Search chats** (`⌘⇧F`, the sidebar's magnifier, or **Add → Search chats…**)
+scans every stored thread the sidebar lists — the name it was given, the preview
+it shows and the messages it holds — and answers with the line each match was
+found on. The scan is the harness's (`search_sessions`, in `src/search.rs`), run
+on a blocking task because it reads every log on disk, and it is asked once the
+reader settles on a phrase rather than once a keystroke: an answer that is no
+longer the newest is dropped by its own sequence number instead of racing the
+one that is. A phrase blank finds nothing rather than everything, a log that
+cannot be read is skipped so one damaged file is not the reason nothing is
+found, a thread is counted at most 200 matches and the listing at 40 rows, and a
+snippet is clipped by characters and joined onto one line so a phrase from the
+middle of a wrapped paragraph still reads as a row. Archived threads are not
+searched: the sidebar does not list them either.
+
+**Activity** (the bell, or **Add → Activity**) is what is asking for the reader:
+the approval or question the window is holding for them, the threads a turn is
+still writing in, and the ones that finished while they were elsewhere. The bell
+carries a dot for any of those, in the tool colour while the dialog is up, so the
+mark says that something is there rather than what it is; the view's own **Clear
+these marks** is the same action as `⇧Esc`.
+
+**Archived chats** (**Add → Archived chats…**) lists what the sidebar leaves out
+— `archived_sessions` answers with the same views over the other half of the
+store's own state — and **Unarchive** puts a thread back where it was through
+`unarchive_session`, the command the sidebar's toast already offers. A thread is
+opened from the archive the same way it is opened from the tree; the row keeps
+its folder and its age.
+
+**Find in chat** (`⌘F`) walks the conversation's own text nodes, counts the
+matches, and walks them with Enter and Shift+Enter. The match on screen is marked
+with the window's own selection rather than by wrapping the text in a node: a
+reply that is still streaming is not rewritten under the reader, and putting the
+bar away drops the highlight with it. A DOM that cannot be walked (the stub the
+front-end checks run against) says **No matches** rather than failing.
+
 ## Keyboard shortcuts
 
 | Key | Action |
 | --- | --- |
-| `Enter` | Send — delivering a message queued while a turn runs the saved way |
+| `Enter` | Send — delivering a message queued while a turn runs the saved way (`⌘Enter` sends instead when that is the setting) |
 | `Shift+Enter` | Newline |
 | `⌘⇧Enter` / `Ctrl+Shift+Enter` | Deliver this message the other way once while a turn runs |
 | `Shift+Tab` / `Ctrl+R` | Cycle reasoning (the thinking chip opens the level picker) |
-| `Ctrl+K` | Model picker |
+| `⌘K` / `⌘⇧P` | Command menu |
+| `⌘,` | Settings |
+| `⌘F` | Find in this chat (Enter next, Shift+Enter previous) |
+| `⌘⇧F` | Search chats |
 | `Ctrl+/` | Shortcut help |
 | `⌘T`/`Ctrl+T`, `⌘W`/`Ctrl+W` | Open another chat tab, close the one on screen |
+| `⌘⇧T` / `Ctrl+Shift+T` | Reopen the tab closed last |
+| `⌘⌥W` / `Ctrl+Alt+W` | Close the other tabs |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Walk the open tabs |
 | `⌘1`…`⌘9` / `Ctrl+1`…`9` | Open the thread standing at that place in the Projects tree |
+| `⌘[` / `⌘]` | Back and forward through the chats this window has shown |
+| `⌘B` / `Ctrl+B` | Show or hide the sidebar |
+| `⌘+` / `⌘-` / `⌘0` | Larger, smaller, actual size |
+| `⌘J` | Show or hide the bottom panel |
+| `⌃\`` | Open the terminal |
+| `⇧Esc` | Clear the unread marks |
 | `Escape` | Close any dialog; a question is dismissed, which the agent is told rather than left waiting |
 | Click outside a dialog | The same as closing it: the backdrop answers through the dialog's own Close, Cancel or Dismiss, so its teardown is the one either way. The two dialogs whose buttons are the decision — a tool's approval, a folder's trust question — are not dismissed this way, since a stray press must not be an answer |
+
+Every row is an entry in the shortcut table in `ui/app.js`, which is what the
+settings sheet lists and what the recorder edits, so the table is the one place a
+binding is declared. The digits are the exception: they follow the order the
+sidebar lists, which changes as threads arrive.
 
 ## Slash commands
 

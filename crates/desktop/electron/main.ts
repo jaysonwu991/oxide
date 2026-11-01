@@ -261,7 +261,10 @@ interface PagePacket {
   type?: string;
   /// A request's own number, or — for an announcement — the event's name.
   id?: number | string;
-  params?: { command?: string; args?: { url?: unknown; strings?: unknown } };
+  params?: {
+    command?: string;
+    args?: { url?: unknown; strings?: unknown; scale?: unknown; bindings?: unknown };
+  };
 }
 
 function parsePacket(raw: unknown): PagePacket | undefined {
@@ -305,6 +308,31 @@ ipcMain.on(TO_HOST, (event, message: unknown) => {
       request.id,
       request.params.args,
     );
+    return;
+  }
+  // The text size and the bindings are the window's own for the same reason: the
+  // page draws itself, so the scale is applied to this process's web contents,
+  // and the menu bar is this process's to draw. Both are answered here and never
+  // reach the harness, which has neither a page nor a menu.
+  if (request.params?.command === "set_zoom" && typeof request.id === "number") {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const scale = Number(request.params.args?.scale);
+    if (window && !window.isDestroyed() && Number.isFinite(scale)) {
+      window.webContents.setZoomFactor(Math.min(1.6, Math.max(0.7, scale)));
+    }
+    answerRequest(window, request.id, null);
+    return;
+  }
+  if (request.params?.command === "set_native_shortcuts" && typeof request.id === "number") {
+    const bindings = request.params.args?.bindings;
+    nativeBindings = {};
+    if (bindings && typeof bindings === "object" && !Array.isArray(bindings)) {
+      for (const [action, chord] of Object.entries(bindings)) {
+        if (typeof chord === "string") nativeBindings[action] = chord;
+      }
+    }
+    installMenu();
+    answerRequest(BrowserWindow.fromWebContents(event.sender), request.id, null);
     return;
   }
   if (typeof message === "string") sendToHarness(message);
@@ -368,9 +396,50 @@ function respond(window: BrowserWindow | null, packet: Record<string, unknown>):
 // ---------- the menu bar ----------
 
 let nativeStrings: Record<string, string> = {};
+/// The bindings the page is listening for, by action. The page is the one that
+/// knows which key is in force — the reader may have moved it — so the menu
+/// shows what the page says rather than a table of its own.
+let nativeBindings: Record<string, string> = {};
 
 function t(key: string, fallback: string): string {
   return nativeStrings[key] || fallback;
+}
+
+/// A page chord (`mod+shift+t`) as the platform spells an accelerator
+/// (`CmdOrCtrl+Shift+T`). A chord this process cannot spell is left without one,
+/// which still runs from the page's own keyboard.
+function nativeAccelerator(action: string, fallback: string): string {
+  const named: Record<string, string> = {
+    escape: "Esc",
+    tab: "Tab",
+    space: "Space",
+    plus: "Plus",
+    "=": "Plus",
+  };
+  const chord = nativeBindings[action];
+  if (!chord) return fallback;
+  const parts = chord.toLowerCase().split("+");
+  const key = parts.pop() ?? "";
+  if (!key) return fallback;
+  const tokens: string[] = [];
+  for (const part of parts) {
+    if (part === "mod") tokens.push("CmdOrCtrl");
+    else if (part === "ctrl" || part === "control") tokens.push("Ctrl");
+    else if (part === "shift") tokens.push("Shift");
+    else if (part === "alt" || part === "opt" || part === "option") tokens.push("Alt");
+    else return fallback;
+  }
+  tokens.push(named[key] ?? (key.length === 1 ? key.toUpperCase() : key));
+  return tokens.join("+");
+}
+
+/// Asks the open window to perform one of its own actions — the settings sheet,
+/// the command menu, the text size, the sidebar and the history are the page's,
+/// and the menu has no page of its own to paint into.
+function announceEvent(id: string, payload: Record<string, unknown> = {}): void {
+  const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  if (!window || window.isDestroyed()) return;
+  window.webContents.send(TO_PAGE, JSON.stringify({ type: "message", id, payload }));
 }
 
 /// The menu bar the app is, on the platforms that have one. macOS is the only
@@ -391,6 +460,11 @@ function installMenu(): void {
           // one place the reader can ask it to look: the window paints the
           // dialog, so the click reaches it as the event it understands.
           { label: t("ui.checkForUpdates", "Check for Updates…"), click: () => announceCheckUpdates() },
+          {
+            label: t("settings.title", "Settings…"),
+            accelerator: nativeAccelerator("settings", "CmdOrCtrl+,"),
+            click: () => announceEvent("open-settings"),
+          },
           { type: "separator" },
           { label: t("ui.hideOxide", "Hide Oxide"), role: "hide" },
           { label: t("ui.hideOthers", "Hide Others"), role: "hideOthers" },
@@ -416,6 +490,61 @@ function installMenu(): void {
           { label: t("ui.copy", "Copy"), role: "copy" },
           { label: t("ui.paste", "Paste"), role: "paste" },
           { label: t("ui.selectAll", "Select All"), role: "selectAll" },
+        ],
+      },
+      {
+        label: t("ui.view", "View"),
+        submenu: [
+          {
+            label: t("settings.actionCommandMenu", "Command Menu…"),
+            accelerator: nativeAccelerator("command-menu", "CmdOrCtrl+K"),
+            click: () => announceEvent("command-menu"),
+          },
+          { type: "separator" },
+          {
+            label: t("settings.actionLargerText", "Larger Text"),
+            accelerator: nativeAccelerator("font-larger", "CmdOrCtrl+Plus"),
+            click: () => announceEvent("zoom", { action: "in" }),
+          },
+          {
+            label: t("settings.actionSmallerText", "Smaller Text"),
+            accelerator: nativeAccelerator("font-smaller", "CmdOrCtrl+-"),
+            click: () => announceEvent("zoom", { action: "out" }),
+          },
+          {
+            label: t("settings.actionResetText", "Actual Size"),
+            accelerator: nativeAccelerator("font-reset", "CmdOrCtrl+0"),
+            click: () => announceEvent("zoom", { action: "reset" }),
+          },
+          { type: "separator" },
+          {
+            label: t("settings.actionTogglePanel", "Show or Hide Panel"),
+            accelerator: nativeAccelerator("toggle-panel", "CmdOrCtrl+J"),
+            click: () => announceEvent("toggle-panel"),
+          },
+          {
+            label: t("settings.actionTerminal", "Terminal"),
+            accelerator: nativeAccelerator("terminal", "Ctrl+`"),
+            click: () => announceEvent("open-terminal"),
+          },
+          { type: "separator" },
+          {
+            label: t("settings.actionToggleSidebar", "Show or Hide Sidebar"),
+            accelerator: nativeAccelerator("toggle-sidebar", "CmdOrCtrl+B"),
+            click: () => announceEvent("toggle-sidebar"),
+          },
+          {
+            label: t("settings.actionBack", "Back"),
+            accelerator: nativeAccelerator("back", "CmdOrCtrl+["),
+            click: () => announceEvent("history", { action: "back" }),
+          },
+          {
+            label: t("settings.actionForward", "Forward"),
+            accelerator: nativeAccelerator("forward", "CmdOrCtrl+]"),
+            click: () => announceEvent("history", { action: "forward" }),
+          },
+          { type: "separator" },
+          { label: t("ui.toggleFullScreen", "Toggle Full Screen"), role: "togglefullscreen" },
         ],
       },
       {
