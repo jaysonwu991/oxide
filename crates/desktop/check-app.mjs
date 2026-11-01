@@ -394,6 +394,11 @@ const pullAsked = [];
 let memoryRows = [];
 let memoriesError = null;
 const forgotten = [];
+// The suggestion the model would give, and what the window asked about.
+let predictAnswer = "Run the tests again";
+let predictError = null;
+const predictedFor = [];
+const forked = [];
 let repositoryStates = [];
 // What `search_sessions` and `archived_sessions` answer with, and the phrases the
 // window asked about.
@@ -1026,6 +1031,22 @@ const invoke = async (command, args = {}) => {
       worktrees = worktrees.filter((entry) => entry.name !== args.name);
       return { ...target };
     }
+    case "predict":
+      predictedFor.push({ ...args });
+      if (predictError) throw predictError;
+      return { suggestion: predictAnswer };
+    case "fork_session":
+      forked.push({ ...args });
+      return {
+        id: "s-fork",
+        name: args.name || null,
+        cwd: args.project,
+        created_at: 1700000400,
+        modified_at: 1700000400,
+        message_count: 2,
+        preview: "side",
+        path: "/tmp/oxide/.oxide/sessions/s-fork.jsonl",
+      };
     case "memories":
       if (memoriesError) throw memoriesError;
       return memoryRows.map((row) => ({ ...row }));
@@ -1219,6 +1240,7 @@ vm.runInThisContext(
     " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
     " PANEL_TABS, changeActions, shapeChange, readRepositoryIndex," +
     " openPulls, readPulls, renderPulls, readPull, pullDetailNodes, renderMemories," +
+    " maybePredict, showPrediction, clearPrediction, acceptPrediction, runSlashCommand," +
     " threads, SHORTCUTS, SETTINGS_SECTIONS, DEFAULT_PREFS, pushNav, navBack, navForward, reopenClosedTab, closeOtherTabs, clearUnread };\n",
 );
 
@@ -9855,6 +9877,72 @@ app.togglePanel("review");
 check("brought the panel back", elementFor("bottom-panel").hidden === false);
 app.hidePanel();
 check("put it away again", elementFor("bottom-panel").hidden === true);
+
+console.log("the next message, and side chats");
+app.state.project = "/tmp/oxide";
+app.state.session = "s31";
+app.state.prefs.predictions = false;
+predictedFor.length = 0;
+await app.maybePredict();
+check(
+  "asked for nothing while the reader has not asked for suggestions",
+  predictedFor.length === 0 && elementFor("prediction").hidden === true,
+  `${predictedFor.length} / ${elementFor("prediction").hidden}`,
+);
+app.state.prefs.predictions = true;
+predictedFor.length = 0;
+await app.maybePredict();
+check(
+  "offered the next message the model suggested",
+  predictedFor.length === 1 &&
+    predictedFor[0].project === "/tmp/oxide" &&
+    predictedFor[0].id === "s31" &&
+    elementFor("prediction").hidden === false &&
+    elementFor("prediction-text").textContent === "Run the tests again",
+  `${JSON.stringify(predictedFor[0])} / ${elementFor("prediction-text").textContent}`,
+);
+const predictionComposer = elementFor("prompt");
+predictionComposer.value = "";
+predictionComposer.fire("keydown", { key: "Tab", shiftKey: false, preventDefault() {}, stopPropagation() {} });
+check(
+  "took Tab as the suggestion, as a draft rather than a message",
+  predictionComposer.value === "Run the tests again" &&
+    elementFor("prediction").hidden === true &&
+    !calls.some(([name]) => name === "send_prompt"),
+  `${predictionComposer.value} / ${elementFor("prediction").hidden}`,
+);
+app.showPrediction("and then push");
+predictionComposer.fire("input", {});
+check(
+  "put the suggestion away as soon as the reader typed",
+  elementFor("prediction").hidden === true,
+  String(elementFor("prediction").hidden),
+);
+predictionComposer.value = "";
+app.showPrediction("one thing");
+predictError = "no credential";
+await app.maybePredict();
+check(
+  "said nothing when the model could not answer",
+  elementFor("prediction").hidden === true,
+  String(elementFor("prediction").hidden),
+);
+predictError = null;
+// A side chat starts from the conversation on screen and is a thread of its own.
+forked.length = 0;
+const tabsBefore = app.chatTabs.length;
+await app.runSlashCommand("/side");
+check(
+  "started a side chat from the chat on screen",
+  forked.length === 1 &&
+    forked[0].project === "/tmp/oxide" &&
+    forked[0].id === "s31" &&
+    forked[0].name === "Side chat" &&
+    app.chatTabs.length === tabsBefore + 1 &&
+    app.state.session === "s-fork",
+  `${JSON.stringify(forked[0])} / ${app.chatTabs.length} / ${app.state.session}`,
+);
+app.state.session = "s31";
 
 console.log("memories");
 memoryRows = [

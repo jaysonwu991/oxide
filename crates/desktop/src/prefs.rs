@@ -43,6 +43,10 @@ pub struct Prefs {
     pub font_scale: f64,
     #[serde(default = "default_true")]
     pub sidebar_visible: bool,
+    /// Whether the composer offers the next message the reader is likely to send.
+    /// Off by default: it is a model call after every turn.
+    #[serde(default)]
+    pub predictions: bool,
     #[serde(default)]
     pub shortcuts: Shortcuts,
     /// Everything this build does not name — a preference a newer window wrote.
@@ -73,6 +77,7 @@ impl Default for Prefs {
             follow_up: default_follow_up(),
             font_scale: default_font_scale(),
             sidebar_visible: true,
+            predictions: false,
             shortcuts: Shortcuts::new(),
             extra: Map::new(),
         }
@@ -136,6 +141,7 @@ impl Prefs {
                 "follow_up" => self.follow_up = choice(key, value, &FOLLOW_UP_BEHAVIORS)?,
                 "font_scale" => self.font_scale = scale(value)?,
                 "sidebar_visible" => self.sidebar_visible = boolean(key, value)?,
+                "predictions" => self.predictions = boolean(key, value)?,
                 "shortcuts" => self.set_shortcuts(value)?,
                 _ => {
                     self.extra.insert(key.clone(), value.clone());
@@ -220,6 +226,7 @@ pub fn describe(prefs: &Prefs) -> Value {
         "follow_up": prefs.follow_up,
         "font_scale": prefs.font_scale,
         "sidebar_visible": prefs.sidebar_visible,
+        "predictions": prefs.predictions,
         "shortcuts": prefs.shortcuts,
     })
 }

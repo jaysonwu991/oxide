@@ -3022,3 +3022,34 @@ body.sidebar-hidden .sidebar-resizer { display: none; }
   cursor: pointer;
 }
 .memory-forget:hover { color: var(--text); border-color: var(--panel-3); }
+
+/* ---------- the next message, offered as a draft ---------- */
+
+.prediction {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: calc(100% - 24px);
+  max-width: 756px;
+  margin: 0 auto;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: var(--panel-2);
+  color: var(--faint);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.prediction:hover { color: var(--dim); }
+.prediction-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prediction-hint {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 10.5px;
+  color: var(--faint);
+}

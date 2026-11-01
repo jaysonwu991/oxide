@@ -7141,6 +7141,26 @@ async function runSlashCommand(text) {
       }
       await openMcps();
       return true;
+    case "side": {
+      if (!state.session || !state.project) {
+        setStatus(t("side.noThread", "Open a chat first: a side chat starts from one."));
+        return true;
+      }
+      try {
+        const forked = await invoke("fork_session", {
+          project: state.project,
+          id: state.session,
+          name: t("side.name", "Side chat"),
+        });
+        clearPrediction();
+        await newChatTab();
+        await openSession(forked);
+        setStatus(t("side.started", "This is a side chat: it starts from the chat you were in and does not join it."));
+      } catch (error) {
+        setStatus(t("side.failed", "Could not start a side chat: {value0}", { value0: error }), "error");
+      }
+      return true;
+    }
     case "model":
       await openModels();
       return true;
@@ -7587,6 +7607,7 @@ const DEFAULT_PREFS = {
   follow_up: "queue",
   font_scale: 1,
   sidebar_visible: true,
+  predictions: false,
   shortcuts: {},
 };
 
@@ -7617,6 +7638,7 @@ function normalizePrefs(raw) {
   if (raw.follow_up === "steer" || raw.follow_up === "queue") prefs.follow_up = raw.follow_up;
   prefs.font_scale = clampFontScale(raw.font_scale);
   if (typeof raw.sidebar_visible === "boolean") prefs.sidebar_visible = raw.sidebar_visible;
+  if (typeof raw.predictions === "boolean") prefs.predictions = raw.predictions;
   if (raw.shortcuts && typeof raw.shortcuts === "object") {
     for (const [action, chord] of Object.entries(raw.shortcuts)) {
       const text = typeof chord === "string" ? chord.trim().toLowerCase() : "";
@@ -8053,6 +8075,7 @@ function paintSettingsControls() {
     el("settings-font-value").textContent = `${Math.round(state.prefs.font_scale * 100)}%`;
   }
   if (el("settings-sidebar")) el("settings-sidebar").checked = state.prefs.sidebar_visible;
+  if (el("settings-predictions")) el("settings-predictions").checked = Boolean(state.prefs.predictions);
   el("settings").setAttribute("aria-expanded", String(!el("settings-modal").hidden));
 }
 
@@ -8870,6 +8893,65 @@ function togglePanel(tab = state.panelTab) {
   else openPanel(tab);
 }
 
+// ---------- the next message, offered as a draft ----------
+
+state.prediction = "";
+
+function showPrediction(text) {
+  const line = el("prediction");
+  if (!line) return;
+  if (!text) {
+    clearPrediction();
+    return;
+  }
+  state.prediction = text;
+  el("prediction-text").textContent = text;
+  line.hidden = false;
+}
+
+function clearPrediction() {
+  state.prediction = "";
+  if (el("prediction")) el("prediction").hidden = true;
+  if (el("prediction-text")) el("prediction-text").textContent = "";
+}
+
+/// Inserts the suggestion as a draft: nothing is sent, and the reader edits it
+/// like their own words.
+function acceptPrediction() {
+  const text = state.prediction;
+  if (!text) return;
+  const prompt = el("prompt");
+  prompt.value = prompt.value.trim() ? `${prompt.value} ${text}` : text;
+  prompt.style.height = "auto";
+  prompt.style.height = `${Math.min(prompt.scrollHeight, 220)}px`;
+  clearPrediction();
+  prompt.focus();
+  prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  updateSendState();
+}
+
+/// Asks for the next message after a turn ends, when the reader has asked for
+/// suggestions and the thread on screen is the one that just finished.
+async function maybePredict() {
+  clearPrediction();
+  if (!state.prefs.predictions || !state.session || !state.project) return;
+  if (el("prompt").value.trim()) return;
+  const project = state.project;
+  const id = state.session;
+  let suggestion = "";
+  try {
+    const answer = await invoke("predict", { project, id });
+    suggestion = String(answer?.suggestion || "");
+  } catch {
+    // A suggestion is an offer: a provider that cannot answer is nothing to say.
+    return;
+  }
+  if (state.session !== id || state.project !== project) return;
+  if (el("prompt").value.trim()) return;
+  if (el("prediction").hidden === false) return;
+  showPrediction(suggestion);
+}
+
 // ---------- the repository's pull requests ----------
 
 /// The list is read when the tab is opened rather than kept warm: the forge
@@ -9596,6 +9678,9 @@ async function initEvents() {
     paintUsage();
     await loadSessions();
     await startNextPendingSend(record);
+    // The turn is over and the next one has not been queued, so the window may
+    // ask what the reader would say next.
+    if (visible && !payload.error) void maybePredict();
   });
   // The requests a thread reported are read from a forge off the listing's own
   // thread, so a state that landed after the sidebar was drawn is what this
@@ -10108,6 +10193,10 @@ function init() {
   el("settings-font-larger").onclick = () => resizeText(1);
   el("settings-sidebar").onchange = (event) =>
     savePrefs({ sidebar_visible: Boolean(event.target?.checked) });
+  el("settings-predictions").onchange = (event) => {
+    void savePrefs({ predictions: Boolean(event.target?.checked) });
+    if (!event.target?.checked) clearPrediction();
+  };
   el("command-input").addEventListener("input", () => {
     state.commandIndex = 0;
     renderCommandMenu();
@@ -10516,6 +10605,8 @@ function init() {
     event.preventDefault();
     el("image-view-close").focus();
   });
+  el("prompt").addEventListener("input", () => clearPrediction());
+  el("prediction").onclick = () => acceptPrediction();
   el("prompt").addEventListener("keydown", (event) => {
     if (event.isComposing) return;
     if (atKey(event)) {
@@ -10524,6 +10615,11 @@ function init() {
     }
     if (paletteKey(event)) {
       event.preventDefault();
+      return;
+    }
+    if (event.key === "Tab" && !event.shiftKey && state.prediction) {
+      event.preventDefault();
+      acceptPrediction();
       return;
     }
     if (event.key === "ArrowUp" && !event.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && el("prompt").value === "") {
@@ -10545,6 +10641,7 @@ function init() {
     }
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
+      clearPrediction();
       send(Boolean(event.shiftKey) && state.busy);
       return;
     }
@@ -10553,6 +10650,7 @@ function init() {
       // Enter is the newline Shift+Enter is in the other mode.
       if (state.prefs.send_key === "mod-enter") return;
       event.preventDefault();
+      clearPrediction();
       send(false);
     }
   });
