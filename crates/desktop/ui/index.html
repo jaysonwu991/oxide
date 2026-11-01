@@ -30,7 +30,51 @@
           data-i18n-title="sidebar.newChat"
           data-i18n-aria="sidebar.newChat"
         ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span data-i18n="sidebar.newChat">New Chat</span></button>
+        <!-- The three ways into the threads a reader already has: add one, find
+             one, and the ones that are asking for attention. -->
+        <div class="sidebar-actions">
+          <button
+            id="sidebar-add"
+            class="icon"
+            title="Add"
+            aria-label="Add"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="add-menu"
+            data-i18n-title="sidebar.add"
+            data-i18n-aria="sidebar.add"
+          ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <button
+            id="search-chats"
+            class="icon"
+            title="Search chats"
+            aria-label="Search chats"
+            data-i18n-title="search.title"
+            data-i18n-aria="search.title"
+          ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m10.4 10.4 3.1 3.1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <button
+            id="activity"
+            class="icon"
+            title="Activity"
+            aria-label="Activity"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="activity-modal"
+            data-i18n-title="activity.title"
+            data-i18n-aria="activity.title"
+          ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 2.2a3.6 3.6 0 0 0-3.6 3.6c0 2.6-.9 3.7-1.5 4.3h10.2c-.6-.6-1.5-1.7-1.5-4.3A3.6 3.6 0 0 0 8 2.2Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span id="activity-dot" class="activity-dot" hidden></span></button>
+        </div>
       </div>
+
+      <section id="add-menu" class="add-menu" role="menu" aria-label="Add" data-i18n-aria="sidebar.add" hidden>
+        <button id="add-new-chat" class="add-row" role="menuitem" data-i18n="add.newChat">New chat</button>
+        <button id="add-new-project" class="add-row" role="menuitem" data-i18n="add.newProject">New project…</button>
+        <button id="add-open-folder" class="add-row" role="menuitem" data-i18n="add.openFolder">Open a folder…</button>
+        <div class="add-rule" role="separator"></div>
+        <button id="add-search" class="add-row" role="menuitem" data-i18n="add.search">Search chats…</button>
+        <button id="add-activity" class="add-row" role="menuitem" data-i18n="add.activity">Activity</button>
+        <button id="add-archived" class="add-row" role="menuitem" data-i18n="add.archived">Archived chats…</button>
+      </section>
 
       <div class="projects-section">
         <div class="projects-header">
@@ -78,6 +122,17 @@
           data-i18n-title="sidebar.checkUpdates"
           data-i18n-aria="sidebar.checkUpdates"
         ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M23 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button
+          id="settings"
+          class="icon"
+          title="Settings"
+          aria-label="Settings"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          aria-controls="settings-modal"
+          data-i18n-title="settings.title"
+          data-i18n-aria="settings.title"
+        ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
       </div>
     </aside>
 
@@ -118,7 +173,24 @@
       </header>
 
       <div class="main-content">
+      <div class="center-column">
       <div class="conversation-pane">
+      <div class="find-bar" id="find-bar" hidden role="search">
+        <input
+          id="find-input"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Find in this chat"
+          aria-label="Find in this chat"
+          data-i18n-placeholder="find.placeholder"
+          data-i18n-aria="find.placeholder"
+        />
+        <span id="find-count" class="find-count" aria-live="polite"></span>
+        <button id="find-prev" class="icon" title="Previous match" aria-label="Previous match" data-i18n-title="find.previous" data-i18n-aria="find.previous"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 12.5V4M4 8l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="find-next" class="icon" title="Next match" aria-label="Next match" data-i18n-title="find.next" data-i18n-aria="find.next"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3.5V12M4 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="find-close" class="icon" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      </div>
       <nav id="message-nav" class="message-nav" aria-label="Jump to a message" data-i18n-aria="ui.jumpToAMessage" hidden></nav>
       <div id="message-preview" class="message-preview" hidden></div>
       <div id="transcript" class="conversation" role="tabpanel"></div>
@@ -391,6 +463,13 @@
       </div>
       </div>
 
+    <aside id="bottom-panel" class="bottom-panel" hidden aria-label="Panel" data-i18n-aria="panel.title">
+      <div class="panel-tabs" role="tablist" aria-label="Panel tabs" data-i18n-aria="panel.tabs">
+        <button id="panel-tab-review" class="panel-tab" role="tab" aria-selected="true" aria-controls="review-modal" data-panel="review" data-i18n="panel.review">Review</button>
+        <button id="panel-tab-terminal" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-terminal" data-panel="terminal" data-i18n="panel.terminal">Terminal</button>
+        <button id="panel-close" class="icon panel-close" title="Hide the panel" aria-label="Hide the panel" data-i18n-title="panel.hide" data-i18n-aria="panel.hide"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="panel-bodies">
     <aside id="review-modal" class="changes-pane" aria-label="Changes" data-i18n-aria="ui.changes" hidden>
       <div class="review-dialog">
         <div class="dock-title"><h2 id="review-title" data-i18n="topbar.viewChanges">Changes</h2>
@@ -406,6 +485,8 @@
         <div class="review-head">
           <select id="review-scope" aria-label="Change scope" data-i18n-aria="ui.changeScope"><option value="turn" data-i18n="changes.lastTurn">Last turn</option><option value="repository" data-i18n="changes.uncommitted">Uncommitted</option></select>
           <span id="review-total" class="review-total"></span>
+          <button id="review-stage-all" class="panel-action" hidden title="Stage every change" aria-label="Stage every change" data-i18n-title="review.stageAllHint" data-i18n-aria="review.stageAll" data-i18n="review.stageAll">Stage all</button>
+          <button id="review-unstage-all" class="panel-action" hidden title="Take every change back out of the index" aria-label="Unstage every change" data-i18n-title="review.unstageAllHint" data-i18n-aria="review.unstageAll" data-i18n="review.unstageAll">Unstage all</button>
           <button id="review-refresh" class="icon" title="Refresh changes" aria-label="Refresh changes" data-i18n-title="common.refresh" data-i18n-aria="common.refresh"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 4v6h-6M20 10a8 8 0 1 0 0 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
 
         </div>
@@ -414,6 +495,16 @@
         </div>
       </div>
     </aside>
+        <div id="panel-terminal" class="panel-terminal" hidden>
+          <div id="terminal-surface" class="terminal-surface" tabindex="0" role="log" aria-live="polite" aria-label="Terminal" data-i18n-aria="terminal.title"></div>
+          <div id="terminal-state" class="terminal-state" hidden></div>
+        </div>
+      </div>
+    </aside>
+      </div>
+
+
+
 
     <aside id="details-panel" class="details-pane" aria-label="Project details" data-i18n-aria="topbar.projectDetails" hidden>
       <div class="details-card">
@@ -614,12 +705,19 @@
           <tr><td>Shift+Enter</td><td data-i18n="help.newline">Newline</td></tr>
           <tr><td>⌘⇧Enter / Ctrl+Shift+Enter</td><td data-i18n="help.opposite">Use the opposite follow-up behavior once</td></tr>
           <tr><td>⌘V / Ctrl+V</td><td data-i18n="help.paste">Attach a clipboard image</td></tr>
+          <tr><td>⌘K / Ctrl+K</td><td data-i18n="help.commandMenu">Open the command menu</td></tr>
+          <tr><td>⌘, / Ctrl+,</td><td data-i18n="help.settings">Open settings</td></tr>
           <tr><td>⌘T / Ctrl+T</td><td data-i18n="help.newTab">New chat tab</td></tr>
           <tr><td>⌘W / Ctrl+W</td><td data-i18n="help.closeTab">Close chat tab</td></tr>
+          <tr><td>⌘⇧T / Ctrl+Shift+T</td><td data-i18n="help.reopenTab">Reopen the closed tab</td></tr>
+          <tr><td>⌘⌥W / Ctrl+Alt+W</td><td data-i18n="help.closeOtherTabs">Close the other tabs</td></tr>
           <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td data-i18n="help.cycleTab">Next / previous chat tab</td></tr>
           <tr><td>⌘1…⌘9 / Ctrl+1…9</td><td data-i18n="help.sessionKey">Open the thread at that place in the sidebar</td></tr>
+          <tr><td>⌘[ / ⌘]</td><td data-i18n="help.history">Back / forward through the chats you have read</td></tr>
+          <tr><td>⌘B / Ctrl+B</td><td data-i18n="help.sidebar">Show or hide the sidebar</td></tr>
+          <tr><td>⌘+ / ⌘- / ⌘0</td><td data-i18n="help.textSize">Larger, smaller, actual size</td></tr>
           <tr><td>Shift+Tab / Ctrl+R</td><td data-i18n="help.reasoning">Cycle reasoning</td></tr>
-          <tr><td>Ctrl+K</td><td data-i18n="help.model">Open the model picker</td></tr>
+          <tr><td>⇧Esc</td><td data-i18n="help.clearUnread">Clear the unread marks</td></tr>
           <tr><td>Ctrl+/</td><td data-i18n="help.help">Toggle this help</td></tr>
           <tr><td>↑ / ↓</td><td data-i18n="help.reviewFiles">Walk a change review's files</td></tr>
           <tr><td>Escape</td><td data-i18n="help.escape">Close any dialog</td></tr>
@@ -716,8 +814,254 @@
       </div>
     </div>
 
-    <div id="toast-list" class="toast-list" aria-label="Notifications" data-i18n-aria="toast.notifications"></div>
+    <div
+      id="settings-modal"
+      class="overlay"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-title"
+    >
+      <div class="dialog settings-sheet">
+        <div class="settings-head">
+          <h2 id="settings-title" data-i18n="settings.title">Settings</h2>
+          <button
+            id="settings-close"
+            class="icon"
+            title="Close"
+            aria-label="Close"
+            data-i18n-title="common.close"
+            data-i18n-aria="common.close"
+          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        </div>
+        <div class="settings-body">
+          <nav class="settings-nav" role="tablist" aria-label="Settings sections" data-i18n-aria="settings.sections">
+            <button
+              id="settings-tab-general"
+              class="settings-tab active"
+              role="tab"
+              aria-selected="true"
+              aria-controls="settings-page-general"
+              data-settings-section="general"
+              data-i18n="settings.general"
+            >General</button>
+            <button
+              id="settings-tab-appearance"
+              class="settings-tab"
+              role="tab"
+              aria-selected="false"
+              aria-controls="settings-page-appearance"
+              data-settings-section="appearance"
+              data-i18n="settings.appearance"
+            >Appearance</button>
+            <button
+              id="settings-tab-keyboard"
+              class="settings-tab"
+              role="tab"
+              aria-selected="false"
+              aria-controls="settings-page-keyboard"
+              data-settings-section="keyboard"
+              data-i18n="settings.keyboard"
+            >Keyboard</button>
+          </nav>
+          <div class="settings-pages">
+            <section
+              id="settings-page-general"
+              class="settings-page"
+              role="tabpanel"
+              aria-labelledby="settings-tab-general"
+              data-settings-page="general"
+            >
+              <div class="settings-field">
+                <div class="settings-label" data-i18n="settings.sendKey">Sending a message</div>
+                <div class="settings-hint" data-i18n="settings.sendKeyHint">Which key sends the message you have typed.</div>
+                <div class="settings-segments" role="radiogroup" aria-labelledby="settings-send-key-label">
+                  <span id="settings-send-key-label" hidden data-i18n="settings.sendKey">Sending a message</span>
+                  <button
+                    id="settings-send-enter"
+                    class="settings-segment"
+                    role="radio"
+                    aria-checked="true"
+                    data-send-key="enter"
+                    data-i18n="settings.enterSends"
+                  >Enter sends</button>
+                  <button
+                    id="settings-send-mod-enter"
+                    class="settings-segment"
+                    role="radio"
+                    aria-checked="false"
+                    data-send-key="mod-enter"
+                    data-i18n="settings.modEnterSends"
+                  >⌘Enter sends</button>
+                </div>
+              </div>
+              <div class="settings-field">
+                <div class="settings-label" data-i18n="settings.followUp">A message sent while a turn runs</div>
+                <div class="settings-hint" data-i18n="settings.followUpHint">What the next message does while Oxide is still working.</div>
+                <div class="settings-segments" role="radiogroup" aria-label="Follow-up behavior" data-i18n-aria="settings.followUp">
+                  <button
+                    id="settings-follow-queue"
+                    class="settings-segment"
+                    role="radio"
+                    aria-checked="true"
+                    data-follow-up="queue"
+                    data-i18n="settings.followQueue"
+                  >Wait for the next run</button>
+                  <button
+                    id="settings-follow-steer"
+                    class="settings-segment"
+                    role="radio"
+                    aria-checked="false"
+                    data-follow-up="steer"
+                    data-i18n="settings.followSteer"
+                  >Steer the running turn</button>
+                </div>
+              </div>
+            </section>
+            <section
+              id="settings-page-appearance"
+              class="settings-page"
+              role="tabpanel"
+              aria-labelledby="settings-tab-appearance"
+              data-settings-page="appearance"
+              hidden
+            >
+              <div class="settings-field">
+                <div class="settings-label" data-i18n="settings.fontSize">Text size</div>
+                <div class="settings-hint" data-i18n="settings.fontSizeHint">Scales the whole window. ⌘+ and ⌘- do the same from anywhere.</div>
+                <div class="settings-segments">
+                  <button id="settings-font-smaller" class="settings-segment" data-font-step="-1" data-i18n="settings.smaller">Smaller</button>
+                  <button id="settings-font-reset" class="settings-segment" data-font-step="0" data-i18n="settings.actualSize">Actual size</button>
+                  <button id="settings-font-larger" class="settings-segment" data-font-step="1" data-i18n="settings.larger">Larger</button>
+                  <span id="settings-font-value" class="settings-value">100%</span>
+                </div>
+              </div>
+              <div class="settings-field">
+                <div class="settings-label" data-i18n="settings.sidebar">Sidebar</div>
+                <label class="settings-switch">
+                  <input id="settings-sidebar" type="checkbox" checked />
+                  <span data-i18n="settings.showSidebar">Show the sidebar</span>
+                </label>
+              </div>
+            </section>
+            <section
+              id="settings-page-keyboard"
+              class="settings-page"
+              role="tabpanel"
+              aria-labelledby="settings-tab-keyboard"
+              data-settings-page="keyboard"
+              hidden
+            >
+              <div class="settings-hint settings-keyboard-hint" data-i18n="settings.keyboardHint">Pick a shortcut, then press the keys it should listen for. Escape leaves it as it was.</div>
+              <div id="shortcut-list" class="shortcut-list"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
 
+    <div
+      id="command-menu"
+      class="overlay command-overlay"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command menu"
+      data-i18n-aria="menu.title"
+    >
+      <div class="command-box">
+        <input
+          id="command-input"
+          type="text"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="command-list"
+          aria-autocomplete="list"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Search commands"
+          data-i18n-placeholder="menu.placeholder"
+        />
+        <div id="command-list" class="command-list" role="listbox" aria-label="Commands" data-i18n-aria="menu.title"></div>
+      </div>
+    </div>
+
+    <div
+      id="search-modal"
+      class="overlay command-overlay"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-label="Search chats"
+      data-i18n-aria="search.title"
+    >
+      <div class="command-box search-box">
+        <input
+          id="search-input"
+          type="text"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="search-results"
+          aria-autocomplete="list"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Search chats"
+          data-i18n-placeholder="search.placeholder"
+        />
+        <div id="search-results" class="command-list" role="listbox" aria-label="Chats" data-i18n-aria="search.title"></div>
+      </div>
+    </div>
+
+    <div
+      id="activity-modal"
+      class="overlay"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="activity-title"
+    >
+      <div class="dialog activity-sheet">
+        <div class="settings-head">
+          <h2 id="activity-title" data-i18n="activity.title">Activity</h2>
+          <button
+            id="activity-close"
+            class="icon"
+            title="Close"
+            aria-label="Close"
+            data-i18n-title="common.close"
+            data-i18n-aria="common.close"
+          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        </div>
+        <div id="activity-body" class="activity-body"></div>
+      </div>
+    </div>
+
+    <div
+      id="archived-modal"
+      class="overlay"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="archived-title"
+    >
+      <div class="dialog activity-sheet">
+        <div class="settings-head">
+          <h2 id="archived-title" data-i18n="archived.title">Archived chats</h2>
+          <button
+            id="archived-close"
+            class="icon"
+            title="Close"
+            aria-label="Close"
+            data-i18n-title="common.close"
+            data-i18n-aria="common.close"
+          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        </div>
+        <p class="dialog-sub" data-i18n="archived.subtitle">Threads this window archived. Putting one back returns it to the sidebar where it was.</p>
+        <div id="archived-list" class="session-list archived-list"></div>
+      </div>
+    </div>
+
+    <div id="toast-list" class="toast-list" aria-label="Notifications" data-i18n-aria="toast.notifications"></div>
     <input id="attach-input" type="file" accept="image/*,application/pdf" multiple hidden />
     <input id="folder-picker-input" type="file" webkitdirectory directory multiple hidden />
 

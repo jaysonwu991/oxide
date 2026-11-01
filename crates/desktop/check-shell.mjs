@@ -145,12 +145,14 @@ const emitted = new Set(
     .map((call) => call.match(/"([a-z0-9_-]+)"/)[1]),
 );
 // Two of them the window raises on its own — the update check a menu item asks
-// for — so the events a packet can carry are the engine's and the window's
-// together.
+// for, and the actions the page performs for the menu — so the events a packet
+// can carry are the engine's and the window's together. The window announces
+// most of them through one helper, so its call sites name the event too.
 for (const site of [...code(shell).matchAll(/webContents\.send\(([\s\S]*?)\);/g)].map(([, body]) => body)) {
   const name = /id: "([a-z-]+)"/.exec(site);
   if (name) emitted.add(name[1]);
 }
+for (const [, name] of code(shell).matchAll(/announceEvent\(\s*"([a-z-]+)"/g)) emitted.add(name);
 const listened = new Set([...app.matchAll(/listen\("([a-z-]+)"/g)].map(([, name]) => name));
 // One of them is the window's own rather than the page's — the restart that runs
 // a release an install has put in place — so it is read where the window takes it
@@ -642,10 +644,11 @@ check(
 );
 const clicks = [...menu.matchAll(/\{ label: "([^"]+)", click: /g)].map(([, label]) => label);
 check(
-  "asks the window to check for updates and no more",
+  "asks the window to check for updates, and only about the release",
   JSON.stringify(clicks) === JSON.stringify(["Check for Updates…"]) &&
     /label: "Check for Updates…", click: \(\) => announceCheckUpdates\(\)/.test(menu) &&
-    menu.indexOf('role: "about"') < menu.indexOf("Check for Updates…"),
+    menu.indexOf('role: "about"') < menu.indexOf("Check for Updates…") &&
+    [...menu.matchAll(/announceCheckUpdates\(\)/g)].length === 1,
   clicks.join(", "),
 );
 check(
@@ -659,21 +662,45 @@ const nativeCatalog = text(`${root}crates/core/src/i18n.rs`);
 const nativeRows = [...nativeCatalog.matchAll(/\(\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*,?\s*\)/g)]
   .map((row) => row.slice(1).map((value) => JSON.parse(value)));
 let nativeTemplate;
+let menuEvents = [];
 const menuStub = {
   buildFromTemplate: (template) => template,
   setApplicationMenu: (template) => { nativeTemplate = template; },
 };
 let updateClicks = 0;
 const runMenu = new Function("process", "Menu", "t", "announceTab", "announceCheckUpdates",
+  "nativeAccelerator", "announceEvent",
   localizedMenu.replace("(): void", "()") + "; installMenu();");
 for (const [column, about, updates, edit] of [[1, "About Oxide", "Check for Updates…", "Edit"], [2, "关于 Oxide", "检查更新…", "编辑"]]) {
   const strings = Object.fromEntries(nativeRows.map((entry) => [entry[0], entry[column]]));
-  runMenu({ platform: "darwin" }, menuStub, (key, fallback) => strings[key] || fallback, () => {}, () => { updateClicks++; });
+  runMenu({ platform: "darwin" }, menuStub, (key, fallback) => strings[key] || fallback, () => {}, () => { updateClicks++; },
+    (_action, fallback) => fallback,
+    (id, payload) => menuEvents.push([id, payload]));
   check(`resolved native menu labels from catalog column ${column}`,
     nativeTemplate[0].submenu[0].label === about && nativeTemplate[0].submenu[2].label === updates && nativeTemplate[2].label === edit);
   nativeTemplate[0].submenu[2].click();
 }
 check("kept the translated update menu action wired", updateClicks === 2 && /set_native_language/.test(shell) && /set_native_language/.test(app));
+// Everything else on the bar — the settings sheet, the command menu, the text
+// size, the sidebar and the history — is the page's to perform, so the menu item
+// asks the window over the channel its events travel on rather than doing it in
+// this process. Each id the menu announces has a listener in the page, which is
+// the join a rename on either side would break.
+const updateItem = nativeTemplate[0].submenu[2];
+menuEvents = [];
+for (const top of nativeTemplate) {
+  for (const item of top.submenu ?? []) {
+    if (item.click && item !== updateItem) item.click();
+  }
+}
+const announcedIds = [...new Set(menuEvents.map(([id]) => id))].sort();
+check(
+  "announced the window's own actions over the channel a turn's events travel on",
+  announcedIds.join(",") ===
+      "command-menu,history,open-settings,open-terminal,toggle-panel,toggle-sidebar,zoom" &&
+    announcedIds.every((id) => app.includes(`listen("${id}"`)),
+  announcedIds.join(", "),
+);
 const catalogKeys = new Set(nativeRows.map(([key]) => key));
 const localizedSources = [app, html, shell,
   ...["media/main.js", "src/chat.ts", "src/core/dialogs.ts", "src/core/footer.ts"].map((file) => text(`${root}editors/vscode/${file}`)),

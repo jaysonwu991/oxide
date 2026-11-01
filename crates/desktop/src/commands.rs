@@ -20,6 +20,7 @@ use oxide_core::update_notice;
 use oxide_core::updates::Component;
 use oxide_desktop::at::{AtAnswer, PathCache};
 use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView, SessionView};
+use oxide_desktop::prefs::Prefs;
 use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
 use oxide_desktop::update;
 use serde::{de::DeserializeOwned, Serialize};
@@ -62,6 +63,11 @@ pub struct DesktopState {
     /// The MCP servers, plugin host and language servers each project's last
     /// turn used, so the next turn reuses them instead of starting them again.
     environments: Arc<Mutex<HashMap<PathBuf, oxide_core::runner::TurnEnvironment>>>,
+    /// The terminals the window has open, by the id it was given when it opened
+    /// one. A terminal outlives the panel that shows it — closing the panel puts
+    /// the shell away with it, through `terminal_close`.
+    terminals: Arc<Mutex<HashMap<u64, oxide_desktop::terminal::Terminal>>>,
+    next_terminal: AtomicU64,
     next_run: AtomicU64,
     events: EventSink,
 }
@@ -76,6 +82,8 @@ impl DesktopState {
             launch_update: std::sync::Mutex::new(None),
             runs: Arc::new(Mutex::new(HashMap::new())),
             environments: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
+            next_terminal: AtomicU64::new(1),
             next_run: AtomicU64::new(1),
             events,
         }
@@ -549,6 +557,50 @@ pub async fn all_sessions(state: &DesktopState) -> CmdResult<Vec<SessionView>> {
     Ok(views)
 }
 
+/// The threads the reader archived, which the sidebar leaves out and the listing
+/// that puts one back draws.
+pub async fn archived_sessions(state: &DesktopState) -> CmdResult<Vec<SessionView>> {
+    let manager = state.manager.lock().await;
+    let sessions = manager.all_sessions().map_err(err)?;
+    manager.archived_views(sessions).map_err(err)
+}
+
+/// Searches every stored thread the sidebar lists — the name it was given, the
+/// preview it shows and the messages it holds — and answers the threads that
+/// carry the phrase with the line it was found on.
+///
+/// The scan reads each log, so it runs off the caller's wait: the window asks
+/// once per phrase it settles on rather than once per keystroke.
+pub async fn search_sessions(
+    query: String,
+    state: &DesktopState,
+) -> CmdResult<Vec<oxide_desktop::search::SearchHit>> {
+    let views = {
+        let manager = state.manager.lock().await;
+        let sessions = manager.all_sessions().map_err(err)?;
+        manager.session_views(sessions).map_err(err)?
+    };
+    search_in(&views, &query).await
+}
+
+/// The scan itself, over views the caller already has: the same code the command
+/// runs, so a test can hold the threads it searches without a store on disk.
+async fn search_in(
+    views: &[SessionView],
+    query: &str,
+) -> CmdResult<Vec<oxide_desktop::search::SearchHit>> {
+    let views = views.to_vec();
+    let query = query.to_string();
+    let limit = SEARCH_LIMIT;
+    tokio::task::spawn_blocking(move || oxide_desktop::search::search(&views, &query, limit))
+        .await
+        .map_err(|error| format!("searching the stored threads failed: {error}"))
+}
+
+/// The rows a search answers with: enough to find the thread again without
+/// turning the listing into a second store to page through.
+const SEARCH_LIMIT: usize = 40;
+
 /// Reads the state of the pull requests these threads named, off the command's
 /// own thread: a forge CLI answers in hundreds of milliseconds, or not at all
 /// when the machine is offline, and a listing the sidebar waits on must not wait
@@ -965,6 +1017,164 @@ pub async fn repository_sides(project: String, path: String) -> CmdResult<Value>
     .await
     .map_err(err)?
     .map_err(err)
+}
+
+// ---------- shaping the change before a commit ----------
+
+/// What the index holds for each file the working tree differs in, so the
+/// review pane can offer the action that applies: a file with a working-tree
+/// change can be staged, one with a staged change can have it taken back.
+pub async fn repository_status(
+    project: String,
+) -> CmdResult<Vec<oxide_desktop::staging::FileState>> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || oxide_desktop::staging::states(&root))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+/// One staging action, named by the window. Each of these writes to the
+/// repository, so each is a command of its own rather than a flag on a read.
+pub async fn shape_change(
+    project: String,
+    path: Option<String>,
+    hunk: Option<oxide_desktop::staging::Hunk>,
+    action: String,
+    state: &DesktopState,
+) -> CmdResult<()> {
+    let root = project_dir(&project)?;
+    // One file or hunk at a time is cheap; staging everything walks the tree, and
+    // none of it belongs on a worker the window's other calls share.
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let path = path.as_deref();
+        match (action.as_str(), path, hunk.as_ref()) {
+            ("stage", Some(path), _) => oxide_desktop::staging::stage(&root, path),
+            ("unstage", Some(path), _) => oxide_desktop::staging::unstage(&root, path),
+            ("revert", Some(path), _) => oxide_desktop::staging::revert(&root, path),
+            ("stage-hunk", Some(path), Some(hunk)) => {
+                oxide_desktop::staging::stage_hunk(&root, path, hunk)
+            }
+            ("unstage-hunk", Some(path), Some(hunk)) => {
+                oxide_desktop::staging::unstage_hunk(&root, path, hunk)
+            }
+            ("revert-hunk", Some(path), Some(hunk)) => {
+                oxide_desktop::staging::revert_hunk(&root, path, hunk)
+            }
+            ("stage-all", None, _) => oxide_desktop::staging::stage_all(&root),
+            ("unstage-all", None, _) => oxide_desktop::staging::unstage_all(&root),
+            ("revert-all", None, _) => oxide_desktop::staging::revert_all(&root),
+            ("stage", None, _) | ("unstage", None, _) | ("revert", None, _) => {
+                Err(anyhow::anyhow!("`{action}` names no file to act on"))
+            }
+            (other, _, _) => Err(anyhow::anyhow!("`{other}` is not a staging action")),
+        }
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    // The pane paints what git now holds rather than what it hoped to do.
+    let _ = state;
+    Ok(())
+}
+
+// ---------- the terminal ----------
+
+/// Starts a shell in the thread's folder and hands the window the id it writes
+/// to. Output arrives on `terminal-output` from then on.
+pub async fn terminal_open(
+    project: String,
+    cols: u16,
+    rows: u16,
+    state: &DesktopState,
+) -> CmdResult<Value> {
+    let cwd = project_dir(&project)?;
+    let id = state
+        .next_terminal
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let (terminal, reader) =
+        oxide_desktop::terminal::Terminal::open(&cwd, cols, rows).map_err(err)?;
+    let cwd = terminal.cwd.clone();
+    state.terminals.lock().await.insert(id, terminal);
+    pump_terminal(id, reader, state.events.clone());
+    Ok(json!({ "id": id, "cwd": cwd }))
+}
+
+/// Reads the shell's output on a thread of its own and announces it, so a
+/// command that never returns does not hold a worker the window's calls share.
+fn pump_terminal(id: u64, mut reader: Box<dyn std::io::Read + Send>, events: EventSink) {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        // A read can end in the middle of a character, so the tail waits for the
+        // bytes that complete it rather than being painted as a replacement.
+        let mut carry: Vec<u8> = Vec::new();
+        loop {
+            let count = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(_) => break,
+            };
+            carry.extend_from_slice(&buf[..count]);
+            let text = match std::str::from_utf8(&carry) {
+                Ok(text) => {
+                    let out = text.to_string();
+                    carry.clear();
+                    out
+                }
+                Err(error) => {
+                    let at = error.valid_up_to();
+                    if at == 0 {
+                        // Nothing decodable yet: either a character still
+                        // arriving, or a byte no character contains.
+                        if carry.len() < 4 && error.error_len().is_none() {
+                            continue;
+                        }
+                        carry.drain(..1);
+                        "\u{fffd}".to_string()
+                    } else {
+                        let done = String::from_utf8_lossy(&carry[..at]).into_owned();
+                        carry.drain(..at);
+                        done
+                    }
+                }
+            };
+            if text.is_empty() {
+                continue;
+            }
+            if events
+                .emit("terminal-output", json!({ "terminal": id, "data": text }))
+                .is_err()
+            {
+                break;
+            }
+        }
+        let _ = events.emit("terminal-exit", json!({ "terminal": id }));
+    });
+}
+
+pub async fn terminal_write(id: u64, data: String, state: &DesktopState) -> CmdResult<()> {
+    let mut terminals = state.terminals.lock().await;
+    let terminal = terminals
+        .get_mut(&id)
+        .ok_or_else(|| format!("no terminal `{id}`"))?;
+    terminal.write(data.as_bytes()).map_err(err)
+}
+
+pub async fn terminal_resize(id: u64, cols: u16, rows: u16, state: &DesktopState) -> CmdResult<()> {
+    let mut terminals = state.terminals.lock().await;
+    let terminal = terminals
+        .get_mut(&id)
+        .ok_or_else(|| format!("no terminal `{id}`"))?;
+    terminal.resize(cols, rows).map_err(err)
+}
+
+/// Ends a terminal and the shell with it. A window that has already closed the
+/// panel asks again — a terminal that is not there was closed once already.
+pub async fn terminal_close(id: u64, state: &DesktopState) -> CmdResult<()> {
+    if let Some(mut terminal) = state.terminals.lock().await.remove(&id) {
+        terminal.close();
+    }
+    Ok(())
 }
 
 /// Both sides of one file: what the baseline recorded, read out of the snapshot
@@ -1561,6 +1771,8 @@ pub async fn dispatch(
         "reorder_projects" => command_value(reorder_projects(arg(&args, "ids")?, &state).await),
         "list_sessions" => command_value(list_sessions(arg(&args, "project")?, &state).await),
         "all_sessions" => command_value(all_sessions(&state).await),
+        "archived_sessions" => command_value(archived_sessions(&state).await),
+        "search_sessions" => command_value(search_sessions(arg(&args, "query")?, &state).await),
         "set_session_pinned" => command_value(
             set_session_pinned(arg(&args, "id")?, arg(&args, "pinned")?, &state).await,
         ),
@@ -1681,6 +1893,39 @@ pub async fn dispatch(
             .await,
         ),
         "repository_changes" => command_value(repository_changes(arg(&args, "project")?).await),
+        "repository_status" => command_value(repository_status(arg(&args, "project")?).await),
+        "shape_change" => command_value(
+            shape_change(
+                arg(&args, "project")?,
+                optional_arg(&args, "path")?,
+                optional_arg(&args, "hunk")?,
+                arg(&args, "action")?,
+                &state,
+            )
+            .await,
+        ),
+        "terminal_open" => command_value(
+            terminal_open(
+                arg(&args, "project")?,
+                optional_arg(&args, "cols")?.unwrap_or(100),
+                optional_arg(&args, "rows")?.unwrap_or(24),
+                &state,
+            )
+            .await,
+        ),
+        "terminal_write" => {
+            command_value(terminal_write(arg(&args, "id")?, arg(&args, "data")?, &state).await)
+        }
+        "terminal_resize" => command_value(
+            terminal_resize(
+                arg(&args, "id")?,
+                arg(&args, "cols")?,
+                arg(&args, "rows")?,
+                &state,
+            )
+            .await,
+        ),
+        "terminal_close" => command_value(terminal_close(arg(&args, "id")?, &state).await),
         "repository_sides" => {
             command_value(repository_sides(arg(&args, "project")?, arg(&args, "path")?).await)
         }
@@ -1726,6 +1971,8 @@ pub async fn dispatch(
         "language" => command_value(Ok::<Value, String>(language(optional_arg(
             &args, "project",
         )?))),
+        "read_prefs" => command_value(read_prefs()),
+        "write_prefs" => command_value(write_prefs(arg(&args, "patch")?)),
         "set_language" => command_value(set_language(
             optional_arg(&args, "project")?,
             arg(&args, "tag")?,
@@ -1764,6 +2011,28 @@ fn set_language(project: Option<String>, tag: String) -> CmdResult<Value> {
     })?;
     oxide_core::i18n::save(choice).map_err(err)?;
     Ok(oxide_core::i18n::describe(&cwd))
+}
+
+/// The window's own preferences, in the shape the settings sheet paints. A file
+/// that cannot be read is the window's defaults rather than a launch that fails:
+/// the sheet's next save writes the file whole.
+fn read_prefs() -> CmdResult<Value> {
+    Ok(oxide_desktop::prefs::describe(
+        &Prefs::load().unwrap_or_default(),
+    ))
+}
+
+/// Takes the change a control in the settings sheet made and answers with the
+/// preferences as they now stand, so the window paints what was stored rather
+/// than the value it hoped to store.
+fn write_prefs(patch: Value) -> CmdResult<Value> {
+    let mut prefs = Prefs::load().unwrap_or_default();
+    let patch = patch
+        .as_object()
+        .ok_or_else(|| "invalid `patch`: expected an object".to_string())?;
+    prefs.apply(patch).map_err(err)?;
+    prefs.save().map_err(err)?;
+    Ok(oxide_desktop::prefs::describe(&prefs))
 }
 
 #[cfg(test)]
@@ -2171,5 +2440,48 @@ mod tests {
         assert_eq!(view["role"], "tool");
         assert_eq!(view["toolCallId"], "call_1");
         assert_eq!(view["content"], "file-a\nfile-b");
+    }
+
+    /// The search command's answer is the rows the window paints: the phrase the
+    /// thread carries, the line it was found on, and how many the thread holds.
+    #[tokio::test]
+    async fn the_search_answers_with_the_line_the_phrase_is_on() {
+        let dir = std::env::temp_dir().join(format!("oxide_search_cmd_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = SessionLog::create(&dir).unwrap();
+        log.append(&Message {
+            role: "user".into(),
+            content: Some(MessageContent::Text("the login redirect loops".into())),
+            tool_calls: None,
+            tool_call_id: None,
+            thinking: None,
+        })
+        .unwrap();
+        let summary = log.summary().unwrap();
+        let views = vec![SessionView {
+            summary,
+            pinned: false,
+            worktree: None,
+            project: None,
+            pulls: Vec::new(),
+        }];
+
+        let hits = search_in(&views, "redirect").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].matches, 1);
+        assert!(hits[0].snippet.contains("the login redirect loops"));
+        let painted = serde_json::to_value(&hits[0]).unwrap();
+        // The row carries what opening the thread needs, flattened beside the
+        // match: the id, the folder it ran in and the line.
+        assert!(painted.get("id").is_some() && painted.get("cwd").is_some());
+        assert_eq!(painted["snippet"], hits[0].snippet);
+
+        assert!(search_in(&views, "nothing like it")
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(search_in(&views, "   ").await.unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

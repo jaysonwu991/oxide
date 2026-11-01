@@ -367,6 +367,32 @@ const servers = [
 let sessionReadGate = null;
 const archivedThreads = new Map();
 const calls = [];
+// The window's own preferences, as `read_prefs`/`write_prefs` answer with them,
+// and the scale the page asked the window to draw at.
+let storedPrefs = {
+  send_key: "enter",
+  follow_up: "queue",
+  font_scale: 1,
+  sidebar_visible: true,
+  shortcuts: {},
+};
+let prefsError = null;
+const zoomCalls = [];
+// What the window asked of the shell: the terminal is a process, so the command
+// side of it is recorded here the way the page called it.
+const terminalOpened = [];
+const terminalWrites = [];
+const terminalResizes = [];
+const terminalClosed = [];
+const shaped = [];
+let repositoryStates = [];
+// What `search_sessions` and `archived_sessions` answer with, and the phrases the
+// window asked about.
+let searchAnswer = [];
+let searchError = null;
+const searchedFor = [];
+let archivedAnswer = null;
+let archivedError = null;
 let mcpsError = null;
 let createError = null;
 
@@ -991,6 +1017,50 @@ const invoke = async (command, args = {}) => {
       worktrees = worktrees.filter((entry) => entry.name !== args.name);
       return { ...target };
     }
+    case "shape_change":
+      shaped.push({ ...args });
+      return null;
+    case "repository_status":
+      return [...repositoryStates].map((entry) => ({ ...entry }));
+    case "terminal_open":
+      terminalOpened.push({ ...args });
+      return { id: 7, cwd: args.project };
+    case "terminal_write":
+      terminalWrites.push(args.data);
+      return null;
+    case "terminal_resize":
+      terminalResizes.push(args);
+      return null;
+    case "terminal_close":
+      terminalClosed.push(args.id);
+      return null;
+    case "search_sessions":
+      if (searchError) throw searchError;
+      searchedFor.push(args.query);
+      return searchAnswer.map((hit) => ({ ...hit }));
+    case "archived_sessions":
+      if (archivedError) throw archivedError;
+      return (archivedAnswer ?? []).map((row) => ({ ...row }));
+    case "read_prefs":
+      if (prefsError) throw prefsError;
+      return { ...storedPrefs, shortcuts: { ...storedPrefs.shortcuts } };
+    case "write_prefs": {
+      if (prefsError) throw prefsError;
+      const patch = args.patch || {};
+      for (const [key, value] of Object.entries(patch)) {
+        if (key !== "shortcuts") storedPrefs[key] = value;
+      }
+      // The store drops a shortcut the window sends as null, the way the Rust
+      // side does, so a reset is the action's own binding again.
+      for (const [action, chord] of Object.entries(patch.shortcuts || {})) {
+        if (chord === null) delete storedPrefs.shortcuts[action];
+        else storedPrefs.shortcuts[action] = chord;
+      }
+      return { ...storedPrefs, shortcuts: { ...storedPrefs.shortcuts } };
+    }
+    case "set_zoom":
+      zoomCalls.push(args.scale);
+      return null;
     default:
       return null;
   }
@@ -1111,7 +1181,17 @@ vm.runInThisContext(
     " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
-    " bubble, renderMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog };\n",
+    " bubble, renderMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog," +
+    " openSettings, closeSettings, showSettingsSection, paintSettingsControls, renderShortcuts," +
+    " openCommandMenu, closeCommandMenu, renderCommandMenu, runCommand, commandMatches, commandActions," +
+    " loadPrefs, savePrefs, resizeText, toggleSidebar, announceShortcuts, formatChord, matchShortcut," +
+    " openSearch, closeSearch, requestSearch, renderSearchResults, openAddMenu, closeAddMenu," +
+    " openActivity, closeActivity, renderActivity, paintActivityDot, activityGroups," +
+    " openArchived, closeArchived, renderArchived, openFind, closeFind, stepFind, findHits," +
+    " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal," +
+    " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
+    " PANEL_TABS, changeActions, shapeChange, readRepositoryIndex," +
+    " threads, SHORTCUTS, SETTINGS_SECTIONS, DEFAULT_PREFS, pushNav, navBack, navForward, reopenClosedTab, closeOtherTabs, clearUnread };\n",
 );
 
 const app = globalThis.__app;
@@ -2135,16 +2215,22 @@ check(
     /\.composer \{[^}]*max-width: 780px;[^}]*margin: 0 auto;[^}]*border-radius: var\(--radius\);/.test(sheet),
   sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 260),
 );
-// The bar carries no control of its own: the window's settings live where they
-// always did — the sidebar's foot, the composer's own row — so the bar is the
-// folder's chip and the folder's facts, and nothing else to press.
+// The bar carries no control of its own: the window's settings live in the
+// settings sheet the sidebar's foot opens, so the bar is the folder's chip and
+// the folder's facts, and nothing else to press. What is pinned is the bar
+// itself — the sheet is a surface of its own, reached from the foot and from
+// `⌘,`, and none of its controls belong in this row.
+const composerStrip = shell.slice(
+  shell.indexOf('class="composer-strip"'),
+  shell.indexOf('class="composer"'),
+);
+const stripButtons = [...composerStrip.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1]);
 check(
   "kept the bar down to the folder's chip and the folder's facts",
-  !/id="settings"/.test(shell) &&
-    !/settings-modal/.test(shell) &&
-    !/\.settings-(row|list|label|detail)/.test(sheet) &&
+  stripButtons.join(",") === "project,worktree" &&
+    !/settings-/.test(composerStrip) &&
     !/SETTINGS_ROWS|toggleSettings/.test(source),
-  sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 200),
+  stripButtons.join(",") || composerStrip.slice(0, 120),
 );
 check(
   "gave the folder chip a marker of its own rather than the app's empty state",
@@ -2384,8 +2470,12 @@ const typedGlyphs = ["📁", "📄", "＋", "✕", "×", "◆", "✓", "▾", "�
 // for the same reason: `☐`/`☑` are an assistant's task markers in this window's
 // Markdown and in the panel's, `✦` marks a thinking block the way the terminal's
 // renderer does, and `·` is the separator a line of derived facts is joined
-// with. A mark in a line of text is not a control's drawing.
-const textCharacters = ["·", "☐", "☑", "✔", "✖", "✦"];
+// with. A mark in a line of text is not a control's drawing. The four modifier
+// symbols belong here too, and only here: a shortcut is named in a line of text
+// — `⌘⇧T`, the hint beside a command — exactly as the terminal names it, and a
+// binding is whatever the reader recorded, so the letter beside it comes from
+// the machine's font either way.
+const textCharacters = ["·", "⇧", "⌃", "⌘", "⌥", "☐", "☑", "✔", "✖", "✦"];
 const sharedCharacters = ["✔", "✖", "☐", "☑"];
 // So the characters the window's own strings wear are pinned rather than
 // sampled: a control wearing a character is caught whichever one it is, not only
@@ -2595,12 +2685,17 @@ check(
   `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px`,
 );
 // The shortcut is a reference to a key, so the list itself is written down in
-// the shortcuts dialog, and the handler takes either platform's modifier.
+// the shortcuts dialog, and the handler takes either platform's modifier. The
+// numbers still walk the tree and the help dialog still says so, while the key
+// that opens the pickers moved: `⌘K` is the command menu now, and the model and
+// reasoning pickers are rows in it and in the composer. The digits are the one
+// shortcut that is not in the table — they follow the sidebar's order — so the
+// handler has to take either platform's modifier.
 check(
   "named the shortcut's list in the help dialog and its keys in the handler",
   /<tr><td>⌘1…⌘9 \/ Ctrl\+1…9<\/td><td[^>]*>Open the thread at that place in the sidebar<\/td><\/tr>/.test(
     shell,
-  ) && /!event\.ctrlKey && !event\.metaKey/.test(source),
+  ) && /\(event\.metaKey \|\| event\.ctrlKey\) && event\.key >= "1"/.test(source),
   shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
 );
 // The window around the sidebar already names the app, so the sidebar's own head
@@ -9168,6 +9263,612 @@ check("usage attributes model calls and preserves parent context across backgrou
   el("usage").title.includes("Main agent: 2 model calls") &&
   el("usage").title.includes("Current/latest run: 4 model calls"),
   el("usage").title);
+
+console.log("the settings sheet and the command menu");
+// What the reader stored is what the window paints: the scale is asked of the
+// window rather than written into the page, the sidebar is a class on the body,
+// and the follow-up behavior is the same state the composer's badge reads.
+storedPrefs = {
+  send_key: "mod-enter",
+  follow_up: "steer",
+  font_scale: 1.2,
+  sidebar_visible: false,
+  shortcuts: { "command-menu": "mod+shift+k" },
+};
+await app.loadPrefs();
+check(
+  "painted the preferences the store answered with",
+  zoomCalls.at(-1) === 1.2 &&
+    document.body.classList.contains("sidebar-hidden") &&
+    app.state.followUpBehavior === "steer" &&
+    elementFor("settings-sidebar").checked === false,
+  `${zoomCalls.at(-1)} / ${document.body.classList.contains("sidebar-hidden")} / ${app.state.followUpBehavior}`,
+);
+check(
+  "put the reader's own binding in force",
+  app.formatChord(app.SHORTCUTS.find((action) => action.id === "command-menu") && "mod+shift+k").length > 0 &&
+    app.matchShortcut({ key: "k", metaKey: true, ctrlKey: false, shiftKey: true, altKey: false })?.id === "command-menu" &&
+    app.matchShortcut({ key: "k", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false }) === null,
+  String(app.matchShortcut({ key: "k", metaKey: true, ctrlKey: false, shiftKey: true, altKey: false })?.id),
+);
+// The gear opens the sheet on General, and each tab shows its own page: the
+// sections are named by id, so a control the markup declares is a control the
+// page wired.
+elementFor("settings").onclick();
+check(
+  "opened the settings sheet on its first section",
+  elementFor("settings-modal").hidden === false &&
+    elementFor("settings-page-general").hidden === false &&
+    elementFor("settings-page-keyboard").hidden === true &&
+    elementFor("settings").getAttribute("aria-expanded") === "true",
+  `${elementFor("settings-modal").hidden} / ${elementFor("settings-page-general").hidden}`,
+);
+elementFor("settings-tab-keyboard").onclick();
+check(
+  "showed one section at a time",
+  elementFor("settings-page-keyboard").hidden === false &&
+    elementFor("settings-page-general").hidden === true &&
+    elementFor("settings-tab-keyboard").getAttribute("aria-selected") === "true" &&
+    elementFor("shortcut-list").children.length === app.SHORTCUTS.length,
+  `${elementFor("settings-page-keyboard").hidden} / ${elementFor("shortcut-list").children.length}`,
+);
+// Every action the table names is a row, and the row shows the binding in force
+// with a way back to the one it shipped with.
+const shortcutRow = elementFor("shortcut-list").children.find(
+  (row) => row.dataset?.action === "command-menu",
+);
+check(
+  "listed each action with its binding and a way back",
+  Boolean(shortcutRow) &&
+    shortcutRow.children[0].textContent === "Command menu" &&
+    /[⇧+]K$/.test(String(shortcutRow.children[1].textContent)) &&
+    shortcutRow.children[2].hidden === false,
+  shortcutRow ? shortcutRow.children.map((child) => child.textContent).join(" | ") : "no row",
+);
+storedPrefs.shortcuts = {};
+app.state.prefs.shortcuts = {};
+calls.length = 0;
+elementFor("settings-tab-appearance").onclick();
+elementFor("settings-font-larger").onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const scaleCall = calls.find(([name]) => name === "write_prefs");
+check(
+  "asked the store for a larger scale and painted the answer",
+  scaleCall?.[1]?.patch?.font_scale === 1.3 &&
+    elementFor("settings-font-value").textContent === "130%" &&
+    zoomCalls.at(-1) === 1.3,
+  `${JSON.stringify(scaleCall?.[1]?.patch)} / ${elementFor("settings-font-value").textContent}`,
+);
+elementFor("settings-font-reset").onclick();
+elementFor("settings-sidebar").onchange({ target: { checked: false } });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "kept the sidebar's own switch in the store",
+  document.body.classList.contains("sidebar-hidden") && storedPrefs.sidebar_visible === false,
+  `${document.body.classList.contains("sidebar-hidden")} / ${storedPrefs.sidebar_visible}`,
+);
+elementFor("settings-sidebar").onchange({ target: { checked: true } });
+elementFor("settings-tab-general").onclick();
+elementFor("settings-follow-steer").onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "followed the sheet's choice in the composer's own state",
+  app.state.followUpBehavior === "steer" && storedPrefs.follow_up === "steer",
+  `${app.state.followUpBehavior} / ${storedPrefs.follow_up}`,
+);
+// The send key is the window's, so the box sends on the key the reader chose and
+// leaves Enter to be a newline.
+app.state.prefs.send_key = "mod-enter";
+const prompt = elementFor("prompt");
+prompt.value = "a message";
+calls.length = 0;
+prompt.fire("keydown", { key: "Enter", shiftKey: false, preventDefault() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+const sentOnEnter = calls.some(([name]) => name === "send_prompt");
+prompt.fire("keydown", { key: "Enter", metaKey: true, preventDefault() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "sent on the key the sheet chose",
+  sentOnEnter === false && calls.some(([name]) => name === "send_prompt"),
+  `${sentOnEnter} / ${calls.map(([name]) => name).join(",")}`,
+);
+app.state.prefs.send_key = "enter";
+prompt.value = "";
+// A recorded binding is refused when another action already answers to it, so
+// a key the reader records is always one the window can act on.
+app.showSettingsSection("keyboard");
+check(
+  "offered the keyboard page for recording",
+  elementFor("settings-page-keyboard").hidden === false,
+  String(elementFor("settings-page-keyboard").hidden),
+);
+calls.length = 0;
+app.state.shortcutRecording = "reopen-tab";
+document.fire("keydown", { key: "k", metaKey: true, preventDefault() {}, stopPropagation() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "refused a binding another action already answers to",
+  app.state.shortcutRecording === "reopen-tab" &&
+    !calls.some(([name]) => name === "write_prefs") &&
+    /K is already/.test(String(toastText() || "")),
+  `${app.state.shortcutRecording} / ${toastText()}`,
+);
+calls.length = 0;
+document.fire("keydown", { key: "u", metaKey: true, shiftKey: true, preventDefault() {}, stopPropagation() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "recorded a free binding in the store",
+  app.state.shortcutRecording === null &&
+    storedPrefs.shortcuts["reopen-tab"] === "mod+shift+u" &&
+    calls.some(([name]) => name === "set_native_shortcuts"),
+  `${storedPrefs.shortcuts["reopen-tab"]} / ${calls.map(([name]) => name).join(",")}`,
+);
+calls.length = 0;
+app.renderShortcuts();
+const resetRow = elementFor("shortcut-list").children.find((row) => row.dataset?.action === "reopen-tab");
+resetRow.children[2].onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "put a shortcut back to the binding it shipped with",
+  storedPrefs.shortcuts["reopen-tab"] === undefined,
+  JSON.stringify(storedPrefs.shortcuts),
+);
+app.closeSettings();
+check(
+  "closed the sheet and gave the gear its state back",
+  elementFor("settings-modal").hidden === true &&
+    elementFor("settings").getAttribute("aria-expanded") === "false",
+  `${elementFor("settings-modal").hidden}`,
+);
+// The command menu is the window's own list of actions, filtered as the reader
+// types, and running one row closes the menu and does what it says.
+elementFor("prompt").aftercare = null;
+app.openCommandMenu();
+check(
+  "opened the command menu with the window's actions",
+  elementFor("command-menu").hidden === false &&
+    elementFor("command-list").children.length === app.commandActions().length &&
+    document.activeElement === elementFor("command-input"),
+  `${elementFor("command-menu").hidden} / ${elementFor("command-list").children.length}`,
+);
+const commandLabels = () => elementFor("command-list").children.map((row) => row.children[0]?.textContent);
+check(
+  "named the settings among the actions",
+  commandLabels().some((label) => /Settings/.test(String(label))),
+  commandLabels().join(", "),
+);
+elementFor("command-input").value = "keyboard";
+elementFor("command-input").fire("input", {});
+check(
+  "filtered the actions as the reader typed",
+  elementFor("command-list").children.length === 1 &&
+    /Keyboard shortcuts/.test(String(commandLabels()[0])),
+  commandLabels().join(", "),
+);
+elementFor("command-input").value = "zzz";
+elementFor("command-input").fire("input", {});
+check(
+  "said so rather than showing an empty list",
+  elementFor("command-list").children[0]?.className === "command-empty",
+  String(elementFor("command-list").children[0]?.className),
+);
+elementFor("command-input").value = "settings";
+elementFor("command-input").fire("input", {});
+document.fire("keydown", { key: "Enter", preventDefault() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "ran the row the reader chose",
+  elementFor("command-menu").hidden === true && elementFor("settings-modal").hidden === false,
+  `${elementFor("command-menu").hidden} / ${elementFor("settings-modal").hidden}`,
+);
+app.closeSettings();
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+check("put the menu away on Escape", elementFor("command-menu").hidden === true);
+// The menu bar asks the window for these by name, so the names have to be ones
+// the page listens for: the scale it was asked for is the stored one.
+await emit("open-settings");
+check("opened the sheet from the window's own menu", elementFor("settings-modal").hidden === false);
+await emit("zoom", { action: "reset" });
+check("took the menu's text-size action", zoomCalls.at(-1) === 1, String(zoomCalls.at(-1)));
+await emit("toggle-sidebar");
+await emit("toggle-sidebar");
+check(
+  "took the menu's sidebar action",
+  document.body.classList.contains("sidebar-hidden") === false,
+  String(document.body.classList.contains("sidebar-hidden")),
+);
+app.closeSettings();
+// Nothing about the window's own preferences is the composer's, so a store that
+// cannot answer leaves the window on the values it ships with rather than an
+// empty sheet.
+prefsError = "the store could not be read";
+await app.loadPrefs();
+check(
+  "fell back to the shipped preferences when the store failed",
+  app.state.prefs.font_scale === 1 &&
+    app.state.prefs.sidebar_visible === true &&
+    document.body.classList.contains("sidebar-hidden") === false,
+  JSON.stringify(app.state.prefs),
+);
+prefsError = null;
+storedPrefs = { send_key: "enter", follow_up: "queue", font_scale: 1, sidebar_visible: true, shortcuts: {} };
+await app.loadPrefs();
+
+console.log("the sidebar's add menu, search, activity and the archive");
+/// The search waits for the reader to settle before it reads the store, so a
+/// fired phrase is followed by a pause longer than that wait.
+const settleSearch = () => new Promise((resolve) => setTimeout(resolve, 200));
+// The add menu is the sidebar's own list, and every row on it leads somewhere:
+// a new chat, the two ways into a project, and the three listings.
+elementFor("sidebar-add").onclick();
+const addRows = [...shell.matchAll(/<button id="add-[a-z-]+" class="add-row"/g)].length;
+check(
+  "opened the add menu from the sidebar's plus",
+  elementFor("add-menu").hidden === false &&
+    elementFor("sidebar-add").getAttribute("aria-expanded") === "true" &&
+    addRows === 6,
+  `${elementFor("add-menu").hidden} / ${addRows}`,
+);
+elementFor("add-search").onclick();
+check(
+  "put the menu away and opened the search it names",
+  elementFor("add-menu").hidden === true &&
+    elementFor("search-modal").hidden === false &&
+    elementFor("sidebar-add").getAttribute("aria-expanded") === "false",
+  `${elementFor("add-menu").hidden} / ${elementFor("search-modal").hidden}`,
+);
+// Before a phrase there is nothing to list, and the row says what to type rather
+// than showing an empty box.
+check(
+  "said what to type before anything was searched",
+  elementFor("search-results").children[0]?.textContent === "Type a phrase from a chat, or a name",
+  String(elementFor("search-results").children[0]?.textContent),
+);
+searchAnswer = [
+  {
+    id: "s31",
+    name: "Login redirect",
+    cwd: "/tmp/oxide",
+    preview: "the login redirect loops",
+    modified_at: 1700000300,
+    snippet: "the login redirect loops",
+    matches: 2,
+    in_title: true,
+  },
+];
+elementFor("search-input").value = "redirect";
+elementFor("search-input").fire("input", {});
+await settleSearch();
+const searchRow = elementFor("search-results").children[0];
+check(
+  "searched the store and listed the chat the phrase is in",
+  searchedFor.join(",") === "redirect" &&
+    searchRow?.className.includes("search-row") &&
+    searchRow.children[0].children[0].textContent === "Login redirect" &&
+    searchRow.children[0].children[1].textContent === "the login redirect loops" &&
+    searchRow.children[1].textContent === "2 matches",
+  `${searchedFor.join(",")} / ${searchRow?.children.map((child) => child.textContent).join(" | ")}`,
+);
+searchAnswer = [];
+elementFor("search-input").value = "zzzz";
+elementFor("search-input").fire("input", {});
+await settleSearch();
+check(
+  "said a phrase nothing carries found nothing",
+  elementFor("search-results").children[0]?.textContent === "No chat carries that",
+  String(elementFor("search-results").children[0]?.textContent),
+);
+searchError = "the store is unreadable";
+elementFor("search-input").value = "redirect";
+elementFor("search-input").fire("input", {});
+await settleSearch();
+check(
+  "reported a search that failed rather than an empty list",
+  /the store is unreadable/.test(String(elementFor("search-results").children[0]?.textContent)),
+  String(elementFor("search-results").children[0]?.textContent),
+);
+searchError = null;
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+check("put the search away on Escape", elementFor("search-modal").hidden === true);
+// Activity is what is asking for the reader: the dialog the window holds for
+// them, a thread still writing, and one that finished while they were elsewhere.
+// The threads this check has been driving are held aside first, so the quiet
+// state is the state being read rather than whatever an earlier check left
+// running.
+const heldRecords = [...app.threads.entries()];
+app.threads.clear();
+app.state.pendingApproval = null;
+app.paintActivityDot();
+app.openActivity();
+check(
+  "opened activity quiet when nothing is waiting",
+  elementFor("activity-modal").hidden === false &&
+    elementFor("activity-body").children[0]?.textContent === "Nothing is waiting on you." &&
+    elementFor("activity-dot").hidden === true,
+  String(elementFor("activity-body").children[0]?.textContent),
+);
+app.state.pendingApproval = 17;
+app.paintActivityDot();
+const activityBody = elementFor("activity-body");
+const activityHeading = (index) => activityBody.children[index]?.textContent;
+const activityRowTitle = (index) => activityBody.children[index]?.children[0]?.textContent;
+check(
+  "marked the bell and listed the approval the window is holding",
+  elementFor("activity-dot").hidden === false &&
+    elementFor("activity").className.includes("asking") &&
+    activityHeading(0) === "Waiting for you" &&
+    activityRowTitle(1) === "A tool is waiting for your approval",
+  `${elementFor("activity-dot").hidden} / ${activityHeading(0)} / ${activityRowTitle(1)}`,
+);
+app.state.pendingApproval = null;
+app.paintActivityDot();
+check(
+  "let go of the bell's asking state with the approval",
+  elementFor("activity").className.includes("asking") === false &&
+    elementFor("activity-dot").hidden === true,
+  `${elementFor("activity").className} / ${elementFor("activity-dot").hidden}`,
+);
+for (const [key, record] of heldRecords) app.threads.set(key, record);
+app.closeActivity();
+check(
+  "closed activity and gave the bell its state back",
+  elementFor("activity-modal").hidden === true &&
+    elementFor("activity").getAttribute("aria-expanded") === "false",
+  String(elementFor("activity-modal").hidden),
+);
+// The archive lists what the sidebar leaves out, and puts one back through the
+// same command the sidebar's own toast offers.
+archivedAnswer = [
+  { id: "s41", name: "Old login", cwd: "/tmp/oxide", preview: "old", modified_at: 1700000000 },
+];
+app.openArchived();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const archivedRow = elementFor("archived-list").children[0];
+check(
+  "listed the archived chat with where it ran and when",
+  archivedRow?.className.includes("archived-row") &&
+    archivedRow.children[0].children[0].textContent === "Old login" &&
+    /ago|just now/.test(String(archivedRow.children[0].children[1].textContent)) &&
+    archivedRow.children[1].textContent === "Unarchive",
+  archivedRow ? archivedRow.children.map((child) => child.textContent).join(" | ") : "no row",
+);
+calls.length = 0;
+archivedRow.children[1].onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "put the chat back through the command the sidebar uses",
+  calls.some(([name]) => name === "unarchive_session"),
+  calls.map(([name]) => name).join(","),
+);
+archivedAnswer = [];
+await app.renderArchived();
+check(
+  "said the archive is empty rather than listing nothing",
+  elementFor("archived-list").children[0]?.textContent === "Nothing archived in this window yet.",
+  String(elementFor("archived-list").children[0]?.textContent),
+);
+archivedError = "the archive is unreadable";
+await app.renderArchived();
+check(
+  "reported an archive it could not read",
+  /the archive is unreadable/.test(String(elementFor("archived-list").children[0]?.textContent)),
+  String(elementFor("archived-list").children[0]?.textContent),
+);
+archivedError = null;
+archivedAnswer = null;
+app.closeArchived();
+// Find walks the conversation's own text: the count is what was found, and a
+// transcript with no walker says so rather than counting nothing.
+app.openFind();
+check(
+  "opened the find bar on the conversation",
+  elementFor("find-bar").hidden === false && document.activeElement === elementFor("find-input"),
+  String(elementFor("find-bar").hidden),
+);
+elementFor("find-input").value = "redirect";
+elementFor("find-input").fire("input", {});
+check(
+  "said a transcript it cannot walk has no matches",
+  elementFor("find-count").textContent === "No matches",
+  String(elementFor("find-count").textContent),
+);
+// A DOM that can walk its text is what a real window has: the same bar counts the
+// hits, walks them, and says which one is on screen.
+const fakeNodes = ["the login redirect loops", "redirect again"].map((nodeValue) => ({
+  nodeValue,
+  parentElement: null,
+}));
+document.createTreeWalker = () => {
+  let index = -1;
+  return {
+    get currentNode() {
+      return fakeNodes[index];
+    },
+    nextNode: () => {
+      if (index + 1 >= fakeNodes.length) return false;
+      index += 1;
+      return true;
+    },
+  };
+};
+elementFor("find-input").fire("input", {});
+check(
+  "counted every match the walk found",
+  elementFor("find-count").textContent === "1 of 2",
+  String(elementFor("find-count").textContent),
+);
+elementFor("find-next").onclick();
+check(
+  "walked to the next match and wrapped back",
+  elementFor("find-count").textContent === "2 of 2",
+  String(elementFor("find-count").textContent),
+);
+elementFor("find-prev").onclick();
+elementFor("find-prev").onclick();
+check(
+  "walked back past the first match to the last",
+  elementFor("find-count").textContent === "2 of 2",
+  String(elementFor("find-count").textContent),
+);
+check(
+  "found the phrase in the nodes it walked",
+  app.findHits("redirect").length === 2 && app.findHits("").length === 0,
+  String(app.findHits("redirect").length),
+);
+elementFor("find-close").onclick();
+check(
+  "put the bar away and forgot the matches",
+  elementFor("find-bar").hidden === true && elementFor("find-count").textContent === "",
+  `${elementFor("find-bar").hidden} / ${elementFor("find-count").textContent}`,
+);
+delete document.createTreeWalker;
+
+console.log("the panel and its terminal");
+// The panel is one dock with two bodies: a tab is a body made visible and the
+// other put away, and the panel is only there while one of them is.
+app.openPanel("review");
+check(
+  "opened the panel on its review tab",
+  elementFor("bottom-panel").hidden === false &&
+    elementFor("review-modal").hidden === false &&
+    elementFor("panel-terminal").hidden === true &&
+    elementFor("panel-tab-review").className.includes("active") &&
+    elementFor("panel-tab-review").getAttribute("aria-selected") === "true",
+  `${elementFor("bottom-panel").hidden} / ${elementFor("review-modal").hidden} / ${elementFor("panel-terminal").hidden}`,
+);
+await app.openTerminal();
+check(
+  "switched its body to a shell in the thread's folder",
+  terminalOpened.length === 1 &&
+    terminalOpened[0].project === "/tmp/oxide" &&
+    app.state.terminal.id === 7 &&
+    elementFor("panel-terminal").hidden === false &&
+    elementFor("review-modal").hidden === true &&
+    document.activeElement === elementFor("terminal-surface"),
+  `${JSON.stringify(terminalOpened[0])} / ${app.state.terminal.id}`,
+);
+// What the shell writes is drawn: colours are runs, a carriage return goes back
+// to the start of the line, and a line feed starts the next one.
+app.terminalFeed("\x1b[31mred\x1b[0m plain\r\nsecond");
+await new Promise((resolve) => setTimeout(resolve, 30));
+const termLines = elementFor("terminal-surface").children;
+const firstLine = termLines[0]?.children ?? [];
+check(
+  "drew the shell's colours as runs of a line",
+  termLines.length === 2 &&
+    firstLine.length === 2 &&
+    firstLine[0].textContent === "red" &&
+    firstLine[0].style.color === app.terminalColor("31") &&
+    firstLine[1].textContent === " plain" &&
+    !firstLine[1].style.color &&
+    termLines[1].children[0].textContent === "second",
+  `${termLines.length} lines / ${firstLine.map((span) => span.textContent).join("|")}`,
+);
+check(
+  "named the colours a shell asks for",
+  app.terminalColor("31") === "#e06c75" &&
+    /^rgb\(/.test(app.terminalColor(String(256 + 196))) &&
+    app.terminalColor("") === "",
+  `${app.terminalColor("31")} / ${app.terminalColor("452")}`,
+);
+// A carriage return on a line whose text is longer than what follows overwrites
+// from the start rather than appending, which is what a progress line does.
+app.terminalFeed("\rX");
+await new Promise((resolve) => setTimeout(resolve, 30));
+check(
+  "wrote over the line a carriage return went back to",
+  elementFor("terminal-surface").children[1].children[0].textContent === "Xecond",
+  String(elementFor("terminal-surface").children[1].children[0].textContent),
+);
+// A sequence that arrives in two chunks waits for the rest rather than painting
+// half of itself as text.
+app.terminalFeed("\x1b[3");
+app.terminalFeed("2mgreen");
+await new Promise((resolve) => setTimeout(resolve, 30));
+const lastLine = elementFor("terminal-surface").children.at(-1).children;
+const colored = lastLine.at(-1);
+check(
+  "waited for the rest of a split sequence",
+  colored?.textContent === "green" && colored?.style.color === app.terminalColor("32"),
+  `${lastLine.map((span) => span.textContent).join("|")} / ${colored?.style.color}`,
+);
+// The shell does its own line editing, so the window sends the keys rather than
+// keeping a buffer of its own.
+terminalWrites.length = 0;
+const sendKey = (key, extra = {}) => app.terminalKey({ key, preventDefault() {}, ...extra });
+check(
+  "sent the keys a shell reads",
+  sendKey("Enter") &&
+    sendKey("Backspace") &&
+    sendKey("ArrowUp") &&
+    sendKey("a") &&
+    sendKey("c", { ctrlKey: true }) &&
+    sendKey("k", { metaKey: true }) === false,
+  terminalWrites.join("|"),
+);
+check(
+  "sent them as the bytes a terminal expects",
+  terminalWrites.join("|") === "\r|\x7f|\x1b[A|a|\u0003",
+  JSON.stringify(terminalWrites),
+);
+// Closing the panel ends the shell: a terminal nobody can see must not keep a
+// process alive.
+app.hidePanel();
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "put the shell away with the panel",
+  elementFor("bottom-panel").hidden === true &&
+    elementFor("review-modal").hidden === true &&
+    app.state.terminal.id === null &&
+    terminalClosed.includes(7),
+  `${elementFor("bottom-panel").hidden} / ${terminalClosed.join(",")}`,
+);
+app.togglePanel("review");
+check("brought the panel back", elementFor("bottom-panel").hidden === false);
+app.hidePanel();
+check("put it away again", elementFor("bottom-panel").hidden === true);
+
+console.log("staging a change from the review");
+// The action a row offers is the one that applies: a staged change can be taken
+// back, a working-tree change can be staged, and a tracked file can be reverted.
+repositoryStates = [
+  { path: "src/agent.rs", staged: true, worktree: true, untracked: false },
+  { path: "fresh.md", staged: false, worktree: true, untracked: true },
+];
+await app.readRepositoryIndex("/tmp/oxide");
+const stagedActions = app.changeActions({ path: "src/agent.rs" });
+const freshActions = app.changeActions({ path: "fresh.md" });
+const labelsOf = (node) => node.children.map((child) => child.textContent).join(",");
+check(
+  "offered the action each file's state allows",
+  labelsOf(stagedActions) === "Stage,Unstage,Revert" &&
+    labelsOf(freshActions) === "Stage",
+  `${labelsOf(stagedActions)} / ${labelsOf(freshActions)}`,
+);
+shaped.length = 0;
+stagedActions.children[0].onclick({ stopPropagation() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "asked git to stage the file the row names",
+  shaped.length === 1 &&
+    shaped[0].action === "stage" &&
+    shaped[0].path === "src/agent.rs" &&
+    shaped[0].project === "/tmp/oxide",
+  JSON.stringify(shaped),
+);
+// Reverting throws work away, so it asks first and does nothing when the answer
+// is no.
+shaped.length = 0;
+stagedActions.children[2].onclick({ stopPropagation() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+const asked = elementFor("confirm-modal").hidden === false;
+elementFor("confirm-cancel").onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "asked before reverting, and did nothing when told no",
+  asked && shaped.length === 0,
+  `${asked} / ${JSON.stringify(shaped)}`,
+);
 
 console.log(failures.length ? `\n${failures.length} failed` : "\nall checks passed");
 process.exit(failures.length ? 1 : 0);
