@@ -523,16 +523,63 @@ pub async fn handoff_session(
 // ---------- sessions ----------
 
 pub async fn list_sessions(project: String, state: &DesktopState) -> CmdResult<Vec<SessionView>> {
-    let manager = state.manager.lock().await;
-    let sessions = manager.sessions_for(&PathBuf::from(project)).map_err(err)?;
-    manager.session_views(sessions).map_err(err)
+    let (views, pulls) = {
+        let manager = state.manager.lock().await;
+        let sessions = manager.sessions_for(&PathBuf::from(project)).map_err(err)?;
+        (
+            manager.session_views(sessions).map_err(err)?,
+            manager.pulls(),
+        )
+    };
+    read_pull_states(state, pulls, &views);
+    Ok(views)
 }
 
 /// Sessions across every project, newest first (the cross-repo view).
 pub async fn all_sessions(state: &DesktopState) -> CmdResult<Vec<SessionView>> {
-    let manager = state.manager.lock().await;
-    let sessions = manager.all_sessions().map_err(err)?;
-    manager.session_views(sessions).map_err(err)
+    let (views, pulls) = {
+        let manager = state.manager.lock().await;
+        let sessions = manager.all_sessions().map_err(err)?;
+        (
+            manager.session_views(sessions).map_err(err)?,
+            manager.pulls(),
+        )
+    };
+    read_pull_states(state, pulls, &views);
+    Ok(views)
+}
+
+/// Reads the state of the pull requests these threads named, off the command's
+/// own thread: a forge CLI answers in hundreds of milliseconds, or not at all
+/// when the machine is offline, and a listing the sidebar waits on must not wait
+/// with it. The window is told when an answer lands, and asks for the listing
+/// again.
+fn read_pull_states(
+    state: &DesktopState,
+    pulls: Arc<oxide_desktop::pulls::PullStore>,
+    views: &[SessionView],
+) {
+    let urls: Vec<String> = views
+        .iter()
+        .flat_map(|view| view.pulls.iter().map(|pull| pull.url.clone()))
+        .collect();
+    let stale = pulls.stale(&urls);
+    if stale.is_empty() || !pulls.begin_refresh() {
+        return;
+    }
+    let events = state.events.clone();
+    tokio::spawn(async move {
+        let changed = tokio::task::spawn_blocking(move || {
+            let changed = pulls.refresh(&stale);
+            pulls.end_refresh();
+            changed
+        })
+        .await
+        .unwrap_or(false);
+        if changed {
+            let _ = events.emit("pulls-updated", json!({}));
+        }
+    });
 }
 
 pub async fn set_session_pinned(

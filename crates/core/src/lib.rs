@@ -39,6 +39,7 @@ pub mod plugin;
 pub mod plugin_registry;
 pub mod portkey_usage;
 pub mod pricing;
+pub mod pulls;
 pub mod runner;
 pub mod session;
 pub mod session_state;
