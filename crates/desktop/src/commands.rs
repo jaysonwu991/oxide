@@ -1224,6 +1224,44 @@ pub async fn install_update(state: &DesktopState, token: Option<String>) -> CmdR
     }
 }
 
+/// Downloads the newest release's installer into the reader's Downloads folder,
+/// for a copy the app cannot replace in place: a distribution's package, a
+/// checkout's build, or an installation an administrator owns. The window calls
+/// this from the dialog's Download button, so such a copy still has a way to
+/// reach the newest release without leaving the app.
+///
+/// The progress is reported the way an install reports it — the window paints
+/// one download bar for both — but it is not remembered as the launch's own
+/// install: nothing is put in place here, so there is no restart for a window
+/// that starts later to be offered.
+pub async fn download_update(state: &DesktopState, token: Option<String>) -> CmdResult<Value> {
+    let token = token.unwrap_or_else(update::new_token);
+    let named = token.clone();
+    let answer = update::download_reporting(&token, move |progress| {
+        let _ = state.events.emit(
+            "update-progress",
+            json!({
+                "stage": progress.stage,
+                "version": progress.version,
+                "received": progress.received,
+                "total": progress.total,
+                "token": named,
+            }),
+        );
+    })
+    .await;
+    match answer {
+        Ok(answer) => Ok(answer),
+        Err(error) if update::was_cancelled(&error) => {
+            let _ = state
+                .events
+                .emit("update-failed", json!({ "cancelled": true }));
+            Ok(json!({ "ok": false, "cancelled": true }))
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Stops the install running under `token`, which is what the dialog's Cancel
 /// asks for: the download stops where it is, nothing is put in place, and the
 /// release is offered again by the next check. The token is the install's own,
@@ -1628,6 +1666,9 @@ pub async fn dispatch(
         "check_updates" => command_value(check_updates().await),
         "install_update" => {
             command_value(install_update(&state, optional_arg(&args, "token")?).await)
+        }
+        "download_update" => {
+            command_value(download_update(&state, optional_arg(&args, "token")?).await)
         }
         "cancel_update" => command_value(cancel_update(arg(&args, "token")?)),
         "launch_update" => command_value(launch_update(&state)),

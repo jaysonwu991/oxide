@@ -6183,6 +6183,7 @@ const UPDATE_BUTTONS = [
   "update-later",
   "update-cancel",
   "update-background",
+  "update-download",
   "update-install",
   "update-restart",
 ];
@@ -6236,8 +6237,13 @@ function paintUpdate(check) {
           version: check.current,
         }),
     available
-      ? t("ui.installingDownloadsTheReleaseForThisMachineAndPutsItInThisAppSPlace", "Installing downloads the release for this machine and puts it in this app's place. ") +
+      ? check.installable === true
+        ? t("ui.installingDownloadsTheReleaseForThisMachineAndPutsItInThisAppSPlace", "Installing downloads the release for this machine and puts it in this app's place. ") +
           t("update.keepsRunning", "The app keeps running until it is restarted.")
+        : t(
+            "ui.downloadingFetchesTheInstallerIntoYourDownloadsFolder",
+            "Downloading fetches this release's installer into your Downloads folder. Open it to install the update.",
+          )
       : "",
   );
   paintFacts(check);
@@ -6245,19 +6251,25 @@ function paintUpdate(check) {
   paintProgressBar(null);
   // Only the app itself decides whether it can replace this installation: a
   // copy in a system directory, a distribution's package or a checkout's build
-  // cannot be written over, and the advice line above is the way to install
-  // instead. The release page is where that copy is installed from, and where
-  // the notes are when the release carried none of its own.
+  // cannot be written over. Such a copy still gets the release itself: the
+  // Download button fetches the installer into the reader's Downloads folder,
+  // and the release page stays where the notes are.
   const install = available && check.installable === true;
+  const download = available && Boolean(check.asset && check.asset.url);
   updateButtons({
     "update-close": true,
     "update-page": Boolean(check.releaseUrl) && (!install || !check.notes),
     "update-install": install,
+    "update-download": download,
   });
   if (available) el("update-close").textContent = t("common.dismiss", "Dismiss");
   // The button says what it does rather than naming the release again: the
   // dialog's own title already carries the version it is about.
   if (install) el("update-install").textContent = t("dialog.update.install", "Update");
+  if (download) {
+    el("update-download").className = install ? "ghost" : "primary";
+    el("update-download").textContent = t("dialog.update.download", "Download");
+  }
 }
 
 /// The facts a check leaves: what this machine has, what the release is, and
@@ -6451,6 +6463,45 @@ function newUpdateToken() {
   return `ui-${UPDATE_TOKEN_SEED}${updateTokens}`;
 }
 
+/// Downloads the release the dialog offered into the reader's Downloads folder.
+/// This is the action a copy the app cannot replace in place gets — a system
+/// installation, a checkout's build — so the newest release is reachable from
+/// the dialog without the release page. It is the install's own bar: the file is
+/// the one an install would fetch and verify, only it lands where the reader
+/// opens it.
+async function downloadUpdate() {
+  if (updateInstall) {
+    paintDownloading(updateInstall);
+    return;
+  }
+  const install = {
+    token: newUpdateToken(),
+    stage: "checking",
+    version: (updateCheck && updateCheck.latest) || "",
+    received: 0,
+    total: 0,
+  };
+  updateInstall = install;
+  updateProbe += 1;
+  paintDownloading(install);
+  let answer;
+  try {
+    answer = await invoke("download_update", { token: install.token });
+  } catch (error) {
+    answer = { ok: false, text: String(error) };
+  }
+  if (answer && answer.cancelled === true) return;
+  if (!updateInstall || updateInstall.token !== install.token) return;
+  updateInstall = null;
+  if (!answer || answer.ok !== true) {
+    reportUpdateFailure(
+      (answer && answer.text) || t("ui.theDownloadDidNotFinish", "The download did not finish."),
+    );
+    return;
+  }
+  paintDownloaded(answer);
+}
+
 /// Stops the install the dialog is watching. The reader asked for it, so nothing
 /// is put in place and nothing is reported as having gone wrong: the next check
 /// offers the release again.
@@ -6512,6 +6563,29 @@ function paintInstalled(answer) {
   updateButtons(
     pending ? { "update-close": true } : { "update-later": true, "update-restart": true },
   );
+}
+
+/// A download that landed: the installer is in the reader's Downloads folder,
+/// and opening it from there is the install the release page's would be. No
+/// restart is offered, because nothing was put in place to restart into.
+function paintDownloaded(answer) {
+  const version = (answer && answer.version) || "";
+  updateHead(
+    t("dialog.update.downloaded", "Oxide {version} is downloaded", { version }),
+    t(
+      "ui.openTheInstallerFromYourDownloadsFolderToFinishTheUpdate",
+      "Open the installer from your Downloads folder to finish the update.",
+    ),
+  );
+  const lines = [];
+  if (answer && answer.path) lines.push(`<span class="update-path">${escapeHtml(answer.path)}</span>`);
+  if (answer && answer.text) lines.push(`<span class="update-advice">${escapeHtml(answer.text)}</span>`);
+  el("update-body").innerHTML = lines
+    .map((line) => `<div class="update-line">${line}</div>`)
+    .join("");
+  paintChangelog(null);
+  paintProgressBar(null);
+  updateButtons({ "update-close": true });
 }
 
 /// A failure to check or to install: the CLI's own words, which say which of the
@@ -8040,6 +8114,7 @@ function init() {
   el("update-background").onclick = closeUpdate;
   el("update-page").onclick = openReleaseNotes;
   el("update-install").onclick = installUpdate;
+  el("update-download").onclick = downloadUpdate;
   el("update-cancel").onclick = cancelUpdate;
   el("update-restart").onclick = restartApp;
   el("sessions-close").onclick = () => (el("sessions-modal").hidden = true);
