@@ -1264,6 +1264,34 @@ The pane is deliberately read-only for now: it does not comment, approve or
 merge. Those write to somebody else's pull request, and the confirmation a
 reader deserves before one is a design of its own.
 
+## The next message, offered as a draft
+
+The composer can suggest the line the reader is likely to send. It is off by
+default — it is a model call after every turn — and **Settings → Appearance →
+Composer** turns it on. After a turn ends for the thread on screen, and only when
+the box is empty and the window has not been asked to stop, `predict` reads the
+conversation's tail from the session log and asks the configured model for one
+message, capped at 120 tokens: no tools, no session of its own, and a prompt
+(`src/predict.rs`) that says who spoke and asks for the reader's own next line.
+The answer is cut to its first line, unquoted, stripped of the label a model may
+put in front of it and capped at 280 characters; a full stop, which is the
+model's way of saying nothing follows, is no suggestion at all.
+
+The suggestion is a draft, not a message: **Tab** puts it in the box (or after
+what is already typed), typing puts it away, and a provider that is not
+configured or an answer that says nothing leaves no suggestion rather than an
+error. `src/predict.rs` holds the prompt and the cleaning, so the terminal can
+ask the same question of the same conversation when it grows a composer.
+
+## Side chats
+
+`/side` starts a side chat from the conversation on screen: `fork_session` copies
+its history into a thread of its own, named **Side chat**, and the window opens
+that thread in a new tab. What is asked there does not join the thread it was
+asked beside, and the thread it started from is untouched — going back is the tab
+you came from. It is one command and one rename rather than a mode: the fork is a
+session like any other, so it can be resumed, archived or searched like one.
+
 ## Memories
 
 Settings gained a **Memories** page: what the agent was asked to remember, read

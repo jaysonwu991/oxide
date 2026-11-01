@@ -368,7 +368,8 @@
         </div>
 
         <div id="composer" class="composer">
-          <div id="queue-list" class="queued-messages" aria-label="Queued messages" data-i18n-aria="composer.queued" hidden></div>
+          <button id="prediction" class="prediction" type="button" hidden title="Insert this suggestion" aria-label="Insert this suggestion" data-i18n-title="composer.predictionHint" data-i18n-aria="composer.predictionHint"><span id="prediction-text" class="prediction-text"></span><span class="prediction-hint" data-i18n="composer.predictionKey">Tab</span></button>
+        <div id="queue-list" class="queued-messages" aria-label="Queued messages" data-i18n-aria="composer.queued" hidden></div>
           <div id="queue-menu" class="queued-message-menu" role="menu"
             aria-label="Queued message actions" data-i18n-aria="composer.queuedActions" hidden></div>
           <div id="attachments" class="attachments" hidden></div>
@@ -951,6 +952,14 @@
                   <button id="settings-font-larger" class="settings-segment" data-font-step="1" data-i18n="settings.larger">Larger</button>
                   <span id="settings-font-value" class="settings-value">100%</span>
                 </div>
+              </div>
+              <div class="settings-field">
+                <div class="settings-label" data-i18n="settings.predictions">Composer</div>
+                <label class="settings-switch">
+                  <input id="settings-predictions" type="checkbox" />
+                  <span data-i18n="settings.predictionsLabel">Suggest the next message</span>
+                </label>
+                <div class="settings-hint" data-i18n="settings.predictionsHint">After a turn, asks the model for the message you are likely to send and offers it as a draft. Tab inserts it. This is one extra model call after every turn.</div>
               </div>
               <div class="settings-field">
                 <div class="settings-label" data-i18n="settings.sidebar">Sidebar</div>

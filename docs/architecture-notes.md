@@ -13,7 +13,8 @@ The repository is a Cargo workspace. Shared agent code lives in
 and `src/` the Rust harness it starts: `manager.rs`/`turn.rs`, `prefs.rs` for
 the window's own preferences, `search.rs` for finding a phrase across the stored
 threads, `staging.rs`/`terminal.rs` for shaping the change and running the
-reader's shell, `review.rs` for the repository's pull requests, the window's own
+reader's shell, `review.rs` for the repository's pull requests, `predict.rs` for the
+suggestion the composer offers, the window's own
 command layer, and a single `oxide_invoke` command the page reaches through the
 preload's bridge, one JSON packet per line between the two halves). The Cargo
 package names are `oxide-core`, `oxide` (the CLI), and `oxide-desktop`. The VS

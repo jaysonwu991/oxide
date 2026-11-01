@@ -1078,6 +1078,42 @@ pub async fn shape_change(
     Ok(())
 }
 
+// ---------- the next message, and side chats ----------
+
+/// Asks the configured model for the message the reader is likely to send next.
+/// A suggestion is an offer: a provider that is not configured, or an answer that
+/// says nothing, comes back as no suggestion rather than as a failed run.
+pub async fn predict(project: String, id: String) -> CmdResult<Value> {
+    let root = project_dir(&project)?;
+    let config = oxide_desktop::manager::load_project_config(&root).map_err(err)?;
+    let log = SessionLog::open_ref(&root, &id).map_err(err)?;
+    let messages = log.messages().map_err(err)?;
+    let suggestion = oxide_desktop::predict::suggest(&config, &messages)
+        .await
+        .map_err(err)?;
+    Ok(json!({ "suggestion": suggestion }))
+}
+
+/// Starts a side chat: the conversation so far in a thread of its own, so what is
+/// asked beside a thread does not join it. The new thread is named, since a side
+/// chat is one the reader will look for again.
+pub async fn fork_session(project: String, id: String, name: Option<String>) -> CmdResult<Value> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let log = SessionLog::open_ref(&root, &id)?;
+        let messages = log.messages()?;
+        let fork = SessionLog::fork(&root, &messages)?;
+        let summary = fork.summary()?;
+        if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+            SessionLog::rename(&root, &summary.id, &name)?;
+        }
+        Ok(json!(summary))
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)
+}
+
 // ---------- memories ----------
 
 /// What the agent has been told to remember for this project and for this reader:
@@ -1949,6 +1985,15 @@ pub async fn dispatch(
                 optional_arg(&args, "hunk")?,
                 arg(&args, "action")?,
                 &state,
+            )
+            .await,
+        ),
+        "predict" => command_value(predict(arg(&args, "project")?, arg(&args, "id")?).await),
+        "fork_session" => command_value(
+            fork_session(
+                arg(&args, "project")?,
+                arg(&args, "id")?,
+                optional_arg(&args, "name")?,
             )
             .await,
         ),

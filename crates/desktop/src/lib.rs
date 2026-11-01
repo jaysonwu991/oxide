@@ -15,6 +15,7 @@
 pub mod at;
 pub mod git;
 pub mod manager;
+pub mod predict;
 pub mod prefs;
 pub mod pulls;
 pub mod repository;
