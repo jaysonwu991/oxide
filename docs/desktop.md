@@ -255,11 +255,9 @@ The regions, top to bottom:
   project at all the same button offers the Add-project dialog. The Oxide menu
   offers adding, finding and reopening chats. Activity's bell carries a dot while something is running,
   unread or waiting for an answer; the **Projects**
-  tree, and a footer pinned
-  to the bottom with the three controls that belong to the window rather than to
-  a message: the theme, the interface language and the check for updates, an
-  icon button each (a half-filled circle, a globe, and the same refresh arrow the
-  extension's own check carries), with the settings gear last. The tree groups each project's sessions
+  tree. The navigation rail keeps the window controls in a vertical group at
+  the bottom: theme, interface language, check for updates and settings, with
+  the settings gear last. The sidebar has no separate footer. The tree groups each project's sessions
   under it. Project options and **New task**, and a stored thread's pin and
   archive actions, appear when their row is hovered or holds keyboard focus,
   matching Codex's quiet resting tree. The key a thread answers to is nowhere
