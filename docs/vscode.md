@@ -494,7 +494,11 @@ turns is closed after ten minutes.
   beside a picked label — a question with nothing to pick shows the step with the
   caret already in that field, since typing is the whole of the answer, while one
   that offers options is left alone. **Next** walks to the question after this one (**Back**
-  returns to it, keeping what was already answered), and the last step's
+  returns to it, keeping what was already answered). The fields survive a full
+  transcript refresh for the same request and conversation:
+  typed filenames, selected options, the current step and the field's selection
+  remain intact. A refresh leaves focus where the reader put it. Another chat
+  or a replacement request gets fresh fields. The final
   **Submit** posts the whole set as a `question` frame (`core/questions.ts`;
   `chat.ts::answerQuestion` → `cli.ts`), while **Dismiss** answers with nothing
   at all, which the agent reports to the model as a question nobody answered, and
@@ -1275,6 +1279,19 @@ named in the extension's Output channel (`Oxide 0.36.0 is available (installed:
 says so too, so the offer is never the only thing the reader has to go on.
 
 ## Rendering
+
+The Desktop and Extension composers share atomic deletion for rendered `@path`
+references: Backspace, Delete, word deletion or a selected-range deletion that
+intersects a reference removes the entire reference. Quoted paths, spaces and
+line suffixes remain part of the reference, and Undo restores it in one step.
+Code spans and surrounding prose keep normal editing behavior.
+
+Bare website addresses such as `github.com`, `www.example.org` and
+`docs.example.dev/setup` are linked in the composer with HTTPS destinations.
+The message keeps the text that was typed rather than gaining Markdown link
+syntax after editing. Email addresses, file names, references and code spans are
+excluded from this decoration. `check-markdown-input.mjs` exercises both
+composers in Chromium.
 
 There is no Markdown preview beside the composer: the box is the rendered view,
 with the source painted as formatted text where it is typed. **Up** in an empty

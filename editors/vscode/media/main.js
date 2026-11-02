@@ -98,7 +98,7 @@ function installMarkdownInput(editor, render) {
     if (tag === "CODE" && node.parentNode?.tagName !== "PRE") return `\`${text}\``;
     if (tag === "A") {
       const url = node.getAttribute("href") || "";
-      return text.replace(marker, "") === url ? text : `[${text}](${url})`;
+      return node.hasAttribute("data-editor-autolink") || text.replace(marker, "") === url ? text : `[${text}](${url})`;
     }
     if (/^H[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
     if (tag === "BLOCKQUOTE") return `\n\n${text.trim().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
@@ -258,7 +258,47 @@ function installMarkdownInput(editor, render) {
     return true;
   }
   editor.addEventListener("beforeinput", (event) => {
-    if (composing || event.isComposing || !["insertText", "insertLineBreak"].includes(event.inputType)) return;
+    if (composing || event.isComposing) return;
+    if (event.inputType.startsWith("delete")) {
+      let start = selectionOffset(false);
+      let end = selectionOffset(true);
+      const target = event.getTargetRanges?.()[0];
+      if (target && editor.contains(target.startContainer) && editor.contains(target.endContainer)) {
+        const first = read({ node: target.startContainer, offset: target.startOffset }).indexOf(marker);
+        const last = read({ node: target.endContainer, offset: target.endOffset }).indexOf(marker);
+        if (first >= 0 && last >= first) { start = first; end = last; }
+      }
+      if (start === end) {
+        if (event.inputType.endsWith("Backward")) {
+          const count = event.inputType === "deleteWordBackward"
+            ? source.slice(0, start).match(/\S+\s*$/)?.[0].length || 1 : 1;
+          start = Math.max(0, start - count);
+        } else if (event.inputType.endsWith("Forward")) {
+          const count = event.inputType === "deleteWordForward"
+            ? source.slice(end).match(/^\s*\S+/)?.[0].length || 1 : 1;
+          end = Math.min(source.length, end + count);
+        }
+      }
+      let referenceDeleted = false;
+      // Read rendered references so code spans and ordinary @ text stay editable.
+      for (const reference of editor.querySelectorAll(".file-reference")) {
+        const first = read({ node: reference, offset: 0 }).indexOf(marker);
+        const last = read({ node: reference, offset: reference.childNodes.length }).indexOf(marker);
+        if (first >= 0 && start < last && end > first) {
+          start = Math.min(start, first);
+          end = Math.max(end, last);
+          referenceDeleted = true;
+        }
+      }
+      if (!referenceDeleted) return;
+      event.preventDefault();
+      source = source.slice(0, start) + source.slice(end);
+      remember();
+      paint(start);
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    if (!["insertText", "insertLineBreak"].includes(event.inputType)) return;
     if (event.inputType === "insertText" && event.data === " ") leaveInlineCode(1);
     // Applying text to the Markdown model avoids inheriting a code/bold span
     // when the caret is immediately after its closing delimiter.
@@ -511,21 +551,21 @@ function installMarkdownInput(editor, render) {
 
   // ---------- inline markdown ----------
 
-  function anchor(href, label) {
+  function anchor(href, label, bare = false) {
     const text = label == null ? escapeHtml(href) : label;
-    return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${text}</a>`;
+    return `<a href="${escapeHtml(href)}"${bare ? ' data-editor-autolink=""' : ""} target="_blank" rel="noreferrer">${text}</a>`;
   }
 
   // A bare URL often ends a sentence, so trailing punctuation stays outside the
   // link and an unbalanced closing bracket is handed back to the text.
-  function autolink(url, stash) {
+  function autolink(url, stash, bare = false) {
     let href = url.replace(/[.,;:!?]+$/, "");
     let trail = url.slice(href.length);
     while (href.endsWith(")") && href.split("(").length < href.split(")").length) {
       href = href.slice(0, -1);
       trail = ")" + trail;
     }
-    return href ? stash(anchor(href)) + trail : url;
+    return href ? stash(anchor(bare ? `https://${href}` : href, bare ? escapeHtml(href) : undefined, bare)) + trail : url;
   }
 
   // Link labels can contain balanced brackets, as issue keys in PR titles do.
@@ -574,6 +614,10 @@ function installMarkdownInput(editor, render) {
     s = inlineLinks(s, stash);
     s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
     s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
+    if (references) {
+      s = s.replace(/(^|[\s(])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|org|net|io|dev|app|co|edu|gov|ai|me|info|uk|cn|de|fr|jp)(?::\d{1,5})?(?:[/?#][^\s<>"'`\u0000]*)?)(?=$|[\s),.;:!?])/gi,
+        (_, prefix, url) => prefix + autolink(url, stash, true));
+    }
     if (hardBreaks) s = s.replace(/ {2,}\n|\\\n/g, () => stash("<br>")).replace(/\n/g, " ");
     s = escapeHtml(s);
     s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -1530,7 +1574,7 @@ function installMarkdownInput(editor, render) {
   /// is, the question itself with its own header above it, and the buttons this
   /// position allows. Only the question being asked has its fields shown; the
   /// other blocks stay where they are, holding what was answered in them.
-  function paintQuestionStep(entry) {
+  function paintQuestionStep(entry, focus = true) {
     const questions = entry.item.questions || [];
     const count = questions.length;
     const index = Math.min(Math.max(entry.stepIndex || 0, 0), count - 1);
@@ -1567,7 +1611,7 @@ function installMarkdownInput(editor, render) {
     const shown = entry.blocks[index];
     const free = shown ? shown.querySelector(".qfree") : null;
     const options = Array.isArray(question.options) ? question.options : [];
-    if (free && !options.length && document.activeElement !== free) free.focus();
+    if (focus && free && !options.length && document.activeElement !== free) free.focus();
     paintQuestionActions(entry);
   }
 
@@ -1579,6 +1623,13 @@ function installMarkdownInput(editor, render) {
     const waiting = item.state === "pending";
     entry.el.classList.toggle("waiting", waiting);
     entry.el.classList.toggle("answered", item.state === "answered");
+    const identity = JSON.stringify([item.requestId, item.title, item.questions]);
+    if (waiting && entry.questionIdentity === identity && entry.blocks.length) {
+      paintQuestionStep(entry, false);
+      return;
+    }
+    entry.questionIdentity = waiting ? identity : null;
+    entry.stepIndex = 0;
     entry.body.textContent = "";
     entry.actions.textContent = "";
     entry.blocks = [];
@@ -1837,8 +1888,8 @@ function installMarkdownInput(editor, render) {
     });
   }
 
-  function appendItem(item, keepScroll) {
-    const entry = itemNode(item);
+  function appendItem(item, keepScroll, retained = null) {
+    const entry = retained || itemNode(item);
     entry.item = item;
     entry.el.dataset.id = String(item.id);
     entries.set(item.id, entry);
@@ -1911,6 +1962,11 @@ function installMarkdownInput(editor, render) {
         // may carry, and the state is the one message that repaints from
         // scratch.
         applyLanguage(message.language);
+        const sameConversation = currentSession === (message.sessionId ?? null) &&
+          currentFolder === (message.folder ?? null);
+        const previous = sameConversation ? new Map(entries) : new Map();
+        const focused = document.activeElement;
+        const selection = focused ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
         entries.clear();
         transcript.innerHTML = "";
         transcript.appendChild(empty);
@@ -1923,12 +1979,24 @@ function installMarkdownInput(editor, render) {
           clockSession = currentSession;
         }
         paintHome(message.folder);
-        for (const item of message.items) appendItem(item, false);
+        let restoreFocus = false;
+        for (const item of message.items) {
+          const old = previous.get(item.id);
+          const retain = item.kind === "question" && item.state === "pending" &&
+            old?.item.kind === "question" && old.item.state === "pending" &&
+            old.questionIdentity === JSON.stringify([item.requestId, item.title, item.questions]);
+          if (retain && focused && old.el.contains(focused)) restoreFocus = true;
+          appendItem(item, false, retain ? old : null);
+        }
         setStatus(message.status, message.busy, message.queued, message.queue, message.followUpBehavior);
         setRun(message.run);
         setFooter(message.footer);
         setChips(message.context, message.attachments);
         scrollDown(true);
+        if (restoreFocus) {
+          focused.focus({ preventScroll: true });
+          if (selection[0] != null && focused.setSelectionRange) focused.setSelectionRange(...selection);
+        }
         return;
       }
       case "push":

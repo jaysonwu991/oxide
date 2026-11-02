@@ -76,7 +76,10 @@ class StubElement {
     this.id = id;
     this.isContentEditable = id === "prompt";
     this.children = [];
-    this.style = {};
+    this.style = {
+      setProperty(name, value) { this[name] = value; },
+      removeProperty(name) { delete this[name]; },
+    };
     this.dataset = {};
     this.hidden = true;
     this.value = "";
@@ -1254,7 +1257,7 @@ vm.runInThisContext(
     " openSettings, closeSettings, showSettingsSection, paintSettingsControls, renderShortcuts," +
     " openCommandMenu, closeCommandMenu, renderCommandMenu, runCommand, commandMatches, commandActions," +
     " loadPrefs, savePrefs, resizeText, toggleSidebar, announceShortcuts, formatChord, matchShortcut," +
-    " openSearch, closeSearch, requestSearch, renderSearchResults, openSearchRow, openAddMenu, closeAddMenu," +
+    " openSearch, closeSearch, requestSearch, renderSearchResults, openSearchRow," +
     " openActivity, closeActivity, renderActivity, paintActivityDot, activityGroups," +
     " openArchived, closeArchived, renderArchived, openFind, closeFind, stepFind, findHits," +
     " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal," +
@@ -2245,7 +2248,7 @@ check(
   /\.status \{[^}]*color: var\(--faint\);[^}]*font-size: 11.5px;/.test(sheet) &&
     /\.status\[data-level="error"\] \{ color: var\(--error\); \}/.test(sheet) &&
     /#stop\.run-control \{[^}]*width: 30px;/.test(sheet) &&
-    /#usage \{ color: var\(--faint\); font-size: 11.5px;/.test(sheet),
+    /#usage \{[^}]*color: var\(--faint\); font-size: 11.5px;/.test(sheet),
   sheet.slice(sheet.indexOf(".status {"), sheet.indexOf(".status {") + 220),
 );
 // The row is one line of facts and readings, however long the folder's own names
@@ -2285,7 +2288,7 @@ check(
   /\.composer-strip \{[^}]*width: calc\(100% - 24px\);[^}]*max-width: 756px;[^}]*margin: 0 auto;[^}]*background: var\(--panel-2\);[^}]*border: 1px solid var\(--border\);[^}]*border-bottom: none;[^}]*border-radius: 10px 10px 0 0;/.test(
     sheet,
   ) &&
-    /\.composer \{[^}]*max-width: 780px;[^}]*margin: 0 auto;[^}]*border-radius: var\(--radius\);/.test(sheet),
+    /\.composer \{[^}]*max-width: 780px;[^}]*margin: 0 auto;[^}]*border-radius: 20px;/.test(sheet),
   sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 260),
 );
 // The bar carries no control of its own: the window's settings live in the
@@ -2334,7 +2337,7 @@ for (const [id, label] of [
 ]) {
   const button = buttonFor(id);
   check(
-    `made ${id} an icon-only button`,
+    `kept ${id} labelled and accessible`,
     // The words are in the tooltip rather than the button: the label exactly,
     // then either the line break a second hint follows or the closing quote.
     new RegExp(`title="${label}(&#10;|")`).test(button) &&
@@ -2358,9 +2361,8 @@ const railUtilities = shell.slice(shellAt('class="rail-utilities"'), shellAt("</
 const composerLeft = shell.slice(shellAt('class="composer-left"'), shellAt('class="composer-right"'));
 const idsIn = (markup) => (markup.match(/id="[a-z-]+"/g) || []).join(" ");
 check(
-  "kept window utilities in the rail and message controls in the composer",
-  /id="theme"[^>]*title="Theme"[^>]*aria-label="Theme"/.test(railUtilities) &&
-    /id="update"[^>]*title="Check for updates"/.test(railUtilities) &&
+  "kept settings in the rail and message controls in the composer",
+  railUtilities.includes('id="settings"') &&
     !/id="(connect|trust|permissions|help)"/.test(railUtilities) &&
     ["connect", "trust", "permissions", "help"].every((id) =>
       composerLeft.includes(`id="${id}"`),
@@ -2369,15 +2371,14 @@ check(
   `rail: ${idsIn(railUtilities)} · composer: ${idsIn(composerLeft)}`,
 );
 check(
-  "merged all window utilities into the rail without a duplicate settings button or sidebar footer",
-  ["theme", "language", "update", "settings"].every((id) =>
-    railUtilities.includes(`id="${id}"`) && buttonFor(id).includes('class="rail-button"'),
-  ) && !shell.includes('class="sidebar-foot"') && !shell.includes('id="rail-settings"'),
+  "left only Settings in the rail utilities",
+  ["theme", "language", "update"].every((id) => !railUtilities.includes(`id="${id}"`)) &&
+    railUtilities.includes('id="settings"') && buttonFor("settings").includes('class="rail-button"') && !shell.includes('class="sidebar-foot"') && !shell.includes('id="rail-settings"'),
   idsIn(railUtilities),
 );
 check(
-  "ordered composer utilities as provider, access, agents, approvals and shortcuts",
-  ["attach", "connect", "trust", "agents", "permissions", "help"].every((id, index, ids) =>
+  "kept tools together before the visible approvals control",
+  ["attach", "composer-tools", "connect", "trust", "agents", "help", "permissions"].every((id, index, ids) =>
     index === 0 || composerLeft.indexOf(`id="${ids[index - 1]}"`) < composerLeft.indexOf(`id="${id}"`),
   ),
   idsIn(composerLeft),
@@ -2392,12 +2393,12 @@ for (const [id, title, label] of [
 ]) {
   const button = buttonFor(id);
   check(
-    `made ${id} an icon-only button`,
+    `kept ${id} labelled and accessible`,
     button.includes('class="chip chip-icon"') &&
       button.includes(`title="${title}"`) &&
       button.includes(`aria-label="${label}"`) &&
       button.includes("<svg") &&
-      /<\/svg>$/.test(button),
+      (id === "attach" ? /<\/svg>$/.test(button) : button.includes("<span")),
     button,
   );
 }
@@ -2754,8 +2755,8 @@ const rightPadding = (row) => {
 };
 check(
   "let sidebar titles use the idle action strip without moving under its controls",
-  rightPadding(".project-item") === 10 &&
-    rightPadding(".session-item") === 10 &&
+  rightPadding(".project-item") === 8 &&
+    rightPadding(".session-item") === 6 &&
     /\.project-item::after,[\s\S]*?\.session-item::after \{[^}]*width: 54px;[^}]*pointer-events: none;/.test(sheet) &&
     /\.project-item:hover::after,[\s\S]*?\.session-item:focus-within::after \{ opacity: 1; \}/.test(sheet) &&
     /\.row-more,[\s\S]*?\.row-archive \{[^}]*z-index: 1;/.test(sheet),
@@ -2796,16 +2797,17 @@ check(
   ) && /\(event\.metaKey \|\| event\.ctrlKey\) && event\.key >= "1"/.test(source),
   shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
 );
-// The sidebar groups its app menu, activity and search above New Chat.
+// The sidebar groups its title, activity and search above New Chat.
 const newChatButton = buttonFor("new-chat");
 check(
-  "placed the app menu, activity and search above the New Chat action",
+  "placed the plain title, activity and search above the New Chat action",
   shellAt('id="new-chat"') > 0 &&
     shellAt('id="new-chat"') < shellAt('class="projects-section"') &&
-    shellAt('id="sidebar-add"') < shellAt('id="activity"') &&
+    shellAt('class="sidebar-brand"') < shellAt('id="activity"') &&
     shellAt('id="activity"') < shellAt('id="search-chats"') &&
     shellAt('id="search-chats"') < shellAt('id="new-chat"') &&
-    buttonFor("sidebar-add").includes('class="sidebar-brand"') &&
+    shell.includes('<span class="sidebar-brand">Oxide</span>') &&
+    !shell.includes('id="sidebar-add"') && !shell.includes('id="add-menu"') &&
     newChatButton.includes(`title="New Chat&#10;`) &&
     newChatButton.includes('aria-label="New Chat"') &&
     newChatButton.includes('<svg') &&
@@ -2868,7 +2870,8 @@ for (const selector of scrolledRows) {
   const padding = rightPaddingOf(selector);
   check(
     `kept ${selector}'s rows clear of the scrollbar's lane`,
-    Number.isFinite(padding) && Number.isFinite(laneWidth) && padding >= laneWidth + 2,
+    Number.isFinite(padding) && Number.isFinite(laneWidth) &&
+      (selector === ".projects-tree" ? padding === 4 : padding >= laneWidth + 2),
     `lane ${laneWidth} · padding-right ${padding}`,
   );
 }
@@ -2940,31 +2943,20 @@ check(
   scrolledBox.className,
 );
 
-// The rail's own button, because the menu item that opens the same dialog
-// is macOS's: Windows and Linux build no menu bar, so the window is the way in
-// there. The dialog reports the CLI's release, so the note under it says which
-// installation an install would touch.
+const appearanceSettings = shell.slice(shellAt('id="settings-page-appearance"'), shellAt('id="settings-page-notifications"'));
+const generalSettings = shell.slice(shellAt('id="settings-page-general"'), shellAt('id="settings-page-appearance"'));
 const updateButton = buttonFor("update");
-check(
-  "offered Check for Updates in the navigation rail",
-  updateButton.includes('class="rail-button"') &&
-    updateButton.includes('title="Check for updates"') &&
-    updateButton.includes('aria-label="Check for updates"') &&
-    railUtilities.includes('id="update"'),
-  updateButton,
-);
-// The two that stayed in the foot are glyphs too, so the sidebar's own row has
-// no words in it either.
-check(
-  "drew the rail utilities as glyphs",
-  ["theme", "update"].every((id) => buttonFor(id).includes("<svg") && /<\/svg>$/.test(buttonFor(id))),
-  `${buttonFor("theme")} / ${updateButton}`,
-);
+check("moved theme and language into Appearance settings",
+  ["theme", "language"].every((id) => appearanceSettings.includes(`id="${id}"`) &&
+    buttonFor(id).includes('class="ghost"')));
+check("offered Check for updates in General settings",
+  generalSettings.includes('id="update"') && updateButton.includes('class="ghost"') &&
+    updateButton.includes('aria-label="Check for updates"'));
 check(
   "put the dialog among the overlays Escape closes",
   /<div id="update-modal" class="overlay" role="dialog" aria-modal="true" aria-labelledby="update-title" hidden>/.test(
     shell,
-  ) && shellAt('id="update"') < shellAt('id="update-modal"'),
+  ) && source.includes('"update-modal",'),
   String(shellAt('id="update-modal"')),
 );
 check(
@@ -5335,7 +5327,7 @@ if (catalogSkipped) {
   // from a folder and the built-ins are what the app performs itself, so the
   // core answers a projectless ask with those rather than leaving the menu empty.
   // The built-ins the core names this app for: a command another front-end
-  // performs (`/agent` is the VS Code panel's) is not a row here, since taking
+  // performs (`/init` is the terminal's) is not a row here, since taking
   // it would reach the app's "not available" note rather than doing anything.
   const builtinRows = catalog.filter(
     (entry) =>
@@ -5950,7 +5942,7 @@ check(
     elementFor("send").hidden === true &&
     document.body.classList.contains("running") &&
     /body\.running \.composer-strip \{ display: none; \}/.test(sheet) &&
-    /body\.running \.composer \{ border-radius: var\(--radius\); \}/.test(sheet),
+    /body\.running \.composer \{ border-radius: 20px; \}/.test(sheet),
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden}`,
 );
 check(
@@ -7542,6 +7534,7 @@ const progressFill = elementFor("update-progress-fill");
 const updateOpen = () => elementFor("update-modal").hidden === false;
 const offered = (button) => button.hidden === false;
 
+app.openSettings("general");
 calls.length = 0;
 elementFor("update").onclick(press({ target: elementFor("update") }));
 check(
@@ -7549,7 +7542,7 @@ check(
   projectCalls("check_updates").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
-check("opened the dialog from the sidebar's own button", updateOpen(), String(elementFor("update-modal").hidden));
+check("opened the dialog from the Settings update button", updateOpen(), String(elementFor("update-modal").hidden));
 await nextTick();
 check(
   "named the release the app's own train resolved",
@@ -8606,6 +8599,7 @@ check(
   "drew the request a thread reported on its row, in its state",
   pullMark?.classList.contains("state-merged") === true &&
     pullMark.title === "Pull request #266 · Merged" &&
+    pullMark.innerHTML === app.ICONS.pullMerged &&
     pullRow.classList.contains("has-pull"),
   `${pullMark?.className} / ${pullMark?.title}`,
 );
@@ -8626,6 +8620,15 @@ check(
   ).length === 1,
   elementFor("projects-tree").outline(),
 );
+for (const [state, icon] of [["closed", app.ICONS.pullClosed], ["open", app.ICONS.pull], [null, app.ICONS.pull]]) {
+  app.state.sessions = [{ ...pullThread, pulls: [{ ...pullThread.pulls[0], state }] }];
+  await app.renderProjectsTree();
+  const badge = elementFor("projects-tree").querySelector(".session-pull");
+  check(`distinguished a ${state || "unknown"} request on the sidebar`,
+    badge?.innerHTML === icon && badge.classList.contains(`state-${state || "unknown"}`));
+}
+app.state.sessions = [pullThread];
+await app.renderProjectsTree();
 
 // The project card's branch row is where a thread's request is opened from: it
 // names the branch and the request, and a thread with no request leaves the row
@@ -8971,6 +8974,12 @@ check("dismissed the reasoning dropdown on an outside click", elementFor("reason
 
 console.log("composer agents");
 projectInfo = { ...projectFacts(128000), agents: [{ name: "review", description: "Review changes" }] };
+calls.length = 0;
+await app.runSlashCommand("/agent");
+check("opened the existing agent picker through /agent without sending a prompt",
+  !elementFor("agents-modal").hidden && elementFor("agents-list").children.length === 2 &&
+    projectCalls("send_prompt").length === 0);
+elementFor("agents-modal").hidden = true;
 await elementFor("agents").onclick();
 check("opened the agent picker from the composer", !elementFor("agents-modal").hidden && elementFor("agents-list").children.length === 2);
 elementFor("agents-list").children[1].onclick();
@@ -8978,6 +8987,42 @@ check("selected the discovered agent for subsequent turns", app.state.agent === 
 await elementFor("agents").onclick();
 elementFor("agents-list").children[0].onclick();
 check("returned to the default agent", app.state.agent === "");
+const optionsSession = app.state.session;
+const optionsReasoning = app.state.reasoning;
+const optionsPicked = app.state.reasoningPicked;
+app.state.session = "options-chat";
+app.state.agent = "review";
+app.state.reasoning = "high";
+app.state.reasoningPicked = true;
+await app.startPrompt("review this change", [], false);
+const optionsThread = app.visibleThread();
+app.state.session = "other-options-chat";
+app.state.agent = "";
+app.state.reasoning = "low";
+app.state.reasoningPicked = true;
+optionsThread.busy = false;
+calls.length = 0;
+await app.startPrompt("continue reviewing", [], false, optionsThread);
+check("kept a background follow-up's agent and reasoning in its own conversation",
+  projectCalls("send_prompt").at(-1)?.[1].agent === "review" &&
+    projectCalls("send_prompt").at(-1)?.[1].reasoning === "high" &&
+    projectCalls("send_prompt").at(-1)?.[1].session === "options-chat" &&
+    app.state.session === "other-options-chat" && !app.state.busy,
+  JSON.stringify(projectCalls("send_prompt").at(-1)));
+app.withThread(optionsThread, () => app.setIdle());
+app.threads.delete("s:options-chat");
+app.threads.delete("s:other-options-chat");
+app.state.session = optionsSession;
+app.state.reasoning = optionsReasoning;
+app.state.reasoningPicked = optionsPicked;
+const agentProject = app.state.project;
+app.state.project = null;
+calls.length = 0;
+await app.runSlashCommand("/agent");
+check("asked for a project before opening its agents", projectCalls("project_info").length === 0 &&
+  elementFor("projects-modal").hidden === false);
+elementFor("projects-modal").hidden = true;
+app.state.project = agentProject;
 check("kept dock resizing quiet on hover", !/\.dock-resizer:hover/.test(sheet) && !/id="(?:details|changes)-resizer"[^>]*title=/.test(shell));
 
 console.log("Markdown composer and prompt recall");
@@ -9244,9 +9289,10 @@ check(
   calls.some(([name, args]) => name === "language" && args.project === previousProject) && document.documentElement.lang === "en-GB",
   document.documentElement.lang,
 );
+app.openSettings("appearance");
 elementFor("language").onclick(press());
 check(
-  "opened the language picker with a way out",
+  "opened the language picker from Appearance settings with a way out",
   elementFor("language-modal").hidden === false &&
     elementFor("language").getAttribute("aria-expanded") === "true",
   `${elementFor("language-modal").hidden} / ${elementFor("language").getAttribute("aria-expanded")}`,
@@ -9591,7 +9637,7 @@ prefsError = null;
 storedPrefs = { send_key: "enter", follow_up: "queue", font_scale: 1, sidebar_visible: true, shortcuts: {} };
 await app.loadPrefs();
 
-console.log("the sidebar's add menu, search, activity and the archive");
+console.log("the sidebar's search, activity and the archive");
 elementFor("rail-more").onclick();
 check("the rail opens the existing command menu", elementFor("command-menu").hidden === false);
 app.closeCommandMenu();
@@ -9617,25 +9663,8 @@ check("the title bar reflects the saved sidebar visibility",
 /// The search waits for the reader to settle before it reads the store, so a
 /// fired phrase is followed by a pause longer than that wait.
 const settleSearch = () => new Promise((resolve) => setTimeout(resolve, 200));
-// The add menu is the sidebar's own list, and every row on it leads somewhere:
-// a new chat, the two ways into a project, and the three listings.
-elementFor("sidebar-add").onclick();
-const addRows = [...shell.matchAll(/<button id="add-[a-z-]+" class="add-row"/g)].length;
-check(
-  "opened the add menu from the sidebar's plus",
-  elementFor("add-menu").hidden === false &&
-    elementFor("sidebar-add").getAttribute("aria-expanded") === "true" &&
-    addRows === 6,
-  `${elementFor("add-menu").hidden} / ${addRows}`,
-);
-elementFor("add-search").onclick();
-check(
-  "put the menu away and opened the search it names",
-  elementFor("add-menu").hidden === true &&
-    elementFor("search-modal").hidden === false &&
-    elementFor("sidebar-add").getAttribute("aria-expanded") === "false",
-  `${elementFor("add-menu").hidden} / ${elementFor("search-modal").hidden}`,
-);
+elementFor("search-chats").onclick();
+check("opened search from the sidebar control", elementFor("search-modal").hidden === false);
 // Before a phrase there is nothing to list, and the row says what to type rather
 // than showing an empty box.
 check(
@@ -9899,6 +9928,29 @@ check(
 );
 delete document.createTreeWalker;
 
+const originalReviewStorageWrite = localStorage.setItem;
+let savedReviewLayout = null;
+localStorage.setItem = (key, value) => {
+  if (key === "oxide.reviewUnified") savedReviewLayout = value;
+  originalReviewStorageWrite(key, value);
+};
+elementFor("review-layout").onclick();
+check("switched the review to unified diff without replacing its content",
+  elementFor("review-modal").classList.contains("unified") &&
+    elementFor("review-layout").getAttribute("aria-pressed") === "true" &&
+    savedReviewLayout === "true");
+elementFor("review-layout").onclick();
+check("returned the review to old/new columns", !elementFor("review-modal").classList.contains("unified"));
+localStorage.setItem = originalReviewStorageWrite;
+const reviewDivider = elementFor("panel-resizer");
+reviewDivider.fire("keydown", { key: "ArrowLeft", preventDefault() {} });
+check("resized the side panel with the keyboard", reviewDivider.getAttribute("aria-valuenow") === "57");
+reviewDivider.fire("keydown", { key: "Home", preventDefault() {} });
+check("clamped the side panel to its minimum", reviewDivider.getAttribute("aria-valuenow") === "30");
+reviewDivider.fire("keydown", { key: "End", preventDefault() {} });
+check("clamped the side panel to its maximum", reviewDivider.getAttribute("aria-valuenow") === "70");
+reviewDivider.fire("dblclick", {});
+check("reset the side panel width", reviewDivider.getAttribute("aria-valuenow") === "55");
 console.log("the panel and its terminal");
 // The panel is one dock with two bodies: a tab is a body made visible and the
 // other put away, and the panel is only there while one of them is.
