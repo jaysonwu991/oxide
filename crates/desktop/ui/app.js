@@ -7722,6 +7722,7 @@ async function savePrefs(patch) {
 
 function applyPrefs() {
   document.body.classList.toggle("sidebar-hidden", !state.prefs.sidebar_visible);
+  el("sidebar-toggle").setAttribute("aria-expanded", String(state.prefs.sidebar_visible));
   void invoke("set_zoom", { scale: state.prefs.font_scale }).catch(() => {});
   paintSettingsControls();
 }
@@ -8016,12 +8017,19 @@ function pushNav(session) {
   state.navStack.push(session);
   if (state.navStack.length > 40) state.navStack.shift();
   state.navIndex = state.navStack.length - 1;
+  paintNavigation();
+}
+
+function paintNavigation() {
+  el("nav-back").disabled = state.navIndex <= 0;
+  el("nav-forward").disabled = state.navIndex >= state.navStack.length - 1;
 }
 
 async function navTo(index) {
   const session = state.navStack[index];
   if (!session) return;
   state.navIndex = index;
+  paintNavigation();
   state.navigating = true;
   try {
     await openSession(session);
@@ -8411,12 +8419,13 @@ state.searchRows = [];
 state.searchIndex = 0;
 state.searchSeq = 0;
 state.searchError = "";
+state.searchPhrase = "";
 state.searchTimer = 0;
 state.archived = [];
 state.findHits = [];
 state.findIndex = -1;
 
-/// The menu under the sidebar's plus: the ways into a thread that already
+/// The sidebar's Oxide menu: the ways into a thread that already
 /// exists, and the two ways into a new one.
 function openAddMenu() {
   closeOverlays("add-menu");
@@ -8437,6 +8446,7 @@ function closeAddMenu() {
 // ---------- searching chats ----------
 
 function openSearch() {
+  clearTimeout(state.searchTimer);
   closeOverlays("search-modal");
   el("search-modal").hidden = false;
   el("search-input").value = "";
@@ -8444,6 +8454,7 @@ function openSearch() {
   state.searchIndex = 0;
   state.searchSeq += 1;
   state.searchError = "";
+  state.searchPhrase = "";
   renderSearchResults();
   el("search-input").focus();
 }
@@ -8451,6 +8462,7 @@ function openSearch() {
 function closeSearch() {
   if (el("search-modal").hidden) return;
   el("search-modal").hidden = true;
+  clearTimeout(state.searchTimer);
   // A search still on its way is dropped: its answer must not repaint a box that
   // has been put away (or one reopened on another phrase).
   state.searchSeq += 1;
@@ -8481,17 +8493,20 @@ function searchSoon(query) {
 }
 
 async function requestSearch(phrase, seq) {
+  if (seq !== state.searchSeq) return;
   let answer = [];
+  let searchError = "";
   try {
     answer = (await invoke("search_sessions", { query: phrase })) || [];
-    state.searchError = "";
   } catch (error) {
     answer = [];
-    state.searchError = t("search.failed", "Could not search the stored threads: {value0}", {
+    searchError = t("search.failed", "Could not search the stored threads: {value0}", {
       value0: error,
     });
   }
   if (seq !== state.searchSeq) return;
+  state.searchError = searchError;
+  state.searchPhrase = phrase;
   state.searchRows = answer;
   state.searchIndex = 0;
   renderSearchResults();
@@ -8530,6 +8545,10 @@ function renderSearchResults() {
     title.className = "search-title";
     title.textContent = sessionLabel(hit);
     text.appendChild(title);
+    const context = document.createElement("span");
+    context.className = "search-snippet";
+    context.textContent = hit.worktree || sessionProject(hit);
+    text.appendChild(context);
     if (hit.snippet) {
       const snippet = document.createElement("span");
       snippet.className = "search-snippet";
@@ -8548,15 +8567,21 @@ function renderSearchResults() {
       count.textContent = t("search.matchCount", "{count} matches", { count: hit.matches });
       row.appendChild(count);
     }
-    row.onclick = () => openSearchRow(hit);
+    row.onclick = () => void openSearchRow(hit);
     list.appendChild(row);
   });
 }
 
-function openSearchRow(hit) {
+async function openSearchRow(hit) {
   if (!hit) return;
+  const phrase = state.searchPhrase;
   closeSearch();
-  void selectSessionFromTree(hit);
+  const seq = state.searchSeq;
+  await selectSessionFromTree(hit);
+  if (seq !== state.searchSeq || state.session !== hit.id || !phrase || !hit.matches) return;
+  el("find-input").value = phrase;
+  state.findIndex = -1;
+  openFind();
 }
 
 // ---------- activity ----------
@@ -8791,16 +8816,29 @@ function closeFind() {
 /// The text a search can land in: the conversation's own text nodes, which is
 /// what the reader sees, in the order they see it. A DOM without a walker (the
 /// stub the checks run against) has no hits rather than an error.
-function transcriptTextNodes() {
+function* transcriptTextNodes() {
   const root = el("transcript");
-  if (!root || typeof document.createTreeWalker !== "function") return [];
+  if (!root || typeof document.createTreeWalker !== "function") return;
   const walker = document.createTreeWalker(root, 4, null);
-  const nodes = [];
   while (walker.nextNode()) {
     const text = walker.currentNode.nodeValue;
-    if (text && text.trim()) nodes.push(walker.currentNode);
+    if (text && text.trim()) yield walker.currentNode;
   }
-  return nodes;
+}
+
+// Case conversion can expand a character (İ → i + combining dot). DOM ranges
+// need offsets in the original UTF-16 text, not in its lowercase copy.
+function originalFindOffset(source, folded, offset, end = false) {
+  if (source.length === folded.length) return offset;
+  let original = 0;
+  let lower = 0;
+  for (const char of source) {
+    const next = lower + char.toLowerCase().length;
+    if (offset < next) return original + (end && offset > lower ? char.length : 0);
+    original += char.length;
+    lower = next;
+  }
+  return original;
 }
 
 function findHits(query) {
@@ -8813,7 +8851,12 @@ function findHits(query) {
     while (hits.length < 500) {
       const at = text.indexOf(needle, from);
       if (at < 0) break;
-      hits.push({ node, start: at, end: at + needle.length });
+      hits.push({
+        node,
+        start: originalFindOffset(node.nodeValue, text, at),
+        end: originalFindOffset(node.nodeValue, text, at + needle.length, true),
+      });
+      if (hits.length >= 500) return hits;
       from = at + Math.max(1, needle.length);
     }
   }
@@ -8829,8 +8872,9 @@ function stepFind(step) {
     window.getSelection?.()?.removeAllRanges?.();
     return;
   }
-  const base = state.findIndex < 0 ? (step < 0 ? 0 : -1) : state.findIndex;
-  state.findIndex = (base + step + state.findHits.length) % state.findHits.length;
+  state.findIndex = state.findIndex < 0
+    ? (step < 0 ? state.findHits.length - 1 : 0)
+    : (state.findIndex + step + state.findHits.length) % state.findHits.length;
   selectFindHit();
   paintFindCount();
 }
@@ -10115,11 +10159,12 @@ function initSidebarResize() {
   const STEP = 16;
   const STORAGE_KEY = "oxide.sidebarWidth";
   // Keep a comfortable reading column for the transcript.
-  const maxWidth = () => Math.max(MIN, window.innerWidth - 420);
+  const maxWidth = () => Math.max(MIN, window.innerWidth - 475);
   const clamp = (width) => Math.max(MIN, Math.min(maxWidth(), Math.round(width)));
   const apply = (width, persist) => {
     const next = clamp(width);
     sidebar.style.width = `${next}px`;
+    document.body.style.setProperty("--sidebar-width", `${next}px`);
     // The separator advertises a resize affordance, so keep its value in sync
     // for screen readers.
     handle.setAttribute("aria-valuenow", String(next));
@@ -10166,6 +10211,7 @@ function initSidebarResize() {
   handle.addEventListener("dblclick", () => {
     localStorage.removeItem(STORAGE_KEY);
     sidebar.style.width = "";
+    document.body.style.removeProperty("--sidebar-width");
     const current = sidebar.getBoundingClientRect().width;
     paintDockToggles();
     handle.setAttribute("aria-valuenow", String(Math.round(current)));
@@ -10179,7 +10225,7 @@ function initSidebarResize() {
 
 function dockHasRoom() {
   const sidebar = document.querySelector(".sidebar")?.getBoundingClientRect().width || 268;
-  return window.innerWidth - sidebar - 7 >= 1100;
+  return window.innerWidth - (state.prefs.sidebar_visible ? sidebar + 7 : 0) - 48 >= 1100;
 }
 
 /// How long a scrollbar stays drawn after the last scroll of its box, in
@@ -10313,6 +10359,20 @@ function finishEditorControlPress(event) {
 }
 
 function init() {
+  document.body.classList.toggle("platform-mac", /Mac/.test(window.navigator?.platform || ""));
+  paintNavigation();
+  el("nav-back").onclick = navBack;
+  el("nav-forward").onclick = navForward;
+  el("sidebar-toggle").onclick = toggleSidebar;
+  el("window-commands").onclick = openCommandMenu;
+  el("rail-home").onclick = newChatFromSidebar;
+  el("rail-projects").onclick = openProjects;
+  el("rail-search").onclick = openSearch;
+  el("rail-activity").onclick = openActivity;
+  el("rail-more").onclick = openCommandMenu;
+  el("rail-worktrees").onclick = openWorktrees;
+  el("rail-mcps").onclick = openMcps;
+  el("rail-settings").onclick = () => openSettings();
   installMarkdownInput(el("prompt"), (text) => renderMarkdown(text, true));
   initSidebarResize();
   initChatTabs();

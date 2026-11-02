@@ -97,6 +97,8 @@ function createWindow(): BrowserWindow {
     // the first click on a control in a window that is not yet key is spent on
     // making it key, and the reader has to click twice.
     acceptFirstMouse: true,
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 14, y: 16 } } : {}),
     webPreferences: {
       // The page's bridge is the preload below, and the page is the app's own
       // script, so the two live in the same world: `ui/app.js` fills in its own

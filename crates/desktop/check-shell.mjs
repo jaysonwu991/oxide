@@ -392,6 +392,12 @@ check(
 
 console.log("the window");
 check(
+  "uses native inset macOS controls above draggable app chrome",
+  /titleBarStyle: process.platform === "darwin" \? "hiddenInset" : "default"/.test(shell) &&
+    /trafficLightPosition: \{ x: 14, y: 16 \}/.test(shell) &&
+    html.indexOf('<header class="topbar">') < html.indexOf('<aside class="sidebar">'),
+);
+check(
   "runs this package's own main process",
   packaged.main === "electron/dist/main.js" &&
     packaged.scripts.build === "node ../../scripts/prepare-diagrams.mjs desktop && tsc -p tsconfig.json" &&

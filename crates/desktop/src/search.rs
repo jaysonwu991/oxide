@@ -1,5 +1,5 @@
 //! Searching the threads a reader has: what a phrase from a conversation, or a
-//! branch it ran on, turns up.
+//! project or worktree it ran in, turns up.
 //!
 //! The search is over the same text the window paints — the display of each
 //! stored message — so a phrase found here is a phrase the reader can see when
@@ -56,8 +56,12 @@ pub fn search(views: &[SessionView], query: &str, limit: usize) -> Vec<SearchHit
             .as_deref()
             .is_some_and(|name| name.to_lowercase().contains(&needle))
             || view.summary.preview.to_lowercase().contains(&needle);
+        let in_folder = std::iter::once(view.summary.cwd.as_str())
+            .chain(view.project.as_deref())
+            .chain(view.worktree.as_deref())
+            .any(|folder| folder.to_lowercase().contains(&needle));
         let (snippet, matches) = scan(&view.summary.path, &needle).unwrap_or_default();
-        if in_title || matches > 0 {
+        if in_title || in_folder || matches > 0 {
             hits.push(SearchHit {
                 session: view.clone(),
                 snippet,
@@ -100,22 +104,26 @@ fn scan(path: &Path, needle: &str) -> Result<(String, usize)> {
 /// in the case it was stored, clipped by characters and joined so a snippet from
 /// a wrapped paragraph still reads as one row.
 fn clip(text: &str, lower: &str, at: usize) -> String {
-    // The character the match starts at, counted in the folded text: lowercasing
-    // can change a byte's length for a few characters, and a snippet a character
-    // or two off is still the line the phrase was found on.
-    let start_char = lower[..at].chars().count();
-    let characters: Vec<char> = text.chars().collect();
-    if characters.is_empty() {
-        return String::new();
-    }
+    debug_assert!(lower.is_char_boundary(at));
+    let mut folded_bytes = 0;
+    let start_char = text
+        .chars()
+        .take_while(|character| {
+            if folded_bytes >= at {
+                return false;
+            }
+            folded_bytes += character.to_lowercase().map(char::len_utf8).sum::<usize>();
+            folded_bytes <= at
+        })
+        .count();
     let start = start_char.saturating_sub(SNIPPET_BEFORE);
-    let end = (start_char + SNIPPET_AFTER).min(characters.len());
+    let mut characters = text.chars().skip(start);
     let mut out = String::new();
     if start > 0 {
         out.push('…');
     }
-    out.extend(&characters[start..end]);
-    if end < characters.len() {
+    out.extend(characters.by_ref().take(start_char - start + SNIPPET_AFTER));
+    if characters.next().is_some() {
         out.push('…');
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -276,5 +284,30 @@ mod tests {
         let hits = search(&[view], "redirect", 10);
         assert!(!hits[0].snippet.contains('\n'), "{}", hits[0].snippet);
         assert!(hits[0].snippet.contains("second line with redirect"));
+    }
+
+    #[test]
+    fn finds_project_and_worktree_paths_without_message_matches() {
+        let dir = temp("folders");
+        let path = thread(&dir, &["unrelated"]);
+        let mut view = view("folder", None, "", path);
+        view.project = Some("/projects/oxide".into());
+        view.worktree = Some("/worktrees/fix-login".into());
+        for query in ["PROJECTS/OXIDE", "fix-login", "/tmp/oxide"] {
+            let hits = search(std::slice::from_ref(&view), query, 10);
+            assert_eq!(hits.len(), 1, "{query}");
+            assert_eq!(hits[0].matches, 0);
+            assert!(!hits[0].in_title);
+        }
+    }
+
+    #[test]
+    fn a_snippet_stays_at_its_match_after_expanding_lowercase_characters() {
+        let text = format!("{} redirect {}", "İ".repeat(200), "tail ".repeat(100));
+        let lower = text.to_lowercase();
+        let snippet = clip(&text, &lower, lower.find("redirect").unwrap());
+        assert!(snippet.contains("redirect"), "{snippet}");
+        assert!(snippet.starts_with('…') && snippet.ends_with('…'));
+        assert!(snippet.chars().count() < 150);
     }
 }

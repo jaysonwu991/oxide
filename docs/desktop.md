@@ -13,6 +13,17 @@ project's session list.
 
 ## Layout and navigation
 
+The window has one full-width toolbar with chat history, a sidebar toggle, the
+chat title or tabs, and the existing changes, details and new-tab actions.
+On macOS, native traffic lights sit inside this draggable toolbar. Windows and
+Linux retain their native window controls.
+
+A narrow navigation rail stays available when the sidebar is hidden. It opens
+a new chat, projects, chat search, activity, the command menu, worktrees, MCP
+servers and settings. The sidebar header places the Oxide menu, activity bell
+and search together above New Chat. These controls use the same actions and
+saved preferences as their keyboard and menu counterparts.
+
 The project summary uses a fixed-width right panel. It hides automatically when
 widening the left sidebar or narrowing the window leaves too little room for the
 chat, and returns when space is available. The sidebar remains resizable.
@@ -237,12 +248,12 @@ bar that has lost its inset are each a failed check.
 
 The regions, top to bottom:
 
-- **Sidebar** — **+ New Chat** at the top, opening a thread in the project the
+- **Sidebar** — the **Oxide** menu, **Activity** bell and **Search chats** share
+  the header, with **New Chat** directly below, opening a thread in the project the
   window is in and, when nothing is open yet, the folder picker that asks which
   project to start in — a folder is never picked for the reader, and with no
-  project at all the same button offers the Add-project dialog; beside it the
-  three ways into a thread that already exists — **Add** (its own menu), **Search
-  chats** and **Activity**, whose bell carries a dot while something is running,
+  project at all the same button offers the Add-project dialog. The Oxide menu
+  offers adding, finding and reopening chats. Activity's bell carries a dot while something is running,
   unread or waiting for an answer; the **Projects**
   tree, and a footer pinned
   to the bottom with the three controls that belong to the window rather than to
@@ -1342,19 +1353,27 @@ being kept warm, so it is what the store holds now.
 
 Four ways, each answering a different question.
 
-**Search chats** (`⌘⇧F`, the sidebar's magnifier, or **Add → Search chats…**)
-scans every stored thread the sidebar lists — the name it was given, the preview
-it shows and the messages it holds — and answers with the line each match was
-found on. The scan is the harness's (`search_sessions`, in `src/search.rs`), run
+**Search chats** (`⌘⇧F`, the sidebar's magnifier, or **Oxide → Search chats…**)
+scans every stored thread the sidebar lists — its name, preview, messages and
+project/worktree paths — and answers with the line each match was found on.
+Each result shows its folder to distinguish chats with the same name. Opening
+a result with message matches opens **Find in chat** on the searched phrase at
+the first visible match. The scan is the harness's (`search_sessions`, in `src/search.rs`), run
 on a blocking task because it reads every log on disk, and it is asked once the
 reader settles on a phrase rather than once a keystroke: an answer that is no
 longer the newest is dropped by its own sequence number instead of racing the
-one that is. A phrase blank finds nothing rather than everything, a log that
+one that is, including its error state. Closing the search cancels a pending
+debounce. A phrase blank finds nothing rather than everything, a log that
 cannot be read is skipped so one damaged file is not the reason nothing is
 found, a thread is counted at most 200 matches and the listing at 40 rows, and a
 snippet is clipped by characters and joined onto one line so a phrase from the
 middle of a wrapped paragraph still reads as a row. Archived threads are not
 searched: the sidebar does not list them either.
+
+Find in chat stops scanning at 500 matches and keeps highlight offsets in the
+original text when lowercasing expands a Unicode character. Search snippets
+retain only the characters around the match rather than allocating a character
+array for an entire long message.
 
 **Activity** (the bell, or **Add → Activity**) is what is asking for the reader:
 the approval or question the window is holding for them, the threads a turn is
