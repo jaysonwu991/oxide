@@ -268,10 +268,12 @@ The regions, top to bottom:
   app, **Edit project** — whose dialog is also where it is removed — while a
   discovered folder, which has no registry entry to edit, carries **Remove
   project** on the card itself.
-  Each row permanently reserves the actions' room, so revealing them does not
-  move or reflow its title; that padding also keeps the controls off the text,
-  so a press meant for a name is a press on the name rather than on the button
-  beside it. The active project and the active thread both
+  Titles use the idle action strip; an inert fade covers the text beneath
+  revealed controls without moving or reflowing it. A pull-request badge reserves
+  its own space at rest and gives way to pin/archive on hover or keyboard focus.
+  Badges and actions have opaque backgrounds matching the row to cover titles.
+  Focusing the request link itself keeps it visible and hides those actions.
+  The active project and the active thread both
   carry the accent bar, so which one is on screen reads the same in either
   list, and a thread is listed — under the summarized title of its first
   message — as soon as its turn starts rather than once it ends: the thread the

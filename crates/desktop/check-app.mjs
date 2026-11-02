@@ -2588,7 +2588,7 @@ const sheetRules = [...sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors
   selectors.trim(),
   body,
 ]);
-const sidebarActionRule = (selectors) => /\.row-(?:add|more|pin|archive)/.test(selectors);
+const sidebarActionRule = (selectors) => /\.row-(?:add|more|pin|archive)|\.session-pull/.test(selectors);
 const inertSidebarActionSurface = (selectors, body) =>
   selectors.includes(".project-item::after") &&
   selectors.includes(".session-item::after") &&
@@ -2620,6 +2620,7 @@ const cosmeticOnHover = [
   "background",
   "background-color",
   "background-image",
+  "--session-control-bg",
   "border-color",
   "box-shadow",
   "color",
@@ -2759,6 +2760,27 @@ check(
     /\.project-item:hover::after,[\s\S]*?\.session-item:focus-within::after \{ opacity: 1; \}/.test(sheet) &&
     /\.row-more,[\s\S]*?\.row-archive \{[^}]*z-index: 1;/.test(sheet),
   `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px`,
+);
+check(
+  "reserved request badge space and replaced it with two hover actions without moving the title",
+  /min-width: 0/.test(rowRule(".session-item .name")) &&
+    /position: relative/.test(rowRule(".session-pull")) &&
+    /flex: none/.test(rowRule(".session-pull")) &&
+    lastPixels(rowBodies(".row-pin"), "right") === 28 &&
+    lastPixels(rowBodies(".row-archive"), "right") === 6 &&
+    !/\.session-item\.has-pull \.row-(pin|archive)/.test(sheet) &&
+    /opacity: 0; pointer-events: none/.test(rowBodies(".session-item:hover .session-pull")) &&
+    /opacity: 0; pointer-events: none/.test(rowBodies(".session-item:focus-within .session-pull")) &&
+    /opacity: 1; pointer-events: auto/.test(rowBodies(".session-item .session-pull:focus-visible")) &&
+    /opacity: 0; pointer-events: none/.test(rowBodies(".session-item:has(.session-pull:focus-visible) .row-archive")),
+);
+check(
+  "covered sidebar titles with opaque request and hover-action backgrounds",
+  [".session-item .session-pull", ".session-item .row-pin", ".session-item .row-archive"]
+    .every((selector) => /background: var\(--session-control-bg\)/.test(rowBodies(selector))) &&
+    /--session-control-bg: var\(--sidebar\)/.test(rowBodies(".session-item")) &&
+    /--session-control-bg: var\(--panel-2\)/.test(rowBodies(".session-item:hover")) &&
+    /--session-control-bg: var\(--panel-3\)/.test(rowBodies(".session-item.active")),
 );
 // The shortcut is a reference to a key, so the list itself is written down in
 // the shortcuts dialog, and the handler takes either platform's modifier. The

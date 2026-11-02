@@ -1723,7 +1723,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .session-item .session-run .spinner { border-color: var(--accent); border-top-color: transparent; }
 /* The title remains the flexible cell: a long one ellipsizes rather than
    pushing the pin and archive actions out of the row. */
-.session-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Let titles use the action strip while it is idle, as Codex's sidebar does.
    When the row's controls appear, an inert fade supplies their surface without
@@ -1853,15 +1853,11 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .row-pin.active { color: var(--accent); }
 .row-more svg, .row-pin svg, .row-archive svg, .row-add svg { width: 14px; height: 14px; }
 
-/* The pull request a thread reported sits at the row's own right edge, in the
-   state the forge last reported: a row that has one keeps the badge there and
-   the pin and archive beside it, so the mark is readable and clickable whether
-   or not the pointer is on the row. */
+/* The request reserves its own space at rest. Hover actions replace its paint,
+   keeping the title still; keyboard focus on the request keeps its link usable. */
 .session-pull {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
+  position: relative;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1876,13 +1872,23 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   z-index: 1;
   transition: background 0.12s, color 0.12s;
 }
+.session-item { --session-control-bg: var(--sidebar); }
+.session-item:hover,
+.session-item:focus-within { --session-control-bg: var(--panel-2); }
+.session-item.active { --session-control-bg: var(--panel-3); }
+.session-item .session-pull,
+.session-item .row-pin,
+.session-item .row-archive { background: var(--session-control-bg); }
 .session-pull:hover { background: var(--panel-3); color: var(--text); }
 .session-pull svg { width: 14px; height: 14px; }
 .session-pull.state-open { color: var(--success); }
 .session-pull.state-merged { color: var(--accent); }
 .session-pull.state-closed { color: var(--error); }
-.session-item.has-pull .row-pin { right: 50px; }
-.session-item.has-pull .row-archive { right: 28px; }
+.session-item:hover .session-pull,
+.session-item:focus-within .session-pull { opacity: 0; pointer-events: none; }
+.session-item .session-pull:focus-visible { opacity: 1; pointer-events: auto; }
+.session-item:has(.session-pull:focus-visible) .row-pin,
+.session-item:has(.session-pull:focus-visible) .row-archive { opacity: 0; pointer-events: none; }
 
 .sidebar-floating-card {
   position: fixed;
