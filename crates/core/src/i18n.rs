@@ -1769,6 +1769,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("ui.view", "View", "视图"),
     ("ui.toggleFullScreen", "Toggle Full Screen", "切换全屏"),
     ("sidebar.add", "Add", "添加"),
+    ("shell.navigation", "Navigation", "导航"),
     ("add.newChat", "New chat", "新建对话"),
     ("add.newProject", "New project…", "新建项目…"),
     ("add.openFolder", "Open a folder…", "打开文件夹…"),

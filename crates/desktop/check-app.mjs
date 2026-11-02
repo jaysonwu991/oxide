@@ -411,6 +411,7 @@ let repositoryStates = [];
 // window asked about.
 let searchAnswer = [];
 let searchError = null;
+let searchGate = null;
 const searchedFor = [];
 let archivedAnswer = null;
 let archivedError = null;
@@ -1102,6 +1103,7 @@ const invoke = async (command, args = {}) => {
       terminalClosed.push(args.id);
       return null;
     case "search_sessions":
+      if (searchGate) return searchGate(args.query);
       if (searchError) throw searchError;
       searchedFor.push(args.query);
       return searchAnswer.map((hit) => ({ ...hit }));
@@ -1252,7 +1254,7 @@ vm.runInThisContext(
     " openSettings, closeSettings, showSettingsSection, paintSettingsControls, renderShortcuts," +
     " openCommandMenu, closeCommandMenu, renderCommandMenu, runCommand, commandMatches, commandActions," +
     " loadPrefs, savePrefs, resizeText, toggleSidebar, announceShortcuts, formatChord, matchShortcut," +
-    " openSearch, closeSearch, requestSearch, renderSearchResults, openAddMenu, closeAddMenu," +
+    " openSearch, closeSearch, requestSearch, renderSearchResults, openSearchRow, openAddMenu, closeAddMenu," +
     " openActivity, closeActivity, renderActivity, paintActivityDot, activityGroups," +
     " openArchived, closeArchived, renderArchived, openFind, closeFind, stepFind, findHits," +
     " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal," +
@@ -2769,20 +2771,19 @@ check(
   ) && /\(event\.metaKey \|\| event\.ctrlKey\) && event\.key >= "1"/.test(source),
   shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
 );
-// The window around the sidebar already names the app, so the sidebar's own head
-// is not a second brand: it is the way into a conversation — the extension's own
-// plus with its words beside it, in the one row above the lists that has room for
-// them. The Projects header keeps the glyph alone, so the window's two pluses are
-// the same drawing and only one of them is worded.
+// The sidebar groups its app menu, activity and search above New Chat.
 const newChatButton = buttonFor("new-chat");
 check(
-  "made the sidebar's head a New Chat control instead of a second brand",
+  "placed the app menu, activity and search above the New Chat action",
   shellAt('id="new-chat"') > 0 &&
     shellAt('id="new-chat"') < shellAt('class="projects-section"') &&
-    !/class="brand"/.test(shell) &&
+    shellAt('id="sidebar-add"') < shellAt('id="activity"') &&
+    shellAt('id="activity"') < shellAt('id="search-chats"') &&
+    shellAt('id="search-chats"') < shellAt('id="new-chat"') &&
+    buttonFor("sidebar-add").includes('class="sidebar-brand"') &&
     newChatButton.includes(`title="New Chat&#10;`) &&
     newChatButton.includes('aria-label="New Chat"') &&
-    newChatButton.includes(`<path d="${sharedGlyphs.new}"`) &&
+    newChatButton.includes('<svg') &&
     /<\/svg>\s*<span[^>]*>New Chat<\/span>/.test(newChatButton),
   newChatButton,
 );
@@ -9566,6 +9567,28 @@ storedPrefs = { send_key: "enter", follow_up: "queue", font_scale: 1, sidebar_vi
 await app.loadPrefs();
 
 console.log("the sidebar's add menu, search, activity and the archive");
+elementFor("rail-more").onclick();
+check("the rail opens the existing command menu", elementFor("command-menu").hidden === false);
+app.closeCommandMenu();
+elementFor("rail-settings").onclick();
+check("the rail opens the existing settings sheet", elementFor("settings-modal").hidden === false);
+app.closeSettings();
+elementFor("rail-search").onclick();
+check("the rail searches saved chats", elementFor("search-modal").hidden === false);
+app.closeSearch();
+const savedNavigation = { stack: app.state.navStack, index: app.state.navIndex };
+app.state.navStack = [];
+app.state.navIndex = -1;
+app.pushNav({ id: "shell-history-first" });
+check("history controls disable directions with no destination",
+  elementFor("nav-back").disabled && elementFor("nav-forward").disabled);
+app.pushNav({ id: "shell-history-second" });
+check("history controls enable Back after visiting another chat",
+  !elementFor("nav-back").disabled && elementFor("nav-forward").disabled);
+app.state.navStack = savedNavigation.stack;
+app.state.navIndex = savedNavigation.index;
+check("the title bar reflects the saved sidebar visibility",
+  elementFor("sidebar-toggle").getAttribute("aria-expanded") === String(app.state.prefs.sidebar_visible));
 /// The search waits for the reader to settle before it reads the store, so a
 /// fired phrase is followed by a pause longer than that wait.
 const settleSearch = () => new Promise((resolve) => setTimeout(resolve, 200));
@@ -9616,7 +9639,8 @@ check(
   searchedFor.join(",") === "redirect" &&
     searchRow?.className.includes("search-row") &&
     searchRow.children[0].children[0].textContent === "Login redirect" &&
-    searchRow.children[0].children[1].textContent === "the login redirect loops" &&
+    searchRow.children[0].children[1].textContent === "/tmp/oxide" &&
+    searchRow.children[0].children[2].textContent === "the login redirect loops" &&
     searchRow.children[1].textContent === "2 matches",
   `${searchedFor.join(",")} / ${searchRow?.children.map((child) => child.textContent).join(" | ")}`,
 );
@@ -9639,6 +9663,38 @@ check(
   String(elementFor("search-results").children[0]?.textContent),
 );
 searchError = null;
+const pendingSearches = new Map();
+searchGate = (query) => new Promise((resolve, reject) => pendingSearches.set(query, { resolve, reject }));
+app.state.searchSeq += 1;
+const staleSearch = app.requestSearch("old", app.state.searchSeq);
+app.state.searchSeq += 1;
+const freshSearch = app.requestSearch("new", app.state.searchSeq);
+pendingSearches.get("new").resolve([{ id: "fresh", name: "Newest answer", cwd: "/tmp/new" }]);
+await freshSearch;
+pendingSearches.get("old").reject("stale failure");
+await staleSearch;
+app.renderSearchResults();
+check("an older search failure cannot replace a newer result or its error state",
+  app.state.searchError === "" && app.state.searchRows[0]?.id === "fresh" &&
+    elementFor("search-results").children[0]?.className.includes("search-row"));
+app.state.searchSeq += 1;
+const oldSuccess = app.requestSearch("older success", app.state.searchSeq);
+app.state.searchSeq += 1;
+const newFailure = app.requestSearch("newer failure", app.state.searchSeq);
+pendingSearches.get("newer failure").reject("current failure");
+await newFailure;
+pendingSearches.get("older success").resolve([]);
+await oldSuccess;
+check("an older successful search cannot erase the current failure",
+  app.state.searchError.includes("current failure"));
+searchGate = null;
+const searchesBeforeClose = searchedFor.length;
+elementFor("search-input").value = "cancelled before scanning";
+elementFor("search-input").fire("input", {});
+app.closeSearch();
+await settleSearch();
+check("closing search cancels its pending scan", searchedFor.length === searchesBeforeClose);
+app.openSearch();
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 check("put the search away on Escape", elementFor("search-modal").hidden === true);
 // Activity is what is asking for the reader: the dialog the window holds for
@@ -9786,6 +9842,30 @@ check(
   app.findHits("redirect").length === 2 && app.findHits("").length === 0,
   String(app.findHits("redirect").length),
 );
+app.state.findIndex = -1;
+app.openFind();
+check("opening find starts at the first match", app.state.findIndex === 0);
+fakeNodes.splice(0, fakeNodes.length, { nodeValue: "İİ redirect 😀", parentElement: null });
+const unicodeHit = app.findHits("REDIRECT")[0];
+check("find highlights original text after expanding Unicode lowercase characters",
+  fakeNodes[0].nodeValue.slice(unicodeHit.start, unicodeHit.end) === "redirect");
+const expandedHit = app.findHits("i")[0];
+check("a match within a lowercase expansion selects the whole original character",
+  fakeNodes[0].nodeValue.slice(expandedHit.start, expandedHit.end) === "İ");
+let visitedFindNodes = 0;
+document.createTreeWalker = () => ({
+  currentNode: { nodeValue: "redirect", parentElement: null },
+  nextNode: () => ++visitedFindNodes <= 1000,
+});
+check("find stops walking once its result limit is reached",
+  app.findHits("redirect").length === 500 && visitedFindNodes === 500);
+elementFor("search-input").value = "redirect";
+app.state.searchPhrase = "redirect";
+elementFor("search-input").value = "a newer query still waiting";
+await app.openSearchRow({ id: app.state.session, cwd: app.state.project, matches: 1 });
+check("a search result opens find on its phrase at the first match",
+  elementFor("find-bar").hidden === false && elementFor("find-input").value === "redirect" &&
+    app.state.findIndex === 0);
 elementFor("find-close").onclick();
 check(
   "put the bar away and forgot the matches",
