@@ -163,6 +163,52 @@ function exerciseEditor() {
     check("space leaves the link", editor.value === "go https://example.com " && editor.textContent === "go https://example.com " && !editor.querySelector("a").contains(window.getSelection().focusNode));
     type("and");
     check("typing after a URL space", editor.value === "go https://example.com and");
+    editor.value = "Visit github.com/openai/codex, www.example.org and docs.example.dev/setup.";
+    end();
+    check("bare domains link to HTTPS and keep punctuation outside", JSON.stringify([...editor.querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href")])) === JSON.stringify([
+      ["github.com/openai/codex", "https://github.com/openai/codex"],
+      ["www.example.org", "https://www.example.org"],
+      ["docs.example.dev/setup", "https://docs.example.dev/setup"],
+    ]));
+    const domainSource = editor.value;
+    const domainTail = editor.querySelector("[data-editor-tail]").firstChild;
+    domainTail.appendData("!");
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    check("DOM edits keep bare domain source unchanged", editor.value === domainSource + "!");
+    editor.value = "github.com";
+    end();
+    type("/openai");
+    check("editing a bare domain preserves its source and link", editor.value === "github.com/openai" && editor.querySelector("a").getAttribute("href") === "https://github.com/openai");
+    editor.value = "mail@example.com src/main.rs config.json @github.com `github.com`";
+    check("emails files references and inline code are not bare links", editor.querySelectorAll("a").length === 0 && editor.querySelector(".file-reference")?.textContent === "@github.com");
+    const erase = (type, start, finish = start) => {
+      editor.setSelectionRange(start, finish);
+      const event = new InputEvent("beforeinput", { inputType: type, bubbles: true, cancelable: true });
+      editor.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    for (const reference of ["@src/main.rs", '@"source files/main.rs"#12-14', "@folder/"]) {
+      const original = `Use ${reference} please`;
+      editor.value = original;
+      check("backspace removes the entire reference", erase("deleteContentBackward", 4 + reference.length) && editor.value === "Use  please" && editor.selectionStart === 4);
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, cancelable: true }));
+      check("undo restores the whole reference", editor.value === original && editor.querySelector(".file-reference")?.textContent === reference);
+      check("deleting selected path characters removes the reference", erase("deleteByCut", 6, 8) && editor.value === "Use  please");
+      editor.value = original;
+      check("forward deletion removes the whole reference", erase("deleteContentForward", 4) && editor.value === "Use  please");
+    }
+    editor.value = "Use @src/main.rs ";
+    end();
+    check("word deletion clears a path and selected trailing space", erase("deleteWordBackward", editor.value.length) && editor.value === "Use ");
+    editor.value = "Use @src/a.rs and @src/b.rs now";
+    const secondReference = editor.value.indexOf("@src/b.rs");
+    check("selection across references removes complete references", erase("deleteContentBackward", 6, secondReference + 3) && editor.value === "Use  now");
+    editor.value = "Use @src/a.rs and @src/b.rs now";
+    check("deleting one path preserves the other", erase("deleteContentBackward", 12) && editor.value === "Use  and @src/b.rs now");
+    editor.value = "Use @src/main.rs please";
+    check("deleting adjacent prose stays native", !erase("deleteContentBackward", editor.value.length));
+    editor.value = "Use `read @src/main.rs` please";
+    check("deleting inside code stays native", !erase("deleteContentBackward", editor.value.indexOf("main") + 2));
     editor.value = "hello @src/main.rs ";
     editor.setSelectionRange(19, 19);
     type("next");

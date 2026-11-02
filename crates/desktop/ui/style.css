@@ -10,6 +10,7 @@
   --faint: #6f6f6f;
   --accent: #a9c7ff;
   --success: #78d38a;
+  --pull-merged: #a371f7;
   --error: #f08a82;
   --tool-bg: #232323;
   --tool: #e0b072;
@@ -289,7 +290,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .topbar:has(.chat-tabs:not([hidden])) .thread-title { display: none; }
 .topbar:has(.chat-tabs:not([hidden])) .topbar-folder { display: none; }
 .topbar-folder { flex: none; color: var(--dim); }
-.navigation-rail button:focus-visible, .topbar button:focus-visible, .sidebar-brand:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.navigation-rail button:focus-visible, .topbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .topbar button, .chat-tabs { -webkit-app-region: no-drag; }
 .topbar-leading { display: flex; align-items: center; gap: 4px; flex: 0 0 calc(var(--sidebar-width, 268px) + 55px); min-width: 220px; padding-left: 12px; }
 .platform-mac .topbar-leading { padding-left: 96px; }
@@ -704,7 +705,7 @@ button.details-row:disabled:hover { color: var(--text); }
    row's columns line up with the next one's however a line wraps. */
 .split {
   display: grid;
-  grid-template-columns: max-content minmax(max-content, 1fr);
+  grid-template-columns: max-content minmax(240px, 1fr) max-content minmax(240px, 1fr);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
   width: max-content;
@@ -715,9 +716,10 @@ button.details-row:disabled:hover { color: var(--text); }
   overflow: hidden;
 }
 .split-row { display: contents; }
-.split-row > :nth-child(1), .split-row > :nth-child(2) { display: none; }
-.split-row.remove > :nth-child(1), .split-row.remove > :nth-child(2) { display: block; }
-.split-row.remove > :nth-child(3), .split-row.remove > :nth-child(4) { display: none; }
+.changes-pane.unified .split { grid-template-columns: max-content minmax(max-content, 1fr); }
+.changes-pane.unified .split-row > :nth-child(1), .changes-pane.unified .split-row > :nth-child(2) { display: none; }
+.changes-pane.unified .split-row.remove > :nth-child(1), .changes-pane.unified .split-row.remove > :nth-child(2) { display: block; }
+.changes-pane.unified .split-row.remove > :nth-child(3), .changes-pane.unified .split-row.remove > :nth-child(4) { display: none; }
 .split-num {
   padding: 0 8px 0 2px;
   color: var(--faint);
@@ -765,9 +767,9 @@ button.details-row:disabled:hover { color: var(--text); }
   position: relative;
   max-width: 780px;
   margin: 0 auto;
-  background: var(--panel);
+  background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 20px;
   padding: 10px 12px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
@@ -806,7 +808,7 @@ button.details-row:disabled:hover { color: var(--text); }
    facts return when the turn is idle, while the active response gets the room
    above the box for queued follow-ups and live activity. */
 body.running .composer-strip { display: none; }
-body.running .composer { border-radius: var(--radius); }
+body.running .composer { border-radius: 20px; }
 .live-changes {
   align-self: center;
   display: flex;
@@ -1178,7 +1180,7 @@ body.running .composer { border-radius: var(--radius); }
 }
 /* What the chat has spent: the terminal footer's own line, in the window's dim
 tone, with tabular figures so a count that grows does not shift the row it ends. */
-#usage { color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#usage { display: none; color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #stop.run-control {
   display: inline-flex;
   align-items: center;
@@ -1278,7 +1280,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   width: 30px;
   height: 30px;
   padding: 0;
-  border-radius: 9px;
+  border-radius: 50%;
   font-size: 15px;
   color: var(--dim);
   background: var(--panel-2);
@@ -1667,10 +1669,9 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .projects-header button { margin-left: auto; padding: 2px 4px; border-radius: 6px; }
 .projects-header button:hover { background: var(--panel-2); }
 
-/* 14px on the right is the scrollbar's lane (see `::-webkit-scrollbar` at the
-   foot of this sheet): the rows end beside it instead of under it. */
-.projects-tree { flex: 1; overflow-y: auto; padding: 4px 14px 18px 8px; display: flex; flex-direction: column; gap: 2px; }
-.project-group { display: flex; flex-direction: column; gap: 1px; }
+/* The scrollbar already owns its lane; keep the rows close to that edge. */
+.projects-tree { flex: 1; overflow-y: auto; padding: 4px 4px 14px 4px; display: flex; flex-direction: column; gap: 2px; }
+.project-group { display: flex; flex-direction: column; gap: 0; margin-bottom: 6px; }
 /* A project's row is what the arrangement is dragged by: the row takes the grab
    cursor, the row being moved in the air says so, and the row under the pointer
    wears the line the project would land on. The line is drawn inside the row's
@@ -1680,8 +1681,8 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
-  border-radius: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
   cursor: grab;
   user-select: none;
   transition: background 0.15s;
@@ -1690,14 +1691,14 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .project-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .project-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .project-item:hover { background: var(--panel-2); }
-.project-item.active { background: var(--panel-3); }
+.project-item.active { color: var(--text); }
 .project-item .icon { font-size: 12px; color: var(--dim); width: 16px; display: flex; align-items: center; justify-content: center; }
 .project-item .name { flex: 1; font-weight: 500; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-item .count { display: none; }
 
 .project-sessions { display: flex; flex-direction: column; gap: 0px; }
 .project-empty {
-  padding: 5px 12px 7px 32px;
+  padding: 2px 8px 4px 30px;
   color: var(--faint);
   font-size: 12px;
 }
@@ -1706,8 +1707,8 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px 6px 32px;
-  border-radius: 4px;
+  padding: 5px 6px 5px 30px;
+  border-radius: 8px;
   cursor: pointer;
   user-select: none;
   font-size: 12.5px;
@@ -1743,7 +1744,6 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   pointer-events: none;
   transition: opacity 0.12s;
 }
-.project-item.active::after,
 .session-item.active::after { background: linear-gradient(90deg, transparent, var(--panel-3) 34%); }
 .project-item:hover::after,
 .project-item:focus-within::after,
@@ -1762,7 +1762,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   cursor: pointer;
 }
 .sidebar-show-more:hover { background: var(--panel-2); color: var(--text); }
-.project-show-more { padding: 6px 8px 7px 32px; }
+.project-show-more { padding: 5px 6px 6px 30px; }
 
 .sidebar-recents { margin-top: 16px; display: flex; flex-direction: column; }
 .sidebar-section-title {
@@ -1882,7 +1882,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .session-pull:hover { background: var(--panel-3); color: var(--text); }
 .session-pull svg { width: 14px; height: 14px; }
 .session-pull.state-open { color: var(--success); }
-.session-pull.state-merged { color: var(--accent); }
+.session-pull.state-merged { color: var(--pull-merged); }
 .session-pull.state-closed { color: var(--error); }
 .session-item:hover .session-pull,
 .session-item:focus-within .session-pull { opacity: 0; pointer-events: none; }
@@ -2714,13 +2714,12 @@ body.sidebar-hidden .topbar-leading { flex-basis: 220px; }
 .command-hint { color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .command-empty { color: var(--faint); font-size: 12.5px; padding: 10px 12px; }
 
-/* ---------- the sidebar's own actions and app menu ---------- */
+/* ---------- the sidebar's title and actions ---------- */
 
 .sidebar-top { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 8px 8px 10px; border-bottom: 1px solid var(--border); }
 .sidebar-top .new-chat { flex: 1 1 auto; width: auto; min-width: 0; }
 .sidebar-actions { display: flex; align-items: center; gap: 2px; min-height: 34px; }
-.sidebar-brand { display: flex; align-items: center; gap: 7px; margin-right: auto; padding: 5px 8px; font-size: 17px; font-weight: 600; }
-.sidebar-brand svg { color: var(--faint); }
+.sidebar-brand { display: block; margin-right: auto; padding: 5px 8px; font-size: 17px; font-weight: 600; }
 .sidebar-top .new-chat { font-weight: 400; letter-spacing: normal; }
 .sidebar-top .new-chat svg { color: var(--dim); }
 .sidebar-actions .icon { padding: 5px; border-radius: 7px; color: var(--dim); }
@@ -2740,35 +2739,6 @@ body.sidebar-hidden .topbar-leading { flex-basis: 220px; }
 }
 
 #activity.asking .activity-dot { background: var(--tool); }
-
-.add-menu {
-  position: fixed;
-  z-index: 40;
-  min-width: 190px;
-  padding: 5px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.add-row {
-  text-align: left;
-  padding: 7px 9px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.add-row:hover { background: var(--panel-3); }
-.add-rule { height: 1px; margin: 4px 6px; background: var(--border); }
 
 /* ---------- find in chat ---------- */
 
@@ -2894,20 +2864,19 @@ body.sidebar-hidden .topbar-leading { flex-basis: 220px; }
 .archived-restore:hover { color: var(--text); border-color: var(--panel-3); }
 
 
-/* ---------- the bottom panel: Review and the terminal ---------- */
+/* ---------- the review and terminal panel ---------- */
 
-/* The conversation keeps the width and the panel takes the height it asks for, so
-   a long diff scrolls inside the dock rather than pushing the composer up. */
-.center-column { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* Chat and review scroll independently within the same window height. */
+.center-column { flex: 1 1 auto; display: flex; flex-direction: row; min-width: 0; min-height: 0; }
 .center-column .conversation-pane { flex: 1 1 auto; min-height: 0; }
 
 .bottom-panel {
-  flex: 0 0 auto;
+  flex: 0 0 var(--review-width, 55%);
   display: flex;
   flex-direction: column;
-  min-height: 160px;
-  max-height: 55vh;
-  border-top: 1px solid var(--border);
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border);
   background: var(--bg);
 }
 
@@ -3103,3 +3072,24 @@ body.sidebar-hidden .topbar-leading { flex-basis: 220px; }
 .file-table { border-collapse: collapse; font-size: 12.5px; }
 .file-table th, .file-table td { border: 1px solid var(--border); padding: 4px 9px; text-align: left; vertical-align: top; }
 .file-table th { background: var(--panel-2); font-weight: 600; }
+
+/* Keep review beside the chat; narrow windows use the stacked panel. */
+.panel-resizer { flex: 0 0 5px; cursor: col-resize; touch-action: none; }
+.center-column:has(.bottom-panel[hidden]) > .panel-resizer { display: none; }
+.panel-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+body.chat-open .composer-strip { display: none; }
+.composer-left > .chip, .composer-tools > summary { border: 0; background: none; }
+.composer-tools { position: relative; }
+.composer-tools > summary { list-style: none; cursor: pointer; }
+.composer-tools > summary::-webkit-details-marker { display: none; }
+.composer-tools-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 35; min-width: 210px; padding: 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); box-shadow: 0 8px 24px #0003; }
+.composer-tools-menu .chip-icon { width: 100%; height: auto; min-height: 34px; justify-content: flex-start; gap: 10px; padding: 6px 10px; border: 0; border-radius: 6px; }
+.composer-tools-menu .chip-icon svg { flex: none; }
+#permissions { width: auto; gap: 6px; padding: 0 6px; border-radius: 8px; font-size: 11.5px; }
+.details-repository { color: var(--faint); font-size: 11.5px; }
+.details-repository > summary { cursor: pointer; padding: 4px 0; }
+@media (max-width: 1100px) {
+  .center-column { flex-direction: column; }
+  .bottom-panel { flex-basis: 45vh; max-height: 55vh; border-left: 0; border-top: 1px solid var(--border); }
+  .center-column:has(.bottom-panel:not([hidden])) > .panel-resizer { display: none; }
+}

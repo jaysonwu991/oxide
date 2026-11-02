@@ -211,6 +211,14 @@ const ICONS = {
       '<path d="M3.6 4.6v6.8M12.4 11.4V6.2a1.4 1.4 0 0 0-1.4-1.4H5.4" ' + STROKE_16 + '/>',
     16,
   ),
+  pullMerged: glyph(
+    '<circle cx="4" cy="3" r="1.5" ' + STROKE_16 + '/><circle cx="4" cy="13" r="1.5" ' + STROKE_16 + '/><circle cx="12" cy="13" r="1.5" ' + STROKE_16 + '/><path d="M4 4.5v7M5.5 4.5 10.5 11" ' + STROKE_16 + '/>',
+    16,
+  ),
+  pullClosed: glyph(
+    '<circle cx="4" cy="3" r="1.5" ' + STROKE_16 + '/><circle cx="4" cy="13" r="1.5" ' + STROKE_16 + '/><circle cx="12" cy="13" r="1.5" ' + STROKE_16 + '/><path d="M4 4.5v7M12 7.5v4M10 2l4 4M14 2l-4 4" ' + STROKE_16 + '/>',
+    16,
+  ),
   check: glyph('<path d="m5.6 8 1.5 1.5 3.5-3.5" ' + STROKE_16 + '/>', 16),
   caret: glyph(`<path d="M5.5 8.6 12 14.8l6.5-6.2" ${STROKE_24}/>`),
   power: glyph(
@@ -1435,21 +1443,21 @@ function refreshThreadTitle() {
 
 // ---------- markdown ----------
 
-function anchor(href, label) {
+function anchor(href, label, bare = false) {
   const text = label == null ? escapeHtml(href) : label;
-  return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${text}</a>`;
+  return `<a href="${escapeHtml(href)}"${bare ? ' data-editor-autolink=""' : ""} target="_blank" rel="noreferrer">${text}</a>`;
 }
 
 // A bare URL often ends a sentence, so trailing punctuation stays outside the
 // link and an unbalanced closing bracket is handed back to the surrounding text.
-function autolink(url, stash) {
+function autolink(url, stash, bare = false) {
   let href = url.replace(/[.,;:!?]+$/, "");
   let trail = url.slice(href.length);
   while (href.endsWith(")") && href.split("(").length < href.split(")").length) {
     href = href.slice(0, -1);
     trail = ")" + trail;
   }
-  return href ? stash(anchor(href)) + trail : url;
+  return href ? stash(anchor(bare ? `https://${href}` : href, bare ? escapeHtml(href) : undefined, bare)) + trail : url;
 }
 
 // Link labels can contain balanced brackets, as issue keys in PR titles do.
@@ -1499,6 +1507,10 @@ function inline(text, references = false, hardBreaks = false) {
   s = inlineLinks(s, stash);
   s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
   s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
+  if (references) {
+    s = s.replace(/(^|[\s(])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|org|net|io|dev|app|co|edu|gov|ai|me|info|uk|cn|de|fr|jp)(?::\d{1,5})?(?:[/?#][^\s<>"'`\u0000]*)?)(?=$|[\s),.;:!?])/gi,
+      (_, prefix, url) => prefix + autolink(url, stash, true));
+  }
   if (hardBreaks) s = s.replace(/ {2,}\n|\\\n/g, () => stash("<br>")).replace(/\n/g, " ");
   s = escapeHtml(s);
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -3101,7 +3113,7 @@ function installMarkdownInput(editor, render) {
     if (tag === "CODE" && node.parentNode?.tagName !== "PRE") return `\`${text}\``;
     if (tag === "A") {
       const url = node.getAttribute("href") || "";
-      return text.replace(marker, "") === url ? text : `[${text}](${url})`;
+      return node.hasAttribute("data-editor-autolink") || text.replace(marker, "") === url ? text : `[${text}](${url})`;
     }
     if (/^H[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
     if (tag === "BLOCKQUOTE") return `\n\n${text.trim().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
@@ -3261,7 +3273,47 @@ function installMarkdownInput(editor, render) {
     return true;
   }
   editor.addEventListener("beforeinput", (event) => {
-    if (composing || event.isComposing || !["insertText", "insertLineBreak"].includes(event.inputType)) return;
+    if (composing || event.isComposing) return;
+    if (event.inputType.startsWith("delete")) {
+      let start = selectionOffset(false);
+      let end = selectionOffset(true);
+      const target = event.getTargetRanges?.()[0];
+      if (target && editor.contains(target.startContainer) && editor.contains(target.endContainer)) {
+        const first = read({ node: target.startContainer, offset: target.startOffset }).indexOf(marker);
+        const last = read({ node: target.endContainer, offset: target.endOffset }).indexOf(marker);
+        if (first >= 0 && last >= first) { start = first; end = last; }
+      }
+      if (start === end) {
+        if (event.inputType.endsWith("Backward")) {
+          const count = event.inputType === "deleteWordBackward"
+            ? source.slice(0, start).match(/\S+\s*$/)?.[0].length || 1 : 1;
+          start = Math.max(0, start - count);
+        } else if (event.inputType.endsWith("Forward")) {
+          const count = event.inputType === "deleteWordForward"
+            ? source.slice(end).match(/^\s*\S+/)?.[0].length || 1 : 1;
+          end = Math.min(source.length, end + count);
+        }
+      }
+      let referenceDeleted = false;
+      // Read rendered references so code spans and ordinary @ text stay editable.
+      for (const reference of editor.querySelectorAll(".file-reference")) {
+        const first = read({ node: reference, offset: 0 }).indexOf(marker);
+        const last = read({ node: reference, offset: reference.childNodes.length }).indexOf(marker);
+        if (first >= 0 && start < last && end > first) {
+          start = Math.min(start, first);
+          end = Math.max(end, last);
+          referenceDeleted = true;
+        }
+      }
+      if (!referenceDeleted) return;
+      event.preventDefault();
+      source = source.slice(0, start) + source.slice(end);
+      remember();
+      paint(start);
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    if (!["insertText", "insertLineBreak"].includes(event.inputType)) return;
     if (event.inputType === "insertText" && event.data === " ") leaveInlineCode(1);
     // Applying text to the Markdown model avoids inheriting a code/bold span
     // when the caret is immediately after its closing delimiter.
@@ -3986,7 +4038,13 @@ async function startPrompt(prompt, attachments, showBubble = true, thread = null
     // and the checkout the reader picked travel with the message.
     record.project = state.project;
     record.worktree = state.worktree;
+    record.turnOptions = {
+      agent: state.agent || null,
+      reasoning: state.reasoningPicked ? state.reasoning : null,
+    };
   }
+  // Queued turns keep their conversation's choices while another chat is open.
+  const turnOptions = record.turnOptions || { agent: null, reasoning: null };
   const project = record.worktree || record.project || view.project;
   if (!project) return;
   const session = record.session;
@@ -4032,8 +4090,8 @@ async function startPrompt(prompt, attachments, showBubble = true, thread = null
       // used last, which is a thread they never chose — and one the sidebar
       // would go on listing unchanged.
       session: session || "new",
-      agent: state.agent || null,
-      reasoning: state.reasoningPicked ? state.reasoning : null,
+      agent: turnOptions.agent,
+      reasoning: turnOptions.reasoning,
       attachments: attachments.length ? attachments : null,
     });
     if (record.stopRequested && record.busy) await stopThread(record);
@@ -5037,8 +5095,9 @@ function paintDockToggles() {
   // The selected chat owns the dock throughout its lifetime. The welcome
   // page has no chat, even when another conversation is running.
   const panel = el("details-panel");
+  document.body.classList.toggle("chat-open", hasChat());
   const wasHidden = panel.hidden;
-  panel.hidden = !state.detailsOpen || !hasChat() || !el("review-modal").hidden || !dockHasRoom();
+  panel.hidden = !state.detailsOpen || !hasChat() || !el("bottom-panel").hidden || !dockHasRoom();
   el("details-toggle").hidden = !hasChat();
   el("changes-toggle").hidden = !hasChat();
   paintLiveChanges();
@@ -5637,10 +5696,10 @@ const OVERLAYS = [
   "activity-modal",
   "archived-modal",
   "file-modal",
-  "add-menu",
 ];
 
 function closeOverlays(except) {
+  el("composer-tools").open = false;
   for (const id of OVERLAYS) {
     if (id !== except) el(id).hidden = true;
   }
@@ -7106,7 +7165,8 @@ function pullButton(pull) {
   button.className = `session-pull state-${pull.state || "unknown"}`;
   button.title = pullTitle(pull);
   button.setAttribute("aria-label", button.title);
-  button.innerHTML = ICONS.pull;
+  button.innerHTML = pull.state === "merged" ? ICONS.pullMerged
+    : pull.state === "closed" ? ICONS.pullClosed : ICONS.pull;
   button.onclick = (event) => {
     event.stopPropagation();
     openExternal(pull.url);
@@ -7184,6 +7244,9 @@ async function runSlashCommand(text) {
     }
     case "model":
       await openModels();
+      return true;
+    case "agent":
+      await openAgents();
       return true;
     case "theme":
       await openThemes();
@@ -8425,24 +8488,6 @@ state.archived = [];
 state.findHits = [];
 state.findIndex = -1;
 
-/// The sidebar's Oxide menu: the ways into a thread that already
-/// exists, and the two ways into a new one.
-function openAddMenu() {
-  closeOverlays("add-menu");
-  const menu = el("add-menu");
-  menu.hidden = false;
-  el("sidebar-add").setAttribute("aria-expanded", "true");
-  const anchor = el("sidebar-add").getBoundingClientRect();
-  menu.style.left = `${Math.round(anchor.left)}px`;
-  menu.style.top = `${Math.round(anchor.bottom + 6)}px`;
-}
-
-function closeAddMenu() {
-  if (el("add-menu").hidden) return;
-  el("add-menu").hidden = true;
-  el("sidebar-add").setAttribute("aria-expanded", "false");
-}
-
 // ---------- searching chats ----------
 
 function openSearch() {
@@ -8948,6 +8993,7 @@ function openPanel(tab) {
     el(parts.body).hidden = !active;
   }
   el("bottom-panel").hidden = false;
+  paintDockToggles();
   if (chosen === "terminal") {
     fitTerminal();
     el("terminal-surface").focus();
@@ -8961,6 +9007,7 @@ function hidePanel() {
   el("review-modal").hidden = true;
   el("panel-terminal").hidden = true;
   void stopTerminal();
+  paintDockToggles();
 }
 
 /// The panel is only there while one of its bodies is: closing the review with
@@ -10228,6 +10275,52 @@ function dockHasRoom() {
   return window.innerWidth - (state.prefs.sidebar_visible ? sidebar + 7 : 0) - 48 >= 1100;
 }
 
+function initPanelResize() {
+  const handle = el("panel-resizer");
+  const storageKey = "oxide.reviewWidth";
+  let width = 55;
+  const apply = (value, persist = false) => {
+    width = Math.max(30, Math.min(70, Number.isFinite(value) ? value : 55));
+    document.body.style.setProperty("--review-width", `${width}%`);
+    handle.setAttribute("aria-valuenow", String(Math.round(width)));
+    if (persist) localStorage.setItem(storageKey, String(width));
+    fitTerminal();
+  };
+  apply(Number(localStorage.getItem(storageKey)) || 55);
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    const start = width;
+    const available = document.querySelector(".center-column")?.getBoundingClientRect().width || window.innerWidth;
+    handle.setPointerCapture(event.pointerId);
+    document.body.classList.add("resizing");
+    const move = (next) => apply(start - 100 * (next.clientX - event.clientX) / available);
+    const finish = (next) => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+      handle.releasePointerCapture?.(next.pointerId);
+      document.body.classList.remove("resizing");
+      apply(width, true);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
+  });
+  handle.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 10 : 2;
+    if (event.key === "ArrowLeft") apply(width + step, true);
+    else if (event.key === "ArrowRight") apply(width - step, true);
+    else if (event.key === "Home") apply(30, true);
+    else if (event.key === "End") apply(70, true);
+    else return;
+    event.preventDefault();
+  });
+  handle.addEventListener("dblclick", () => {
+    localStorage.removeItem(storageKey);
+    apply(55);
+  });
+}
+
 /// How long a scrollbar stays drawn after the last scroll of its box, in
 /// milliseconds: long enough to be read while the wheel is still spinning down,
 /// short enough that the bar is away by the time the reader has moved on.
@@ -10374,10 +10467,32 @@ function init() {
   el("rail-mcps").onclick = openMcps;
   installMarkdownInput(el("prompt"), (text) => renderMarkdown(text, true));
   initSidebarResize();
+  initPanelResize();
+  const unifiedReview = localStorage.getItem("oxide.reviewUnified") === "true";
+  el("review-modal").classList.toggle("unified", unifiedReview);
+  el("review-layout").setAttribute("aria-pressed", String(unifiedReview));
+  el("review-layout").onclick = () => {
+    const unified = el("review-modal").classList.toggle("unified");
+    el("review-layout").setAttribute("aria-pressed", String(unified));
+    localStorage.setItem("oxide.reviewUnified", String(unified));
+  };
   initChatTabs();
   initMessageNavigator();
   initJumpLatest();
   initOverlayScrollbars();
+  document.addEventListener("click", (event) => {
+    const tools = el("composer-tools");
+    if (!event.target?.closest?.("#composer-tools summary")) tools.open = false;
+  });
+  document.addEventListener("keydown", (event) => {
+    const tools = el("composer-tools");
+    if (event.key === "Escape" && tools.open) {
+      tools.open = false;
+      tools.querySelector("summary")?.focus();
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+    }
+  });
   // The language is the core's to resolve, so the page asks before it paints
   // anything of its own; the markup it was authored in stands until then.
   void loadLanguage();
@@ -10428,8 +10543,8 @@ function init() {
   });
   window.addEventListener("resize", positionSettingsDropdowns);
   el("model").onclick = () => el("models-modal").hidden ? openModels() : closeModels();
-  el("theme").onclick = openThemes;
-  el("language").onclick = openLanguage;
+  el("theme").onclick = () => { closeSettings(); return openThemes(); };
+  el("language").onclick = () => { closeSettings(); openLanguage(); };
   el("language-close").onclick = closeLanguage;
   el("permissions").onclick = openPermissions;
   el("help").onclick = toggleHelp;
@@ -10474,39 +10589,6 @@ function init() {
   };
   el("search-modal").onclick = (event) => {
     if (event.target === el("search-modal")) closeSearch();
-  };
-  // The add menu hangs beside the sidebar rather than over it, so a press
-  // anywhere else puts it away — including the one that opens another dialog.
-  document.addEventListener("mousedown", (event) => {
-    if (el("add-menu").hidden) return;
-    const target = event.target;
-    if (target === el("sidebar-add") || target?.closest?.("#add-menu")) return;
-    closeAddMenu();
-  });
-  el("sidebar-add").onclick = () => (el("add-menu").hidden ? openAddMenu() : closeAddMenu());
-  el("add-new-chat").onclick = () => {
-    closeAddMenu();
-    void newChatTab();
-  };
-  el("add-new-project").onclick = () => {
-    closeAddMenu();
-    openCreateProject();
-  };
-  el("add-open-folder").onclick = () => {
-    closeAddMenu();
-    openProjects();
-  };
-  el("add-search").onclick = () => {
-    closeAddMenu();
-    openSearch();
-  };
-  el("add-activity").onclick = () => {
-    closeAddMenu();
-    openActivity();
-  };
-  el("add-archived").onclick = () => {
-    closeAddMenu();
-    openArchived();
   };
   el("search-chats").onclick = openSearch;
   el("search-input").addEventListener("input", () => {
@@ -10655,7 +10737,7 @@ function init() {
     event.preventDefault();
     createWorktree();
   });
-  el("update").onclick = openUpdate;
+  el("update").onclick = () => { closeSettings(); return openUpdate(); };
   // Every step's own way out, which is the step it is on: Dismiss and Later put
   // the dialog away without touching the install, Download in background does
   // the same for a download that is still running, and Cancel is the one that
@@ -10945,7 +11027,6 @@ function init() {
       closeModels();
       closeSettings();
       closeCommandMenu();
-      closeAddMenu();
       closeActivity();
       closeArchived();
       closeSearch();

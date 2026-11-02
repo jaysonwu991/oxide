@@ -11,7 +11,106 @@ shared by every front-end (the CLI, the desktop app, and the VS Code extension),
 with a GUI that can manage **multiple projects** (cross-repo) and show each
 project's session list.
 
+## Codex Desktop comparison
+
+Baseline reviewed on 2026-11-02 against the current implementation and official
+OpenAI documentation. The former Codex app documentation now redirects to the
+ChatGPT desktop documentation; Codex-specific execution and general desktop
+capabilities are distinguished below. **Full product parity is not achieved.**
+An existing control or a passing Oxide check establishes Oxide behavior, not
+identical behavior in Codex. No side-by-side visual or live Codex execution test
+has been performed in this review.
+
+Oxide's existing functionality remains part of the target: multiple providers,
+shared CLI/Desktop/VS Code configuration and sessions, project trust, explicit
+approval choices, discovered agents, commands, skills, MCP and plugins. Matching
+Codex's workflows must preserve those contracts.
+
+| Capability | Oxide Desktop evidence and remaining difference |
+| --- | --- |
+| Projects and chat navigation | Implemented: project tree, tabs, search, pin/archive/rename and history (`manager.rs`, `search.rs`, `ui/app.js`). Cloud-synced projects and custom sidebar sections are not implemented. |
+| Parallel conversations | Implemented: per-conversation transcript, run, queue, usage and changes. Background follow-ups now retain their own agent and reasoning overrides instead of reading the visible conversation's choices. |
+| Queue, steer and stop | Implemented, including editing, reordering, deleting and steering queued messages. Delivery semantics have local behavior checks; no cross-product equivalence test exists. |
+| Local and Worktree execution | Implemented through shared `oxide_core::worktree`: detached checkout, branch creation, copying changes and Local/Worktree handoff. |
+| Worktree setup and project actions | Partial: `.worktreeinclude` copies setup files; there is no local-environment configuration UI, automatic setup script lifecycle or configured terminal action buttons. |
+| Cloud execution | Missing: no environment publishing, remote task execution or cloud session synchronization. A remote model provider is not a remote execution environment. |
+| Remote/mobile control | Missing: no authenticated host pairing, reconnectable remote event stream or remote approval interface. |
+| Scheduled automations | Missing: no durable schedule store, scheduler, run history, pause/resume or background worktree scheduling. Manually asking the agent to run a script does not provide this lifecycle. |
+| Long-running goals | Partial: the shared agent loop continues through tools, retries and compaction; there is no explicit persisted goal with budget, stopping condition and resume lifecycle. |
+| Plan mode | Missing as a native mode: prompting an agent to plan does not enforce a read-only tool policy or provide a plan-to-execution transition. |
+| Trust and approvals | Implemented using the shared trust and approval stores. Oxide defaults `auto_approve` to on; this is a different policy from Codex's documented workspace approval modes. Preserve a user's explicit setting. |
+| OS sandbox and automatic approval review | Missing: Oxide tool approval rules and path validation are not an OS filesystem/network sandbox. No automatic safety-review service exists. |
+| Model/provider and reasoning controls | Implemented using Oxide's provider catalogs and shared configuration. Oxide's provider choices and billing remain its own; model availability cannot be inferred from Codex's catalog. |
+| Agent selection and delegation | Implemented: Desktop's agent picker selects discovered agents and passes the selection to the shared runner; `/agent` now opens that same picker. Core `task` supports subagent execution. |
+| Skills and commands | Implemented: trusted ecosystem discovery, shared slash catalog and shared command resolution. |
+| MCP and plugins | Partial: shared loading and MCP configuration/status/auth support exist. Desktop lacks the CLI's plugin marketplace installation/update browser and Codex's account-connected universal plugin directory. |
+| Attachments | Implemented: image, PDF and text input, paste/drop and image previews, subject to the shared limits and provider support. |
+| Transcript and composer | Implemented: Markdown, diagrams, tool cards, reasoning, message navigation, find, shortcuts and draft history. Visual equivalence requires live reference captures and keyboard/scroll checks at supported sizes. |
+| Local code review | Implemented: turn/repository diffs, undo and per-file stage/unstage/revert. Hunk operations exist in `staging.rs`, but the UI exposes file actions only. |
+| Pull request review | Partial: `gh`/`glab` provide repository requests, description, checks, comments and diffs. No cross-repository personal review inbox, viewed-revision markers or cloud review service. |
+| Integrated terminal | Partial: real PTY and keyboard input, with a limited ANSI renderer. Full-screen terminal programs, complete terminal emulation and persistent hidden terminal sessions are not supported. |
+| File and artifact preview | Partial: images, text, Markdown, diagrams and CSV previews. No live document/spreadsheet/presentation authoring canvas or account artifact lifecycle. |
+| Browser/computer use | No built-in browser session or native computer-control subsystem. Configured MCP tools can supply capabilities but do not establish native product parity. |
+| Voice and image generation | No native recording/voice workflow or first-party generation UI. Provider/MCP capabilities depend on configuration. |
+| Notifications and activity | Implemented: unread/activity states, approval/question notifications, completion settings and keeping the machine awake during a turn. |
+| Settings, accessibility and release | Implemented: shared language/theme, keyboard remapping, native menu, focus behavior, platform installers and updater checks. Actual packaged accessibility and visual parity remain unverified. |
+| Account services | Oxide has provider credentials and its own local stores. ChatGPT account sync, organization policies, hosted connectors and subscription entitlements require separate service integration. |
+
+The implementation evidence above is in `crates/desktop/src/`, `ui/app.js`,
+`ui/index.html`, `check-app.mjs`, `check-shell.mjs` and the shared core modules.
+Absence claims refer to native functionality in this checkout, not what a user
+could arrange through an external tool or plugin.
+
+The official comparison sources are
+[the desktop app](https://learn.chatgpt.com/docs/app),
+[projects and chats](https://learn.chatgpt.com/docs/projects),
+[execution environments](https://learn.chatgpt.com/docs/environments/modes),
+[worktrees and handoff](https://learn.chatgpt.com/docs/environments/git-worktrees),
+[local setup scripts and actions](https://learn.chatgpt.com/docs/environments/local-environment),
+[scheduled tasks](https://learn.chatgpt.com/docs/automations?surface=app),
+[permission modes](https://learn.chatgpt.com/docs/permission-modes),
+[code review](https://learn.chatgpt.com/docs/code-review),
+[plugins](https://learn.chatgpt.com/docs/plugins), and
+[long-running coding workflows and Plan mode](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex).
+Availability may depend on account, platform and deployment; undocumented details
+need a live reference rather than assumptions from a similar layout.
+
+### Completion criteria for full parity
+
+1. Close the local workflow gaps: desktop plugin management, worktree setup and
+   actions, hunk controls, complete terminal behavior, native Plan mode and
+   explicit goal lifecycle. Implement shared semantics in core and verify that
+   CLI and VS Code continue to honor the same stores and explicit user choices.
+2. Add execution boundaries in core: enforce filesystem/network sandboxing for
+   every tool route and subprocess, expose the selected mode accurately and test
+   denied actions. Changing an approval label must not imply a sandbox exists.
+3. Add durable background execution: schedules and run history, overlap/missed-run
+   policy, crash/restart recovery, pause/resume and dedicated worktrees. Requests
+   and results must remain answerable in their owning conversations.
+4. Add cloud/remote services with authenticated hosts, environment management,
+   durable event replay, reconnect/cancel, approval delivery and account sync.
+   These require an execution/service architecture, not placeholder buttons.
+5. Add the desktop integrations and artifact workflows listed above, validating
+   actual provider/plugin support and account access rather than claiming that
+   generic MCP connectivity supplies every capability.
+6. Run matched scenarios on both installed apps: create/resume/archive a chat,
+   switch projects during concurrent runs, queue/steer/stop, answer approvals,
+   inspect attachments, create/hand off a worktree, stage/revert a hunk, recover
+   after restart, run a schedule and reconnect a remote session. Compare keyboard
+   access, focus, scroll anchoring and layouts at supported window sizes. Pass
+   Oxide's UI/shell checks, Rust tests/clippy and packaged platform smoke tests.
+
+Until these criteria are met, describe the implemented workflows individually
+rather than saying the products are the same.
+
 ## Layout and navigation
+
+The project tree uses compact rows and a narrow inset beside the native scrollbar
+lane, so titles can use the sidebar width. Only the active chat has a filled
+selection background. Pull-request badges use a merge glyph in purple for merged
+requests, a crossed request glyph in red for closed requests, green for open
+requests and grey while their state is unknown. Pin and archive actions still
+appear on hover or keyboard focus without shifting the title.
 
 The window has one full-width toolbar with chat history, a sidebar toggle, the
 chat title or tabs, and the existing changes, details and new-tab actions.
@@ -20,7 +119,7 @@ Linux retain their native window controls.
 
 A narrow navigation rail stays available when the sidebar is hidden. It opens
 a new chat, projects, chat search, activity, the command menu, worktrees, MCP
-servers and settings. The sidebar header places the Oxide menu, activity bell
+servers and settings. The sidebar header places the plain Oxide title, activity bell
 and search together above New Chat. These controls use the same actions and
 saved preferences as their keyboard and menu counterparts.
 
@@ -187,7 +286,7 @@ The menu bar is the window's own: `installMenu` builds it with
 `Menu.buildFromTemplate` from the platform's own roles (`about`, `quit`,
 `hideOthers`, `undo`/`copy`/`paste`, `minimize`/`zoom`/`close`) plus the items
 the app answers itself: **Check for Updates…**, which sends the page the
-`check-updates` event and so ends at the same dialog the sidebar's own button
+`check-updates` event and so ends at the same dialog the Settings update button
 opens, and the **File** menu's **New Tab** (`⌘T`/`Ctrl+T`) and **Close Tab**
 (`⌘W`/`Ctrl+W`), which go to the page as its `chat-tab` event rather than
 inventing a second tab model. macOS is the only platform that gets one;
@@ -248,16 +347,16 @@ bar that has lost its inset are each a failed check.
 
 The regions, top to bottom:
 
-- **Sidebar** — the **Oxide** menu, **Activity** bell and **Search chats** share
+- **Sidebar** — the **Oxide** title, **Activity** bell and **Search chats** share
   the header, with **New Chat** directly below, opening a thread in the project the
   window is in and, when nothing is open yet, the folder picker that asks which
   project to start in — a folder is never picked for the reader, and with no
-  project at all the same button offers the Add-project dialog. The Oxide menu
-  offers adding, finding and reopening chats. Activity's bell carries a dot while something is running,
+  project at all the same button offers the Add-project dialog. The title has no dropdown. The existing New Chat, project controls and command
+  menu provide chat and project actions. Activity's bell carries a dot while something is running,
   unread or waiting for an answer; the **Projects**
-  tree. The navigation rail keeps the window controls in a vertical group at
-  the bottom: theme, interface language, check for updates and settings, with
-  the settings gear last. The sidebar has no separate footer. The tree groups each project's sessions
+  tree. The navigation rail keeps the settings gear at the bottom. Theme and interface
+  language are under Settings → Appearance; Check for updates is under Settings
+  → General and in the native menu. The sidebar has no separate footer. The tree groups each project's sessions
   under it. Project options and **New task**, and a stored thread's pin and
   archive actions, appear when their row is hovered or holds keyboard focus,
   matching Codex's quiet resting tree. The key a thread answers to is nowhere
@@ -273,9 +372,8 @@ The regions, top to bottom:
   its own space at rest and gives way to pin/archive on hover or keyboard focus.
   Badges and actions have opaque backgrounds matching the row to cover titles.
   Focusing the request link itself keeps it visible and hides those actions.
-  The active project and the active thread both
-  carry the accent bar, so which one is on screen reads the same in either
-  list, and a thread is listed — under the summarized title of its first
+  The active project's label stays readable without a filled row, while the
+  active thread carries the selection background. A thread is listed — under the summarized title of its first
   message — as soon as its turn starts rather than once it ends: the thread the
   window is in stands in for itself in the tree, in that project's session
   count and in the `/session` list until the store has written it, keyed by
@@ -339,8 +437,11 @@ The regions, top to bottom:
   exactly where they are written. **Up** in an empty box recalls
   the last prompt from this chat, including a resumed chat, without restoring attachments.
   Completion menus take priority over recall. The box holds
-  the attachment strip, the message box itself and the icon row of chips, with a
-  bar of its own sitting on the box's top edge — the way Codex's own composer
+  the attachment strip, the message box and a compact action row. Provider login,
+  project trust, agents and shortcuts are grouped in **More tools**, with tool
+  approvals, model/reasoning and Send still visible. Extended usage totals remain
+  available through `/usage`. The project bar appears only before a chat starts;
+  established chats keep that space for the message. The bar sits on the box's top edge — the way Codex's own composer
   carries its top row, and the way the VS Code panel carries its own. That bar is
   narrower than the box and centered on it, 24px narrower (the 12px the box pads
   each side), so its edges stand where the box's own text column does and the box
@@ -348,7 +449,7 @@ The regions, top to bottom:
   names where the turn will run: the
   folder's chip, the branch that folder is on, and the checkout the next turn
   runs in at the row's other end — and nothing else, since the window's settings
-  stay in the sidebar's foot and the box's own row, and what the chat has spent
+  stay in the Settings sheet and the box's own row, and what the chat has spent
   belongs beside the context it is measured against, in that row. There is no
   readout for
   the machine the turn runs on: a folder on
@@ -372,8 +473,8 @@ The regions, top to bottom:
   button wearing the fact's own text — the glyph with the checkout's name beside
   it while a thread writes to a copy, in the accent so the row says which copy at
   a glance, and the glyph alone otherwise — while every other setting stays where
-  it was — the theme, the language, the release check and the settings sheet's
-  gear in the sidebar's foot, the rest in the box's own row — rather than being
+  it was — theme, language and the release check in Settings, its gear at the
+  bottom of the rail, and the rest in the box's own row — rather than being
   gathered onto the bar as well. While the thread on screen is the one a turn is running
   in (`body.running`), the bar steps aside so the box keeps the room its phase
   and Stop need, and it is back once the run ends. The
@@ -985,7 +1086,7 @@ A chat that opened a pull or merge request says so on its row. The link is read
 from the thread's own log — the URL the forge CLI printed — so nothing has to be
 recorded by hand.
 
-- The sidebar row carries the request's mark: green for an open request, accent
+- The sidebar row carries the request's mark: green for an open request, purple
   for a merged one, red for a closed one, and grey while the forge has not
   answered yet. Its tooltip names the request and the state, and a press opens it
   in the system browser through `open_url` rather than opening the thread.
@@ -1109,7 +1210,7 @@ immediately and persists it.
 ## Language
 
 The window is drawn in British English (the default) or Simplified Chinese. The
-globe in the sidebar's foot opens a row per language, each named in the language
+Language button under Settings → Appearance opens a row per language, each named in the language
 itself (`English (United Kingdom)`, `简体中文`) with the one in use marked. A row
 writes the `language` key in the shared `settings.json` — the `language`/
 `set_language` commands resolve and write it through `oxide_core::i18n` — so the
@@ -1166,16 +1267,16 @@ by name rather than quietly replaced; a value the window *can* read but not use 
 a scale outside `0.7`–`1.6`, a word from a newer build — falls back to the value
 the window shipped with, so a hand-edited file never stops the window opening.
 
-**Settings** is one sheet, opened from the gear in the sidebar's foot, the app
+**Settings** is one sheet, opened from the gear at the bottom of the navigation rail, the app
 menu's **Settings…** (`⌘,`) or the command menu. Its sections are named by id so
 every control the markup declares is a control the page wired, and it paints what
 the store answered rather than what a click hoped to store:
 
-- **General** — the key that sends (`Enter` sends and `Shift+Enter` is a newline,
+- **General** — Check for updates, the key that sends (`Enter` sends and `Shift+Enter` is a newline,
 or `⌘Enter` sends and `Enter` is a newline), and what a message sent while a turn
 runs does (wait for the next run, or steer the one in flight). The follow-up
 choice is the same state the composer's badge and its `⌘⇧Enter` override read.
-- **Appearance** — the text size, as a scale the window applies to its own web
+- **Appearance** — theme and interface language pickers, the text size, as a scale the window applies to its own web
 contents (`set_zoom`, never a stylesheet edit), and whether the sidebar is shown
 at all.
 - **Keyboard** — every action in the window's shortcut table with the binding in
@@ -1205,8 +1306,13 @@ which is where Codex keeps it too.
 
 ## The bottom panel: Review and the terminal
 
-The window's dock sits under the conversation and spans it, with two tabs and
-`⌘J` to show or hide it. It is only there while one of its bodies is: closing the
+The review, terminal and pull-request tabs open beside the conversation, with
+`⌘J` to show or hide the panel. A separator resizes its width from 30% to 70%
+with the pointer or Left/Right keys (Shift moves faster); Home/End select the
+limits and double-click restores 55%. The width survives relaunch. Windows at
+1100px or narrower stack the panel below the conversation. Both panes scroll
+independently. Review defaults to old/new columns; **Unified diff** toggles a
+saved single-column view. It is only there while one of its bodies is: closing the
 review with `Escape` puts the dock away too, unless the terminal is what is
 showing. The review pane still reads what it always did — a turn's card, or the
 repository's uncommitted changes — and gained what it writes.
@@ -1437,10 +1543,10 @@ catalog `oxide command --json` prints and the terminal's own autocomplete
 mirrors. A name the app itself owns is performed here — the built-ins the catalog
 names the desktop app for, each with the one spelling the catalog declares: `/mcp`
 opens the **MCP servers** dialog, `/session` the **Sessions** dialog, and
-`/model`, `/theme`, `/permissions`, `/trust`, `/connect`, `/new`, `/reasoning`,
+`/model`, `/agent`, `/theme`, `/permissions`, `/trust`, `/connect`, `/new`, `/reasoning`,
 `/usage`, `/language`, `/logout`, `/attach` and `/help` open or run what the
-composer's own buttons do, while a built-in another front-end owns (`/agent` is
-the VS Code panel's) is not a row at all. A project command, a prompt template
+composer's own buttons do, while a built-in another front-end owns (`/init` is
+the terminal's) is not a row at all. A project command, a prompt template
 and a skill are sent on as a normal message, so the CLI's own resolution handles
 them — as is a client command with an argument, so `/mcp list` and `/session
 <id>` reach the agent instead of being performed as the bare command would be. A
@@ -1448,8 +1554,8 @@ skill is listed under its own name (`/rust-conventions`), with the row marked
 `skill` and its description beside it, so taking the row completes the name and
 sending it is what loads the skill: the CLI resolves the same name the menu
 lists, and `/skill:<name>` is the terminal's other spelling of it. Typing a
-built-in out in full names the front-end the catalog hands it to (`/agent is the
-VS Code panel's command.`) rather than sending the literal text `/agent` to the
+built-in out in full names the front-end the catalog hands it to (`/init is the
+terminal's command.`) rather than sending the literal text `/init` to the
 model, and a client command no front-end performs yet is named as not being in
 the app yet, in the same status line — which is what keeps every name the
 catalog declares a client command from being sent on as a prompt. With no
@@ -1495,6 +1601,19 @@ that could not reach a server.
 
 ## Rendering
 
+The Desktop and Extension composers share atomic deletion for rendered `@path`
+references: Backspace, Delete, word deletion or a selected-range deletion that
+intersects a reference removes the entire reference. Quoted paths, spaces and
+line suffixes remain part of the reference, and Undo restores it in one step.
+Code spans and surrounding prose keep normal editing behavior.
+
+Bare website addresses such as `github.com`, `www.example.org` and
+`docs.example.dev/setup` are linked in the composer with HTTPS destinations.
+The message keeps the text that was typed rather than gaining Markdown link
+syntax after editing. Email addresses, file names, references and code spans are
+excluded from this decoration. `check-markdown-input.mjs` exercises both
+composers in Chromium.
+
 Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks), blockquotes, rules, pipe tables, fenced code with
 lightweight syntax highlighting (Rust, JS/TS, Python, Go, Bash, JSON), and
@@ -1531,7 +1650,7 @@ and results for removed messages or old themes are discarded. Run
 
 ## Check for updates
 
-The check-for-updates button in the sidebar footer — or **Check for Updates…**
+The check-for-updates button under Settings → General — or **Check for Updates…**
 in the macOS app menu,
 directly under **About**, which asks the open window to run the same check —
 reports the newest **Oxide Desktop** release and installs it. The app's own
@@ -1608,7 +1727,7 @@ setup for an app bundle) is not the one that replaces it.
 
 A download that does not match its checksum is refused before anything is
 replaced, and one install runs at a time. A check asked for again — the menu
-item and the sidebar's check button are the same command — is the one that owns the
+item and the Settings check button are the same command — is the one that owns the
 dialog, so an answer a newer check has already replaced is dropped rather than
 repainting the dialog with an older release. A check asks GitHub for the newest
 release, so a machine with no network reports what went wrong instead of

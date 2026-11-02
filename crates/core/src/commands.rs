@@ -14,8 +14,8 @@
 //! none of its own.
 //!
 //! An agent is not a slash command: a client selects one through its own agent
-//! picker (`/agent` in the VS Code panel, `--agent` for a terminal or desktop
-//! run), so agent files contribute no entry here. The routing a command's
+//! picker (`/agent` in Desktop and the VS Code panel, `--agent` in the terminal),
+//! so agent files contribute no entry here. The routing a command's
 //! frontmatter declares
 //! (`agent:`, `subtask:`) is resolved by the CLI when it runs the `/name`
 //! prompt, so a client that only sends the prompt needs no entry for it.
@@ -130,9 +130,7 @@ pub const BUILTINS: &[Builtin] = &[
         name: "agent",
         description: "Choose the subagent this chat runs as",
         arguments: None,
-        // The panel picks a subagent; a run's `--agent` is the CLI's own flag
-        // rather than a slash command, and the desktop app has no picker.
-        front_ends: &[FrontEnd::Panel],
+        front_ends: &[FrontEnd::Desktop, FrontEnd::Panel],
     },
     Builtin {
         name: "permissions",
@@ -676,7 +674,7 @@ mod tests {
         assert!(owns(FrontEnd::Terminal, "permissions"));
         assert!(!owns(FrontEnd::Terminal, "agent"));
         assert!(owns(FrontEnd::Desktop, "theme"));
-        assert!(!owns(FrontEnd::Desktop, "agent"));
+        assert!(owns(FrontEnd::Desktop, "agent"));
         assert!(!owns(FrontEnd::Panel, "theme"));
         assert!(owns(FrontEnd::Panel, "logout"));
         assert!(owns(FrontEnd::Panel, "permissions"));

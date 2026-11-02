@@ -3039,6 +3039,82 @@ describe("webview questions", () => {
   const dashes = (card: StubElement) =>
     card.querySelectorAll(".qdash").map((dash) => dash.className);
 
+  it("keeps a partially typed file list and its caret through a state refresh", () => {
+    const { byId, send, active, posted } = loadRenderer();
+    const item = {
+      ...pending,
+      questions: [{ question: "Which two files?", header: "Files", options: [], multiSelect: false }],
+    };
+    const snapshot = () => stateMessage({ sessionId: "files-chat", folder: "/project", items: [item] });
+    send(snapshot());
+    const transcript = byId.get("transcript")!;
+    const field = find(find(transcript, "question")!, "qfree")!;
+    field.value = "first-file.md";
+    field.setSelectionRange(5, 9);
+    field.focus();
+
+    send(snapshot());
+    const card = find(transcript, "question")!;
+    assert.equal(find(card, "qfree"), field);
+    assert.equal(field.value, "first-file.md");
+    assert.equal(active(), field);
+    assert.equal(field.selectionStart, 5);
+    assert.equal(field.selectionEnd, 9);
+    const composer = byId.get("input")!;
+    composer.focus();
+    send(snapshot());
+    assert.equal(active(), composer);
+    assert.equal(field.value, "first-file.md");
+    field.value += ", second-file.md";
+    button(card, "Submit").fire("click");
+    assert.deepEqual(shape(posted[posted.length - 1]), {
+      k: "question",
+      requestId: item.requestId,
+      answers: [{ question: "Which two files?", values: ["first-file.md, second-file.md"] }],
+    });
+  });
+
+  it("retains selected options, free text and the current step on repeated pending updates", () => {
+    const { byId, send } = loadRenderer();
+    const item = {
+      ...pending,
+      questions: [
+        { ...pending.questions[0], multiSelect: true },
+        { question: "Anything else?", header: "Notes", options: [], multiSelect: false },
+      ],
+    };
+    const snapshot = () => stateMessage({ sessionId: "options-chat", folder: "/project", items: [item] });
+    send(snapshot());
+    const transcript = byId.get("transcript")!;
+    const card = find(transcript, "question")!;
+    fields(card)[1].checked = true;
+    card.querySelectorAll(".qfree")[0].value = "keep this note";
+    button(card, "Next").fire("click");
+    card.querySelectorAll(".qfree")[1].value = "and this one";
+    send(snapshot());
+    send({ k: "question", id: item.id, state: "pending", label: "" });
+    assert.equal(find(transcript, "question"), card);
+    assert.equal(find(card, "qsteplabel")!.textContent, "2 of 2 questions");
+    assert.equal(fields(card)[1].checked, true);
+    assert.deepEqual(card.querySelectorAll(".qfree").map((field) => field.value), ["keep this note", "and this one"]);
+  });
+
+  it("does not carry a question draft into another conversation or a replacement request", () => {
+    const { byId, send } = loadRenderer();
+    const item = {
+      ...pending,
+      questions: [{ question: "Which files?", header: "Files", options: [], multiSelect: false }],
+    };
+    const transcript = byId.get("transcript")!;
+    send(stateMessage({ sessionId: "first", folder: "/project", items: [item] }));
+    find(find(transcript, "question")!, "qfree")!.value = "private-file.md";
+    send(stateMessage({ sessionId: "second", folder: "/project", items: [item] }));
+    assert.equal(find(find(transcript, "question")!, "qfree")!.value, "");
+    find(find(transcript, "question")!, "qfree")!.value = "second-file.md";
+    send(stateMessage({ sessionId: "second", folder: "/project", items: [{ ...item, requestId: 22 }] }));
+    assert.equal(find(find(transcript, "question")!, "qfree")!.value, "");
+  });
+
   it("paints a radio group and a field for the user's own answer", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
