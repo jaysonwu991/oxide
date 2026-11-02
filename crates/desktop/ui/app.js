@@ -10372,7 +10372,6 @@ function init() {
   el("rail-more").onclick = openCommandMenu;
   el("rail-worktrees").onclick = openWorktrees;
   el("rail-mcps").onclick = openMcps;
-  el("rail-settings").onclick = () => openSettings();
   installMarkdownInput(el("prompt"), (text) => renderMarkdown(text, true));
   initSidebarResize();
   initChatTabs();

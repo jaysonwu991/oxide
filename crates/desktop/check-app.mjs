@@ -2289,7 +2289,7 @@ check(
   sheet.slice(sheet.indexOf(".composer-strip {"), sheet.indexOf(".composer-strip {") + 260),
 );
 // The bar carries no control of its own: the window's settings live in the
-// settings sheet the sidebar's foot opens, so the bar is the folder's chip and
+// settings sheet the navigation rail opens, so the bar is the folder's chip and
 // the folder's facts, and nothing else to press. What is pinned is the bar
 // itself — the sheet is a surface of its own, reached from the foot and from
 // `⌘,`, and none of its controls belong in this row.
@@ -2354,23 +2354,26 @@ check(
   `${buttonFor("review-refresh")} / ${buttonFor("review-close")}`,
 );
 
-// The sidebar's foot keeps the two that belong to the window rather than to a
-// message — the release check and the theme — and everything else it used to
-// hold stands in the composer beside the message's chips, where it is reachable
-// before a project is even open.
-const sidebarFoot = shell.slice(shellAt('class="sidebar-foot"'), shellAt("</aside>"));
+const railUtilities = shell.slice(shellAt('class="rail-utilities"'), shellAt("</nav>"));
 const composerLeft = shell.slice(shellAt('class="composer-left"'), shellAt('class="composer-right"'));
 const idsIn = (markup) => (markup.match(/id="[a-z-]+"/g) || []).join(" ");
 check(
-  "kept Check for Updates and Theme in the sidebar, and moved the rest to the composer",
-  /id="theme"[^>]*title="Theme"[^>]*aria-label="Theme"/.test(sidebarFoot) &&
-    /id="update"[^>]*title="Check for updates"/.test(sidebarFoot) &&
-    !/id="(connect|trust|permissions|help)"/.test(sidebarFoot) &&
+  "kept window utilities in the rail and message controls in the composer",
+  /id="theme"[^>]*title="Theme"[^>]*aria-label="Theme"/.test(railUtilities) &&
+    /id="update"[^>]*title="Check for updates"/.test(railUtilities) &&
+    !/id="(connect|trust|permissions|help)"/.test(railUtilities) &&
     ["connect", "trust", "permissions", "help"].every((id) =>
       composerLeft.includes(`id="${id}"`),
     ) &&
     shellAt('id="reasoning"') > shellAt('id="connect"'),
-  `foot: ${idsIn(sidebarFoot)} · composer: ${idsIn(composerLeft)}`,
+  `rail: ${idsIn(railUtilities)} · composer: ${idsIn(composerLeft)}`,
+);
+check(
+  "merged all window utilities into the rail without a duplicate settings button or sidebar footer",
+  ["theme", "language", "update", "settings"].every((id) =>
+    railUtilities.includes(`id="${id}"`) && buttonFor(id).includes('class="rail-button"'),
+  ) && !shell.includes('class="sidebar-foot"') && !shell.includes('id="rail-settings"'),
+  idsIn(railUtilities),
 );
 check(
   "ordered composer utilities as provider, access, agents, approvals and shortcuts",
@@ -2915,23 +2918,23 @@ check(
   scrolledBox.className,
 );
 
-// The sidebar's own button, because the menu item that opens the same dialog
+// The rail's own button, because the menu item that opens the same dialog
 // is macOS's: Windows and Linux build no menu bar, so the window is the way in
 // there. The dialog reports the CLI's release, so the note under it says which
 // installation an install would touch.
 const updateButton = buttonFor("update");
 check(
-  "offered Check for Updates in the sidebar's foot",
-  updateButton.includes('class="icon"') &&
+  "offered Check for Updates in the navigation rail",
+  updateButton.includes('class="rail-button"') &&
     updateButton.includes('title="Check for updates"') &&
     updateButton.includes('aria-label="Check for updates"') &&
-    sidebarFoot.includes('id="update"'),
+    railUtilities.includes('id="update"'),
   updateButton,
 );
 // The two that stayed in the foot are glyphs too, so the sidebar's own row has
 // no words in it either.
 check(
-  "drew the sidebar's foot as glyphs",
+  "drew the rail utilities as glyphs",
   ["theme", "update"].every((id) => buttonFor(id).includes("<svg") && /<\/svg>$/.test(buttonFor(id))),
   `${buttonFor("theme")} / ${updateButton}`,
 );
@@ -9570,7 +9573,7 @@ console.log("the sidebar's add menu, search, activity and the archive");
 elementFor("rail-more").onclick();
 check("the rail opens the existing command menu", elementFor("command-menu").hidden === false);
 app.closeCommandMenu();
-elementFor("rail-settings").onclick();
+elementFor("settings").onclick();
 check("the rail opens the existing settings sheet", elementFor("settings-modal").hidden === false);
 app.closeSettings();
 elementFor("rail-search").onclick();
