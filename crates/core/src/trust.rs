@@ -87,6 +87,14 @@ impl TrustStore {
         self.decisions.insert(canonical(dir), trusted);
     }
 
+    /// Removes a saved decision for exactly `dir` (not an ancestor), so a
+    /// project removed from a front-end's project list stops holding a trust
+    /// decision it can no longer be reviewed or revoked through. Returns
+    /// whether a decision was present.
+    pub fn forget(&mut self, dir: &Path) -> bool {
+        self.decisions.remove(&canonical(dir)).is_some()
+    }
+
     /// The closest saved decision for `dir` or one of its ancestors.
     pub fn decision(&self, dir: &Path) -> Option<bool> {
         let mut current = Some(dir.to_path_buf());
@@ -269,6 +277,26 @@ mod tests {
         store.set(&child, false);
         assert_eq!(store.decision(&child), Some(false));
         assert_eq!(store.decision(&root), Some(true));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn forget_removes_exact_decision_only() {
+        let root = temp_dir("forget");
+        let child = root.join("a");
+        std::fs::create_dir_all(&child).unwrap();
+
+        let mut store = TrustStore::default();
+        store.set(&root, true);
+        store.set(&child, false);
+
+        assert!(store.forget(&child));
+        assert_eq!(store.decision(&child), Some(true));
+        assert!(!store.forget(&child));
+
+        assert!(store.forget(&root));
+        assert_eq!(store.decision(&root), None);
 
         std::fs::remove_dir_all(&root).ok();
     }
