@@ -105,7 +105,7 @@ const scalar = (source, key) => {
 
 // The names `ui/app.js` performs and the dispatch arms the engine answers with,
 // read out of the sources themselves rather than a hand-kept list.
-const arms = new Set([...commands.matchAll(/^\s*"([a-z_]+)" =>/gm)].map(([, name]) => name));
+const arms = new Set([...commands.slice(commands.indexOf("pub async fn dispatch(")).matchAll(/^\s*"([a-z_]+)" =>/gm)].map(([, name]) => name));
 const performed = new Set([...app.matchAll(/invoke\("([a-z_]+)"/g)].map(([, name]) => name));
 // A command the window performs itself never reaches the engine: the folder
 // chooser is the platform's panel and a link is the platform's browser, and a

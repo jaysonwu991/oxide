@@ -173,6 +173,11 @@ function brandMark() {
 const ICONS = {
   // A project's folder and a document the webview cannot paint: the two drawn
   // for this window alone, in the composer's own style.
+  puzzle: glyph('<path d="M4 4h6a3 3 0 1 1 6 0h4v6a3 3 0 1 0 0 6v4h-6a3 3 0 1 0-6 0H4v-6a3 3 0 1 1 0-6Z" ' + STROKE_24 + '/>'),
+  book: glyph('<path d="M4 4h6l2 2 2-2h6v16h-6l-2 1-2-1H4ZM12 6v15" ' + STROKE_24 + '/>'),
+  refresh: glyph('<path d="M20 7V3m0 4h-4M4 17v4m0-4h4M20 7a8 8 0 0 0-14-2M4 17a8 8 0 0 0 14 2" ' + STROKE_24 + '/>'),
+  trash: glyph('<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" ' + STROKE_24 + '/>'),
+  back: glyph('<path d="m10 5-7 7 7 7M3 12h18" ' + STROKE_24 + '/>'),
   globe: glyph(`<circle cx="12" cy="12" r="9" ${STROKE_24}/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z" ${STROKE_24}/>`),
   folder: glyph(
     `<path d="M20.2 19.4a1.8 1.8 0 0 0 1.8-1.8v-8a1.8 1.8 0 0 0-1.8-1.8h-7.9a1.8 1.8 0 0 1-1.5-.8l-.9-1.4a1.8 1.8 0 0 0-1.5-.8H3.8A1.8 1.8 0 0 0 2 6.6v11a1.8 1.8 0 0 0 1.8 1.8Z" ${STROKE_24}/>`,
@@ -669,8 +674,10 @@ async function switchLanguage(tag) {
     if (probe !== languageProbe || project !== state.project) return;
     applyLanguage(info);
     el("language-modal").hidden = true;
+    renderSettingsLanguage();
   } catch (error) {
     setStatus(String(error), "error");
+    showToast(String(error), "error");
   }
 }
 
@@ -2021,6 +2028,7 @@ async function pickProject(project) {
 }
 
 async function selectProject(project) {
+  closeCustomize();
   // A running turn keeps the folder it started in, and its conversation goes on
   // in its own thread record: the header's strip and the sidebar row the run's
   // own mark keep saying where it is while the window looks at another folder,
@@ -2922,6 +2930,7 @@ async function newTaskIn(project) {
 /// the thread it starts is one they named the folder for, and with no project at
 /// all nothing to run in, so it asks for one the way every other control does.
 async function newChatFromSidebar() {
+  closeCustomize();
   if (!canStartNewChat()) return;
   if (state.project) {
     newChat();
@@ -5675,7 +5684,6 @@ const OVERLAYS = [
   "sources-modal",
   "create-project-modal",
   "projects-modal",
-  "mcps-modal",
   "worktrees-modal",
   "models-modal",
   "reasoning-modal",
@@ -5690,7 +5698,6 @@ const OVERLAYS = [
   "sessions-modal",
   "update-modal",
   "help-modal",
-  "settings-modal",
   "command-menu",
   "search-modal",
   "activity-modal",
@@ -6122,6 +6129,7 @@ function themeProject() {
 }
 
 async function openThemes() {
+  closeSettings();
   closeOverlays("themes-modal");
   el("themes-modal").hidden = false;
   const box = el("theme-list");
@@ -6150,23 +6158,21 @@ async function openThemes() {
 /// panel's language in one place, since the choice is written to the shared
 /// `settings.json` rather than kept beside this window.
 function openLanguage() {
+  closeSettings();
   const modal = el("language-modal");
   const open = modal.hidden;
   closeOverlays("language-modal");
   modal.hidden = !open;
-  el("language").setAttribute("aria-expanded", String(open));
   if (open) renderLanguageRows(null);
 }
 
 function closeLanguage() {
   el("language-modal").hidden = true;
-  el("language").setAttribute("aria-expanded", "false");
 }
 
 const THEME_SWATCH_SLOTS = ["background", "panel", "accent", "text", "success", "tool"];
 
-function renderThemes(entries, current) {
-  const box = el("theme-list");
+function renderThemes(entries, current, box = el("theme-list")) {
   box.innerHTML = "";
   if (!entries.length) {
     box.innerHTML = `<div class="theme-empty">${escapeHtml(t("desktop.empty.themes", "No themes available."))}</div>`;
@@ -6176,6 +6182,8 @@ function renderThemes(entries, current) {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "theme-option" + (name === current ? " active" : "");
+    row.dataset.theme = name;
+    row.setAttribute("aria-pressed", String(name === current));
 
     const swatches = document.createElement("span");
     swatches.className = "theme-swatches";
@@ -6197,24 +6205,27 @@ function renderThemes(entries, current) {
     setCheck(check, name === current);
     row.appendChild(check);
 
-    row.onclick = () => selectTheme(name, row);
+    row.onclick = () => selectTheme(name, row, box);
     box.appendChild(row);
   }
 }
 
-async function selectTheme(name, row) {
+async function selectTheme(name, row, box = el("theme-list")) {
+  for (const node of box.children) node.disabled = true;
   try {
     const result = await invoke("set_theme", { project: themeProject(), name });
     applyTheme(result.colors);
-    const box = el("theme-list");
     for (const node of box.querySelectorAll(".theme-option")) {
       const isActive = node === row;
       node.classList.toggle("active", isActive);
+      node.setAttribute("aria-pressed", String(isActive));
       const check = node.querySelector(".theme-option-check");
       if (check) setCheck(check, isActive);
     }
   } catch (error) {
     showToast(t("ui.themeFailed", "Theme failed: {value0}", { value0: error }), "error");
+  } finally {
+    for (const node of box.children) node.disabled = false;
   }
 }
 
@@ -6931,22 +6942,272 @@ function mono(value) {
   return `<code>${escapeHtml(value || "")}</code>`;
 }
 
+// ---------- customization pages ----------
+
+let customizeView = "";
+let customizeGeneration = 0;
+let pluginCatalog = { installed: [], marketplaces: [] };
+let pluginSource = "all";
+let pluginBusy = false;
+
+function closeCustomize() {
+  closeSettings();
+  customizeView = "";
+  customizeGeneration++;
+  document.body.classList.remove("customizing");
+  document.body.classList.toggle("sidebar-hidden", !state.prefs.sidebar_visible);
+  el("customize-sidebar").hidden = true;
+  el("customize-page").hidden = true;
+  el("mcps-modal").hidden = true;
+  el("rail-customize").removeAttribute("aria-current");
+  el("rail-home").setAttribute("aria-current", "page");
+  paintNavigation();
+}
+
+async function openCustomize(view = "plugins") {
+  closeSettings();
+  closeOverlays();
+  customizeView = view;
+  const generation = ++customizeGeneration;
+  document.body.classList.add("customizing");
+  document.body.classList.remove("sidebar-hidden");
+  el("customize-sidebar").hidden = false;
+  el("customize-page").hidden = false;
+  for (const [name, id] of [["plugins", "plugins-page"], ["skills", "skills-page"], ["mcps", "mcps-modal"]]) {
+    el(id).hidden = name !== view;
+    el(`customize-${name}`).setAttribute("aria-current", name === view ? "page" : "false");
+  }
+  el("rail-home").removeAttribute("aria-current");
+  el("rail-customize").setAttribute("aria-current", "page");
+  paintNavigation();
+  el(view === "mcps" ? "mcps-title" : `${view}-title`).focus();
+  const catalog = loadPluginCatalog();
+  if (view === "mcps") await loadMcps();
+  if (view === "skills") {
+    const box = el("skills-list");
+    box.innerHTML = "";
+    if (!state.project) appendProjectPrompt(box);
+    else {
+      box.textContent = "Loading skills…";
+      try {
+        const project = state.project;
+        const entries = await invoke("list_commands", { project });
+        if (generation !== customizeGeneration || project !== state.project) return;
+        box.innerHTML = "";
+        for (const skill of entries.filter((entry) => entry.kind === "skill")) {
+          const row = document.createElement("article");
+          row.className = "plugin-card";
+          const text = document.createElement("div");
+          const title = document.createElement("h3");
+          title.textContent = skill.name;
+          const description = document.createElement("p");
+          description.textContent = skill.description;
+          text.append(title, description);
+          row.appendChild(text);
+          box.appendChild(row);
+        }
+        if (!box.children.length) box.textContent = "No skills found in this project. Add a skill or install a plugin that provides skills.";
+      } catch (error) {
+        if (generation === customizeGeneration) box.textContent = `Could not load skills: ${error}`;
+      }
+    }
+  }
+  await catalog;
+}
+
+function appendProjectPrompt(box) {
+  const message = document.createElement("p");
+  message.textContent = "Choose a project to manage its resources.";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary";
+  button.textContent = "Choose a project";
+  button.onclick = () => { closeCustomize(); askForProject(); };
+  box.append(message, button);
+}
+
+let pluginCatalogGeneration = 0;
+async function loadPluginCatalog() {
+  const generation = ++pluginCatalogGeneration;
+  el("plugin-message").textContent = "Loading plugins…";
+  try {
+    const catalog = await invoke("plugin_catalog");
+    if (generation !== pluginCatalogGeneration) return;
+    pluginCatalog = catalog;
+    el("plugin-message").textContent = "";
+    renderPlugins();
+    return true;
+  } catch (error) {
+    if (generation === pluginCatalogGeneration) el("plugin-message").textContent = `Could not load plugins: ${error}`;
+    return false;
+  }
+}
+
+function pluginButton(label, action, name, marketplace) {
+  const button = document.createElement("button");
+  button.type = "button";
+  const icon = { install: "plus", enable: "power", disable: "power", uninstall: "trash", update_marketplace: "refresh", remove_marketplace: "trash" }[action];
+  button.innerHTML = ICONS[icon] || "";
+  if (action.endsWith("marketplace")) {
+    const text = document.createElement("span");
+    text.textContent = label;
+    button.appendChild(text);
+  }
+  button.title = `${label} ${name}`;
+  button.disabled = pluginBusy;
+  button.setAttribute("aria-label", `${label} ${name}`);
+  button.onclick = () => mutatePlugin(action, name, marketplace);
+  return button;
+}
+
+function renderPlugins() {
+  const installed = el("customize-installed");
+  installed.innerHTML = "";
+  for (const plugin of pluginCatalog.installed) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.innerHTML = ICONS.puzzle;
+    const label = document.createElement("span");
+    label.textContent = plugin.name;
+    button.appendChild(label);
+    button.title = plugin.enabled ? "Enabled" : "Disabled";
+    button.onclick = () => {
+      pluginSource = "installed";
+      el("plugin-search").value = plugin.name;
+      void openCustomize("plugins");
+    };
+    installed.appendChild(button);
+  }
+  if (!pluginCatalog.installed.length) installed.textContent = "No plugins installed";
+  const tabs = el("plugin-tabs");
+  tabs.innerHTML = "";
+  const sources = [["all", "All"], ["installed", "Installed"], ...pluginCatalog.marketplaces.map((marketplace) => [marketplace.name, marketplace.name])];
+  if (!sources.some(([key]) => key === pluginSource)) pluginSource = "all";
+  for (const [key, label] of sources) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.setAttribute("aria-pressed", String(pluginSource === key));
+    button.onclick = () => { pluginSource = key; renderPlugins(); };
+    tabs.appendChild(button);
+  }
+  const box = el("plugin-list");
+  box.innerHTML = "";
+  const query = el("plugin-search").value.trim().toLowerCase();
+  let shown = 0;
+  const appendGroup = (label, plugins, marketplace) => {
+    const matches = plugins.filter((plugin) => `${plugin.name} ${plugin.description || ""}`.toLowerCase().includes(query));
+    if (!matches.length) return;
+    shown += matches.length;
+    const group = document.createElement("section");
+    group.className = "plugin-group";
+    const heading = document.createElement("h2");
+    heading.textContent = label;
+    group.appendChild(heading);
+    const grid = document.createElement("div");
+    grid.className = "plugin-grid";
+    for (const plugin of matches) {
+      const card = document.createElement("article");
+      card.className = "plugin-card";
+      const glyph = document.createElement("span");
+      glyph.className = "plugin-glyph";
+      glyph.innerHTML = ICONS.puzzle;
+      glyph.setAttribute("aria-hidden", "true");
+      const text = document.createElement("div");
+      text.className = "plugin-copy";
+      const name = document.createElement("h3");
+      name.textContent = plugin.name;
+      const description = document.createElement("p");
+      description.textContent = plugin.description || "No description provided.";
+      const detail = document.createElement("small");
+      const local = pluginCatalog.installed.find((entry) => entry.name === plugin.name);
+      detail.textContent = [plugin.version, local ? (local.enabled ? "Enabled" : "Disabled") : "Available"].filter(Boolean).join(" · ");
+      text.append(name, description, detail);
+      const actions = document.createElement("div");
+      actions.className = "plugin-actions";
+      if (local) {
+        actions.append(pluginButton(local.enabled ? "Disable" : "Enable", local.enabled ? "disable" : "enable", local.name), pluginButton("Uninstall", "uninstall", local.name));
+      } else actions.appendChild(pluginButton("Install", "install", plugin.name, marketplace));
+      card.append(glyph, text, actions);
+      grid.appendChild(card);
+    }
+    group.appendChild(grid);
+    box.appendChild(group);
+  };
+  if (pluginSource === "all" || pluginSource === "installed") appendGroup("Installed", pluginCatalog.installed);
+  for (const marketplace of pluginCatalog.marketplaces) {
+    if (pluginSource !== "all" && pluginSource !== marketplace.name) continue;
+    const controls = document.createElement("div");
+    controls.className = "marketplace-controls";
+    const source = document.createElement("span");
+    source.textContent = `${marketplace.name} · ${marketplace.source}`;
+    controls.append(source, pluginButton("Update", "update_marketplace", marketplace.name), pluginButton("Remove marketplace", "remove_marketplace", marketplace.name));
+    box.appendChild(controls);
+    if (marketplace.error) {
+      const error = document.createElement("p");
+      error.textContent = marketplace.error;
+      box.appendChild(error);
+    }
+    appendGroup(marketplace.name, marketplace.plugins, marketplace.name);
+  }
+  if (!shown) {
+    const empty = document.createElement("p");
+    empty.textContent = query ? "No plugins match your search." : "No plugins yet. Add a marketplace to discover and install plugins.";
+    box.appendChild(empty);
+  }
+  el("plugins-add").disabled = pluginBusy;
+  el("plugins-refresh").disabled = pluginBusy;
+}
+
+async function mutatePlugin(action, name, marketplace = null) {
+  if (pluginBusy) return;
+  pluginBusy = true;
+  renderPlugins();
+  el("plugin-message").textContent = `Working on ${name}…`;
+  try {
+    const message = await invoke("change_plugin", { action, name, marketplace });
+    if (action === "add_marketplace") {
+      el("marketplace-form").hidden = true;
+      el("plugins-add").setAttribute("aria-expanded", "false");
+      el("marketplace-source").value = "";
+    }
+    if (await loadPluginCatalog()) el("plugin-message").textContent = message;
+    state.palette = [];
+  } catch (error) {
+    el("plugin-message").textContent = `Could not update plugins: ${error}`;
+  } finally {
+    pluginBusy = false;
+    renderPlugins();
+  }
+}
+
 // ---------- MCP servers ----------
 
 /// The servers this project loads, with the state the core reports: the same
 /// listing `oxide mcp list` prints and the terminal's `/mcp` shows.
 async function openMcps() {
-  closeOverlays("mcps-modal");
-  el("mcps-modal").hidden = false;
-  el("mcp-list").innerHTML = `<div class="mcp-empty">${escapeHtml(t("desktop.empty.checkingServers", "Checking servers\u2026"))}</div>`;
-  await loadMcps();
+  await openCustomize("mcps");
 }
 
+let mcpGeneration = 0;
 async function loadMcps() {
+  const generation = ++mcpGeneration;
+  const project = state.project;
+  el("mcp-list").innerHTML = "";
+  if (!project) {
+    state.mcps = [];
+    state.mcpError = "";
+    appendProjectPrompt(el("mcp-list"));
+    return;
+  }
+  el("mcp-list").innerHTML = "<p>Checking servers…</p>";
   try {
-    state.mcps = await invoke("mcp_servers", { project: state.project || "" });
+    const servers = await invoke("mcp_servers", { project });
+    if (generation !== mcpGeneration || project !== state.project) return;
+    state.mcps = servers;
     state.mcpError = "";
   } catch (error) {
+    if (generation !== mcpGeneration || project !== state.project) return;
     state.mcpError = String(error);
   }
   renderMcps();
@@ -7015,13 +7276,17 @@ async function toggleMcp(server, button) {
   }
   button.disabled = true;
   const enabled = !server.enabled;
+  const project = state.project;
+  const generation = ++mcpGeneration;
   const dismissProgress = showToast(`${enabled ? "Turning on" : "Turning off"} ${server.name}…`);
   try {
-    state.mcps = await invoke("set_mcp_server", {
-      project: state.project || "",
+    const servers = await invoke("set_mcp_server", {
+      project,
       name: server.name,
       enabled,
     });
+    if (generation !== mcpGeneration || project !== state.project) return;
+    state.mcps = servers;
     state.mcpError = "";
     renderMcps();
     showToast(`${server.name} ${enabled ? "enabled" : "disabled"}`);
@@ -8084,11 +8349,12 @@ function pushNav(session) {
 }
 
 function paintNavigation() {
-  el("nav-back").disabled = state.navIndex <= 0;
+  el("nav-back").disabled = !customizeView && el("settings-modal").hidden && state.navIndex <= 0;
   el("nav-forward").disabled = state.navIndex >= state.navStack.length - 1;
 }
 
 async function navTo(index) {
+  closeCustomize();
   const session = state.navStack[index];
   if (!session) return;
   state.navIndex = index;
@@ -8102,6 +8368,8 @@ async function navTo(index) {
 }
 
 function navBack() {
+  if (!el("settings-modal").hidden) { closeSettings(); return; }
+  if (customizeView) { closeCustomize(); return; }
   if (state.navIndex > 0) void navTo(state.navIndex - 1);
 }
 
@@ -8117,20 +8385,65 @@ function clearUnread() {
   paintActivityDot();
 }
 
-// ---------- the settings sheet ----------
+let settingsThemeProbe = 0;
+async function loadSettingsThemes() {
+  const probe = ++settingsThemeProbe;
+  const project = themeProject();
+  const box = el("settings-theme-list");
+  box.innerHTML = "<p>Loading themes…</p>";
+  try {
+    const themes = await invoke("list_themes", { project });
+    const entries = await Promise.all((themes.names || []).map(async (name) => {
+      const result = await invoke("theme_colors", { project, name });
+      return { name, colors: result.colors };
+    }));
+    if (probe !== settingsThemeProbe || project !== themeProject()) return;
+    renderThemes(entries, themes.current, box);
+  } catch (error) {
+    if (probe === settingsThemeProbe) box.textContent = `Could not load themes: ${error}`;
+  }
+}
+
+function renderSettingsLanguage() {
+  const select = el("settings-language");
+  select.innerHTML = "";
+  const languages = state.languages.length ? state.languages : [
+    { tag: "en-GB", nativeLabel: "English (United Kingdom)" },
+    { tag: "zh-CN", nativeLabel: "简体中文" },
+  ];
+  for (const language of languages) {
+    const option = document.createElement("option");
+    option.value = language.tag;
+    option.textContent = language.nativeLabel || language.label || language.tag;
+    select.appendChild(option);
+  }
+  select.value = state.language;
+}
+
+// ---------- settings page ----------
 
 function openSettings(section = "general") {
-  closeOverlays("settings-modal");
+  closeCustomize();
+  closeOverlays();
+  document.body.classList.add("settings-open");
+  el("rail-home").removeAttribute("aria-current");
+  el("settings").setAttribute("aria-current", "page");
   el("settings-modal").hidden = false;
   el("settings").setAttribute("aria-expanded", "true");
   showSettingsSection(section);
   paintSettingsControls();
+  paintNavigation();
+  el(SETTINGS_SECTIONS[section]?.tab || "settings-tab-general").focus();
 }
 
 function closeSettings() {
   if (el("settings-modal").hidden) return;
   state.shortcutRecording = null;
   el("settings-modal").hidden = true;
+  document.body.classList.remove("settings-open");
+  el("settings").removeAttribute("aria-current");
+  el("rail-home").setAttribute("aria-current", "page");
+  paintNavigation();
   el("settings").setAttribute("aria-expanded", "false");
   el("settings").focus();
 }
@@ -8153,7 +8466,13 @@ function showSettingsSection(section) {
     const tab = el(parts.tab);
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
     el(parts.page).hidden = !active;
+  }
+  state.shortcutRecording = null;
+  if (chosen === "appearance") {
+    void loadSettingsThemes();
+    renderSettingsLanguage();
   }
   if (chosen === "keyboard") renderShortcuts();
   if (chosen === "memories") void renderMemories();
@@ -10458,13 +10777,48 @@ function init() {
   el("nav-forward").onclick = navForward;
   el("sidebar-toggle").onclick = toggleSidebar;
   el("window-commands").onclick = openCommandMenu;
-  el("rail-home").onclick = newChatFromSidebar;
-  el("rail-projects").onclick = openProjects;
+  el("rail-home").onclick = () => { closeCustomize(); void newChatFromSidebar(); };
+  el("rail-projects").onclick = () => { closeCustomize(); openProjects(); };
   el("rail-search").onclick = openSearch;
   el("rail-activity").onclick = openActivity;
   el("rail-more").onclick = openCommandMenu;
   el("rail-worktrees").onclick = openWorktrees;
-  el("rail-mcps").onclick = openMcps;
+  for (const [id, icon] of Object.entries({
+    "customize-plugins": "puzzle", "customize-skills": "book", "customize-mcps": "computer",
+    "customize-chat": "back", "plugins-refresh": "refresh", "plugins-add": "plus",
+    "skills-refresh": "refresh", "settings-close": "back", "update": "refresh",
+  })) {
+    const control = el(id);
+    const label = document.createElement("span");
+    if (id === "update") {
+      label.dataset.i18n = "sidebar.checkUpdates";
+      control.removeAttribute("data-i18n");
+    }
+    label.textContent = id === "settings-close" ? "Back to chat" : control.textContent;
+    control.innerHTML = ICONS[icon];
+    if (id !== "plugins-refresh") control.appendChild(label);
+  }
+  el("rail-customize").onclick = () => openCustomize();
+  for (const view of ["plugins", "skills", "mcps"]) el(`customize-${view}`).onclick = () => openCustomize(view);
+  el("customize-chat").onclick = () => { closeCustomize(); el("rail-home").focus(); };
+  el("plugin-search").oninput = renderPlugins;
+  el("plugins-refresh").onclick = loadPluginCatalog;
+  el("skills-refresh").onclick = () => openCustomize("skills");
+  el("plugins-add").onclick = () => {
+    el("marketplace-form").hidden = false;
+    el("plugins-add").setAttribute("aria-expanded", "true");
+    el("marketplace-source").focus();
+  };
+  el("marketplace-cancel").onclick = () => {
+    el("marketplace-form").hidden = true;
+    el("plugins-add").setAttribute("aria-expanded", "false");
+    el("plugins-add").focus();
+  };
+  el("marketplace-form").onsubmit = (event) => {
+    event.preventDefault();
+    const source = el("marketplace-source").value.trim();
+    if (source) void mutatePlugin("add_marketplace", source);
+  };
   installMarkdownInput(el("prompt"), (text) => renderMarkdown(text, true));
   initSidebarResize();
   initPanelResize();
@@ -10543,8 +10897,13 @@ function init() {
   });
   window.addEventListener("resize", positionSettingsDropdowns);
   el("model").onclick = () => el("models-modal").hidden ? openModels() : closeModels();
-  el("theme").onclick = () => { closeSettings(); return openThemes(); };
-  el("language").onclick = () => { closeSettings(); openLanguage(); };
+  el("settings-language").onchange = async () => {
+    const select = el("settings-language");
+    select.disabled = true;
+    await switchLanguage(select.value);
+    renderSettingsLanguage();
+    select.disabled = false;
+  };
   el("language-close").onclick = closeLanguage;
   el("permissions").onclick = openPermissions;
   el("help").onclick = toggleHelp;
@@ -10553,6 +10912,17 @@ function init() {
   el("settings-close").onclick = closeSettings;
   for (const [section, parts] of Object.entries(SETTINGS_SECTIONS)) {
     el(parts.tab).onclick = () => showSettingsSection(section);
+    el(parts.tab).addEventListener("keydown", (event) => {
+      const names = Object.keys(SETTINGS_SECTIONS);
+      const index = names.indexOf(section);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? names.length - 1
+        : event.key === "ArrowDown" ? (index + 1) % names.length
+        : event.key === "ArrowUp" ? (index + names.length - 1) % names.length : null;
+      if (next === null) return;
+      event.preventDefault();
+      showSettingsSection(names[next]);
+      el(SETTINGS_SECTIONS[names[next]].tab).focus();
+    });
   }
   el("settings-send-enter").onclick = () => savePrefs({ send_key: "enter" });
   el("settings-send-mod-enter").onclick = () => savePrefs({ send_key: "mod-enter" });
@@ -10724,7 +11094,7 @@ function init() {
       resolveRename(el("rename-input").value.trim());
     }
   });
-  el("mcps-close").onclick = () => (el("mcps-modal").hidden = true);
+  el("mcps-close").onclick = closeCustomize;
   el("mcps-refresh").onclick = () => loadMcps();
   el("worktree").onclick = openWorktrees;
   el("worktrees-close").onclick = () => closeWorktrees();
@@ -10926,7 +11296,6 @@ function init() {
     "permissions-modal": "permissions-close",
     "question": "question-dismiss",
     "rename-modal": "rename-cancel",
-    "settings-modal": "settings-close",
     "activity-modal": "activity-close",
     "archived-modal": "archived-close",
     "file-modal": "file-close",
@@ -10946,7 +11315,7 @@ function init() {
   document.addEventListener("mousedown", (event) => {
     const target = event.target;
     if (!target || typeof target.id !== "string") return;
-    for (const id of ["projects-modal", "mcps-modal", "worktrees-modal", "sessions-modal"]) {
+    for (const id of ["projects-modal", "worktrees-modal", "sessions-modal"]) {
       const box = el(id);
       if (box.hidden || box.contains(target)) continue;
       box.hidden = true;
@@ -11797,6 +12166,7 @@ async function openSessionTab(session) {
 }
 
 async function selectSessionFromTree(session) {
+  closeCustomize();
   if (!session) return;
   const existing = chatTabs.find((tab) => tab.session === session.id && tab.id !== activeTabId);
   if (existing) return activateChatTab(existing.id);

@@ -11,6 +11,25 @@ shared by every front-end (the CLI, the desktop app, and the VS Code extension),
 with a GUI that can manage **multiple projects** (cross-repo) and show each
 project's session list.
 
+## Customize and Settings
+
+The Customize rail button opens a sidebar with Plugins, Skills, MCP servers,
+and installed plugins, alongside a full content page. Plugins can be browsed
+and searched across configured marketplaces, installed, enabled, disabled, and
+uninstalled. Add marketplace accepts the same repository URL or local path as
+the CLI; each source can be updated or removed in place. Desktop uses
+`plugin_catalog` and `change_plugin` over the bridge and delegates every
+operation to `oxide_core::plugin_registry`. These actions are available without
+a selected project. Skills and MCP servers instead show a project selection
+action when no folder is open, without probing an empty path.
+
+Settings uses the same rail/sidebar/page structure. Its sections are General,
+Appearance, Notifications, Memories, and Keyboard. Appearance shows theme
+preview cards and a language selector directly, with immediate saving through
+the existing shared commands. The settings sidebar supports arrow keys,
+Home, and End. Back returns to the mounted chat; visiting these pages does not
+move its transcript, draft, queue, or running turn.
+
 ## Codex Desktop comparison
 
 Baseline reviewed on 2026-11-02 against the current implementation and official
@@ -43,7 +62,7 @@ Codex's workflows must preserve those contracts.
 | Model/provider and reasoning controls | Implemented using Oxide's provider catalogs and shared configuration. Oxide's provider choices and billing remain its own; model availability cannot be inferred from Codex's catalog. |
 | Agent selection and delegation | Implemented: Desktop's agent picker selects discovered agents and passes the selection to the shared runner; `/agent` now opens that same picker. Core `task` supports subagent execution. |
 | Skills and commands | Implemented: trusted ecosystem discovery, shared slash catalog and shared command resolution. |
-| MCP and plugins | Partial: shared loading and MCP configuration/status/auth support exist. Desktop lacks the CLI's plugin marketplace installation/update browser and Codex's account-connected universal plugin directory. |
+| MCP and plugins | Customize provides full pages for installed plugins, marketplace browsing and installation, skills, and MCP configuration/status. It uses the CLI’s shared plugin registry; Codex’s account-connected universal plugin directory is not available. |
 | Attachments | Implemented: image, PDF and text input, paste/drop and image previews, subject to the shared limits and provider support. |
 | Transcript and composer | Implemented: Markdown, diagrams, tool cards, reasoning, message navigation, find, shortcuts and draft history. Visual equivalence requires live reference captures and keyboard/scroll checks at supported sizes. |
 | Local code review | Implemented: turn/repository diffs, undo and per-file stage/unstage/revert. Hunk operations exist in `staging.rs`, but the UI exposes file actions only. |
@@ -77,7 +96,7 @@ need a live reference rather than assumptions from a similar layout.
 
 ### Completion criteria for full parity
 
-1. Close the local workflow gaps: desktop plugin management, worktree setup and
+1. Close the remaining local workflow gaps, including worktree setup and
    actions, hunk controls, complete terminal behavior, native Plan mode and
    explicit goal lifecycle. Implement shared semantics in core and verify that
    CLI and VS Code continue to honor the same stores and explicit user choices.
@@ -118,8 +137,8 @@ On macOS, native traffic lights sit inside this draggable toolbar. Windows and
 Linux retain their native window controls.
 
 A narrow navigation rail stays available when the sidebar is hidden. It opens
-a new chat, projects, chat search, activity, the command menu, worktrees, MCP
-servers and settings. The sidebar header places the plain Oxide title, activity bell
+a new chat, projects, chat search, activity, the command menu, worktrees, Customize
+and settings. The sidebar header places the plain Oxide title, activity bell
 and search together above New Chat. These controls use the same actions and
 saved preferences as their keyboard and menu counterparts.
 
@@ -449,7 +468,7 @@ The regions, top to bottom:
   names where the turn will run: the
   folder's chip, the branch that folder is on, and the checkout the next turn
   runs in at the row's other end — and nothing else, since the window's settings
-  stay in the Settings sheet and the box's own row, and what the chat has spent
+  stay in the Settings page and the box's own row, and what the chat has spent
   belongs beside the context it is measured against, in that row. There is no
   readout for
   the machine the turn runs on: a folder on
@@ -1274,7 +1293,7 @@ by name rather than quietly replaced; a value the window *can* read but not use 
 a scale outside `0.7`–`1.6`, a word from a newer build — falls back to the value
 the window shipped with, so a hand-edited file never stops the window opening.
 
-**Settings** is one sheet, opened from the gear at the bottom of the navigation rail, the app
+**Settings** is a full page with its own sidebar, opened from the gear at the bottom of the navigation rail, the app
 menu's **Settings…** (`⌘,`) or the command menu. Its sections are named by id so
 every control the markup declares is a control the page wired, and it paints what
 the store answered rather than what a click hoped to store:
@@ -1283,7 +1302,7 @@ the store answered rather than what a click hoped to store:
 or `⌘Enter` sends and `Enter` is a newline), and what a message sent while a turn
 runs does (wait for the next run, or steer the one in flight). The follow-up
 choice is the same state the composer's badge and its `⌘⇧Enter` override read.
-- **Appearance** — theme and interface language pickers, the text size, as a scale the window applies to its own web
+- **Appearance** — inline theme previews and a language selector, the text size, as a scale the window applies to its own web
 contents (`set_zoom`, never a stylesheet edit), and whether the sidebar is shown
 at all.
 - **Keyboard** — every action in the window's shortcut table with the binding in
@@ -1537,7 +1556,7 @@ front-end checks run against) says **No matches** rather than failing.
 | Click outside a dialog | The same as closing it: the backdrop answers through the dialog's own Close, Cancel or Dismiss, so its teardown is the one either way. The two dialogs whose buttons are the decision — a tool's approval, a folder's trust question — are not dismissed this way, since a stray press must not be an answer |
 
 Every row is an entry in the shortcut table in `ui/app.js`, which is what the
-settings sheet lists and what the recorder edits, so the table is the one place a
+settings page lists and what the recorder edits, so the table is the one place a
 binding is declared. The digits are the exception: they follow the order the
 sidebar lists, which changes as threads arrive.
 
