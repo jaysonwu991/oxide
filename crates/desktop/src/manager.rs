@@ -259,7 +259,10 @@ impl DesktopManager {
         Ok(project)
     }
 
-    /// Removes a folder from the sidebar. Sessions on disk are left untouched.
+    /// Removes a folder from the sidebar. Sessions on disk are left
+    /// untouched, but any saved trust decision for it is forgotten: a project
+    /// no longer in the list should not keep holding a trust decision
+    /// nobody can review or revoke through it.
     pub fn remove_project(&mut self, id: &str) -> Result<bool> {
         let before = self.registry.clone();
         self.registry
@@ -279,6 +282,12 @@ impl DesktopManager {
         if let Err(error) = self.persist() {
             self.registry = before;
             return Err(error);
+        }
+        let trust_root = oxide_core::worktree::Worktrees::trust_root(Path::new(id));
+        if let Ok(mut store) = TrustStore::load() {
+            if store.forget(&trust_root) {
+                let _ = store.save();
+            }
         }
         Ok(removed || newly_hidden)
     }
