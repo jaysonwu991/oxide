@@ -86,6 +86,17 @@ pub struct McpToolResult {
     pub is_error: bool,
 }
 
+#[derive(Debug)]
+struct SessionExpired;
+
+impl fmt::Display for SessionExpired {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MCP session expired (HTTP 404)")
+    }
+}
+
+impl std::error::Error for SessionExpired {}
+
 impl AuthorizationRequired {
     fn new(name: &str) -> Self {
         Self {
@@ -710,6 +721,7 @@ struct McpConnection {
     next_id: u64,
     instructions: Option<String>,
     authorization_blocked: bool,
+    session_expired: bool,
 }
 
 enum Transport {
@@ -803,6 +815,7 @@ impl McpConnection {
             name: server.name.clone(),
             transport,
             authorization_blocked: false,
+            session_expired: false,
             next_id: 1,
             instructions: None,
         };
@@ -816,9 +829,10 @@ impl McpConnection {
             "capabilities": {},
             "clientInfo": { "name": "Oxide", "version": env!("CARGO_PKG_VERSION") },
         });
-        let initialize = self.request("initialize", params).await?;
+        let initialize = self.request_once("initialize", params).await?;
         self.instructions = instructions_from(&initialize);
         self.notify("notifications/initialized", json!({})).await?;
+        self.session_expired = false;
         Ok(())
     }
 
@@ -919,6 +933,27 @@ impl McpConnection {
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        if self.session_expired {
+            self.initialize()
+                .await
+                .context("renewing expired MCP session")?;
+        }
+        let result = self.request_once(method, params.clone()).await;
+        if method != "initialize"
+            && result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.is::<SessionExpired>())
+        {
+            self.initialize()
+                .await
+                .context("renewing expired MCP session")?;
+            return self.request_once(method, params).await;
+        }
+        result
+    }
+
+    async fn request_once(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
         let payload = json!({
@@ -984,6 +1019,13 @@ impl McpConnection {
                 }
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED {
                     return Err(AuthorizationRequired::new(&self.name).into());
+                }
+                // A session-bearing 404 rejects the session before dispatch;
+                // unlike a timeout, it is safe to replay even a writing tool.
+                if response.status() == reqwest::StatusCode::NOT_FOUND && session_id.is_some() {
+                    *session_id = None;
+                    self.session_expired = true;
+                    return Err(SessionExpired.into());
                 }
                 if method == "initialize" && response.status().is_success() {
                     *session_id = response.headers().get(MCP_SESSION_ID).cloned();
@@ -1695,6 +1737,7 @@ for line in sys.stdin:
                     next_id: 1,
                     instructions: None,
                     authorization_blocked: false,
+                    session_expired: false,
                     transport: Transport::Remote {
                         client: reqwest::Client::new(),
                         url: format!("http://{address}"),
@@ -1712,6 +1755,108 @@ for line in sys.stdin:
             assert!(error.is::<AuthorizationRequired>(), "{error:#}");
         }
         server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_remote_sessions_reconnect_once_without_replaying_ambiguous_failures() {
+        for (failure, session, recover, calls) in [
+            ("404 Not Found", Some("old-session"), true, 2),
+            ("404 Not Found", Some("old-session"), false, 2),
+            ("404 Not Found", Some("old-session"), true, 3),
+            ("404 Not Found", None, false, 1),
+            ("500 Internal Server Error", Some("old-session"), false, 1),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server_task = tokio::spawn(async move {
+                let mut tool_calls = 0;
+                let mut initializes = 0;
+                loop {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let (headers, body) = read_http_request(&mut socket).await;
+                    let headers = headers.to_ascii_lowercase();
+                    match body["method"].as_str().unwrap() {
+                        "initialize" => {
+                            initializes += 1;
+                            assert!(!headers.contains(MCP_SESSION_ID));
+                            let response = json!({"jsonrpc":"2.0", "id":body["id"],
+                                "result":{"capabilities":{}}})
+                            .to_string();
+                            send_http_response(
+                                &mut socket,
+                                "200 OK",
+                                &response,
+                                if initializes == 1 {
+                                    session
+                                } else {
+                                    Some("new-session")
+                                },
+                            )
+                            .await;
+                        }
+                        "notifications/initialized" => {
+                            send_http_response(&mut socket, "202 Accepted", "", None).await;
+                        }
+                        "tools/call" => {
+                            tool_calls += 1;
+                            assert_eq!(
+                                body["params"],
+                                json!({"name":"send_message", "arguments":{"text":"hello"}})
+                            );
+                            let expected_session = if initializes == 1 {
+                                session
+                            } else {
+                                Some("new-session")
+                            };
+                            if let Some(expected) = expected_session {
+                                assert!(headers.contains(&format!("mcp-session-id: {expected}")));
+                            } else {
+                                assert!(!headers.contains(MCP_SESSION_ID));
+                            }
+                            if recover && tool_calls == calls {
+                                let response = json!({"jsonrpc":"2.0", "id":body["id"],
+                                    "result":{"content":[{"type":"text","text":"sent"}]}})
+                                .to_string();
+                                send_http_response(&mut socket, "200 OK", &response, None).await;
+                            } else {
+                                send_http_response(&mut socket, failure, "rejected", None).await;
+                            }
+                            if tool_calls == calls {
+                                assert_eq!(initializes, calls);
+                                break;
+                            }
+                        }
+                        method => panic!("unexpected method {method}"),
+                    }
+                }
+            });
+            let server = McpServer {
+                name: "session-recovery".to_string(),
+                enabled: true,
+                domains: Vec::new(),
+                kind: McpKind::Remote {
+                    url: format!("http://{address}/mcp"),
+                    headers: BTreeMap::new(),
+                    oauth: None,
+                },
+            };
+            let mut connection = McpConnection::connect(&server).await.unwrap();
+            let mut result = connection
+                .call_tool("send_message", json!({"text":"hello"}))
+                .await;
+            if calls == 3 {
+                assert!(result.is_err());
+                result = connection
+                    .call_tool("send_message", json!({"text":"hello"}))
+                    .await;
+            }
+            if recover {
+                assert_eq!(result.unwrap().text, "sent");
+            } else {
+                assert!(result.is_err());
+            }
+            server_task.await.unwrap();
+        }
     }
 
     #[tokio::test]
