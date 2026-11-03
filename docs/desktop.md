@@ -625,6 +625,13 @@ pnpm run check   # type check the window, writing nothing
 pnpm run dist    # both halves in release, packaged into the platform's installer
 ```
 
+The window pins Electron 45.2.1 in `package.json` and `pnpm-lock.yaml`.
+The [Electron 45 breaking changes](https://www.electronjs.org/docs/latest/breaking-changes#breaking-api-changes-450)
+require no bridge migration: the preload uses only `electron` and runs with
+`sandbox: false`, popups are denied, and the harness is an external executable
+with pipe stdio rather than an ASAR file descriptor. The app does not use the
+changed screen-capture, tracing, storage-access or safe-storage APIs.
+
 `pnpm start` copies the diagram renderer, compiles the engine with `cargo
 build`, compiles the window, and runs Electron on this crate. The window finds the engine it starts in this
 order: `OXIDE_DESKTOP_HARNESS` when a developer points it at one, the copy
