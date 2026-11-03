@@ -409,6 +409,59 @@ pub async fn set_mcp_server(
     Ok(oxide_core::mcp_config::server_views(&cwd).await)
 }
 
+// ---------- plugins ----------
+
+pub async fn plugin_catalog() -> CmdResult<serde_json::Value> {
+    tokio::task::spawn_blocking(|| {
+        let state = oxide_core::plugin_registry::load_state().map_err(err)?;
+        let marketplaces = oxide_core::plugin_registry::marketplace_overview().map_err(err)?;
+        Ok(json!({
+            "installed": state.plugins.values().collect::<Vec<_>>(),
+            "marketplaces": marketplaces.iter().map(|marketplace| json!({
+                "name": marketplace.name,
+                "source": marketplace.source,
+                "error": marketplace.error,
+                "plugins": marketplace.plugins.iter().map(|plugin| json!({
+                    "name": plugin.name,
+                    "description": plugin.description,
+                    "version": plugin.version,
+                    "installed": plugin.installed,
+                    "enabled": plugin.enabled,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        }))
+    })
+    .await
+    .map_err(err)?
+}
+
+pub async fn change_plugin(
+    action: String,
+    name: String,
+    marketplace: Option<String>,
+) -> CmdResult<String> {
+    use oxide_core::plugin_registry as registry;
+    match action.as_str() {
+        "install" => registry::install(&name, marketplace.as_deref())
+            .await
+            .map_err(err),
+        "add_marketplace" => registry::add_marketplace(&name).await.map_err(err),
+        "update_marketplace" => registry::update_marketplace(&name).await.map_err(err),
+        "enable" | "disable" | "uninstall" | "remove_marketplace" => {
+            tokio::task::spawn_blocking(move || match action.as_str() {
+                "enable" => registry::set_enabled(&name, true),
+                "disable" => registry::set_enabled(&name, false),
+                "uninstall" => registry::uninstall(&name),
+                _ => registry::remove_marketplace(&name),
+            })
+            .await
+            .map_err(err)?
+            .map_err(err)
+        }
+        _ => Err(format!("unknown plugin action: {action}")),
+    }
+}
+
 // ---------- slash commands ----------
 
 /// The `/` palette: the built-in client commands plus the agents, commands and
@@ -1918,6 +1971,15 @@ pub async fn dispatch(
         "set_project_trust" => command_value(
             set_project_trust(arg(&args, "project")?, arg(&args, "trusted")?, &state).await,
         ),
+        "plugin_catalog" => command_value(plugin_catalog().await),
+        "change_plugin" => command_value(
+            change_plugin(
+                arg(&args, "action")?,
+                arg(&args, "name")?,
+                optional_arg(&args, "marketplace")?,
+            )
+            .await,
+        ),
         "mcp_servers" => command_value(mcp_servers(arg(&args, "project")?).await),
         "set_mcp_server" => command_value(
             set_mcp_server(
@@ -2156,6 +2218,14 @@ fn write_prefs(patch: Value) -> CmdResult<Value> {
 mod tests {
     use super::*;
     use oxide_core::llm::{FunctionCall, ToolCall};
+
+    #[tokio::test]
+    async fn plugin_actions_reject_unknown_operations_before_accessing_the_registry() {
+        let error = change_plugin("erase".into(), "example".into(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "unknown plugin action: erase");
+    }
 
     #[tokio::test]
     async fn a_turn_that_cannot_start_reports_its_error_and_ends() {

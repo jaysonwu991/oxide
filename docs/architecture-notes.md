@@ -75,7 +75,16 @@ that nobody answered, so a turn cannot hang; the request is then announced as
 closed — `AgentEvent::QuestionClosed` in rpc mode, the desktop's own
 `question-closed` — so a dialog is hidden rather than left offering an answer
 nothing is waiting for, and a run that ends (or is stopped) takes its own
-pending requests with it. The desktop's MCP list (`mcp_servers`, `set_mcp_server`) and
+pending requests with it. Customize is a full page with its own sidebar,
+opened from the rail: Plugins and Skills sit beside MCP servers, with installed
+plugins listed below. The `plugin_catalog` bridge command reads the shared
+registry and marketplace overviews on the blocking pool; `change_plugin`
+delegates installation, toggles, removal and marketplace management to that
+same registry. Neither needs a project. Settings is another full page with its
+own section navigation; Appearance renders theme previews and language choices
+inline. Both destinations leave the chat mounted and mark the selected rail
+control, and Back returns to the chat. MCP and Skills ask for a project when
+none is selected. The desktop's MCP list (`mcp_servers`, `set_mcp_server`) and
 its `/` palette (`list_commands`) read the same core the terminal does —
 `oxide_core::mcp_config::server_views` and `oxide_core::commands::palette` — and
 the menu is drawn from what the catalog says is this app's: an entry's

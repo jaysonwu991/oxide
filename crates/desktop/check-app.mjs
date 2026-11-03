@@ -418,6 +418,15 @@ let searchGate = null;
 const searchedFor = [];
 let archivedAnswer = null;
 let archivedError = null;
+let selectedTheme = "dark";
+let pluginsError = null;
+const pluginsFixture = {
+  installed: [{ name: "helper", description: "Useful commands", enabled: true, version: "1.0" }],
+  marketplaces: [{ name: "team", source: "/tmp/team", error: null, plugins: [
+    { name: "helper", description: "Useful commands", installed: true, enabled: true },
+    { name: "search-tools", description: "Search tools", installed: false, enabled: false },
+  ] }],
+};
 let mcpsError = null;
 let createError = null;
 
@@ -780,6 +789,17 @@ const invoke = async (command, args = {}) => {
   switch (command) {
     case "list_projects":
       return projectRows.map((row) => ({ ...row }));
+    case "plugin_catalog":
+      if (pluginsError) throw pluginsError;
+      return structuredClone(pluginsFixture);
+    case "change_plugin": {
+      if (pluginsError) throw pluginsError;
+      const plugin = pluginsFixture.installed.find((entry) => entry.name === args.name);
+      if (args.action === "install") pluginsFixture.installed.push({ name: args.name, description: "Installed test plugin", enabled: true });
+      if (args.action === "disable" || args.action === "enable") plugin.enabled = args.action === "enable";
+      if (args.action === "uninstall") pluginsFixture.installed = pluginsFixture.installed.filter((entry) => entry.name !== args.name);
+      return "Plugin updated";
+    }
     case "mcp_servers":
       if (mcpsError) throw mcpsError;
       if (!String(args.project || "").trim()) throw "select a project first";
@@ -950,6 +970,12 @@ const invoke = async (command, args = {}) => {
     case "list_models":
       return modelCatalog;
     case "list_themes":
+      return { current: selectedTheme, names: ["dark", "light", "ocean"] };
+    case "theme_colors":
+      return { colors: { background: args.name === "light" ? "#ffffff" : "#1c1c1c", panel: "#222222", accent: "#a9c7ff", text: "#eeeeee", success: "#78d38a", tool: "#e0b072" } };
+    case "set_theme":
+      selectedTheme = args.name;
+      return { colors: { background: args.name === "light" ? "#ffffff" : "#1c1c1c" } };
     case "list_sessions":
     case "list_approvals":
       return [];
@@ -1246,7 +1272,7 @@ vm.runInThisContext(
     " updateRunBanner, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
     " loadGit, openProjectDetails, refreshProjectDetails, openRepositoryChanges, changeReviewScope," +
-    " loadMcps, openSessions," +
+    " loadMcps, openSessions, openCustomize, closeCustomize, mutatePlugin, renderPlugins," +
     " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
     " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkThread, restoreThread, captureChatTab, threads, visibleThread, withThread, turnInThread, backgroundRun, openThreadRecord, threadForRunId," +
@@ -2104,10 +2130,11 @@ const buttonFor = (id) => {
   return shell.slice(shell.lastIndexOf("<button", at), shell.indexOf("</button>", at));
 };
 check(
-  "attached the listings to the composer",
+  "kept project and session pickers at the composer and MCP on its page",
   shellAt('class="composer-wrap"') < shellAt('id="projects-modal"') &&
-    shellAt('id="projects-modal"') < shellAt('id="mcps-modal"') &&
-    shellAt('id="mcps-modal"') < shellAt('id="sessions-modal"') &&
+    shellAt('id="customize-page"') < shellAt('id="mcps-modal"') &&
+    shellAt('id="mcps-modal"') < shellAt('class="main"') &&
+    shellAt('id="projects-modal"') < shellAt('id="sessions-modal"') &&
     shellAt('id="sessions-modal"') < shellAt('class="composer-strip"') &&
     shellAt('class="composer-strip"') < shellAt('id="composer"'),
   `${shellAt('id="projects-modal"')} / ${shellAt('id="mcps-modal"')} / ${shellAt('id="sessions-modal"')} / ${shellAt('class="composer-strip"')}`,
@@ -2946,9 +2973,10 @@ check(
 const appearanceSettings = shell.slice(shellAt('id="settings-page-appearance"'), shellAt('id="settings-page-notifications"'));
 const generalSettings = shell.slice(shellAt('id="settings-page-general"'), shellAt('id="settings-page-appearance"'));
 const updateButton = buttonFor("update");
-check("moved theme and language into Appearance settings",
-  ["theme", "language"].every((id) => appearanceSettings.includes(`id="${id}"`) &&
-    buttonFor(id).includes('class="ghost"')));
+check("showed theme choices and language directly in Appearance",
+  appearanceSettings.includes('id="settings-theme-list"') &&
+  appearanceSettings.includes('<select id="settings-language"') &&
+  !appearanceSettings.includes('aria-controls="themes-modal"'));
 check("offered Check for updates in General settings",
   generalSettings.includes('id="update"') && updateButton.includes('class="ghost"') &&
     updateButton.includes('aria-label="Check for updates"'));
@@ -3433,6 +3461,43 @@ check(
 );
 app.state.busy = false;
 app.state.runId = null;
+
+// ---------- customization pages ----------
+console.log("customization pages");
+app.state.project = null;
+calls.length = 0;
+await app.openCustomize();
+check("opened Customize without a project", !elementFor("customize-page").hidden && !elementFor("customize-sidebar").hidden);
+check("marked the Customize rail active", elementFor("rail-customize").getAttribute("aria-current") === "page");
+check("listed installed plugins in the sidebar", elementFor("customize-installed").outline().includes("helper"));
+check("showed available marketplace plugins", elementFor("plugin-list").outline().includes("search-tools"));
+app.openSettings("appearance");
+check("gave Settings its own page and selected rail icon", document.body.classList.contains("settings-open") && elementFor("customize-page").hidden && elementFor("settings").getAttribute("aria-current") === "page");
+await app.openCustomize();
+check("switched from Settings to Customize without overlapping pages", elementFor("settings-modal").hidden && !document.body.classList.contains("settings-open") && !elementFor("customize-page").hidden);
+await app.mutatePlugin("install", "search-tools", "team");
+check("installed through the shared plugin command", projectCalls("change_plugin").at(-1)?.[1]?.marketplace === "team" && elementFor("customize-installed").outline().includes("search-tools"));
+await app.mutatePlugin("disable", "helper");
+check("refreshed disabled state", elementFor("plugin-list").outline().includes("Disabled"));
+await app.mutatePlugin("uninstall", "search-tools");
+check("removed an uninstalled plugin from the sidebar", !elementFor("customize-installed").outline().includes("search-tools"));
+elementFor("plugin-search").value = "no-such-plugin";
+app.renderPlugins();
+check("filtered plugin search", !elementFor("plugin-list").outline().includes("plugin-card"));
+elementFor("plugin-search").value = "";
+pluginsError = "registry unavailable";
+await app.openCustomize();
+check("reported plugin failures", elementFor("plugin-message").textContent.includes("registry unavailable"));
+pluginsError = null;
+await app.openCustomize("mcps");
+check("offered a project choice instead of probing no project", projectCalls("mcp_servers").length === 0 && elementFor("mcp-list").outline().includes("Choose a project"));
+document.fire("mousedown", press({ target: elementFor("customize-mcps") }));
+check("kept the MCP page open when navigating in the sidebar", !elementFor("mcps-modal").hidden);
+await app.openCustomize("skills");
+check("gave skills a full page and project prompt", !elementFor("skills-page").hidden && elementFor("skills-list").outline().includes("Choose a project"));
+app.navBack();
+check("returned to the chat with Back", elementFor("customize-page").hidden && !document.body.classList.contains("customizing"));
+elementFor("mcp-list").innerHTML = "";
 
 // ---------- /mcp ----------
 
@@ -3924,8 +3989,8 @@ check(
 );
 document.fire("mousedown", press({ target: elementFor("transcript") }));
 check(
-  "closed a listing on a press outside it",
-  elementFor("mcps-modal").hidden === true,
+  "kept the MCP page open on a press outside its listing",
+  elementFor("mcps-modal").hidden === false,
   String(elementFor("mcps-modal").hidden),
 );
 elementFor("sessions-modal").hidden = false;
@@ -9290,32 +9355,17 @@ check(
   document.documentElement.lang,
 );
 app.openSettings("appearance");
-elementFor("language").onclick(press());
-check(
-  "opened the language picker from Appearance settings with a way out",
-  elementFor("language-modal").hidden === false &&
-    elementFor("language").getAttribute("aria-expanded") === "true",
-  `${elementFor("language-modal").hidden} / ${elementFor("language").getAttribute("aria-expanded")}`,
-);
-const languageRows = elementFor("language-list").children;
-check(
-  "named each language in itself, with the one in use marked",
-  languageRows.length === 2 &&
-    languageRows[1].children[0].textContent === "简体中文" &&
-    languageRows[0].children[1].textContent === "en-GB" &&
-    languageRows[0].className.includes("active") &&
-    !languageRows[1].className.includes("active"),
-  languageRows.map((row) => `${row.children[0].textContent}:${row.className}`).join(", "),
-);
-languageRows[1].onclick(press());
-await nextTick();
-check(
-  "switched through the core rather than a setting of this window's own",
+check("kept Appearance open with an inline language selector",
+  !elementFor("settings-modal").hidden && elementFor("language-modal").hidden);
+const languageOptions = elementFor("settings-language").children;
+check("named inline language options in their own language",
+  languageOptions.length === 2 && languageOptions[1].textContent === "简体中文" &&
+    elementFor("settings-language").value === "en-GB");
+elementFor("settings-language").value = "zh-CN";
+await elementFor("settings-language").onchange();
+check("switched through the core and stayed in Appearance",
   calls.some(([name, args]) => name === "set_language" && args.tag === "zh-CN" && args.project === previousProject) &&
-    document.documentElement.lang === "zh-CN" &&
-    elementFor("language-modal").hidden === true,
-  JSON.stringify(calls.filter(([name]) => name === "set_language")),
-);
+    document.documentElement.lang === "zh-CN" && !elementFor("settings-modal").hidden);
 check(
   "repainted the words the page writes itself in the language it was given",
   elementFor("status-text").textContent === "就绪" &&
@@ -9338,8 +9388,9 @@ elementFor("create-project-modal").hidden = true;
 // Back to English, so a page left on screen is the one this suite was written
 // against.
 app.state.language = "zh-CN";
-elementFor("language").onclick(press());
-elementFor("language-list").children[0].onclick(press());
+elementFor("settings-language").value = "en-GB";
+await elementFor("settings-language").onchange();
+app.closeSettings();
 await nextTick();
 check(
   "switched back to the language the app is authored in",
@@ -9455,6 +9506,10 @@ check(
     elementFor("shortcut-list").children.length === app.SHORTCUTS.length,
   `${elementFor("settings-page-keyboard").hidden} / ${elementFor("shortcut-list").children.length}`,
 );
+elementFor("settings-tab-keyboard").fire("keydown", {key:"Home", preventDefault() {}});
+check("navigated settings sections with the keyboard", !elementFor("settings-page-general").hidden && document.activeElement === elementFor("settings-tab-general"));
+elementFor("settings-tab-general").fire("keydown", {key:"End", preventDefault() {}});
+check("kept settings keyboard focus on the selected tab", !elementFor("settings-page-keyboard").hidden && document.activeElement === elementFor("settings-tab-keyboard"));
 // Every action the table names is a row, and the row shows the binding in force
 // with a way back to the one it shipped with.
 const shortcutRow = elementFor("shortcut-list").children.find(
@@ -9472,6 +9527,13 @@ storedPrefs.shortcuts = {};
 app.state.prefs.shortcuts = {};
 calls.length = 0;
 elementFor("settings-tab-appearance").onclick();
+await nextTick();
+const themeCards = elementFor("settings-theme-list").children;
+check("showed theme previews inline", themeCards.length === 3 && themeCards[0].getAttribute("aria-pressed") === "true");
+await themeCards[1].onclick();
+check("applied the selected theme without closing Settings",
+  selectedTheme === "light" && !elementFor("settings-modal").hidden &&
+  themeCards[1].getAttribute("aria-pressed") === "true" && themeCards[0].getAttribute("aria-pressed") === "false");
 elementFor("settings-font-larger").onclick();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const scaleCall = calls.find(([name]) => name === "write_prefs");
