@@ -18,7 +18,7 @@
   },
   "devDependencies": {
     "@types/node": "24.19.1",
-    "electron": "44.5.1",
+    "electron": "45.2.1",
     "electron-builder": "26.0.12",
     "mermaid": "12.2.0",
     "typescript": "7.0.2"
