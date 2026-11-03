@@ -4334,7 +4334,21 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
 }
 
 fn bash_failure_hint(output: &str) -> Option<&'static str> {
-    if output.contains("[rejected]")
+    if (output.contains("corepack.cjs") || output.contains("Corepack"))
+        && (output.contains("Error when performing the request")
+            || output.contains("Network access disabled by the environment"))
+    {
+        Some("[hint: Corepack could not download the project's pinned package manager. Inspect package.json's packageManager and the installed managers (`command -v pnpm; command -v volta`). If Volta is installed, inspect `volta list all` and try the installed manager with `PATH=\"$HOME/.volta/bin:$PATH\" pnpm --version` before rerunning. Do not repeat the failing Corepack download, change the project's version pin, or bypass commit hooks. For a test, an existing node_modules/.bin executable may work without downloading a manager.]")
+    } else if output.contains("testPathPattern")
+        && output.contains("was replaced by")
+        && output.contains("--testPathPatterns")
+    {
+        Some("[hint: this installed Jest requires --testPathPatterns (plural). Update the attempted command's flag and rerun the same focused tests; do not change repository configuration to repair an obsolete CLI flag.]")
+    } else if output.contains("Cannot find configuration for task") {
+        Some("[hint: inspect the target package.json scripts/name and Nx project configuration before retrying. Use the installed Nx executable to list projects or show the exact project and its targets; a directory name need not be its Nx project name.]")
+    } else if output.contains("Unknown JSON field:") && output.contains("Available fields:") {
+        Some("[hint: select only the JSON fields listed by this installed command. Different gh subcommands expose different fields; for `gh pr checks`, use name,state,bucket,link rather than conclusion.]")
+    } else if output.contains("[rejected]")
         && (output.contains("(stale info)")
             || output.contains("(fetch first)")
             || output.contains("(non-fast-forward)"))
@@ -7883,6 +7897,31 @@ mod tests {
 
     #[test]
     fn shell_errors_from_sessions_have_specific_recovery_hints() {
+        for failure in [
+            "Corepack: Error when performing the request to https://registry.npmjs.org/pnpm/-/pnpm.tgz",
+            "corepack.cjs: Network access disabled by the environment",
+        ] {
+            let hint = bash_failure_hint(failure).unwrap();
+            assert!(hint.contains("volta list all"), "{hint}");
+            assert!(hint.contains("bypass commit hooks"), "{hint}");
+            assert!(!hint.contains("run the same command again"), "{hint}");
+        }
+        assert!(bash_failure_hint("Error when performing the request").is_none());
+        assert!(bash_failure_hint(
+            "Jest: Option testPathPattern was replaced by --testPathPatterns"
+        )
+        .unwrap()
+        .contains("plural"));
+        assert!(
+            bash_failure_hint("NX Cannot find configuration for task footer:test")
+                .unwrap()
+                .contains("targets")
+        );
+        assert!(bash_failure_hint(
+            "Unknown JSON field: conclusion\nAvailable fields: bucket, state"
+        )
+        .unwrap()
+        .contains("name,state,bucket,link"));
         let repetition = bash_failure_hint("grep: maximum repetition exceeds 255").unwrap();
         assert!(repetition.contains("`grep` tool"));
         assert!(!repetition.contains("regex: true"), "{repetition}");

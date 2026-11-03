@@ -10,6 +10,11 @@ in the background; `tool_search` discovers capabilities and declares only the
 matching `<server>__<tool>` schemas on the next model call. `mcp_load` connects or
 retries a particular server while keeping its catalog deferred.
 
+A remote MCP request rejected with HTTP 404 while carrying a session ID clears
+that ID, initializes a new session, and retries the request once. A second
+rejection is reported. An ordinary 404 without a session ID, a timeout, or a
+server error is not replayed: the outcome of a writing tool may be unknown.
+
 | Tool | Parameters |
 | --- | --- |
 | `read` | `path`, `offset?` (1-based), `limit?` (default 2000 lines) |
@@ -123,6 +128,13 @@ is still a failure; Windows has neither `pipefail` nor `PIPESTATUS`, so only an
 unpiped run is read this way. Because such a read confirms no outcome, it does
 not clear the pull-request entry in the run's Definition-of-Done tracking: the
 reminder still asks for the checks to be read again until they report.
+
+Corepack download failures point to installed package managers such as Volta or
+local test executables before another download, a version-pin change, or a hook
+bypass. Obsolete Jest flags, missing Nx targets and unsupported JSON fields
+carry recovery hints that ask for the installed command or project configuration.
+The agent saves verified, reusable environment fixes and test commands in memory
+with their project and version context.
 
 Shell failures caused by unsupported grep repetition counts, unclosed quotes,
 or selecting a package outside the current Cargo workspace carry a specific
