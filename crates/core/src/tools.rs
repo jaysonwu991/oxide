@@ -3705,49 +3705,61 @@ fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
     serde_json::from_str(&grep.equivalent_call()?).ok()
 }
 
-/// Only expand a simple filename glob in a literal directory. Whether that
-/// directory is the project root or the one the command's own `cd` reached is
-/// the caller's to say.
+/// Resolve bounded, ordinary shell globs component by component, including
+/// parent directories, without evaluating expansions or descending recursively.
 fn grep_glob_names_files(operand: &str, cwd: &Path) -> bool {
     if operand.starts_with('~')
         || operand.ends_with('/')
         || operand.contains(['\'', '"', '\\', '$', '`', '[', '{', '}'])
+        || operand.contains("**")
+        || !operand.contains(['*', '?'])
     {
         return false;
     }
-    let path = Path::new(operand);
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let Some(pattern) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    if parent.to_string_lossy().contains(['*', '?']) || !pattern.contains(['*', '?']) {
-        return false;
-    }
-    let Ok(entries) = std::fs::read_dir(cwd.join(parent)) else {
-        return false;
-    };
-    let pattern_chars: Vec<char> = pattern.chars().collect();
-    let mut matched = false;
-    for entry in entries {
-        let Ok(entry) = entry else { return false };
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            return false;
-        };
-        if name.starts_with('.') && !pattern.starts_with('.') {
-            continue;
-        }
-        if wildcard(&pattern_chars, &name.chars().collect::<Vec<_>>()) {
-            if !entry.path().is_file() {
-                return false;
+    let mut paths = vec![if operand.starts_with('/') {
+        PathBuf::from("/")
+    } else {
+        cwd.to_path_buf()
+    }];
+    let mut remaining = 4096usize;
+    for component in operand.split('/').filter(|part| !part.is_empty()) {
+        let mut next = Vec::new();
+        let pattern: Vec<char> = component.chars().collect();
+        for base in paths {
+            if component.contains(['*', '?']) {
+                let Ok(entries) = std::fs::read_dir(&base) else {
+                    return false;
+                };
+                for entry in entries {
+                    let Some(budget) = remaining.checked_sub(1) else {
+                        return false;
+                    };
+                    remaining = budget;
+                    let Ok(entry) = entry else { return false };
+                    let name = entry.file_name();
+                    let Some(name) = name.to_str() else {
+                        return false;
+                    };
+                    if name.starts_with('.') && !component.starts_with('.') {
+                        continue;
+                    }
+                    if wildcard(&pattern, &name.chars().collect::<Vec<_>>()) {
+                        next.push(entry.path());
+                    }
+                }
+            } else {
+                let path = base.join(component);
+                if path.exists() {
+                    next.push(path);
+                }
             }
-            matched = true;
         }
+        if next.is_empty() {
+            return false;
+        }
+        paths = next;
     }
-    matched
+    !paths.is_empty() && paths.iter().all(|path| path.is_file())
 }
 
 fn recursive_grep_sweeps(operands: &[String], cwd: &Path, verified: bool) -> bool {
@@ -8481,6 +8493,43 @@ mod tests {
         let docs = dir.join("docs").to_string_lossy().replace('\\', "/");
         let command = format!("ls; grep -rn needle {docs}/*.md");
         assert!(!uses_recursive_shell_grep(&command, &dir), "{command}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_allows_recursive_grep_of_package_files_in_globbed_directories() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_grep_package_glob_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("apps/server")).unwrap();
+        std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+        for path in [
+            "package.json",
+            "apps/server/package.json",
+            "apps/web/package.json",
+        ] {
+            std::fs::write(dir.join(path), "vite\nvitest\n").unwrap();
+        }
+        let command = format!(
+            "cd '{}' && grep -rn '\"vite\"\\|\"vitest\"' apps/*/package.json package.json",
+            dir.display()
+        );
+        assert!(!uses_recursive_shell_grep(&command, &dir));
+        let output = execute(
+            &call(
+                "bash",
+                json!({ "command": "grep -rn 'vite\\|vitest' apps/*/package.json package.json" }),
+            ),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(!output.is_error, "{}", output.text);
+        assert!(output.text.contains("apps/server/package.json:1:vite"));
+        assert!(output.text.contains("apps/web/package.json:2:vitest"));
+        std::fs::create_dir_all(dir.join("apps/cache/package.json")).unwrap();
+        assert!(uses_recursive_shell_grep(&command, &dir));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
