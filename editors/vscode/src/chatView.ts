@@ -327,6 +327,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const style = webview.asWebviewUri(vscode.Uri.joinPath(media, "style.css"));
     const diagrams = webview.asWebviewUri(vscode.Uri.joinPath(media, "diagrams.js"));
     const diagramStyle = webview.asWebviewUri(vscode.Uri.joinPath(media, "diagrams.css"));
+    const brand = webview.asWebviewUri(vscode.Uri.joinPath(media, "oxide.svg"));
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -343,9 +344,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <div id="actions">
     <button id="new-session" class="icon" title="New chat" aria-label="New chat" data-i18n-title="panel.newChat" data-i18n-aria="panel.newChat">${ICONS.new}</button>
     <button id="resume-session" class="icon" title="Session history" aria-label="Session history" aria-expanded="false" aria-controls="dialog" data-i18n-title="panel.sessionHistory" data-i18n-aria="panel.sessionHistory">${ICONS.resume}</button>
-    <span class="actions-sep" aria-hidden="true"></span>
-    <button id="approvals" class="icon" data-control="permissions" title="Tool approvals" aria-label="Tool approvals" data-i18n-title="composer.permissions" data-i18n-aria="composer.permissions">${ICONS.lock}</button>
-    <button id="shortcuts" class="icon" data-control="shortcuts" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" data-i18n-title="composer.help" data-i18n-aria="composer.help">${ICONS.help}</button>
   </div>
 </header>
 <section id="run-strip" hidden>
@@ -372,9 +370,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <main id="transcript" tabindex="0">
   <div id="run-time" class="run-time" role="timer" hidden><span id="run-time-text"></span></div>
   <div id="empty" class="empty">
-    <p id="empty-lead" data-i18n="surface.askOxideToMakeAChangeExplainCodeOrRunSomething">Ask Oxide to make a change, explain code, or run something.</p>
+    <div class="welcome-mark" aria-hidden="true"><img src="${brand}" width="40" height="40" alt=""></div>
+    <h1 id="welcome-title" data-i18n="home.title">What should we build?</h1>
+    <p id="empty-lead" data-i18n="home.openFolder">Open a folder to run Oxide: sessions and context are per project.</p>
     <div id="empty-suggestions" class="suggestions" hidden></div>
-    <p class="hint" data-i18n-code="panel.sharedRuntime">Runs use the same configuration, sessions and project trust as the terminal: \`oxide\` starts a turn with \`--mode rpc\`, so a tool that needs your approval waits for an answer here.</p>
   </div>
 </main>
 <button id="jump-latest" class="jump-latest" type="button" title="Jump to latest message" aria-label="Jump to latest message" data-i18n-title="topbar.jumpLatest" data-i18n-aria="topbar.jumpLatest" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
@@ -383,6 +382,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     title="View changes" aria-label="View changes" data-i18n-title="topbar.viewChanges" data-i18n-aria="topbar.viewChanges"></button>
   <div id="strip" class="composer-strip">
     <div class="strip-facts">
+      <span id="project" class="project-chip" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 6h7l2 3h9v11H3Z"/></svg></span><span id="project-name"></span></span>
       <span id="branch-wrap" class="branch-wrap" hidden><span class="foot-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="5" r="1.5"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5"/></svg></span><span id="branch"></span></span>
       <button id="worktree" class="fact fact-button" type="button" data-control="worktree"
         title="Worktree" aria-label="Worktree" aria-haspopup="dialog" aria-controls="dialog" data-i18n-title="composer.worktree" data-i18n-aria="composer.worktree" hidden><span class="foot-icon" aria-hidden="true">${ICONS.worktree}</span><span id="worktree-name" hidden></span></button>
@@ -396,10 +396,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <div id="chips" class="chips" hidden></div>
     <div id="input" class="markdown-input body" contenteditable="true" spellcheck="false"
       role="textbox" aria-multiline="true" aria-label="Message" data-i18n-aria="composer.message"
-      data-placeholder="Ask Oxide…  Enter to send · Shift+Enter for a newline · paste or drop an image" data-i18n-placeholder="panel.placeholder"></div>
+      data-placeholder="Ask Oxide…" data-i18n-placeholder="composer.placeholder"></div>
     <div id="bar">
       <button id="attach" class="icon" title="Attach images, PDFs or files (paste or drop them here too)" aria-label="Attach" data-i18n-title="panel.attachHint" data-i18n-aria="composer.attach">${ICONS.attach}</button>
-      <div id="meta" class="meta" aria-label="Turn settings" data-i18n-aria="surface.turnSettings"></div>
+      <details id="composer-tools" class="composer-tools">
+        <summary id="composer-tools-toggle" title="More tools" aria-label="More tools" data-i18n-title="composer.moreTools" data-i18n-aria="composer.moreTools"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></svg></summary>
+        <div class="composer-tools-menu">
+          <div id="meta" class="meta" aria-label="Turn settings" data-i18n-aria="surface.turnSettings"></div>
+          <button id="shortcuts" class="tool-option" data-control="shortcuts" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" data-i18n-title="composer.help" data-i18n-aria="composer.help">${ICONS.help}<span data-i18n="composer.help">Keyboard shortcuts</span></button>
+        </div>
+      </details>
+      <button id="approvals" class="icon approvals-control" data-control="permissions" title="Tool approvals" aria-label="Tool approvals" aria-haspopup="dialog" aria-controls="dialog" aria-expanded="false" data-i18n-title="composer.permissions" data-i18n-aria="composer.permissions">${ICONS.lock}<span data-i18n="composer.permissions">Tool approvals</span></button>
       <span id="status" hidden></span>
       <span class="spacer"></span>
       <div id="model-settings" class="model-settings" aria-label="Model and reasoning" data-i18n-aria="surface.modelAndReasoning"></div>

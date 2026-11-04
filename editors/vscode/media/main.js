@@ -388,7 +388,7 @@ function installMarkdownInput(editor, render) {
   const gaugeFill = $("gauge-fill");
   const metaBox = $("meta");
   const modelSettings = $("model-settings");
-  const headerActions = $("actions");
+  const composerTools = $("composer-tools");
   const chipBox = $("chips");
   const atBox = $("at");
   const branchLabel = $("branch");
@@ -1922,7 +1922,7 @@ function installMarkdownInput(editor, render) {
   function paintHome(folder) {
     const open = Boolean(folder);
     emptyLead.textContent = open
-      ? t("panel.homeLead", "Ask Oxide to make a change, explain code, or run something.")
+      ? folder
       : t(
           "home.openFolder",
           "Open a folder to run Oxide: sessions and context are per project.",
@@ -1939,6 +1939,10 @@ function installMarkdownInput(editor, render) {
       }
     }
     suggestions.hidden = !open;
+    $("project").hidden = !open;
+    const name = String(folder || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder || "";
+    $("project-name").textContent = name;
+    $("project").title = folder || "";
   }
 
   /// Fills the composer with a suggestion, which is where the reader then edits
@@ -1964,6 +1968,7 @@ function installMarkdownInput(editor, render) {
         applyLanguage(message.language);
         const sameConversation = currentSession === (message.sessionId ?? null) &&
           currentFolder === (message.folder ?? null);
+        if (!sameConversation) composerTools.open = false;
         const previous = sameConversation ? new Map(entries) : new Map();
         const focused = document.activeElement;
         const selection = focused ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
@@ -2224,12 +2229,14 @@ function installMarkdownInput(editor, render) {
   /// a string by the time it gets here, so this function only paints.
   function setFooter(footer) {
     if (!footer) return;
+    const focusedTool = [...metaBox.children].find((chip) => chip.contains(document.activeElement))?.dataset.control;
     metaBox.innerHTML = "";
     modelSettings.innerHTML = "";
     for (const chip of footer.chips || []) {
       const box = chip.id === "model" || chip.id === "reasoning" ? modelSettings : metaBox;
       box.appendChild(chipNode(chip.label, chip.id, chip.title, chip.value, chip.active));
     }
+    if (focusedTool && composerTools.open) [...metaBox.children].find((chip) => chip.dataset.control === focusedTool)?.focus();
     syncSettingDropdown();
     const info = footer.info || "";
     branchLabel.textContent = info;
@@ -2296,6 +2303,10 @@ function installMarkdownInput(editor, render) {
       icon.className = "control-icon";
       icon.innerHTML = CONTROL_ICONS[control] || CONTROL_ICONS.model;
       el.appendChild(icon);
+      const text = document.createElement("span");
+      text.className = "tool-option-label";
+      text.textContent = control === "access" ? t("composer.trust", "Project access") : control === "agent" ? t("dialog.agents.title", "Agents") : label;
+      el.appendChild(text);
     }
     const name = control === "access" ? t("composer.trust", "Project access") : control === "agent" ? t("dialog.agents.title", "Agents") : label;
     el.title = title ? `${name === label ? label : `${name}\n${label}`}\n${title}` : t("surface.ClickToChange", "{name} — click to change", { name });
@@ -2472,6 +2483,7 @@ function installMarkdownInput(editor, render) {
 
   function updateSendState() {
     const hasText = Boolean(input.value.trim()) || pendingCount() > 0;
+    composer.classList.toggle("filled", hasText);
     // The corner's own actions belong to the thread this composer is showing. A
     // turn running in another thread is not this transcript's, so a message
     // typed here would be steered into that run and its reply would land in a
@@ -2645,6 +2657,7 @@ function installMarkdownInput(editor, render) {
     // The header's own button is the same state: it says whether the history is
     // on screen, so the two can never disagree about which click closes it.
     historyButton.setAttribute("aria-expanded", dialog && dialog.kind === "sessions" ? "true" : "false");
+    $("approvals").setAttribute("aria-expanded", String(dialog?.kind === "permissions"));
     if (!dialog) {
       // The class is dropped with it: a hidden element's siblings would still be
       // ordered around it, and the next listing says which end it wants.
@@ -3466,17 +3479,25 @@ function installMarkdownInput(editor, render) {
       return;
     }
     vscode.postMessage({ k: "control", control: chip.dataset.control });
+    composerTools.open = false;
   }
   metaBox.addEventListener("click", clickSetting);
   modelSettings.addEventListener("click", clickSetting);
   // The checkout's own control lives on the bar above the box: it opens the
   // panel's worktree listing, which is the same picker the footer chip opened.
   stripBox.addEventListener("click", clickSetting);
-  // The panel's two app-level controls — the tools it allows without asking and
-  // the keyboard shortcuts — live in the header rather than in the composer's
-  // own row, which is the message's: a narrow side bar cannot hold four glyphs
-  // and a model name on one line, and neither of these is about the message.
-  headerActions.addEventListener("click", clickSetting);
+  $("approvals").addEventListener("click", clickSetting);
+  $("shortcuts").addEventListener("click", clickSetting);
+  document.addEventListener("click", (event) => {
+    if (!composerTools.contains(event.target)) composerTools.open = false;
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !composerTools.open) return;
+    composerTools.open = false;
+    $("composer-tools-toggle").focus();
+    event.preventDefault();
+    event.stopImmediatePropagation?.();
+  }, true);
 
   // Links open in the browser and paths open in the editor, because a webview
   // cannot navigate or read the workspace itself.

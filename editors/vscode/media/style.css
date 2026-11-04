@@ -139,15 +139,6 @@ button.icon[hidden],
   flex: 0 0 auto;
 }
 
-/* The header carries two kinds of control: the thread's own (a new chat, its
-   history) and the panel's (the tools it allows without asking, its keyboard
-   shortcuts). The hairline is what keeps them from reading as four of a kind. */
-.actions-sep {
-  width: 1px;
-  height: 16px;
-  margin: 0 2px;
-  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
-}
 
 code,
 pre,
@@ -230,7 +221,7 @@ pre,
 .run-time {
   flex: 0 0 auto;
   width: 100%;
-  max-width: 760px;
+  max-width: 780px;
   margin: 0 auto;
   padding: 0 0 7px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
@@ -242,6 +233,8 @@ pre,
 /* ---------- transcript ---------- */
 
 #transcript {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -249,6 +242,7 @@ pre,
   padding: 12px 10px 4px;
   outline: none;
 }
+#transcript > * { flex-shrink: 0; min-width: 0; }
 
 #transcript.hide-thinking .thinking {
   display: none;
@@ -258,11 +252,18 @@ pre,
    about how this panel runs it, held in the middle of the room it has. */
 .empty {
   color: var(--vscode-descriptionForeground);
-  max-width: 32em;
-  margin: 10vh auto 0;
+  width: 100%;
+  max-width: 560px;
+  margin: auto;
+  padding: 24px 0;
   text-align: center;
   line-height: 1.5;
 }
+
+.welcome-mark { display: grid; place-items: center; width: 56px; height: 56px; margin: 0 auto 16px; border-radius: 19%; background: var(--vscode-editorWidget-background, var(--vscode-input-background)); box-shadow: 0 10px 24px #0003; }
+.welcome-mark img { display: block; }
+.empty h1 { margin: 0 0 8px; color: var(--vscode-foreground); font-size: 24px; font-weight: 600; line-height: 1.3; }
+#empty-lead { margin-bottom: 22px; overflow-wrap: anywhere; }
 
 .empty p {
   margin: 0 0 12px;
@@ -282,10 +283,10 @@ pre,
    who has nothing to say yet picks one and edits it, the way the desktop app's
    home state offers the same four. */
 .empty .suggestions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0 0 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 10px;
+  margin: 0;
 }
 
 /* The row is turned off explicitly: a `display` of its own beats the browser's
@@ -299,18 +300,21 @@ pre,
   display: block;
   width: 100%;
   text-align: left;
-  padding: 7px 10px;
+  padding: 14px 16px;
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  border-radius: 6px;
+  border-radius: 12px;
+  min-height: 68px;
   background: var(--vscode-input-background, rgba(128, 128, 128, 0.1));
-  color: var(--vscode-foreground);
+  color: var(--vscode-descriptionForeground);
   font-family: inherit;
   font-size: 0.95em;
 }
 
 .empty .suggestions button:hover {
   border-color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+  color: var(--vscode-foreground);
 }
+.empty .suggestions button:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
 
 .msg {
   margin: 0 0 14px;
@@ -1191,19 +1195,16 @@ footer {
   display: none;
 }
 
-/* The settings the bar carries as glyphs share one quiet group: they hang off
-   a hairline so the row reads as two groups rather than one, and they stay
-   borderless and dim until pointed at, since a row of outlined controls is what
-   made this bar unreadable in a narrow panel. */
+/* Less frequent settings stay together in the composer tools menu. */
 .meta {
   display: flex;
-  align-items: center;
+  align-items: stretch;
+  flex-direction: column;
   flex: 0 0 auto;
   flex-wrap: nowrap;
   gap: 1px;
-  margin: 0 0 0 2px;
-  padding: 0 0 0 5px;
-  border-left: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.22));
+  margin: 0;
+  padding: 0;
 }
 
 .meta:empty {
@@ -1273,18 +1274,16 @@ footer {
 #composer {
   position: relative;
   width: 100%;
-  max-width: 760px;
+  max-width: 780px;
   margin-left: auto;
   margin-right: auto;
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
-  border-radius: var(--surface-radius);
+  border-radius: 20px;
   background: var(--vscode-input-background);
-  padding: 10px;
+  padding: 10px 12px;
 }
 
-#composer:focus-within {
-  border-color: var(--vscode-focusBorder);
-}
+#composer.filled { border-color: var(--vscode-focusBorder); }
 
 #composer.dragging {
   border-color: var(--vscode-focusBorder);
@@ -1547,10 +1546,8 @@ footer {
   color: var(--vscode-foreground);
 }
 
-/* The composer toolbar keeps its settings beside the message action, as one
-   row at every width: the glyphs keep their size and the model chip is the one
-   thing that gives way, its value cut with an ellipsis before the row wraps and
-   leaves a lone glyph on a line of its own. */
+/* The model gives way before the actions; the smallest sidebars put model
+   and reasoning together on their own row. */
 #bar {
   display: flex;
   align-items: center;
@@ -1617,7 +1614,7 @@ footer {
 /* The composer's own top row is a bar of its own on the box's top edge, the way
    the desktop app carries its own: a surface of the theme's own widget color,
    rounded at the top and narrower than the box, centered on it so its edges stand
-   where the box's own text column does — 20px narrower, the 10px the box pads each
+   where the box's own text column does — 24px narrower, the 12px the box pads each
    side, in a narrow side bar as much as a wide one. It names the branch the folder
    is on, with what the thread has spent of its window and the gauge that draws the
    same reading beside Send in the toolbar below. */
@@ -1625,8 +1622,8 @@ footer {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  width: calc(100% - 20px);
-  max-width: 740px;
+  width: calc(100% - 24px);
+  max-width: 756px;
   margin-left: auto;
   margin-right: auto;
   min-height: 32px;
@@ -1644,7 +1641,7 @@ footer {
 /* The active turn uses Codex's compact composer. The project/branch/context
    facts are restored as soon as the turn ends. */
 body.running .composer-strip { display: none; }
-body.running #composer { border-radius: var(--surface-radius); }
+body.running #composer { border-radius: 20px; }
 .live-changes {
   align-self: center;
   display: flex;
@@ -1673,6 +1670,9 @@ body.running #composer { border-radius: var(--surface-radius); }
   gap: 8px;
   min-width: 0;
 }
+.project-chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 48%; padding: 3px 8px; border: 1px solid var(--vscode-panel-border, transparent); border-radius: 999px; font-family: var(--vscode-font-family); }
+.project-chip[hidden] { display: none; }
+#project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Follow-ups waiting for the active response, matching Codex Desktop's rail. */
 .queued-messages {
@@ -1777,6 +1777,7 @@ body.running #composer { border-radius: var(--surface-radius); }
    is its content's, so a percentage on the label would resolve against the text it
    is meant to bound and cut `main` down to `m…`. */
 .branch-wrap {
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1881,7 +1882,7 @@ body.running #composer { border-radius: var(--surface-radius); }
   min-height: 0;
   max-height: min(62%, max(120px, calc(100% - 250px)));
   width: calc(100% - 20px);
-  max-width: 760px;
+  max-width: 780px;
   margin: 10px auto 0;
   padding: 12px 8px 8px;
   border: var(--dialog-edge);
@@ -2300,7 +2301,7 @@ button.dialog-row:focus-visible {
    spacing, surfaces and radii so moving between the two clients feels like the
    same product rather than two unrelated renderers. */
 #header {
-  min-height: 48px;
+  min-height: 46px;
   padding: 0 14px;
   background: var(--vscode-editor-background);
 }
@@ -2322,7 +2323,7 @@ button.dialog-row:focus-visible {
 .approval,
 .question {
   width: 100%;
-  max-width: 760px;
+  max-width: 780px;
   margin-left: auto;
   margin-right: auto;
 }
@@ -2334,7 +2335,7 @@ button.dialog-row:focus-visible {
 .msg.user {
   width: auto;
   max-width: min(78%, 620px);
-  margin-right: max(0px, calc((100% - 760px) / 2));
+  margin-right: max(0px, calc((100% - 780px) / 2));
 }
 
 .msg.user .bubble {
@@ -2471,8 +2472,7 @@ footer {
   padding: 3px 5px;
 }
 
-.usage,
-.branch-wrap {
+.usage {
   flex: 0 0 auto;
 }
 
@@ -2501,8 +2501,7 @@ footer {
 #send, #stop { flex: none; }
 
 /* The two settings that carry a value end the row beside the action that sends:
-   the model in a chip with a surface of its own, since it is the setting a
-   reader checks before typing, and the effort quieter beside it. The model's
+   the model and effort as quiet dropdowns, matching Desktop. The model's
    value is the row's one elastic thing — it takes the ellipsis and everything
    else keeps its size — so a long model name narrows the chip instead of
    pushing a control onto a second line. */
@@ -2535,8 +2534,8 @@ footer {
 }
 .model-settings [data-control="model"] {
   padding: 0 4px 0 8px;
-  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
-  background: var(--vscode-editorWidget-background, transparent);
+  border-color: transparent;
+  background: transparent;
   color: var(--vscode-foreground);
 }
 .model-settings [data-control="model"]:hover {
@@ -2558,6 +2557,19 @@ footer {
   box-shadow: 0 8px 30px #0005;
 }
 #dialog.settings-dropdown .popover-head { margin-bottom: 6px; }
+
+.composer-tools { position: relative; flex: none; }
+.composer-tools summary { display: flex; align-items: center; justify-content: center; width: var(--control-size); height: var(--control-size); border-radius: 8px; color: var(--vscode-descriptionForeground); cursor: pointer; list-style: none; }
+.composer-tools summary::-webkit-details-marker { display: none; }
+.composer-tools summary:hover, .composer-tools[open] summary { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.composer-tools summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
+.composer-tools-menu { position: absolute; z-index: 60; bottom: calc(100% + 8px); left: -30px; width: min(260px, calc(100vw - 48px)); max-height: min(360px, 60vh); overflow-y: auto; padding: 6px; background: var(--vscode-menu-background, var(--vscode-editor-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, #80808055)); border-radius: 12px; box-shadow: 0 8px 30px #0005; }
+.composer-tools-menu .meta-chip, .tool-option { display: flex; align-items: center; justify-content: flex-start; width: 100%; min-width: 0; height: auto; min-height: 34px; gap: 10px; padding: 7px 10px; text-align: left; white-space: normal; background: transparent; color: var(--vscode-foreground); font: inherit; border: 0; border-radius: 6px; }
+.tool-option:hover, .composer-tools-menu .meta-chip:hover { background: var(--vscode-toolbar-hoverBackground); }
+.tool-option svg { flex: none; width: 18px; height: 18px; }
+.tool-option:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+button.approvals-control { width: auto; gap: 6px; padding: 0 6px; font-size: 11.5px; white-space: nowrap; }
+@media (max-width: 520px) { .approvals-control span { display: none; } button.approvals-control { width: var(--control-size); padding: 0; } }
 
 .meta-chip[data-control="access"].active {
   color: var(--vscode-textLink-foreground);
@@ -2591,6 +2603,10 @@ footer {
   .meta { gap: 0; }
   .model-settings .setting-chip { padding: 0 4px; }
   .model-settings [data-control="model"] { padding: 0 3px 0 6px; }
+}
+@media (max-width: 340px) {
+  #bar { flex-wrap: wrap; }
+  .model-settings { order: -1; flex: 1 0 100%; justify-content: flex-start; }
 }
 
 .markdown-input { white-space: pre-wrap; overflow-y: auto; outline: none; min-width: 0; }
