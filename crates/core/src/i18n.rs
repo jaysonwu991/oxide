@@ -829,6 +829,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("ui.couldNotRemoveProject", "Could not remove project: {value0}", "无法移除项目：{value0}"),
     ("ui.projectOptionsFor", "Project options for {value0}", "{value0} 的项目选项"),
     ("ui.newTaskIn", "New task in {value0}", "在 {value0} 中新建任务"),
+    ("ui.toggleProjectChats", "Expand or collapse chats in {value0}", "展开或折叠 {value0} 中的聊天"),
     ("ui.runsInTheWorktree", "Runs in the worktree {value0}", "在工作树 {value0} 中运行"),
     ("ui.showMoreProjects", "Show {value0} more projects", "再显示 {value0} 个项目"),
     ("ui.showMoreChatsIn", "Show {value0} more chats in {value1}", "再显示 {value1} 中的 {value0} 个对话"),
@@ -1018,8 +1019,8 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ),
     (
         "dialog.projects.subtitle",
-        "The folders this window can run in, the same list the sidebar draws. Picking one opens it here.",
-        "此窗口可以运行的文件夹，与侧边栏中的列表相同。选择其中一个即在此打开。",
+        "Choose the project you want to work in.",
+        "选择你要使用的项目。",
     ),
     ("dialog.worktrees.title", "Worktrees", "工作树"),
     (

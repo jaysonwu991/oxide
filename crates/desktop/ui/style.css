@@ -299,6 +299,28 @@ body.resizing { cursor: col-resize; user-select: none; }
 .rail-button { display: flex; align-items: center; justify-content: center; width: 38px; height: 38px; padding: 9px; flex: none; color: var(--dim); border-radius: 10px; }
 .rail-button svg { display: block; width: 18px; height: 18px; flex: none; }
 .rail-button:hover, .rail-button[aria-current="page"], .rail-button[aria-expanded="true"] { color: var(--text); background: var(--panel-2); }
+.rail-button[aria-expanded="true"] { box-shadow: inset 2px 0 var(--accent); }
+body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color: var(--dim); }
+.rail-panel.popover,
+.rail-panel.overlay {
+  position: fixed;
+  z-index: 80;
+  inset: 58px auto auto 56px;
+  width: min(390px, calc(100vw - 72px));
+  max-height: calc(100vh - 76px);
+  padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 16px 48px #0005;
+  overflow: hidden;
+  backdrop-filter: none;
+}
+.rail-panel.overlay { display: flex; align-items: stretch; justify-content: flex-start; }
+.rail-panel > .dialog,
+.rail-panel > .command-box { width: 100%; min-width: 0; max-height: calc(100vh - 78px); margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+.rail-panel .command-list,
+.rail-panel .activity-body { min-height: 0; overflow-y: auto; }
 .rail-divider { width: 24px; border-top: 1px solid var(--border); margin: 5px 0; flex: none; }
 .rail-utilities { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 7px; padding-top: 7px; flex: none; }
 .thread-title { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -375,7 +397,7 @@ body.resizing { cursor: col-resize; user-select: none; }
    71.875% of a tile whose corner is 18.95% of its side. It is centred itself
    because its box is a block in a centred column: left to the column it sat at
    the column's edge while the title under it was centred. */
-.welcome { margin: auto; text-align: center; max-width: 560px; }
+.welcome { margin: auto; text-align: center; width: 100%; max-width: 560px; }
 .welcome-mark {
   width: 56px;
   height: 56px;
@@ -388,15 +410,19 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .welcome h1 { font-size: 24px; font-weight: 600; margin: 0 0 8px; }
 .welcome p { color: var(--dim); margin: 0 0 22px; word-break: break-all; }
-.suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.suggestions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 10px; text-align: left; }
 .suggestions button {
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 8px 14px;
+  border-radius: 12px;
+  padding: 14px 16px;
   color: var(--dim);
   font-size: 12.5px;
+  text-align: left;
+  min-height: 68px;
+  background: var(--panel);
 }
 .suggestions button:hover { color: var(--text); border-color: var(--dim); background: var(--panel); }
+.suggestions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* The home state's own rows, for a window that opened on no project: the newest
    threads across the folders the sidebar lists, so the window opens on
    something to open rather than on an empty box. */
@@ -1695,10 +1721,15 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .project-item .icon { font-size: 12px; color: var(--dim); width: 16px; display: flex; align-items: center; justify-content: center; }
 .project-item .name { flex: 1; font-weight: 500; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-item .count { display: none; }
+.project-collapse { display: flex; align-items: center; justify-content: center; width: 18px; height: 22px; flex: none; padding: 0; color: var(--faint); }
+.project-collapse svg { transition: transform 0.15s; }
+.project-collapse[aria-expanded="true"] svg { transform: rotate(90deg); }
+.project-collapse:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.project-item:has(.project-collapse) { gap: 4px; padding-left: 2px; }
 
 .project-sessions { display: flex; flex-direction: column; gap: 0px; }
 .project-empty {
-  padding: 2px 8px 4px 30px;
+  padding: 2px 8px 4px 48px;
   color: var(--faint);
   font-size: 12px;
 }
@@ -1707,7 +1738,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 6px 5px 30px;
+  padding: 5px 6px 5px 48px;
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
@@ -1720,7 +1751,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 /* The thread a turn is running in says so on its own row: the reader may be
    looking at another one, so the sidebar is what names the working thread. The
    mark sits in the row's indent gutter, clear of the ✕. */
-.session-item .session-run { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; }
+.session-item .session-run { position: absolute; left: 28px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; }
 .session-item .session-run .spinner { border-color: var(--accent); border-top-color: transparent; }
 /* The title remains the flexible cell: a long one ellipsizes rather than
    pushing the pin and archive actions out of the row. */
@@ -1762,7 +1793,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
   cursor: pointer;
 }
 .sidebar-show-more:hover { background: var(--panel-2); color: var(--text); }
-.project-show-more { padding: 5px 6px 6px 30px; }
+.project-show-more { padding: 5px 6px 6px 48px; }
 
 .sidebar-recents { margin-top: 16px; display: flex; flex-direction: column; }
 .sidebar-section-title {
@@ -1853,8 +1884,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .row-pin.active { color: var(--accent); }
 .row-more svg, .row-pin svg, .row-archive svg, .row-add svg { width: 14px; height: 14px; }
 
-/* The request reserves its own space at rest. Hover actions replace its paint,
-   keeping the title still; keyboard focus on the request keeps its link usable. */
+/* Keep the request clickable while the row's other actions are visible. */
 .session-pull {
   position: relative;
   flex: none;
@@ -1884,11 +1914,11 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .session-pull.state-open { color: var(--success); }
 .session-pull.state-merged { color: var(--pull-merged); }
 .session-pull.state-closed { color: var(--error); }
-.session-item:hover .session-pull,
-.session-item:focus-within .session-pull { opacity: 0; pointer-events: none; }
-.session-item .session-pull:focus-visible { opacity: 1; pointer-events: auto; }
-.session-item:has(.session-pull:focus-visible) .row-pin,
-.session-item:has(.session-pull:focus-visible) .row-archive { opacity: 0; pointer-events: none; }
+.session-item.has-pull { padding-right: 54px; }
+.session-item.has-pull .row-pin { right: 28px; }
+.session-item.has-pull .row-archive { right: 6px; }
+.session-item .session-pull:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.session-item.has-pull::after { width: 78px; }
 
 .sidebar-floating-card {
   position: fixed;

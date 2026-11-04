@@ -131,6 +131,11 @@ requests, a crossed request glyph in red for closed requests, green for open
 requests and grey while their state is unknown. Pin and archive actions still
 appear on hover or keyboard focus without shifting the title.
 
+Project disclosure buttons fold their chats independently and keep that choice
+while the session list refreshes. Opening a chat from Recents reveals its project
+again. Pull-request badges remain icon-only and stay clickable while
+Pin and Archive appear beside them; hovering a chat no longer hides its link.
+
 The window has one full-width toolbar with chat history, a sidebar toggle, the
 chat title or tabs, and the existing changes, details and new-tab actions.
 On macOS, native traffic lights sit inside this draggable toolbar. Windows and
@@ -141,6 +146,13 @@ a new chat, projects, chat search, activity, the command menu, worktrees, Custom
 and settings. The sidebar header places the plain Oxide title, activity bell
 and search together above New Chat. These controls use the same actions and
 saved preferences as their keyboard and menu counterparts.
+
+The rail's Projects, Search, Activity, Commands and Worktrees controls toggle
+panels beside the rail. The selected control carries an accent and announces its
+expanded state. Switching controls closes the previous panel; Escape returns
+focus to its rail control, and clicking outside dismisses it. Composer pickers
+retain their position above the composer. Welcome suggestions use a responsive
+card grid with visible keyboard focus.
 
 The project summary uses a fixed-width right panel. It hides automatically when
 widening the left sidebar or narrowing the window leaves too little room for the
