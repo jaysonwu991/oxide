@@ -113,16 +113,20 @@ its view never appear and the activity-bar pane is the only one.
 the order), falling back to the secondary side bar's and then to the
 activity-bar one when that focus command does not exist.
 
-The panel's own chrome is icon-first, the way Claude Code's is. The header shows
-the thread's summarized title — the resumed session's name when the dialog knew
-one, else the first message sent condensed to one line (Markdown stripped, cut
-at a word boundary), else **New chat** — next to icon buttons for a new chat
-and for resuming one, whose tooltips — and `aria-label`s, the names a screen
-reader reads out — say **New chat** and **Session history**; the model is the
-footer's first chip rather than a second line under the title, and the
-composer's **Attach**, **Stop** and **Send** are icons too, so the only text in
-the chrome is the phase and the numbers. The phase line
-appears only while there is one to read that the corner cannot say — queued
+The panel follows Desktop's chat layout while keeping VS Code's theme colors.
+The header shows the thread's summarized title next to New Chat and Session
+History. The composer places Attach, More Tools and Tool Approvals before the
+model, reasoning, context gauge and Send/Stop action. More Tools contains Project
+Access, Agents and Keyboard Shortcuts; selecting an item or clicking outside
+closes it, and Escape returns focus to its toggle without stopping a turn.
+The approvals label becomes an icon in narrow sidebars, and model/reasoning move
+to their own row below 340px so their values remain usable.
+
+The project name, branch and worktree appear on the inset strip above the rounded
+composer. The project name is a readout of the chat's folder; VS Code remains
+responsible for choosing workspace folders. Model and reasoning use the same
+quiet dropdown treatment as Desktop. The phase line appears only while there
+is something to read that the corner cannot say — queued
 messages, an idle note — since a running turn's phase moves into the Stop
 button's tooltip and `Working for 12s` is a line at the end of the transcript
 rather than a dot in the toolbar. A turn that finishes while the panel
@@ -134,15 +138,14 @@ the terminal's and the desktop app's). The view-title actions (`oxide.newSession
 `oxide.resumeSession`) carry the codicon `$(add)` and `$(history)` for the same
 reason, so VS Code draws them as icons instead of inline text.
 
-The page a thread starts on is the desktop app's home state in the panel's own
-room: the invitation, the four things to start from the desktop app offers —
-each one filling the message box to be edited rather than sending itself — and
-the line about how this panel runs a turn. Which of the two it is depends on the
-folder: with none open there is nowhere to run, so the invitation is replaced by
-`Open a folder to run Oxide: sessions and context are per project.` — the same
-words the refused send uses — and the suggestions are left out, since a message
-sent with no folder is refused. `TranscriptState.folder` is what the host tells
-the page, so the panel says it before the send rather than after it.
+The welcome page shares Desktop's mark, heading, project path and four
+suggestion cards. The cards form two columns when there is room and stack in a
+sidebar; each fills the composer for editing without sending. With no folder,
+the path is replaced by `Open a folder to run Oxide: sessions and context are per
+project.` and the suggestions and project readout are hidden. The host's
+`TranscriptState.folder` supplies this context, so it cannot drift from the chat
+being read. The welcome page scrolls in short panels while the composer stays
+available.
 
 `oxide.openChat` also sits on the editor's own toolbar: the manifest contributes
 it to `editor/title` (`resourceScheme == file`, since an output or diff tab has

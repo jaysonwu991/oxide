@@ -34,7 +34,7 @@ function between(text: string, from: string, to: string): string {
 /// here.
 function shellElements(): { id: string; hidden: boolean }[] {
   const elements = new Map<string, boolean>();
-  for (const match of shell.matchAll(/<[a-z]+[^>]*\bid="([^"]+)"[^>]*>/g)) {
+  for (const match of shell.matchAll(/<[a-z][a-z0-9]*[^>]*\bid="([^"]+)"[^>]*>/g)) {
     elements.set(match[1], /\shidden[\s>/]/.test(match[0]));
   }
   return [...elements].map(([id, hidden]) => ({ id, hidden }));
@@ -91,6 +91,7 @@ class StubElement {
   hidden = false;
   disabled = false;
   checked = false;
+  open = false;
   /// What the DOM reports for an element that is not focusable, which is what
   /// the renderer's own handles are before they are made buttons.
   tabIndex = -1;
@@ -443,7 +444,7 @@ function loadRenderer(options: { image?: StubImage; now?: () => number; width?: 
     byId.set(id, element);
   }
   const localizedNodes: StubElement[] = [];
-  for (const match of shell.matchAll(/<([a-z]+)\b([^<>]*\bdata-i18n(?:-[a-z]+)?="[^<>]*)>/g)) {
+  for (const match of shell.matchAll(/<([a-z][a-z0-9]*)\b([^<>]*\bdata-i18n(?:-[a-z]+)?="[^<>]*)>/g)) {
     const id = /\bid="([^"]+)"/.exec(match[2])?.[1];
     const element = (id && byId.get(id)) || new StubElement(match[1]);
     for (const [, name, value] of match[2].matchAll(/([\w-]+)="([^"]*)"/g)) {
@@ -596,7 +597,7 @@ function paletteAsked(posted: Record<string, unknown>[]): number {
 }
 
 describe("webview footer", () => {
-  it("shows model and reasoning beside the action while other settings stay icons", () => {
+  it("shows model and reasoning beside the action while other settings use the tools menu", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
     const chips = byId.get("model-settings")!.children;
@@ -610,6 +611,8 @@ describe("webview footer", () => {
     assert.equal(chips[0].children[1].className, "control-icon selector-caret");
     assert.equal(chips[0].getAttribute("aria-label"), "model: glm-5 · 128.0k");
     assert.equal(chips[0].title, "model: glm-5 · 128.0k\nSwitch the model");
+    assert.equal(byId.get("meta")!.children[0].children[1].textContent, "Project access");
+    assert.equal(byId.get("meta")!.children[1].children[1].textContent, "Agents");
     assert.ok(shell.indexOf('id="model-settings"') < shell.indexOf('id="stop"'));
     send(stateMessage({ footer: { ...footer, chips: [
       { id: "model", label: "model: another-model · 200k" },
@@ -800,14 +803,14 @@ describe("webview footer", () => {
     assert.match(style, /#worktree-name \{[^}]*text-overflow: ellipsis;/s);
     assert.match(style, /#worktree\[hidden\],/);
     // The bar is narrower than the box and centered on it, so its edges stand where
-    // the box's own text column does (the box's 760px less the 10px it pads each
-    // side, or the same 20px off a narrow side bar's own width) and the box reads as
+    // the box's own text column does (the box's 780px less the 12px it pads each
+    // side, or the same 24px off a narrow side bar's own width) and the box reads as
     // the wider of the two.
-    assert.match(style, /\.composer-strip \{[^}]*width: calc\(100% - 20px\);/s);
-    assert.match(style, /\.composer-strip \{[^}]*max-width: 740px;/s);
-    assert.match(style, /#composer \{[^}]*max-width: 760px;/s);
+    assert.match(style, /\.composer-strip \{[^}]*width: calc\(100% - 24px\);/s);
+    assert.match(style, /\.composer-strip \{[^}]*max-width: 756px;/s);
+    assert.match(style, /#composer \{[^}]*max-width: 780px;/s);
     assert.match(style, /\.composer-strip \{[^}]*border-radius: 10px 10px 0 0;/s);
-    assert.match(style, /#composer \{[^}]*border-radius: var\(--surface-radius\);/s);
+    assert.match(style, /#composer \{[^}]*border-radius: 20px;/s);
     // The readout takes the row's own auto margin, so the gauge rides at the end
     // after it and the branch takes whatever room is left.
     assert.match(style, /\.composer-strip \.usage \{ margin-left: auto; \}/);
@@ -963,7 +966,7 @@ describe("webview composer", () => {
   });
 
   it("renders the header and composer actions as icon buttons", () => {
-    for (const id of ["new-session", "resume-session", "approvals", "shortcuts", "attach", "send", "stop"]) {
+    for (const id of ["new-session", "resume-session", "approvals", "attach", "send", "stop"]) {
       assert.match(shell, new RegExp(`id="${id}" class="icon`), id);
     }
     // Stop is the one icon that turns red: it ends the turn rather than
@@ -971,18 +974,16 @@ describe("webview composer", () => {
     assert.match(shell, /id="stop" class="icon danger run-control composer-action"/);
   });
 
-  /// The composer's own row is the message's: attach, the two settings a reader
-  /// checks before typing and the action that sends. The two app-level controls
-  /// — the tools allowed without asking, and the keyboard shortcuts — are the
-  /// header's, since a narrow side bar cannot hold four glyphs and a model name
-  /// on one line without cutting the name to `deepse…`.
-  it("keeps the app-level controls in the header and posts what they name", () => {
+  /// The same controls as Desktop, with less frequent settings behind More Tools.
+  it("keeps approvals and additional tools in the composer and posts what they name", () => {
     const header = between(shell, '<div id="actions">', "</header>");
-    for (const [id, control] of [["approvals", "permissions"], ["shortcuts", "shortcuts"]]) {
-      assert.match(header, new RegExp(`id="${id}"[^>]*data-control="${control}"`), id);
+    for (const id of ["approvals", "shortcuts"]) {
+      assert.doesNotMatch(header, new RegExp(`id="${id}"`), id);
     }
     const bar = between(shell, '<div id="bar">', '<div id="dropzone"');
-    assert.doesNotMatch(bar, /id="approvals"|id="shortcuts"/, "the bar keeps the message's own controls");
+    assert.match(bar, /id="approvals"/);
+    assert.match(bar, /id="composer-tools"/);
+    assert.match(bar, /id="shortcuts"/);
     const { byId, posted } = loadRenderer();
     // The stub reads ids out of the shell rather than parsing it, so the data
     // attribute the markup carries is what this sets by hand.
@@ -990,11 +991,38 @@ describe("webview composer", () => {
     approvals.dataset.control = "permissions";
     const shortcuts = byId.get("shortcuts")!;
     shortcuts.dataset.control = "shortcuts";
-    const actions = byId.get("actions")!;
-    actions.fire("click", { target: approvals });
+    const tools = byId.get("composer-tools")!;
+    tools.open = true;
+    approvals.fire("click", { target: approvals });
     assert.equal(last(posted).control, "permissions");
-    actions.fire("click", { target: shortcuts });
+    assert.equal(tools.open, false);
+    tools.open = true;
+    shortcuts.fire("click", { target: shortcuts });
     assert.equal(last(posted).control, "shortcuts");
+    assert.equal(tools.open, false);
+  });
+
+  it("dismisses additional tools without losing the draft", () => {
+    const { byId, fireDocument, send, active } = loadRenderer();
+    send(stateMessage({ folder: "/work/oxide", sessionId: "one" }));
+    const input = byId.get("input")!;
+    input.value = "Keep my draft";
+    const tools = byId.get("composer-tools")!;
+    tools.open = true;
+    fireDocument("keydown", { key: "Escape", preventDefault() {} });
+    assert.equal(tools.open, false);
+    assert.equal(active(), byId.get("composer-tools-toggle"));
+    assert.equal(input.value, "Keep my draft");
+    tools.open = true;
+    byId.get("meta")!.children[0].focus();
+    send(stateMessage({ folder: "/work/oxide", sessionId: "one" }));
+    assert.equal(tools.open, true, "updates to this conversation leave the menu open");
+    assert.equal(active(), byId.get("meta")!.children[0], "updates preserve keyboard focus in the menu");
+    fireDocument("click", { target: input });
+    assert.equal(tools.open, false);
+    tools.open = true;
+    send(stateMessage({ folder: "/work/oxide", sessionId: "two" }));
+    assert.equal(tools.open, false, "a different conversation closes its menu");
   });
 
   /// The full-size preview is the desktop app's: a ✕ in a head row above the
@@ -1531,7 +1559,7 @@ describe("webview composer", () => {
     assert.equal(queue.hidden, false);
     assert.equal(body.classList.contains("running"), true);
     assert.match(style, /body\.running \.composer-strip \{ display: none; \}/);
-    assert.match(style, /body\.running #composer \{ border-radius: var\(--surface-radius\); \}/);
+    assert.match(style, /body\.running #composer \{ border-radius: 20px; \}/);
     assert.deepEqual(queue.children.slice(0, 2).map((row) => row.children[1].textContent), [
       "first follow-up",
       "second follow-up",
@@ -2813,7 +2841,7 @@ describe("webview dialogs", () => {
     assert.match(rule, /flex: 0 0 auto;/, "the dialog does not shrink");
     assert.match(rule, /max-height: min\([^)]*\d+px[^)]*\)/, "its cap leaves room for the footer");
     assert.match(rule, /width: calc\(100% - 20px\);/, "it shares the composer's inset");
-    assert.match(rule, /max-width: 760px;/, "it shares the composer's width cap");
+    assert.match(rule, /max-width: 780px;/, "it shares the composer's width cap");
     assert.match(rule, /margin: 10px auto 0;/, "the header dialog is centered with breathing room");
     assert.match(rule, /border: var\(--dialog-edge\);/, "the card has a complete outline");
     assert.match(rule, /border-radius: var\(--surface-radius\);/, "all four corners use the same radius");
@@ -4361,7 +4389,7 @@ describe("webview welcome page", () => {
     send(stateMessage({ folder: "/work/oxide" }));
     const row = byId.get("empty-suggestions")!;
     assert.equal(row.hidden, false, "a folder is open, so there is somewhere to run");
-    assert.equal(byId.get("empty-lead")!.textContent, "Ask Oxide to make a change, explain code, or run something.");
+    assert.equal(byId.get("empty-lead")!.textContent, "/work/oxide");
     const buttons = row.children;
     assert.equal(buttons.length, 4);
     const first = "Explain this codebase and its architecture.";
@@ -4428,8 +4456,23 @@ describe("webview welcome page", () => {
     assert.equal(byId.get("empty-suggestions")!.hidden, false);
     assert.equal(
       byId.get("empty-lead")!.textContent,
-      "Ask Oxide to make a change, explain code, or run something.",
+      "/work/oxide",
     );
+  });
+
+  it("shows the owning project without confusing it with the branch or worktree", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({ folder: "/work/oxide/", footer: { ...footer, worktree: { name: "review", title: "/work/oxide-review" } } }));
+    assert.equal(byId.get("project")!.hidden, false);
+    assert.equal(byId.get("project-name")!.textContent, "oxide");
+    assert.equal(byId.get("project")!.title, "/work/oxide/");
+    assert.equal(byId.get("branch")!.textContent, "main");
+    assert.equal(byId.get("worktree-name")!.textContent, "review");
+    send(stateMessage({ folder: "C:\\work\\oxide" }));
+    assert.equal(byId.get("project-name")!.textContent, "oxide");
+    send(stateMessage({ folder: null }));
+    assert.equal(byId.get("project")!.hidden, true);
+    assert.equal(byId.get("project-name")!.textContent, "");
   });
 
   it("declares the home state's own parts", () => {
@@ -4440,7 +4483,7 @@ describe("webview welcome page", () => {
     // heard from the host yet offers nothing it cannot run.
     assert.match(shell, /id="empty-suggestions" class="suggestions" hidden/);
     assert.doesNotMatch(shell, /<button[^>]*data-prompt/);
-    // The row is laid out as a flex column, and an author-level `display` beats
+    // The row is laid out as a responsive grid, and an author-level `display` beats
     // the browser's own rule for `hidden` — so the attribute has an explicit rule
     // of its own, or a folder that was closed again would leave the suggestions
     // it built on screen behind the ruled-out invitation.
@@ -4478,26 +4521,25 @@ describe("webview welcome page", () => {
 
 
 describe("static shell localization", () => {
-  it("repaints the shared-runtime note and native placeholders when language arrives or changes", () => {
+  it("repaints the welcome title and native placeholders when language arrives or changes", () => {
     const { send, byId } = loadRenderer();
     send(stateMessage({ language: { language: "zh-CN", strings: {
-      "panel.sharedRuntime": "共用配置：`oxide` 使用 `--mode rpc`，等待批准。",
+      "home.title": "我们要构建什么？",
       "surface.searchSessionsPlaceholder": "搜索会话…",
     } } }));
-    assert.equal(byId.get("shared-runtime-hint")!.innerHTML, "共用配置：<code>oxide</code> 使用 <code>--mode rpc</code>，等待批准。");
+    assert.equal(byId.get("welcome-title")!.textContent, "我们要构建什么？");
     assert.equal(byId.get("dialog-search-input")!.getAttribute("placeholder"), "搜索会话…");
     send(stateMessage({ language: null }));
-    assert.match(byId.get("shared-runtime-hint")!.innerHTML, /Runs use the same configuration/);
-    assert.match(byId.get("shared-runtime-hint")!.innerHTML, /<code>--mode rpc<\/code>/);
+    assert.equal(byId.get("welcome-title")!.textContent, "What should we build?");
     assert.equal(byId.get("dialog-search-input")!.getAttribute("placeholder"), "Search sessions…");
   });
 
-  it("escapes catalog text before rendering inline code", () => {
+  it("renders welcome catalog text as text", () => {
     const { send, byId } = loadRenderer();
     send(stateMessage({ language: { language: "zh-CN", strings: {
-      "panel.sharedRuntime": '<img src=x> `<script>` & text',
+      "home.title": '<img src=x> & text',
     } } }));
-    assert.equal(byId.get("shared-runtime-hint")!.innerHTML, "&lt;img src=x&gt; <code>&lt;script&gt;</code> &amp; text");
+    assert.equal(byId.get("welcome-title")!.textContent, "<img src=x> & text");
   });
 
   it("translates running and retry statuses while preserving tool identifiers", () => {
