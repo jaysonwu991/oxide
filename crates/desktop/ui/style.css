@@ -1345,6 +1345,30 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
 .dialog-actions .dialog-remove { margin-right: auto; }
 
+#create-project-modal { background: rgba(0, 0, 0, 0.2); }
+.create-project-dialog { width: 520px; padding: 20px; border-radius: 20px; background: var(--panel-2); box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28); }
+.create-project-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.create-project-head h2 { margin: 0; font-size: 20px; font-weight: 600; }
+.create-project-head .icon { align-self: flex-start; padding: 3px; }
+.create-project-name-field { display: flex; align-items: center; min-width: 0; height: 40px; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; }
+.create-project-name-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.create-project-name-field > span { display: flex; align-items: center; justify-content: center; width: 40px; height: 100%; flex: none; border-right: 1px solid var(--border); color: var(--dim); }
+#create-project-name { flex: 1; min-width: 0; height: 100%; padding: 0 10px; border: 0; border-radius: 12px; background: transparent; font-size: 13.5px; }
+#create-project-sources { gap: 8px; margin: 0; }
+.create-project-sources-label { font-size: 13px; }
+.create-project-source-box { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 104px; padding: 16px; border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 12px; }
+.create-project-source-box .folder-list { align-self: stretch; margin: 0; max-height: 180px; overflow-y: auto; }
+.create-project-source-box .folder-list:empty { display: none; }
+.create-project-source-options { width: 100%; }
+.create-project-source-options summary { display: flex; justify-content: center; align-items: center; gap: 6px; border-radius: 4px; color: var(--dim); font-size: 13px; cursor: pointer; list-style: none; }
+.create-project-source-options summary::-webkit-details-marker { display: none; }
+.create-project-source-options summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.create-project-source-options .path-row { margin-top: 12px; }
+.create-project-source-options .path-input { min-width: 0; }
+button.create-project-add { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 3px 10px; border-radius: 20px; background: var(--panel-3); font-size: 13px; }
+.create-project-dialog .dialog-actions { margin-top: 32px; gap: 16px; }
+.create-project-dialog .dialog-actions button { padding: 7px 18px; font-size: 13.5px; border-radius: 10px; }
+
 .approval-tool {
   display: inline-block;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1884,7 +1908,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .row-pin.active { color: var(--accent); }
 .row-more svg, .row-pin svg, .row-archive svg, .row-add svg { width: 14px; height: 14px; }
 
-/* Keep the request clickable while the row's other actions are visible. */
+/* The request yields its resting slot to the row actions. */
 .session-pull {
   position: relative;
   flex: none;
@@ -1914,11 +1938,13 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .session-pull.state-open { color: var(--success); }
 .session-pull.state-merged { color: var(--pull-merged); }
 .session-pull.state-closed { color: var(--error); }
-.session-item.has-pull { padding-right: 54px; }
-.session-item.has-pull .row-pin { right: 28px; }
-.session-item.has-pull .row-archive { right: 6px; }
+.session-item:hover .session-pull,
+.session-item:focus-within .session-pull { opacity: 0; pointer-events: none; }
 .session-item .session-pull:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.session-item.has-pull::after { width: 78px; }
+.session-item:has(.session-pull:focus-visible) .session-pull { opacity: 1; pointer-events: auto; }
+.session-item:has(.session-pull:focus-visible) .row-pin,
+.session-item:has(.session-pull:focus-visible) .row-archive { opacity: 0; pointer-events: none; }
+.session-item:has(.session-pull:focus-visible)::after { opacity: 0; }
 
 .sidebar-floating-card {
   position: fixed;
@@ -2732,6 +2758,7 @@ body.settings-open .topbar { grid-column: 1 / -1; }
 .sidebar-actions .icon { padding: 5px; border-radius: 7px; color: var(--dim); }
 .sidebar-actions .icon:hover { color: var(--text); background: var(--panel-2); }
 #activity { position: relative; }
+#activity[aria-expanded="true"] { color: var(--accent); background: var(--panel-2); }
 
 /* The dot is the whole of what the bell says: the view behind it is what is
    listed, so the mark is that something is there rather than what it is. */
@@ -2804,12 +2831,17 @@ body.settings-open .topbar { grid-column: 1 / -1; }
 /* ---------- activity and the archive ---------- */
 
 .activity-sheet { width: min(560px, calc(100vw - 80px)); max-height: min(560px, calc(100vh - 120px)); display: flex; flex-direction: column; }
-.activity-body { overflow-y: auto; padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 2px; }
-.activity-heading { margin: 12px 0 4px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.sidebar-activity { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.activity-body { overflow-y: auto; padding: 4px 8px 16px; display: flex; flex-direction: column; gap: 2px; }
+.activity-heading { margin: 18px 8px 5px; font-size: 12.5px; font-weight: 400; color: var(--faint); }
 .activity-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  flex: none;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
   text-align: left;
   padding: 7px 8px;
   border: 1px solid transparent;
@@ -2821,8 +2853,13 @@ body.settings-open .topbar { grid-column: 1 / -1; }
   cursor: pointer;
 }
 .activity-row:hover { background: var(--panel-2); }
-.activity-row-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.activity-row-detail { color: var(--faint); font-size: 11.5px; flex: 0 0 auto; }
+.activity-row.active { background: var(--panel-3); }
+.activity-row-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.activity-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-row-project { flex: none; color: var(--faint); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-row-detail { color: var(--faint); font-size: 11.5px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.activity-row .spinner { flex: none; }
+.activity-unread { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .activity-clear {
   align-self: flex-start;
   margin: 6px 0 0 8px;

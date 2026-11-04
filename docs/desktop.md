@@ -133,8 +133,9 @@ appear on hover or keyboard focus without shifting the title.
 
 Project disclosure buttons fold their chats independently and keep that choice
 while the session list refreshes. Opening a chat from Recents reveals its project
-again. Pull-request badges remain icon-only and stay clickable while
-Pin and Archive appear beside them; hovering a chat no longer hides its link.
+again. Pull-request badges remain icon-only and give way to Pin and Archive
+in the same right-hand area on hover or keyboard focus. Focusing the request
+link itself keeps it visible and clickable until focus moves to another control.
 
 The window has one full-width toolbar with chat history, a sidebar toggle, the
 chat title or tabs, and the existing changes, details and new-tab actions.
@@ -142,12 +143,13 @@ On macOS, native traffic lights sit inside this draggable toolbar. Windows and
 Linux retain their native window controls.
 
 A narrow navigation rail stays available when the sidebar is hidden. It opens
-a new chat, projects, chat search, activity, the command menu, worktrees, Customize
+a new chat, projects, chat search, the command menu, worktrees, Customize
 and settings. The sidebar header places the plain Oxide title, activity bell
-and search together above New Chat. These controls use the same actions and
+and search together above New Chat. Activity is also available from the command
+menu when the sidebar is hidden. These controls use the same actions and
 saved preferences as their keyboard and menu counterparts.
 
-The rail's Projects, Search, Activity, Commands and Worktrees controls toggle
+The rail's Projects, Search, Commands and Worktrees controls toggle
 panels beside the rail. The selected control carries an accent and announces its
 expanded state. Switching controls closes the previous panel; Escape returns
 focus to its rail control, and clicking outside dismisses it. Composer pickers
@@ -423,7 +425,10 @@ The regions, top to bottom:
   the Projects header
   opens the **Create project** dialog: pick one or more source folders and the
   **Project name** defaults to the first folder's basename (still editable), so
-  creating a project never requires typing a name.
+  creating a project never requires typing a name. The dialog pairs the name
+  with a folder icon and places **Add** inside a bordered Source folders panel.
+  Its source control expands manual path entry; the initial view keeps it folded.
+  The header's close button cancels just like Cancel or the backdrop.
 - **Home** — what the transcript shows before a thread is in it. The mark above
   the invitation is the app's own icon: the split diamond (`ICONS.mark`, the same
   four polygons and colours `scripts/build-icons.py` rasterises) on the icon's
@@ -1519,12 +1524,17 @@ original text when lowercasing expands a Unicode character. Search snippets
 retain only the characters around the match rather than allocating a character
 array for an entire long message.
 
-**Activity** (the bell, or **Add → Activity**) is what is asking for the reader:
-the approval or question the window is holding for them, the threads a turn is
-still writing in, and the ones that finished while they were elsewhere. The bell
-carries a dot for any of those, in the tool colour while the dialog is up, so the
-mark says that something is there rather than what it is; the view's own **Clear
-these marks** is the same action as `⇧Esc`.
+**Activity** (the sidebar bell, or **Command menu → Activity**) replaces the
+project tree with a chat feed, leaving the transcript and composer available.
+The bell stays highlighted until toggled off or Escape restores the tree.
+Priority contains pending approvals/questions and pinned, running or unread
+chats. Remaining chats appear once under Today, Yesterday or Earlier, based on
+local calendar dates. Rows pair their title with the project name and a two-line
+stored preview, with the selected chat highlighted and running/unread marks.
+Opening a chat keeps the feed visible. The command menu reveals the sidebar if
+it was hidden. The bell carries a dot for pending, running or unread activity,
+in the tool colour while an answer is required; **Clear these marks** shares
+the `⇧Esc` action.
 
 **Archived chats** (**Add → Archived chats…**) lists what the sidebar leaves out
 — `archived_sessions` answers with the same views over the other half of the

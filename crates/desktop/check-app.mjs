@@ -2803,14 +2803,23 @@ check(
   `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px`,
 );
 check(
-  "kept pull links reachable beside the hover actions",
+  "replaced the resting pull badge with hover actions in the same strip",
   /min-width: 0/.test(rowRule(".session-item .name")) &&
     /flex: none/.test(rowRule(".session-pull")) &&
-    /padding-right: 54px/.test(rowBodies(".session-item.has-pull")) &&
-    lastPixels(rowBodies(".session-item.has-pull .row-pin"), "right") === 28 &&
-    lastPixels(rowBodies(".session-item.has-pull .row-archive"), "right") === 6 &&
-    !/opacity: 0|pointer-events: none/.test(rowBodies(".session-item:hover .session-pull")) &&
+    rightPadding(".session-item") === 6 &&
+    !rowBodies(".session-item.has-pull") &&
+    lastPixels(rowBodies(".row-pin"), "right") === 28 &&
+    lastPixels(rowBodies(".row-archive"), "right") === 6 &&
+    [".session-item:hover .session-pull", ".session-item:focus-within .session-pull"]
+      .every((selector) => /opacity: 0; pointer-events: none/.test(rowBodies(selector))) &&
     /outline: 2px/.test(rowBodies(".session-item .session-pull:focus-visible")),
+);
+check(
+  "kept the focused pull link visible and clickable in place of the row actions",
+  /opacity: 1; pointer-events: auto/.test(rowBodies(".session-item:has(.session-pull:focus-visible) .session-pull")) &&
+    [".row-pin", ".row-archive"].every((action) =>
+      /opacity: 0; pointer-events: none/.test(rowBodies(`.session-item:has(.session-pull:focus-visible) ${action}`))) &&
+    /opacity: 0/.test(rowBodies(".session-item:has(.session-pull:focus-visible)::after")),
 );
 check(
   "covered sidebar titles with opaque request and hover-action backgrounds",
@@ -2834,7 +2843,7 @@ check(
   ) && /\(event\.metaKey \|\| event\.ctrlKey\) && event\.key >= "1"/.test(source),
   shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
 );
-// The sidebar groups its title, activity and search above New Chat.
+// The sidebar owns the Activity bell; the rail must not duplicate it.
 const newChatButton = buttonFor("new-chat");
 check(
   "placed the plain title, activity and search above the New Chat action",
@@ -2844,6 +2853,7 @@ check(
     shellAt('id="activity"') < shellAt('id="search-chats"') &&
     shellAt('id="search-chats"') < shellAt('id="new-chat"') &&
     shell.includes('<span class="sidebar-brand">Oxide</span>') &&
+    !shell.includes('id="rail-activity"') && !source.includes('"rail-activity"') &&
     !shell.includes('id="sidebar-add"') && !shell.includes('id="add-menu"') &&
     newChatButton.includes(`title="New Chat&#10;`) &&
     newChatButton.includes('aria-label="New Chat"') &&
@@ -3697,6 +3707,12 @@ app.state.project = null;
 app.openCreateProject();
 check("opened the dialog with empty fields", elementFor("create-project-name").value === "" && elementFor("create-project-path").value === "");
 check("kept the dialog open until it is saved", elementFor("create-project-modal").hidden === false);
+check("focused the name and kept manual path entry folded initially", document.activeElement === elementFor("create-project-name") && elementFor("create-project-source-options").open === false);
+elementFor("create-project-source-options").open = true;
+elementFor("create-project-close").click();
+check("cancelled the project from the header close button", elementFor("create-project-modal").hidden === true);
+app.openCreateProject();
+check("reset manual path entry when the dialog reopened", elementFor("create-project-source-options").open === false);
 
 elementFor("create-project-path").value = "~/Projects/oxide";
 app.addCreateProjectTypedPath();
@@ -9850,13 +9866,24 @@ check("put the search away on Escape", elementFor("search-modal").hidden === tru
 // state is the state being read rather than whatever an earlier check left
 // running.
 const heldRecords = [...app.threads.entries()];
+const heldActivitySessions = app.state.sessions;
+const heldActivitySession = app.state.session;
+app.state.sessions = [];
+app.state.session = null;
 app.threads.clear();
 app.state.pendingApproval = null;
 app.paintActivityDot();
 app.openActivity();
 check(
+  "switched the sidebar to activity without opening an overlay",
+  elementFor("sidebar-projects").hidden &&
+    !elementFor("activity-panel").hidden &&
+    !elementFor("activity-panel").classList.contains("overlay") &&
+    elementFor("activity").getAttribute("aria-expanded") === "true",
+);
+check(
   "opened activity quiet when nothing is waiting",
-  elementFor("activity-modal").hidden === false &&
+  elementFor("activity-panel").hidden === false &&
     elementFor("activity-body").children[0]?.textContent === "Nothing is waiting on you." &&
     elementFor("activity-dot").hidden === true,
   String(elementFor("activity-body").children[0]?.textContent),
@@ -9865,12 +9892,12 @@ app.state.pendingApproval = 17;
 app.paintActivityDot();
 const activityBody = elementFor("activity-body");
 const activityHeading = (index) => activityBody.children[index]?.textContent;
-const activityRowTitle = (index) => activityBody.children[index]?.children[0]?.textContent;
+const activityRowTitle = (index) => activityBody.children[index]?.querySelector(".activity-row-title")?.textContent;
 check(
   "marked the bell and listed the approval the window is holding",
   elementFor("activity-dot").hidden === false &&
     elementFor("activity").className.includes("asking") &&
-    activityHeading(0) === "Waiting for you" &&
+    activityHeading(0) === "Priority" &&
     activityRowTitle(1) === "A tool is waiting for your approval",
   `${elementFor("activity-dot").hidden} / ${activityHeading(0)} / ${activityRowTitle(1)}`,
 );
@@ -9882,13 +9909,51 @@ check(
     elementFor("activity-dot").hidden === true,
   `${elementFor("activity").className} / ${elementFor("activity-dot").hidden}`,
 );
+const activityToday = new Date();
+activityToday.setHours(12, 0, 0, 0);
+const activityYesterday = new Date(activityToday);
+activityYesterday.setDate(activityYesterday.getDate() - 1);
+const activityEarlier = new Date(activityToday);
+activityEarlier.setDate(activityEarlier.getDate() - 3);
+app.state.sessions = [
+  { id: "feed-today", name: "Today's chat", cwd: "/tmp/oxide", preview: "A two-line preview", modified_at: activityToday.getTime() / 1000 },
+  { id: "feed-pinned", name: "Pinned chat", cwd: "/tmp/oxide", pinned: true, modified_at: activityEarlier.getTime() / 1000 },
+  { id: "feed-yesterday", name: "Yesterday's chat", cwd: "/tmp/oxide", modified_at: activityYesterday.getTime() / 1000 },
+  { id: "feed-earlier", name: "Older chat", cwd: "/tmp/oxide", modified_at: activityEarlier.getTime() / 1000 },
+];
+app.state.session = "feed-today";
+app.renderActivity();
+check(
+  "grouped activity by priority and local calendar dates without duplicating chats",
+  app.activityGroups().map((group) => group.title).join(",") === "Priority,Today,Yesterday,Earlier" &&
+    activityBody.querySelectorAll(".activity-row").length === 4,
+);
+const feedToday = activityBody.querySelectorAll(".activity-row").find((row) => row.dataset.activityRow === "feed-today");
+check(
+  "showed the active chat with its title, project and preview",
+  feedToday?.classList.contains("active") &&
+    feedToday.querySelector(".activity-row-title")?.textContent === "Today's chat" &&
+    feedToday.querySelector(".activity-row-project")?.textContent === "oxide" &&
+    feedToday.querySelector(".activity-row-detail")?.textContent === "A two-line preview",
+);
+app.threads.set("feed-today", { session: "feed-today", busy: true, unread: true });
+app.paintActivityDot();
+check(
+  "promoted a running unread chat to priority once and drew its spinner",
+  app.activityGroups()[0].rows.filter((row) => row.id === "feed-today").length === 1 &&
+    activityBody.querySelectorAll(".activity-row").find((row) => row.dataset.activityRow === "feed-today")?.querySelector(".spinner"),
+);
+app.threads.delete("feed-today");
 for (const [key, record] of heldRecords) app.threads.set(key, record);
+app.state.sessions = heldActivitySessions;
+app.state.session = heldActivitySession;
 app.closeActivity();
 check(
   "closed activity and gave the bell its state back",
-  elementFor("activity-modal").hidden === true &&
+  elementFor("activity-panel").hidden === true &&
+    elementFor("sidebar-projects").hidden === false &&
     elementFor("activity").getAttribute("aria-expanded") === "false",
-  String(elementFor("activity-modal").hidden),
+  String(elementFor("activity-panel").hidden),
 );
 // The archive lists what the sidebar leaves out, and puts one back through the
 // same command the sidebar's own toast offers.
