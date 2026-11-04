@@ -2372,8 +2372,10 @@ const DONE_RULES: &[DoneRule] = &[
         ],
         reminder: "You opened or updated a pull request but have not read it back. Report the \
                    link the forge printed — `[#123](url)`, the URL from `gh pr view <url> --json \
-                   url` — and do not poll or wait for its checks: a CI run can take a long time, so \
-                   say plainly that they were still running if you mention them.",
+                   url` — and do not poll or wait for its checks unless the user requested the CI \
+                   outcome (for example, \"ensure CI runs well\"). If requested, watch the checks \
+                   to completion once and address failures; otherwise say plainly that they \
+                   were still running if you mention them.",
     },
     DoneRule {
         key: "comment",
@@ -7851,6 +7853,8 @@ for line in sys.stdin:
         // rule, so it asks for the link in its own words.
         assert!(reminder.contains("[#123](url)"), "{reminder}");
         assert!(!reminder.contains("gh pr checks"), "{reminder}");
+        assert!(reminder.contains("unless the user requested"), "{reminder}");
+        assert!(reminder.contains("ensure CI runs well"), "{reminder}");
         assert!(state.reminder().is_none());
 
         // The link `gh pr create` printed is the confirmation, so raising a PR

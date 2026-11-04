@@ -99,11 +99,11 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         }
         Reasoning::Off => {}
         Reasoning::Auto if adaptive => {
-            body["thinking"] = json!({ "type": "adaptive" });
+            body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
         }
         Reasoning::Auto => {}
         level if adaptive => {
-            body["thinking"] = json!({ "type": "adaptive" });
+            body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
             body["output_config"] = json!({ "effort": level.effort() });
         }
         level => {
@@ -564,6 +564,30 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_thinking_requests_visible_summaries_through_portkey() {
+        for reasoning in [Reasoning::Auto, Reasoning::Medium] {
+            let cfg = Config {
+                provider: "portkey".into(),
+                model: "claude-sonnet-5".into(),
+                reasoning,
+                ..config()
+            };
+            let body = request_body(&cfg, &[Message::user("hi")], &[]);
+            assert_eq!(
+                body["thinking"],
+                json!({
+                    "type": "adaptive", "display": "summarized"
+                })
+            );
+            if reasoning == Reasoning::Medium {
+                assert_eq!(body["output_config"]["effort"], "medium");
+            } else {
+                assert!(body.get("output_config").is_none());
+            }
+        }
+    }
+
+    #[test]
     fn adaptive_off_explicitly_disables_default_thinking() {
         let config = Config {
             model: "claude-opus-5".into(),
@@ -571,7 +595,7 @@ mod tests {
             ..Config::default()
         };
         let body = request_body(&config, &[Message::user("hi")], &[]);
-        assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
         assert!(body.get("output_config").is_none());
     }
 

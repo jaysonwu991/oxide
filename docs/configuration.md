@@ -71,6 +71,10 @@ Opus 5 uses shorter scope and completion guidance: it already verifies its work,
 so the harness avoids adding a separate broad verification pass. The requested
 reasoning level is still honored. For adaptive Claude models, `off` explicitly
 sends `thinking.type = disabled`, since omitting the field can leave thinking on.
+Adaptive Anthropic Messages requests explicitly set `thinking.display = summarized`
+(including Claude through Portkey), so newer models return visible summaries
+instead of their default empty, signed thinking blocks. This controls visibility,
+not the requested effort.
 
 ### max_tokens and context_window
 
