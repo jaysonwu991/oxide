@@ -5701,7 +5701,6 @@ const OVERLAYS = [
   "help-modal",
   "command-menu",
   "search-modal",
-  "activity-modal",
   "archived-modal",
   "file-modal",
 ];
@@ -5725,7 +5724,6 @@ function closeOverlays(except) {
 const RAIL_PANELS = {
   "rail-projects": ["projects-modal", openProjects],
   "rail-search": ["search-modal", openSearch],
-  "rail-activity": ["activity-modal", openActivity],
   "rail-more": ["command-menu", openCommandMenu],
   "rail-worktrees": ["worktrees-modal", openWorktrees],
 };
@@ -8991,65 +8989,69 @@ async function openSearchRow(hit) {
 
 // ---------- activity ----------
 
-/// What is asking for the reader: the dialog the window is holding for them, the
-/// threads still writing, and the ones that finished while they were elsewhere.
 function activityGroups() {
   const groups = [];
+  const priority = { key: "activity.priority", title: t("activity.priority", "Priority"), rows: [] };
   if (state.pendingApproval || state.pendingQuestion) {
     const waiting = state.pendingApproval
       ? t("activity.waitingApproval", "A tool is waiting for your approval")
       : t("activity.waitingQuestion", "A question is waiting for your answer");
-    groups.push({
-      key: "activity.waitingForYou",
-      title: t("activity.waitingForYou", "Waiting for you"),
-      rows: [{ id: "pending", title: waiting, detail: "", open: () => closeActivity() }],
-    });
+    priority.rows.push({ id: "pending", title: waiting, detail: "", open: () => closeActivity() });
   }
-  const records = [...threads.values()];
-  const running = records.filter((record) => (record.busy || record.runId) && record.session);
-  if (running.length) {
-    groups.push({
-      key: "activity.running",
-      title: t("activity.running", "Running"),
-      rows: running.map((record) => activityRow(record, t("activity.turnInFlight", "A turn is running"))),
+  const records = new Map([...threads.values()].filter((record) => record.session).map((record) => [record.session, record]));
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const dated = new Map();
+  const sessions = [...listedSessions()].sort((a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0));
+  for (const session of sessions) {
+    const record = records.get(session.id);
+    const row = {
+      id: session.id,
+      title: sessionLabel(session),
+      project: projectNameOf(sessionProject(session)),
+      detail: session.preview || "",
+      active: session.id === state.session,
+      running: Boolean(record?.busy || record?.runId),
+      unread: Boolean(record?.unread),
+      open: () => void selectSessionFromTree(session),
+    };
+    if (session.pinned || row.running || row.unread) {
+      priority.rows.push(row);
+      continue;
+    }
+    const date = new Date((session.modified_at || session.created_at || 0) * 1000);
+    const key = date >= today ? "activity.today" : date >= yesterday ? "activity.yesterday" : "activity.earlier";
+    if (!dated.has(key)) dated.set(key, {
+      key,
+      title: t(key, key === "activity.today" ? "Today" : key === "activity.yesterday" ? "Yesterday" : "Earlier"),
+      rows: [],
     });
+    dated.get(key).rows.push(row);
   }
-  const unread = records.filter((record) => record.unread && record.session);
-  if (unread.length) {
-    groups.push({
-      key: "activity.unread",
-      title: t("activity.unread", "Finished while you were away"),
-      rows: unread.map((record) => activityRow(record, "")),
-      action: { label: t("activity.clear", "Clear these marks"), run: () => clearUnread() },
-    });
+  if (priority.rows.length) groups.push(priority);
+  groups.push(...dated.values());
+  if ([...records.values()].some((record) => record.unread) && priority.rows.length) {
+    priority.action = { label: t("activity.clear", "Clear these marks"), run: () => clearUnread() };
   }
   return groups;
 }
 
-function activityRow(record, detail) {
-  const session = state.sessions.find((entry) => entry.id === record.session);
-  return {
-    id: record.session,
-    title: session ? sessionLabel(session) : record.session,
-    detail: detail || (session ? projectNameOf(sessionProject(session)) : ""),
-    session,
-    open: () => {
-      closeActivity();
-      if (session) void selectSessionFromTree(session);
-    },
-  };
-}
-
 function openActivity() {
-  closeOverlays("activity-modal");
-  el("activity-modal").hidden = false;
+  closeCustomize();
+  closeOverlays();
+  if (!state.prefs.sidebar_visible) void savePrefs({ sidebar_visible: true });
+  el("sidebar-projects").hidden = true;
+  el("activity-panel").hidden = false;
   el("activity").setAttribute("aria-expanded", "true");
   renderActivity();
 }
 
 function closeActivity() {
-  if (el("activity-modal").hidden) return;
-  el("activity-modal").hidden = true;
+  if (el("activity-panel").hidden) return;
+  el("activity-panel").hidden = true;
+  el("sidebar-projects").hidden = false;
   el("activity").setAttribute("aria-expanded", "false");
 }
 
@@ -9073,12 +9075,28 @@ function renderActivity() {
     for (const row of group.rows) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "activity-row";
+      button.className = "activity-row" + (row.active ? " active" : "");
+      if (row.active) button.setAttribute("aria-current", "page");
       button.dataset.activityRow = String(row.id);
+      const head = document.createElement("span");
+      head.className = "activity-row-head";
       const title = document.createElement("span");
       title.className = "activity-row-title";
       title.textContent = row.title;
-      button.appendChild(title);
+      head.appendChild(title);
+      if (row.project) {
+        const project = document.createElement("span");
+        project.className = "activity-row-project";
+        project.textContent = row.project;
+        head.appendChild(project);
+      }
+      if (row.running || row.unread) {
+        const mark = document.createElement("span");
+        mark.className = row.running ? "spinner" : "activity-unread";
+        mark.setAttribute("aria-label", row.running ? t("activity.turnInFlight", "A turn is running") : t("activity.unread", "Finished while you were away"));
+        head.appendChild(mark);
+      }
+      button.appendChild(head);
       if (row.detail) {
         const detail = document.createElement("span");
         detail.className = "activity-row-detail";
@@ -9109,7 +9127,7 @@ function paintActivityDot() {
   dot.hidden = !(busy || waiting);
   el("activity").classList.toggle("asking", waiting);
   paintBadge();
-  if (!el("activity-modal").hidden) renderActivity();
+  if (!el("activity-panel").hidden) renderActivity();
 }
 
 // ---------- archived chats ----------
@@ -10418,6 +10436,7 @@ function openCreateProject() {
   createProjectState.folders = [];
   el("create-project-name").value = "";
   el("create-project-path").value = "";
+  el("create-project-source-options").open = false;
   el("create-project-folders").innerHTML = "";
   el("create-project-error").hidden = true;
   el("create-project-sources").hidden = false;
@@ -10912,6 +10931,7 @@ function init() {
   el("projects-close").onclick = () => (el("projects-modal").hidden = true);
   el("create-project-add-folder").onclick = addCreateProjectFolder;
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
+  el("create-project-close").onclick = () => el("create-project-cancel").click();
   el("create-project-save").onclick = saveCreateProject;
   el("create-project-remove").onclick = () => {
     const project = createProjectState.editing;
@@ -11015,8 +11035,7 @@ function init() {
     state.searchIndex = 0;
     searchSoon(el("search-input").value);
   });
-  el("activity").onclick = () => (el("activity-modal").hidden ? openActivity() : closeActivity());
-  el("activity-close").onclick = closeActivity;
+  el("activity").onclick = () => (el("activity-panel").hidden ? openActivity() : closeActivity());
   el("archived-close").onclick = closeArchived;
   // The find bar's own keys: Enter walks forward, Shift+Enter back, and Escape
   // puts the bar away without the conversation losing its place.
@@ -11346,7 +11365,6 @@ function init() {
     "permissions-modal": "permissions-close",
     "question": "question-dismiss",
     "rename-modal": "rename-cancel",
-    "activity-modal": "activity-close",
     "archived-modal": "archived-close",
     "file-modal": "file-close",
     "themes-modal": "themes-close",
@@ -11369,7 +11387,6 @@ function init() {
       const panel = el(id);
       if (panel.hidden || !panel.classList.contains("rail-panel") || panel.contains(target) || target.closest?.(".navigation-rail")) continue;
       if (id === "search-modal") closeSearch();
-      else if (id === "activity-modal") closeActivity();
       else if (id === "command-menu") closeCommandMenu();
       else panel.hidden = true;
       el(control).setAttribute("aria-expanded", "false");
@@ -11895,6 +11912,7 @@ async function renderProjectsTree() {
   const container = el("projects-tree");
   if (!container) return;
   closeSidebarCards();
+  if (!el("activity-panel").hidden) renderActivity();
   
   container.innerHTML = "";
   
