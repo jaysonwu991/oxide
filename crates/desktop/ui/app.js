@@ -282,6 +282,7 @@ const state = {
   projectName: "",
   sessions: [],
   expandedSidebarProjects: new Set(),
+  collapsedSidebarProjects: new Set(),
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
   followUpBehavior: savedFollowUpBehavior(),
@@ -5709,6 +5710,7 @@ function closeOverlays(except) {
   el("composer-tools").open = false;
   for (const id of OVERLAYS) {
     if (id !== except) el(id).hidden = true;
+    else el(id).classList.remove("rail-panel");
   }
   // The review's state is its card and the file it is showing, so closing the
   // panel drops it along with the markup rather than leaving it half-open.
@@ -5717,6 +5719,45 @@ function closeOverlays(except) {
   // dialog that opens takes the keyboard with it.
   if (except !== "command-palette") closePalette();
   syncSettingsDropdowns();
+  syncRailPanels();
+}
+
+const RAIL_PANELS = {
+  "rail-projects": ["projects-modal", openProjects],
+  "rail-search": ["search-modal", openSearch],
+  "rail-activity": ["activity-modal", openActivity],
+  "rail-more": ["command-menu", openCommandMenu],
+  "rail-worktrees": ["worktrees-modal", openWorktrees],
+};
+
+function syncRailPanels() {
+  for (const [control, [id]] of Object.entries(RAIL_PANELS)) {
+    const panel = el(id);
+    const open = !panel.hidden && panel.classList.contains("rail-panel");
+    el(control).setAttribute("aria-expanded", String(open));
+    if (panel.classList.contains("overlay")) panel.setAttribute("aria-modal", String(!open));
+    if (panel.hidden) panel.classList.remove("rail-panel");
+  }
+}
+
+function toggleRailPanel(control) {
+  const [id, open] = RAIL_PANELS[control];
+  const panel = el(id);
+  if (!panel.hidden && panel.classList.contains("rail-panel")) {
+    closeOverlays();
+    el(control).focus();
+    return;
+  }
+  closeSettings();
+  closeCustomize();
+  open();
+  // A missing project opens the project picker instead of the worktree list.
+  if (panel.hidden) return;
+  panel.classList.add("rail-panel");
+  syncRailPanels();
+  if (!panel.contains(document.activeElement)) {
+    panel.querySelector("input, button, [tabindex='0']")?.focus();
+  }
 }
 
 const SETTINGS_DROPDOWNS = { "models-modal": "model", "reasoning-modal": "reasoning" };
@@ -10778,11 +10819,20 @@ function init() {
   el("sidebar-toggle").onclick = toggleSidebar;
   el("window-commands").onclick = openCommandMenu;
   el("rail-home").onclick = () => { closeCustomize(); void newChatFromSidebar(); };
-  el("rail-projects").onclick = () => { closeCustomize(); openProjects(); };
-  el("rail-search").onclick = openSearch;
-  el("rail-activity").onclick = openActivity;
-  el("rail-more").onclick = openCommandMenu;
-  el("rail-worktrees").onclick = openWorktrees;
+  for (const [control, [id]] of Object.entries(RAIL_PANELS)) {
+    el(control).setAttribute("aria-controls", id);
+    el(control).setAttribute("aria-expanded", "false");
+    el(control).onclick = () => toggleRailPanel(control);
+    if (typeof MutationObserver !== "undefined") {
+      new MutationObserver(() => {
+        const panel = el(id);
+        if (panel.hidden && panel.classList.contains("rail-panel") && panel.contains(document.activeElement)) {
+          el(control).focus();
+        }
+        syncRailPanels();
+      }).observe(el(id), { attributes: true, attributeFilter: ["hidden"] });
+    }
+  }
   for (const [id, icon] of Object.entries({
     "customize-plugins": "puzzle", "customize-skills": "book", "customize-mcps": "computer",
     "customize-chat": "back", "plugins-refresh": "refresh", "plugins-add": "plus",
@@ -11315,14 +11365,24 @@ function init() {
   document.addEventListener("mousedown", (event) => {
     const target = event.target;
     if (!target || typeof target.id !== "string") return;
+    for (const [control, [id]] of Object.entries(RAIL_PANELS)) {
+      const panel = el(id);
+      if (panel.hidden || !panel.classList.contains("rail-panel") || panel.contains(target) || target.closest?.(".navigation-rail")) continue;
+      if (id === "search-modal") closeSearch();
+      else if (id === "activity-modal") closeActivity();
+      else if (id === "command-menu") closeCommandMenu();
+      else panel.hidden = true;
+      el(control).setAttribute("aria-expanded", "false");
+    }
     for (const id of ["projects-modal", "worktrees-modal", "sessions-modal"]) {
       const box = el(id);
-      if (box.hidden || box.contains(target)) continue;
+      if (box.hidden || box.contains(target) || target.closest?.(".navigation-rail")) continue;
       box.hidden = true;
     }
     // The worktree chip says whether its listing is up, and this is the one
     // closing that does not go through the control itself.
     el("worktree").setAttribute("aria-expanded", String(!el("worktrees-modal").hidden));
+    syncRailPanels();
   });
   el("image-modal").addEventListener("keydown", (event) => {
     if (event.key !== "Tab") return;
@@ -11388,6 +11448,7 @@ function init() {
     }
     if (event.defaultPrevented) return;
     if (event.key === "Escape") {
+      const railControl = Object.entries(RAIL_PANELS).find(([, [id]]) => !el(id).hidden && el(id).classList.contains("rail-panel"))?.[0];
       el("message-preview").hidden = true;
       const modalOpen = OVERLAYS.some((id) => !el(id).hidden);
       closeSidebarCards();
@@ -11407,6 +11468,7 @@ function init() {
       // hidden, so the turn continues instead of waiting out the timeout.
       if (!el("question").hidden) answerQuestion(true);
       closeOverlays();
+      if (railControl) el(railControl).focus();
       if (!modalOpen) {
         closeReview();
       }
@@ -11870,7 +11932,23 @@ async function renderProjectsTree() {
     const icon = document.createElement("div");
     icon.className = "icon";
     icon.innerHTML = ICONS.folder;
-    projectItem.appendChild(icon);
+
+    const collapse = document.createElement("button");
+    collapse.type = "button";
+    collapse.className = "project-collapse";
+    const collapsed = state.collapsedSidebarProjects.has(project.id);
+    collapse.setAttribute("aria-expanded", String(!collapsed));
+    collapse.setAttribute("aria-label", t("ui.toggleProjectChats", "Expand or collapse chats in {value0}", { value0: project.name }));
+    collapse.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m5 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    collapse.onclick = (event) => {
+      event.stopPropagation();
+      const folded = !state.collapsedSidebarProjects.has(project.id);
+      if (folded) state.collapsedSidebarProjects.add(project.id);
+      else state.collapsedSidebarProjects.delete(project.id);
+      sessionsContainer.hidden = folded;
+      collapse.setAttribute("aria-expanded", String(!folded));
+    };
+    projectItem.append(collapse, icon);
     
     const name = document.createElement("div");
     name.className = "name";
@@ -11993,6 +12071,7 @@ async function renderProjectsTree() {
     // Threads for this project, grouped under its row.
     const sessionsContainer = document.createElement("div");
     sessionsContainer.className = "project-sessions";
+    sessionsContainer.hidden = collapsed;
 
     const expanded = state.expandedSidebarProjects.has(project.id);
     const visibleSessions = expanded
@@ -12168,10 +12247,12 @@ async function openSessionTab(session) {
 async function selectSessionFromTree(session) {
   closeCustomize();
   if (!session) return;
+  const project = sessionProject(session);
+  const projectOwner = state.projects.find((candidate) => candidate.path === project);
+  if (projectOwner && state.collapsedSidebarProjects.delete(projectOwner.id)) renderProjectsTree();
   const existing = chatTabs.find((tab) => tab.session === session.id && tab.id !== activeTabId);
   if (existing) return activateChatTab(existing.id);
 
-  const project = sessionProject(session);
   const projectSessions = listedSessions().filter((candidate) => sessionProject(candidate) === project);
   if (projectSessions.findIndex((candidate) => candidate.id === session.id) >= SIDEBAR_THREAD_LIMIT) {
     const owner = state.projects.find((candidate) => candidate.path === project);

@@ -1328,17 +1328,30 @@ check("left the composer ready to type in", elementFor("prompt").disabled === fa
 // and at the same weight as the composer's controls under it — not an emoji,
 // whose shape and size belong to whatever font the machine has.
 const firstProjectRow = elementFor("projects-tree").children[0].children[0];
+const projectDisclosure = firstProjectRow.querySelector(".project-collapse");
+const projectChats = elementFor("projects-tree").children[0].children[1];
+const beforeFoldProject = app.state.project;
+projectDisclosure.onclick(press({ stopPropagation() {} }));
+check("folded project chats without selecting another project",
+  projectChats.hidden && projectDisclosure.getAttribute("aria-expanded") === "false" && app.state.project === beforeFoldProject);
+await app.renderProjectsTree();
+const restoredDisclosure = elementFor("projects-tree").querySelector(".project-collapse");
+check("kept the project folded when sessions repaint",
+  elementFor("projects-tree").children[0].children[1].hidden && restoredDisclosure.getAttribute("aria-expanded") === "false");
+restoredDisclosure.onclick(press({ stopPropagation() {} }));
+check("expanded the same project again",
+  !elementFor("projects-tree").children[0].children[1].hidden && restoredDisclosure.getAttribute("aria-expanded") === "true");
 check(
   "drew a project's folder as the app's own glyph",
-  String(firstProjectRow.children[0].innerHTML) === app.ICONS.folder,
+  String(firstProjectRow.querySelector(".icon").innerHTML) === app.ICONS.folder,
   firstProjectRow.outline(),
 );
 // Both of the row's Codex-style controls are drawings too: project options and
 // starting a new task each have their own stable target.
 check(
   "drew a row's controls from the app's own set",
-  String(firstProjectRow.children[3].innerHTML) === app.ICONS.more &&
-    String(firstProjectRow.children[4].innerHTML) === app.ICONS.compose,
+  String(firstProjectRow.querySelector(".row-more").innerHTML) === app.ICONS.more &&
+    String(firstProjectRow.querySelector(".row-add").innerHTML) === app.ICONS.compose,
   firstProjectRow.outline(),
 );
 // The home state's mark is the app's own drawing as well, and the transcript
@@ -2790,17 +2803,14 @@ check(
   `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px`,
 );
 check(
-  "reserved request badge space and replaced it with two hover actions without moving the title",
+  "kept pull links reachable beside the hover actions",
   /min-width: 0/.test(rowRule(".session-item .name")) &&
-    /position: relative/.test(rowRule(".session-pull")) &&
     /flex: none/.test(rowRule(".session-pull")) &&
-    lastPixels(rowBodies(".row-pin"), "right") === 28 &&
-    lastPixels(rowBodies(".row-archive"), "right") === 6 &&
-    !/\.session-item\.has-pull \.row-(pin|archive)/.test(sheet) &&
-    /opacity: 0; pointer-events: none/.test(rowBodies(".session-item:hover .session-pull")) &&
-    /opacity: 0; pointer-events: none/.test(rowBodies(".session-item:focus-within .session-pull")) &&
-    /opacity: 1; pointer-events: auto/.test(rowBodies(".session-item .session-pull:focus-visible")) &&
-    /opacity: 0; pointer-events: none/.test(rowBodies(".session-item:has(.session-pull:focus-visible) .row-archive")),
+    /padding-right: 54px/.test(rowBodies(".session-item.has-pull")) &&
+    lastPixels(rowBodies(".session-item.has-pull .row-pin"), "right") === 28 &&
+    lastPixels(rowBodies(".session-item.has-pull .row-archive"), "right") === 6 &&
+    !/opacity: 0|pointer-events: none/.test(rowBodies(".session-item:hover .session-pull")) &&
+    /outline: 2px/.test(rowBodies(".session-item .session-pull:focus-visible")),
 );
 check(
   "covered sidebar titles with opaque request and hover-action backgrounds",
@@ -7195,8 +7205,8 @@ check(
 const group = elementFor("projects-tree").children[0];
 check(
   "counted it for its project",
-  group?.children[0]?.children[2]?.textContent === 2,
-  String(group?.children[0]?.children[2]?.textContent),
+  group?.children[0]?.querySelector(".count")?.textContent === 2,
+  String(group?.children[0]?.querySelector(".count")?.textContent),
 );
 check(
   "marked it as the thread on screen",
@@ -8601,6 +8611,7 @@ await app.renderProjectsTree();
 const hiddenRecent = elementFor("projects-tree")
   .querySelectorAll(".recent-session-item")
   .find((row) => row.children[0].textContent === "Hidden thread 5");
+app.state.collapsedSidebarProjects.add(hiddenProject.id);
 await hiddenRecent.onclick();
 const revealedProject = elementFor("projects-tree")
   .querySelectorAll(".project-group")
@@ -8611,6 +8622,7 @@ const revealedSession = revealedProject
 check(
   "revealed a capped chat opened from Recents",
   app.state.expandedSidebarProjects.has(hiddenProject.id) &&
+    !app.state.collapsedSidebarProjects.has(hiddenProject.id) &&
     revealedProject?.children[0].classList.contains("active") === true &&
     revealedSession?.classList.contains("active") === true,
   `${app.state.project} / ${app.state.session} / ${elementFor("projects-tree").outline()}`,
@@ -8665,6 +8677,7 @@ check(
   pullMark?.classList.contains("state-merged") === true &&
     pullMark.title === "Pull request #266 · Merged" &&
     pullMark.innerHTML === app.ICONS.pullMerged &&
+    pullMark.children.length === 0 &&
     pullRow.classList.contains("has-pull"),
   `${pullMark?.className} / ${pullMark?.title}`,
 );
@@ -9708,6 +9721,24 @@ check("the rail opens the existing settings sheet", elementFor("settings-modal")
 app.closeSettings();
 elementFor("rail-search").onclick();
 check("the rail searches saved chats", elementFor("search-modal").hidden === false);
+check("anchored search to the rail and announced it as expanded",
+  elementFor("search-modal").classList.contains("rail-panel") && elementFor("rail-search").getAttribute("aria-expanded") === "true");
+elementFor("rail-search").onclick();
+check("a second press dismissed the rail search",
+  elementFor("search-modal").hidden && elementFor("rail-search").getAttribute("aria-expanded") === "false");
+elementFor("rail-search").onclick();
+document.fire("keydown", { key: "Escape" });
+check("Escape dismissed search and returned keyboard focus to the rail",
+  elementFor("search-modal").hidden && document.activeElement === elementFor("rail-search"));
+elementFor("rail-projects").onclick();
+check("project navigation opens beside the rail",
+  !elementFor("projects-modal").hidden && elementFor("projects-modal").classList.contains("rail-panel"));
+elementFor("rail-search").onclick();
+check("switching rail destinations dismisses the previous panel",
+  elementFor("projects-modal").hidden && !elementFor("search-modal").hidden && elementFor("rail-projects").getAttribute("aria-expanded") === "false");
+document.fire("mousedown", { target: elementFor("prompt") });
+check("clicking the composer dismisses the rail panel",
+  elementFor("search-modal").hidden && elementFor("rail-search").getAttribute("aria-expanded") === "false");
 app.closeSearch();
 const savedNavigation = { stack: app.state.navStack, index: app.state.navIndex };
 app.state.navStack = [];
