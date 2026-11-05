@@ -4885,7 +4885,7 @@ where
     let mut total_bytes = 0usize;
     let mut total_lines = 0usize;
     let mut last_byte = None;
-    let mut progress_batch = VecDeque::new();
+    let mut progress_batch: VecDeque<u8> = VecDeque::new();
     let mut last_progress = std::time::Instant::now();
     let mut buffer = [0u8; 8_192];
 
