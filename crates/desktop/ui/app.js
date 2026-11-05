@@ -206,7 +206,7 @@ const ICONS = {
       '<path d="M3.8 6.2h3.4M3.8 8.5h2.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
     16,
   ),
-  gear: glyph('<circle cx="12" cy="12" r="3" ' + STROKE_24 + '/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" ' + STROKE_24 + '/>'),
+  gear: glyph('<circle cx="12" cy="12" r="3.8" ' + STROKE_24 + '/><path d="M9.93 4.79 L10.26 2.15 L13.74 2.15 L14.07 4.79 L15.64 5.44 L17.74 3.81 L20.19 6.26 L18.56 8.36 L19.21 9.93 L21.85 10.26 L21.85 13.74 L19.21 14.07 L18.56 15.64 L20.19 17.74 L17.74 20.19 L15.64 18.56 L14.07 19.21 L13.74 21.85 L10.26 21.85 L9.93 19.21 L8.36 18.56 L6.26 20.19 L3.81 17.74 L5.44 15.64 L4.79 14.07 L2.15 13.74 L2.15 10.26 L4.79 9.93 L5.44 8.36 L3.81 6.26 L6.26 3.81 L8.36 5.44Z" ' + STROKE_24 + '/>'),
   // A pull request a thread reported. The row colors it with the state the
   // forge last answered with, so the mark is the state as well as the link.
   pull: glyph(
@@ -601,6 +601,9 @@ function applyLanguage(info) {
   // The project chip's own words are state, not markup: a folder that is open
   // is named by its folder, and only the empty chip is a label to translate.
   updateProjectChip();
+  paintUpdateNotice(updateNotice.key, updateNotice.fallback);
+  if (!el("projects-page").hidden) renderProjectDirectory();
+  if (!el("search-modal").hidden) renderSearchResults();
   renderLanguageRows(info);
   if (statusKey) state.statusText = t(statusKey, statusKey === "composer.ready" ? "Ready" : "Working…");
   repaintLanguage();
@@ -1978,6 +1981,98 @@ function openProjects() {
   closeOverlays("projects-modal");
   renderProjects();
   el("projects-modal").hidden = false;
+}
+
+let projectsOldestFirst = false;
+
+function closeProjectDirectory() {
+  if (el("projects-page").hidden) return;
+  closeSidebarCards();
+  el("projects-page").hidden = true;
+  document.body.classList.remove("projects-open");
+  el("rail-projects").removeAttribute("aria-current");
+  el("rail-home").setAttribute("aria-current", "page");
+}
+
+function openProjectDirectory() {
+  closeCustomize();
+  closeOverlays();
+  closeSidebarCards();
+  document.body.classList.add("projects-open");
+  el("projects-page").hidden = false;
+  el("rail-home").removeAttribute("aria-current");
+  el("rail-projects").setAttribute("aria-current", "page");
+  el("projects-filter").value = "";
+  renderProjectDirectory();
+  el("projects-filter").focus();
+}
+
+function renderProjectDirectory() {
+  const box = el("projects-directory");
+  box.replaceChildren();
+  const query = String(el("projects-filter").value || "").trim().toLocaleLowerCase();
+  const updated = (project) => Math.max(project.last_session_at || 0, project.last_opened_at || 0);
+  const projects = (state.projects || []).filter((project) =>
+    `${project.name} ${project.path}`.toLocaleLowerCase().includes(query),
+  ).sort((a, b) => (projectsOldestFirst ? updated(a) - updated(b) : updated(b) - updated(a)) || a.name.localeCompare(b.name));
+  el("projects-sort").textContent = projectsOldestFirst ? t("projects.updatedAsc", "Updated ↑") : t("projects.updatedDesc", "Updated ↓");
+  el("projects-sort").setAttribute("aria-pressed", String(projectsOldestFirst));
+  if (!projects.length) {
+    const empty = document.createElement("div");
+    empty.className = "dialog-empty";
+    empty.textContent = query ? t("projects.noMatches", "No projects match your search.") : t("desktop.empty.projects", "No projects yet. Add a folder to run in.");
+    box.appendChild(empty);
+    return;
+  }
+  for (const project of projects) {
+    const row = document.createElement("div");
+    row.className = "project-directory-row";
+    row.dataset.project = project.id;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "project-directory-open";
+    open.title = project.path;
+    const icon = document.createElement("span");
+    icon.innerHTML = ICONS.folder;
+    const name = document.createElement("span");
+    name.textContent = project.name;
+    open.append(icon, name);
+    open.onclick = () => { closeProjectDirectory(); return pickProject(project); };
+    const age = document.createElement("span");
+    age.className = "project-directory-updated";
+    age.textContent = sessionAge(updated(project)) || t("projects.noActivity", "No activity");
+    const actions = document.createElement("div");
+    actions.className = "project-directory-actions";
+    const action = (drawing, label) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "icon";
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      button.innerHTML = drawing;
+      actions.appendChild(button);
+      return button;
+    };
+    const more = action(ICONS.more, t("ui.projectOptionsFor", "Project options for {value0}", { value0: project.name }));
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.onclick = () => more.getAttribute("aria-expanded") === "true" ? closeSidebarCards() : showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), more, more);
+    const pin = action(ICONS.pin, project.pinned ? t("ui.unpinProject", "Unpin project") : t("ui.pinProject", "Pin project"));
+    pin.setAttribute("aria-pressed", String(Boolean(project.pinned)));
+    pin.onclick = async () => {
+      pin.disabled = true;
+      try {
+        state.projects = await invoke("set_project_pinned", { id: project.id, pinned: !project.pinned });
+        renderProjectsTree();
+      } catch (error) {
+        showToast(String(error), "error");
+      } finally { pin.disabled = false; }
+    };
+    const compose = action(ICONS.compose, t("ui.newTaskIn", "New task in {value0}", { value0: project.name }));
+    compose.onclick = () => { closeProjectDirectory(); return newTaskIn(project); };
+    row.append(open, age, actions);
+    box.appendChild(row);
+  }
 }
 
 /// Everything that needs a folder asks for one the same way: the picker of the
@@ -5722,8 +5817,6 @@ function closeOverlays(except) {
 }
 
 const RAIL_PANELS = {
-  "rail-projects": ["projects-modal", openProjects],
-  "rail-search": ["search-modal", openSearch],
   "rail-more": ["command-menu", openCommandMenu],
   "rail-worktrees": ["worktrees-modal", openWorktrees],
 };
@@ -6368,6 +6461,26 @@ let updateProbe = 0;
 /// put the dialog back to the state a fresh window is in.
 const installedUpdate = { answer: null };
 
+const updateNotice = { key: null, fallback: "" };
+
+function paintUpdateNotice(key, fallback) {
+  Object.assign(updateNotice, { key, fallback });
+  const button = el("rail-update");
+  button.hidden = !key;
+  if (key) {
+    button.title = t(key, fallback);
+    button.setAttribute("aria-label", button.title);
+  }
+}
+
+function openUpdateNotice() {
+  if (!installedUpdate.answer || updateInstall) return openUpdate();
+  closeOverlays("update-modal");
+  el("update-modal").hidden = false;
+  updateProbe += 1;
+  paintInstalled(installedUpdate.answer);
+}
+
 /// Opens the dialog on the app's own release train (`desktop-v*`) and offers to
 /// install it. The resolution is `oxide_core::updates`, shared with the
 /// terminal, so the release this window offers is a release of this app and not
@@ -6474,6 +6587,7 @@ function paintUpdate(check) {
     return;
   }
   const available = check.updateAvailable === true;
+  paintUpdateNotice(available ? "ui.updateAvailable" : null, "Update available");
   updateHead(
     available
       ? t("dialog.update.available", "Update Available (v{version})", {
@@ -6566,6 +6680,7 @@ function paintChangelog(check) {
 /// was replaced by an indeterminate one reading "0.0 MB downloaded" the moment
 /// the transfer ended is a number going backwards in front of the reader.
 function paintDownloading(install) {
+  paintUpdateNotice("ui.downloadingUpdate", "Downloading update");
   const version = install.version || (updateCheck && updateCheck.latest) || "";
   const named = version ? `Oxide ${version}` : t("ui.theRelease", "The release");
   const stage = install.stage || "downloading";
@@ -6753,6 +6868,7 @@ async function downloadUpdate() {
 /// offers the release again.
 function cancelUpdate() {
   const token = updateInstall && updateInstall.token;
+  paintUpdateNotice("ui.updateAvailable", "Update available");
   updateInstall = null;
   updateProbe += 1;
   el("update-modal").hidden = true;
@@ -6768,6 +6884,7 @@ function cancelUpdate() {
 /// go to the composer's own status line, which is where an install nobody is
 /// watching reports itself.
 function reportUpdateFailure(text) {
+  paintUpdateNotice("ui.updateAvailable", "Update available");
   if (el("update-modal").hidden) {
     showToast(t("update.installError", "Could not install the update: {value0}", { value0: text }), "error");
     return;
@@ -6782,6 +6899,10 @@ function reportUpdateFailure(text) {
 /// is the restart that runs the release rather than claiming this window is
 /// already the new version.
 function paintInstalled(answer) {
+  paintUpdateNotice(
+    answer.pending ? "ui.installingUpdate" : "dialog.update.restart",
+    answer.pending ? "Installing update" : "Restart and install update",
+  );
   // A Windows installer is a program this app starts and cannot wait on: it
   // asks for elevation and for Oxide to be closed, and the user may cancel it.
   // What is known here is that it is running, so that is what the dialog says
@@ -6815,6 +6936,7 @@ function paintInstalled(answer) {
 /// and opening it from there is the install the release page's would be. No
 /// restart is offered, because nothing was put in place to restart into.
 function paintDownloaded(answer) {
+  paintUpdateNotice("ui.updateAvailable", "Update available");
   const version = (answer && answer.version) || "";
   updateHead(
     t("dialog.update.downloaded", "Oxide {version} is downloaded", { version }),
@@ -6860,6 +6982,7 @@ function paintUpdateFailure(title, text) {
 /// reader is told. It is opened on what the install is doing; each step after
 /// this one arrives as a stage of its own.
 function handleUpdateAvailable() {
+  paintUpdateNotice("ui.updateAvailable", "Update available");
   return openUpdate();
 }
 
@@ -6873,6 +6996,7 @@ function handleUpdateAvailable() {
 /// launch's own) is adopted under the name the engine gave it, which is what its
 /// Cancel then addresses.
 function handleUpdateProgress(payload) {
+  paintUpdateNotice("ui.downloadingUpdate", "Downloading update");
   const token = (payload && payload.token) || "";
   const reported = {
     stage: (payload && payload.stage) || "",
@@ -6896,7 +7020,7 @@ function handleUpdateProgress(payload) {
 /// An install that landed. The running app is still the build that started, so
 /// the dialog is opened on the restart that runs what is now on disk — even for
 /// a download the reader sent to the background, since this is the one thing
-/// left to do about it and the window keeps no row of its own for it.
+/// left to do about it. The rail keeps it reachable after Later.
 function handleUpdateReady(answer) {
   installedUpdate.answer = answer;
   updateInstall = null;
@@ -6913,6 +7037,7 @@ function handleUpdateReady(answer) {
 /// launch's own install reports itself by. A cancel is neither: the reader
 /// asked for it, and the dialog they asked it in is already gone.
 function handleUpdateFailed(payload) {
+  paintUpdateNotice("ui.updateAvailable", "Update available");
   updateInstall = null;
   updateProbe += 1;
   if (payload && payload.cancelled === true) {
@@ -6990,6 +7115,7 @@ let pluginSource = "all";
 let pluginBusy = false;
 
 function closeCustomize() {
+  closeProjectDirectory();
   closeSettings();
   customizeView = "";
   customizeGeneration++;
@@ -8407,6 +8533,7 @@ async function navTo(index) {
 }
 
 function navBack() {
+  if (!el("projects-page").hidden) { closeProjectDirectory(); return; }
   if (!el("settings-modal").hidden) { closeSettings(); return; }
   if (customizeView) { closeCustomize(); return; }
   if (state.navIndex > 0) void navTo(state.navIndex - 1);
@@ -8719,7 +8846,7 @@ function commandActions() {
     { id: "find", label: t("menu.findInChat", "Find in this chat"), hint: "mod+f", run: () => openFind() },
     { id: "activity", label: t("menu.activity", "Activity…"), hint: null, run: () => openActivity() },
     { id: "archived", label: t("menu.archivedChats", "Archived chats…"), hint: null, run: () => openArchived() },
-    { id: "projects", label: t("menu.projects", "Manage projects…"), hint: null, run: () => openProjects() },
+    { id: "projects", label: t("menu.projects", "Manage projects…"), hint: null, run: () => openProjectDirectory() },
     { id: "threads", label: t("menu.threads", "All threads…"), hint: null, run: () => openSessions() },
     { id: "model", label: t("menu.model", "Choose a model…"), hint: null, run: () => openModels() },
     { id: "reasoning", label: t("menu.reasoning", "Reasoning effort…"), hint: null, run: () => openReasoning() },
@@ -8842,6 +8969,10 @@ state.searchSeq = 0;
 state.searchError = "";
 state.searchPhrase = "";
 state.searchTimer = 0;
+state.searchCategory = "all";
+state.searchPending = false;
+let searchChoices = [];
+let searchReturnFocus = null;
 state.archived = [];
 state.findHits = [];
 state.findIndex = -1;
@@ -8849,6 +8980,9 @@ state.findIndex = -1;
 // ---------- searching chats ----------
 
 function openSearch() {
+  searchReturnFocus = document.activeElement;
+  state.searchCategory = "all";
+  state.searchPending = false;
   clearTimeout(state.searchTimer);
   closeOverlays("search-modal");
   el("search-modal").hidden = false;
@@ -8869,6 +9003,7 @@ function closeSearch() {
   // A search still on its way is dropped: its answer must not repaint a box that
   // has been put away (or one reopened on another phrase).
   state.searchSeq += 1;
+  searchReturnFocus?.focus();
 }
 
 /// How long the reader has to stop typing before the store is read: each scan
@@ -8885,13 +9020,19 @@ function searchSoon(query) {
   const seq = state.searchSeq;
   const phrase = String(query || "").trim();
   clearTimeout(state.searchTimer);
-  if (!phrase) {
+  if (!phrase || state.searchCategory === "actions") {
+    state.searchPending = false;
+    state.searchPhrase = "";
     state.searchRows = [];
     state.searchIndex = 0;
     state.searchError = "";
     renderSearchResults();
     return;
   }
+  state.searchRows = [];
+  state.searchError = "";
+  state.searchPending = true;
+  renderSearchResults();
   state.searchTimer = setTimeout(() => void requestSearch(phrase, seq), SEARCH_SETTLE_MS);
 }
 
@@ -8908,6 +9049,7 @@ async function requestSearch(phrase, seq) {
     });
   }
   if (seq !== state.searchSeq) return;
+  state.searchPending = false;
   state.searchError = searchError;
   state.searchPhrase = phrase;
   state.searchRows = answer;
@@ -8915,27 +9057,102 @@ async function requestSearch(phrase, seq) {
   renderSearchResults();
 }
 
+function addSearchChoice(row, run) {
+  const index = searchChoices.length;
+  row.id = `search-choice-${index}`;
+  row.setAttribute("role", "option");
+  row.onclick = run;
+  searchChoices.push({ row, run });
+}
+
+function paintSearchSelection() {
+  state.searchIndex = Math.max(0, Math.min(state.searchIndex, searchChoices.length - 1));
+  searchChoices.forEach(({ row }, index) => {
+    row.classList.toggle("active", index === state.searchIndex);
+    row.setAttribute("aria-selected", String(index === state.searchIndex));
+  });
+  const selected = searchChoices[state.searchIndex]?.row;
+  if (selected) el("search-input").setAttribute("aria-activedescendant", selected.id);
+  else el("search-input").removeAttribute("aria-activedescendant");
+}
+
+function setSearchCategory(category) {
+  state.searchCategory = category;
+  state.searchIndex = 0;
+  searchSoon(el("search-input").value);
+}
+
 function renderSearchResults() {
   const list = el("search-results");
   if (!list) return;
   list.replaceChildren();
+  searchChoices = [];
+  const actions = el("search-actions");
+  actions.replaceChildren();
+  const query = String(el("search-input").value || "").trim().toLocaleLowerCase();
+  const quickActions = [
+    { label: t("menu.newChat", "New chat"), icon: ICONS.compose, shortcut: "new-tab", run: () => newChatTab() },
+    { label: t("menu.openFolder", "Open folder"), icon: ICONS.folder, shortcut: "open-folder", run: () => openProjects() },
+  ];
+  if (state.searchCategory !== "chats") for (const action of quickActions) {
+    if (query && !action.label.toLocaleLowerCase().includes(query)) continue;
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "command-row search-action";
+    const icon = document.createElement("span");
+    icon.className = "search-action-icon";
+    icon.innerHTML = action.icon;
+    const label = document.createElement("span");
+    label.className = "command-name";
+    label.textContent = action.label;
+    const hint = document.createElement("span");
+    hint.className = "command-hint";
+    hint.textContent = formatChord(shortcutChords(SHORTCUTS.find((entry) => entry.id === action.shortcut))[0] || "");
+    row.append(icon, label, hint);
+    addSearchChoice(row, () => { closeSearch(); return action.run(); });
+    actions.appendChild(row);
+  }
+  el("search-actions-heading").hidden = !searchChoices.length;
+  actions.hidden = !searchChoices.length;
+  const showChats = state.searchCategory !== "actions";
+  el("search-chats-heading").hidden = !showChats;
+  list.hidden = !showChats;
+  for (const category of ["all", "actions", "chats"]) {
+    const button = el(`search-category-${category}`);
+    button.classList.toggle("active", category === state.searchCategory);
+    button.setAttribute("aria-pressed", String(category === state.searchCategory));
+  }
+  if (!showChats) {
+    if (!searchChoices.length) {
+      const empty = document.createElement("div");
+      empty.className = "command-empty";
+      empty.textContent = t("search.noActions", "No matching actions.");
+      actions.appendChild(empty);
+      actions.hidden = false;
+    }
+    paintSearchSelection();
+    return;
+  }
+  const hits = query ? state.searchRows : [...listedSessions()].sort((a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0)).slice(0, 8);
   if (state.searchError) {
     const failed = document.createElement("div");
     failed.className = "command-empty";
     failed.textContent = state.searchError;
     list.appendChild(failed);
+    paintSearchSelection();
     return;
   }
-  if (!state.searchRows.length) {
+  if (!hits.length) {
     const empty = document.createElement("div");
     empty.className = "command-empty";
-    empty.textContent = el("search-input")?.value?.trim()
+    empty.textContent = state.searchPending ? t("search.searching", "Searching chats…") : el("search-input")?.value?.trim()
       ? t("search.empty", "No chat carries that")
       : t("search.hint", "Type a phrase from a chat, or a name");
     list.appendChild(empty);
+    paintSearchSelection();
     return;
   }
-  state.searchRows.forEach((hit, index) => {
+  hits.forEach((hit, index) => {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "command-row search-row" + (index === state.searchIndex ? " active" : "");
@@ -8970,9 +9187,14 @@ function renderSearchResults() {
       count.textContent = t("search.matchCount", "{count} matches", { count: hit.matches });
       row.appendChild(count);
     }
-    row.onclick = () => void openSearchRow(hit);
+    const project = document.createElement("span");
+    project.className = "search-project";
+    project.textContent = projectNameOf(sessionProject(hit));
+    row.appendChild(project);
+    addSearchChoice(row, () => openSearchRow(hit));
     list.appendChild(row);
   });
+  paintSearchSelection();
 }
 
 async function openSearchRow(hit) {
@@ -10855,18 +11077,22 @@ function init() {
   for (const [id, icon] of Object.entries({
     "customize-plugins": "puzzle", "customize-skills": "book", "customize-mcps": "computer",
     "customize-chat": "back", "plugins-refresh": "refresh", "plugins-add": "plus",
-    "skills-refresh": "refresh", "settings-close": "back", "update": "refresh",
+    "skills-refresh": "refresh", "settings-close": "back",
   })) {
     const control = el(id);
     const label = document.createElement("span");
-    if (id === "update") {
-      label.dataset.i18n = "sidebar.checkUpdates";
-      control.removeAttribute("data-i18n");
-    }
     label.textContent = id === "settings-close" ? "Back to chat" : control.textContent;
     control.innerHTML = ICONS[icon];
     if (id !== "plugins-refresh") control.appendChild(label);
   }
+  el("rail-projects").onclick = () => {
+    if (el("projects-page").hidden) openProjectDirectory();
+    else { closeProjectDirectory(); el("rail-projects").focus(); }
+  };
+  el("projects-filter").oninput = renderProjectDirectory;
+  el("projects-sort").onclick = () => { projectsOldestFirst = !projectsOldestFirst; renderProjectDirectory(); };
+  el("projects-page-create").onclick = openCreateProject;
+  el("rail-update").onclick = openUpdateNotice;
   el("rail-customize").onclick = () => openCustomize();
   for (const view of ["plugins", "skills", "mcps"]) el(`customize-${view}`).onclick = () => openCustomize(view);
   el("customize-chat").onclick = () => { closeCustomize(); el("rail-home").focus(); };
@@ -11031,6 +11257,20 @@ function init() {
     if (event.target === el("search-modal")) closeSearch();
   };
   el("search-chats").onclick = openSearch;
+  for (const category of ["all", "actions", "chats"]) {
+    el(`search-category-${category}`).onclick = () => setSearchCategory(category);
+  }
+  el("search-input").addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      state.searchIndex = (state.searchIndex + (event.key === "ArrowDown" ? 1 : -1) + searchChoices.length) % (searchChoices.length || 1);
+      paintSearchSelection();
+      searchChoices[state.searchIndex]?.row.scrollIntoView?.({ block: "nearest" });
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      void searchChoices[state.searchIndex]?.run();
+    }
+  });
   el("search-input").addEventListener("input", () => {
     state.searchIndex = 0;
     searchSoon(el("search-input").value);
@@ -11176,7 +11416,6 @@ function init() {
     event.preventDefault();
     createWorktree();
   });
-  el("update").onclick = () => { closeSettings(); return openUpdate(); };
   // Every step's own way out, which is the step it is on: Dismiss and Later put
   // the dialog away without touching the install, Download in background does
   // the same for a download that is still running, and Cancel is the one that
@@ -11487,6 +11726,7 @@ function init() {
       closeOverlays();
       if (railControl) el(railControl).focus();
       if (!modalOpen) {
+        if (!el("projects-page").hidden) { closeProjectDirectory(); el("rail-projects").focus(); }
         closeReview();
       }
       return;
@@ -11909,6 +12149,7 @@ async function archiveSession(session) {
 }
 
 async function renderProjectsTree() {
+  if (!el("projects-page").hidden) renderProjectDirectory();
   const container = el("projects-tree");
   if (!container) return;
   closeSidebarCards();

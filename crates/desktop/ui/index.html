@@ -44,8 +44,9 @@
         </div>
         </div>
       </header>
-<nav class="navigation-rail" aria-label="Navigation" data-i18n-aria="shell.navigation"><button id="rail-home" aria-current="page" class="rail-button" type="button" title="New Chat" aria-label="New Chat" data-i18n-title="sidebar.newChat" data-i18n-aria="sidebar.newChat"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v11h5v-7h4v7h5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-projects" class="rail-button" type="button" title="Projects" aria-label="Projects" data-i18n-title="sidebar.projects" data-i18n-aria="sidebar.projects"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h7l2 3h9v11H3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-search" class="rail-button" type="button" title="Search chats" aria-label="Search chats" data-i18n-title="search.title" data-i18n-aria="search.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v5l-3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-more" class="rail-button" type="button" title="Command menu" aria-label="Command menu" data-i18n-title="menu.title" data-i18n-aria="menu.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="rail-divider" role="separator"></div><button id="rail-worktrees" class="rail-button" type="button" title="Worktrees" aria-label="Worktrees" data-i18n-title="dialog.worktrees.title" data-i18n-aria="dialog.worktrees.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 3v12M17 9v12M7 7c0 5 10 0 10 5M5 3h4M5 17h4M15 21h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-customize" class="rail-button" type="button" title="Customize" aria-label="Customize"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M7 12a5 5 0 0 0 10 0M8 8h.01M16 8h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+<nav class="navigation-rail" aria-label="Navigation" data-i18n-aria="shell.navigation"><button id="rail-home" aria-current="page" class="rail-button" type="button" title="New Chat" aria-label="New Chat" data-i18n-title="sidebar.newChat" data-i18n-aria="sidebar.newChat"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v11h5v-7h4v7h5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-projects" class="rail-button" type="button" title="Projects" aria-label="Projects" data-i18n-title="sidebar.projects" data-i18n-aria="sidebar.projects"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h7l2 3h9v11H3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-more" class="rail-button" type="button" title="Command menu" aria-label="Command menu" data-i18n-title="menu.title" data-i18n-aria="menu.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="rail-divider" role="separator"></div><button id="rail-worktrees" class="rail-button" type="button" title="Worktrees" aria-label="Worktrees" data-i18n-title="dialog.worktrees.title" data-i18n-aria="dialog.worktrees.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 3v12M17 9v12M7 7c0 5 10 0 10 5M5 3h4M5 17h4M15 21h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-customize" class="rail-button" type="button" title="Customize" aria-label="Customize"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M7 12a5 5 0 0 0 10 0M8 8h.01M16 8h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       <div class="rail-utilities">
+        <button id="rail-update" class="rail-button" type="button" hidden title="Update available" aria-label="Update available" aria-haspopup="dialog" aria-controls="update-modal"><span class="rail-update-icon"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 4v10m-4-4 4 4 4-4M5 14v5h14v-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
         <button
           id="settings"
           class="rail-button"
@@ -55,7 +56,7 @@
           aria-controls="settings-modal"
           data-i18n-title="settings.title"
           data-i18n-aria="settings.title"
-        ><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3l2 3 4 1 1 4 2 2-3 3-1 4-4 1-2-2-4-1-1-4-3-2 3-3 1-4ZM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        ><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="3.8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.93 4.79 L10.26 2.15 L13.74 2.15 L14.07 4.79 L15.64 5.44 L17.74 3.81 L20.19 6.26 L18.56 8.36 L19.21 9.93 L21.85 10.26 L21.85 13.74 L19.21 14.07 L18.56 15.64 L20.19 17.74 L17.74 20.19 L15.64 18.56 L14.07 19.21 L13.74 21.85 L10.26 21.85 L9.93 19.21 L8.36 18.56 L6.26 20.19 L3.81 17.74 L5.44 15.64 L4.79 14.07 L2.15 13.74 L2.15 10.26 L4.79 9.93 L5.44 8.36 L3.81 6.26 L6.26 3.81 L8.36 5.44Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
 </nav>
     <aside class="sidebar">
@@ -831,6 +832,18 @@
       </div>
     </div>
 
+    <section id="projects-page" class="projects-destination" aria-labelledby="projects-page-title" hidden>
+      <header class="projects-page-head">
+        <h1 id="projects-page-title" tabindex="-1" data-i18n="sidebar.projects">Projects</h1>
+        <div class="projects-page-tools">
+          <label class="projects-filter"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m16 16 5 5" stroke="currentColor" stroke-width="1.5"/></svg><input id="projects-filter" type="search" placeholder="Search projects" aria-label="Search projects" data-i18n-placeholder="projects.search" data-i18n-aria="projects.search" /></label>
+          <button id="projects-page-create" class="projects-create" type="button"><span aria-hidden="true">+</span><span data-i18n="common.create">Create</span></button>
+        </div>
+      </header>
+      <div class="projects-columns"><span data-i18n="dialog.rename.name">Name</span><button id="projects-sort" type="button" aria-label="Sort by updated time" data-i18n-aria="projects.sort" aria-pressed="false">Updated ↓</button><span></span></div>
+      <div id="projects-directory" class="projects-directory"></div>
+    </section>
+
     <div
       id="settings-modal"
       class="settings-destination"
@@ -894,53 +907,56 @@
               data-settings-page="general"
             >
               <header class="settings-page-heading"><h1 tabindex="-1" data-i18n="settings.general">General</h1><p>Make Oxide work the way you do.</p></header>
-              <div class="settings-field">
-                <div class="settings-label" data-i18n="settings.sendKey">Sending a message</div>
-                <div class="settings-hint" data-i18n="settings.sendKeyHint">Which key sends the message you have typed.</div>
-                <div class="settings-segments" role="radiogroup" aria-labelledby="settings-send-key-label">
-                  <span id="settings-send-key-label" hidden data-i18n="settings.sendKey">Sending a message</span>
-                  <button
-                    id="settings-send-enter"
-                    class="settings-segment"
-                    role="radio"
-                    aria-checked="true"
-                    data-send-key="enter"
-                    data-i18n="settings.enterSends"
-                  >Enter sends</button>
-                  <button
-                    id="settings-send-mod-enter"
-                    class="settings-segment"
-                    role="radio"
-                    aria-checked="false"
-                    data-send-key="mod-enter"
-                    data-i18n="settings.modEnterSends"
-                  >⌘Enter sends</button>
+              <div class="settings-group">
+                <div class="settings-field">
+                  <div class="settings-copy">
+                    <div class="settings-label" data-i18n="settings.sendKey">Sending a message</div>
+                    <div class="settings-hint" data-i18n="settings.sendKeyHint">Which key sends the message you have typed.</div>
+                  </div>
+                  <div class="settings-segments" role="radiogroup" aria-labelledby="settings-send-key-label">
+                    <span id="settings-send-key-label" hidden data-i18n="settings.sendKey">Sending a message</span>
+                    <button
+                      id="settings-send-enter"
+                      class="settings-segment"
+                      role="radio"
+                      aria-checked="true"
+                      data-send-key="enter"
+                      data-i18n="settings.enterSends"
+                    >Enter sends</button>
+                    <button
+                      id="settings-send-mod-enter"
+                      class="settings-segment"
+                      role="radio"
+                      aria-checked="false"
+                      data-send-key="mod-enter"
+                      data-i18n="settings.modEnterSends"
+                    >⌘Enter sends</button>
+                  </div>
                 </div>
-              </div>
-              <div class="settings-field">
-                <div class="settings-label" data-i18n="settings.followUp">A message sent while a turn runs</div>
-                <div class="settings-hint" data-i18n="settings.followUpHint">What the next message does while Oxide is still working.</div>
-                <div class="settings-segments" role="radiogroup" aria-label="Follow-up behavior" data-i18n-aria="settings.followUp">
-                  <button
-                    id="settings-follow-queue"
-                    class="settings-segment"
-                    role="radio"
-                    aria-checked="true"
-                    data-follow-up="queue"
-                    data-i18n="settings.followQueue"
-                  >Wait for the next run</button>
-                  <button
-                    id="settings-follow-steer"
-                    class="settings-segment"
-                    role="radio"
-                    aria-checked="false"
-                    data-follow-up="steer"
-                    data-i18n="settings.followSteer"
-                  >Steer the running turn</button>
+                <div class="settings-field">
+                  <div class="settings-copy">
+                    <div class="settings-label" data-i18n="settings.followUp">A message sent while a turn runs</div>
+                    <div class="settings-hint" data-i18n="settings.followUpHint">What the next message does while Oxide is still working.</div>
+                  </div>
+                  <div class="settings-segments" role="radiogroup" aria-label="Follow-up behavior" data-i18n-aria="settings.followUp">
+                    <button
+                      id="settings-follow-queue"
+                      class="settings-segment"
+                      role="radio"
+                      aria-checked="true"
+                      data-follow-up="queue"
+                      data-i18n="settings.followQueue"
+                    >Wait for the next run</button>
+                    <button
+                      id="settings-follow-steer"
+                      class="settings-segment"
+                      role="radio"
+                      aria-checked="false"
+                      data-follow-up="steer"
+                      data-i18n="settings.followSteer"
+                    >Steer the running turn</button>
+                  </div>
                 </div>
-              </div>
-              <div class="settings-field">
-                <button id="update" class="ghost" type="button" title="Check for updates" aria-label="Check for updates" aria-haspopup="dialog" aria-controls="update-modal" data-i18n="sidebar.checkUpdates" data-i18n-title="sidebar.checkUpdates" data-i18n-aria="sidebar.checkUpdates">Check for updates</button>
               </div>
             </section>
             <section
@@ -952,40 +968,48 @@
               hidden
             >
               <header class="settings-page-heading"><h1 tabindex="-1" data-i18n="settings.appearance">Appearance</h1><p>Choose how your workspace looks and feels.</p></header>
-              <div class="settings-field">
-                <div id="settings-theme-label" class="settings-label" data-i18n="sidebar.theme">Theme</div>
-                <div class="settings-hint">Choose a palette. Changes apply immediately.</div>
-                <div id="settings-theme-list" class="settings-theme-list" role="group" aria-labelledby="settings-theme-label"></div>
-              </div>
-              <div class="settings-field">
-                <label for="settings-language" class="settings-label" data-i18n="sidebar.language">Language</label>
-                <div class="settings-hint">Used across Desktop, the terminal, and the editor extension.</div>
-                <select id="settings-language" aria-label="Language" data-i18n-aria="sidebar.language"></select>
-              </div>
-              <div class="settings-field">
-                <div class="settings-label" data-i18n="settings.fontSize">Text size</div>
-                <div class="settings-hint" data-i18n="settings.fontSizeHint">Scales the whole window. ⌘+ and ⌘- do the same from anywhere.</div>
-                <div class="settings-segments">
-                  <button id="settings-font-smaller" class="settings-segment" data-font-step="-1" data-i18n="settings.smaller">Smaller</button>
-                  <button id="settings-font-reset" class="settings-segment" data-font-step="0" data-i18n="settings.actualSize">Actual size</button>
-                  <button id="settings-font-larger" class="settings-segment" data-font-step="1" data-i18n="settings.larger">Larger</button>
-                  <span id="settings-font-value" class="settings-value">100%</span>
+              <div class="settings-group">
+                <div class="settings-field settings-field-wide">
+                  <div class="settings-copy">
+                    <div id="settings-theme-label" class="settings-label" data-i18n="sidebar.theme">Theme</div>
+                    <div class="settings-hint">Choose a palette. Changes apply immediately.</div>
+                  </div>
+                  <div id="settings-theme-list" class="settings-theme-list" role="group" aria-labelledby="settings-theme-label"></div>
                 </div>
-              </div>
-              <div class="settings-field">
-                <div class="settings-label" data-i18n="settings.predictions">Composer</div>
-                <label class="settings-switch">
-                  <input id="settings-predictions" type="checkbox" />
-                  <span data-i18n="settings.predictionsLabel">Suggest the next message</span>
-                </label>
-                <div class="settings-hint" data-i18n="settings.predictionsHint">After a turn, asks the model for the message you are likely to send and offers it as a draft. Tab inserts it. This is one extra model call after every turn.</div>
-              </div>
-              <div class="settings-field">
-                <div class="settings-label" data-i18n="settings.sidebar">Sidebar</div>
-                <label class="settings-switch">
-                  <input id="settings-sidebar" type="checkbox" checked />
-                  <span data-i18n="settings.showSidebar">Show the sidebar</span>
-                </label>
+                <div class="settings-field">
+                  <div class="settings-copy">
+                    <label for="settings-language" class="settings-label" data-i18n="sidebar.language">Language</label>
+                    <div class="settings-hint">Used across Desktop, the terminal, and the editor extension.</div>
+                  </div>
+                  <select id="settings-language" aria-label="Language" data-i18n-aria="sidebar.language"></select>
+                </div>
+                <div class="settings-field">
+                  <div class="settings-copy">
+                    <div class="settings-label" data-i18n="settings.fontSize">Text size</div>
+                    <div class="settings-hint" data-i18n="settings.fontSizeHint">Scales the whole window. ⌘+ and ⌘- do the same from anywhere.</div>
+                  </div>
+                  <div class="settings-segments">
+                    <button id="settings-font-smaller" class="settings-segment" data-font-step="-1" data-i18n="settings.smaller">Smaller</button>
+                    <button id="settings-font-reset" class="settings-segment" data-font-step="0" data-i18n="settings.actualSize">Actual size</button>
+                    <button id="settings-font-larger" class="settings-segment" data-font-step="1" data-i18n="settings.larger">Larger</button>
+                    <span id="settings-font-value" class="settings-value">100%</span>
+                  </div>
+                </div>
+                <div class="settings-field">
+                  <div class="settings-label" data-i18n="settings.predictions">Composer</div>
+                  <label class="settings-switch">
+                    <input id="settings-predictions" type="checkbox" />
+                    <span data-i18n="settings.predictionsLabel">Suggest the next message</span>
+                  </label>
+                  <div class="settings-hint" data-i18n="settings.predictionsHint">After a turn, asks the model for the message you are likely to send and offers it as a draft. Tab inserts it. This is one extra model call after every turn.</div>
+                </div>
+                <div class="settings-field">
+                  <div class="settings-label" data-i18n="settings.sidebar">Sidebar</div>
+                  <label class="settings-switch">
+                    <input id="settings-sidebar" type="checkbox" checked />
+                    <span data-i18n="settings.showSidebar">Show the sidebar</span>
+                  </label>
+                </div>
               </div>
             </section>
             <section
@@ -997,31 +1021,35 @@
               hidden
             >
               <header class="settings-page-heading"><h1 tabindex="-1" data-i18n="settings.notifications">Notifications</h1><p>Decide when Oxide should get your attention.</p></header>
-              <div class="settings-field">
-                <div class="settings-label" data-i18n="settings.notifyTurns">When a turn finishes</div>
-                <div class="settings-segments" role="radiogroup" aria-label="Turn notifications" data-i18n-aria="settings.notifyTurns">
-                  <button id="settings-notify-off" class="settings-segment" role="radio" aria-checked="false" data-notify-mode="off" data-i18n="settings.notifyOff">Never</button>
-                  <button id="settings-notify-background" class="settings-segment" role="radio" aria-checked="true" data-notify-mode="background" data-i18n="settings.notifyBackground">In the background</button>
-                  <button id="settings-notify-always" class="settings-segment" role="radio" aria-checked="false" data-notify-mode="always" data-i18n="settings.notifyAlways">Always</button>
+              <div class="settings-group">
+                <div class="settings-field">
+                  <div class="settings-copy">
+                    <div class="settings-label" data-i18n="settings.notifyTurns">When a turn finishes</div>
+                    <div class="settings-hint" data-i18n="settings.notifyHint">A turn that finishes while you are elsewhere is announced by the system rather than only in the window.</div>
+                  </div>
+                  <div class="settings-segments" role="radiogroup" aria-label="Turn notifications" data-i18n-aria="settings.notifyTurns">
+                    <button id="settings-notify-off" class="settings-segment" role="radio" aria-checked="false" data-notify-mode="off" data-i18n="settings.notifyOff">Never</button>
+                    <button id="settings-notify-background" class="settings-segment" role="radio" aria-checked="true" data-notify-mode="background" data-i18n="settings.notifyBackground">In the background</button>
+                    <button id="settings-notify-always" class="settings-segment" role="radio" aria-checked="false" data-notify-mode="always" data-i18n="settings.notifyAlways">Always</button>
+                  </div>
                 </div>
-                <div class="settings-hint" data-i18n="settings.notifyHint">A turn that finishes while you are elsewhere is announced by the system rather than only in the window.</div>
-              </div>
-              <div class="settings-field">
-                <div class="settings-label" data-i18n="settings.notifyRequests">While a turn waits for you</div>
-                <label class="settings-switch">
-                  <input id="settings-notify-approvals" type="checkbox" checked />
-                  <span data-i18n="settings.notifyApprovals">Announce a tool waiting for approval</span>
-                </label>
-                <label class="settings-switch">
-                  <input id="settings-notify-questions" type="checkbox" checked />
-                  <span data-i18n="settings.notifyQuestions">Announce a question waiting for an answer</span>
-                </label>
-              </div>
-              <div class="settings-field">
-                <label class="settings-switch">
-                  <input id="settings-keep-awake" type="checkbox" />
-                  <span data-i18n="settings.keepAwake">Keep the machine awake while a turn runs</span>
-                </label>
+                <div class="settings-field">
+                  <div class="settings-label" data-i18n="settings.notifyRequests">While a turn waits for you</div>
+                  <label class="settings-switch">
+                    <input id="settings-notify-approvals" type="checkbox" checked />
+                    <span data-i18n="settings.notifyApprovals">Announce a tool waiting for approval</span>
+                  </label>
+                  <label class="settings-switch">
+                    <input id="settings-notify-questions" type="checkbox" checked />
+                    <span data-i18n="settings.notifyQuestions">Announce a question waiting for an answer</span>
+                  </label>
+                </div>
+                <div class="settings-field">
+                  <label class="settings-switch">
+                    <input id="settings-keep-awake" type="checkbox" />
+                    <span data-i18n="settings.keepAwake">Keep the machine awake while a turn runs</span>
+                  </label>
+                </div>
               </div>
             </section>
             <section
@@ -1105,7 +1133,7 @@
 
     <div
       id="search-modal"
-      class="overlay command-overlay"
+      class="overlay search-overlay"
       hidden
       role="dialog"
       aria-modal="true"
@@ -1118,14 +1146,23 @@
           type="text"
           role="combobox"
           aria-expanded="true"
-          aria-controls="search-results"
+          aria-controls="search-actions search-results"
           aria-autocomplete="list"
           autocomplete="off"
           spellcheck="false"
-          placeholder="Search chats"
-          data-i18n-placeholder="search.placeholder"
+          placeholder="Search Oxide" aria-label="Search Oxide" data-i18n-placeholder="search.oxidePlaceholder" data-i18n-aria="search.oxidePlaceholder"
         />
-        <div id="search-results" class="command-list" role="listbox" aria-label="Chats" data-i18n-aria="search.title"></div>
+        <div class="search-body">
+          <div id="search-actions-heading" class="search-group-heading" data-i18n="search.quickActions">Quick actions</div>
+          <div id="search-actions" role="listbox" aria-label="Quick actions" data-i18n-aria="search.quickActions"></div>
+          <div id="search-chats-heading" class="search-group-heading" data-i18n="search.chats">Chats</div>
+          <div id="search-results" class="command-list" role="listbox" aria-label="Chats" data-i18n-aria="search.title"></div>
+        </div>
+        <nav class="search-categories" aria-label="Search categories" data-i18n-aria="search.categories">
+          <button id="search-category-all" data-i18n="search.all" class="active" type="button" aria-pressed="true">All</button>
+          <button id="search-category-actions" data-i18n="search.actions" type="button" aria-pressed="false">Actions</button>
+          <button id="search-category-chats" data-i18n="search.chats" type="button" aria-pressed="false">Chats</button>
+        </nav>
       </div>
     </div>
 
