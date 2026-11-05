@@ -14,6 +14,8 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::time::{timeout, Duration};
 
+mod grep_files;
+
 /// Pi's truncation budget (`core/tools/truncate.ts`): 2000 lines or 50 KB,
 /// whichever is hit first. A smaller cap is not a speed win — it turns one
 /// call into several paged round trips and hides the tail of a failing build
@@ -407,7 +409,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "bash",
-            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results, skips dependencies and generated files, and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
+            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
             json!({
                 "type": "object",
                 "properties": {
@@ -432,17 +434,19 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "grep",
-            if project_only { "Search file contents inside the current project and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern is a regular expression by default; set `literal: true` to search for plain text. Output is truncated to 2000 matches or 50KB (whichever is hit first)." } else if registered_only { "Search file contents inside projects registered in Oxide and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern is a regular expression by default; set `literal: true` to search for plain text. Output is truncated to 2000 matches or 50KB (whichever is hit first). Absolute paths inside those projects are allowed." } else { "Search file contents and return matching `path:line: text` entries. Use this directly for repository searches instead of calling `bash` with `grep` or `rg`. It runs ripgrep when available, respects ignore files, and skips dependency and generated directories. The pattern is a regular expression by default; set `literal: true` to search for plain text. Output is truncated to 2000 matches or 50KB (whichever is hit first). Absolute paths are allowed." },
+            if project_only { "Search file contents inside the current project using ripgrep. By default return matching filenames, newest modified first (Codex grep_files behavior). Use output_mode: content for matching path:line: text entries and context. Call this instead of calling `bash` with grep or rg. Default limit 100; filename mode caps at 2000 files and times out after 30 seconds." } else if registered_only { "Search file contents inside registered projects using ripgrep. By default return matching filenames, newest modified first (Codex grep_files behavior). Use output_mode: content for matching path:line: text entries and context. Call this instead of calling `bash` with grep or rg. Default limit 100; filename mode caps at 2000 files and times out after 30 seconds." } else { "Search file contents using ripgrep. By default return matching filenames, newest modified first (Codex grep_files behavior). Use output_mode: content for matching path:line: text entries and context. Call this instead of calling `bash` with grep or rg. Absolute paths are allowed. Default limit 100; filename mode caps at 2000 files and times out after 30 seconds." },
             json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Search pattern (regular expression by default, or literal text when `literal` is true)" },
-                    "path": { "type": "string", "description": "Directory to search in (default: .)" },
+                    "pattern": { "type": "string", "description": "Regular expression; filename mode trims surrounding whitespace and reports invalid regex syntax" },
+                    "path": { "type": "string", "description": "File or directory to search (default: .)" },
+                    "output_mode": { "type": "string", "enum": ["files_with_matches", "content"], "description": "Default files_with_matches returns filenames, newest modified first. content returns matching lines." },
+                    "include": { "type": "string", "description": "Glob restricting searched files, e.g. *.rs (Codex parameter name)" },
                     "glob": { "type": "string", "description": "Glob pattern to restrict which file names are searched (e.g. `*.rs`)" },
                     "ignoreCase": { "type": "boolean", "description": "Case-insensitive search" },
                     "literal": { "type": "boolean", "description": "Treat the pattern as a literal string instead of a regular expression (default: false)" },
-                    "context": { "type": "integer", "description": "Number of context lines to include around each match" },
-                    "limit": { "type": "integer", "description": "Maximum number of matches to return" }
+                    "context": { "type": "integer", "description": "Number of context lines around matches in output_mode: content" },
+                    "limit": { "type": "integer", "description": "Maximum results (default 100; files_with_matches maximum 2000, must be positive)" }
                 },
                 "required": ["pattern"]
             }),
@@ -612,6 +616,9 @@ pub async fn execute_with_scope(
             },
             "bash" => bash_with_network_retry(cwd, &args, progress).await,
             "webfetch" => webfetch_guarded(&args, mcp).await.map(ToolOutput::text),
+            "grep" if args.get("output_mode").and_then(Value::as_str) != Some("content") => {
+                grep_files::search(cwd, &args).await.map(ToolOutput::text)
+            }
             "read" | "write" | "edit" | "ls" | "find" | "grep" => {
                 let cwd = cwd.to_path_buf();
                 let args = args.clone();
@@ -3318,6 +3325,7 @@ impl ShellGrep {
         let pattern = literal_grep_word(self.pattern.as_ref()?)?;
         let mut call = serde_json::Map::new();
         call.insert("pattern".to_string(), json!(pattern));
+        call.insert("output_mode".to_string(), json!("content"));
         if let Some(path) = self.operands.first() {
             let path = literal_grep_word(path)?;
             // The tool starts in the project root, so an operand written after a
@@ -4346,7 +4354,17 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
 }
 
 fn bash_failure_hint(output: &str) -> Option<&'static str> {
-    if (output.contains("corepack.cjs") || output.contains("Corepack"))
+    if output.contains("nvm: command not found") || output.contains("command not found: nvm") {
+        Some("[hint: nvm is a shell function and is not loaded here. Oxide adds an installed Node matching the project's .nvmrc to PATH. Check `node --version` and the installed versions under ~/.nvm/versions/node; use a matching installed binary rather than repeating nvm install/use.]")
+    } else if output.contains("timeout: command not found")
+        || output.contains("command not found: timeout")
+    {
+        Some("[hint: this system has no timeout executable. Remove the timeout wrapper and pass the duration in milliseconds through the bash tool's `timeout` argument instead.]")
+    } else if output.contains("fatal: ambiguous argument")
+        && output.contains("unknown revision or path not in the working tree")
+    {
+        Some("[hint: verify the branch/ref before retrying. `git fetch origin <branch>` may update only FETCH_HEAD in a single-branch clone. Inspect FETCH_HEAD and `git config --get-all remote.origin.fetch`; to create the tracking ref explicitly use `git fetch origin refs/heads/<branch>:refs/remotes/origin/<branch>`, then compare remote-only commits before reconciling. Do not force-push or refresh a lease blindly.]")
+    } else if (output.contains("corepack.cjs") || output.contains("Corepack"))
         && (output.contains("Error when performing the request")
             || output.contains("Network access disabled by the environment"))
     {
@@ -4365,7 +4383,7 @@ fn bash_failure_hint(output: &str) -> Option<&'static str> {
             || output.contains("(fetch first)")
             || output.contains("(non-fast-forward)"))
     {
-        Some("[hint: the remote branch or its tracking ref differs from your expectation. Inspect the remote head, fetch into the relevant remote-tracking ref, and compare remote-only commits before reconciling. Do not bypass this rejection with --force, -f, a + refspec, or a blindly refreshed lease; prefer a normal follow-up commit and push.]")
+        Some("[hint: the remote branch or its tracking ref differs from your expectation. Inspect the remote head and compare remote-only commits before reconciling. A single-branch clone may update only FETCH_HEAD: use `git fetch origin refs/heads/<branch>:refs/remotes/origin/<branch>` to fetch the intended tracking ref explicitly. Do not bypass this rejection with --force, -f, a + refspec, or a blindly refreshed lease; prefer a normal follow-up commit and push.]")
     } else if output.contains("grep: maximum repetition exceeds")
         || output.contains("grep: invalid repetition count")
     {
@@ -6901,7 +6919,10 @@ mod tests {
         assert!(!out.text.contains("hidden.rs"), "{}", out.text);
 
         let out = execute(
-            &call("grep", json!({ "pattern": "needle" })),
+            &call(
+                "grep",
+                json!({ "pattern": "needle", "output_mode": "content" }),
+            ),
             &dir,
             &mcp,
             &progress,
@@ -6926,7 +6947,7 @@ mod tests {
         let out = execute(
             &call(
                 "grep",
-                json!({ "pattern": "foo", "glob": "*.rs", "ignoreCase": true, "limit": 50 }),
+                json!({ "output_mode": "content", "pattern": "foo", "glob": "*.rs", "ignoreCase": true, "limit": 50 }),
             ),
             &dir,
             &mcp,
@@ -6937,7 +6958,10 @@ mod tests {
         assert!(out.text.contains("let foo"), "{}", out.text);
 
         let out = execute(
-            &call("grep", json!({ "pattern": "Foo", "context": 1 })),
+            &call(
+                "grep",
+                json!({ "output_mode": "content", "pattern": "Foo", "context": 1 }),
+            ),
             &dir,
             &mcp,
             &progress,
@@ -6961,7 +6985,10 @@ mod tests {
         let progress = Progress::default();
 
         let out = execute(
-            &call("grep", json!({ "pattern": "needle", "limit": 2 })),
+            &call(
+                "grep",
+                json!({ "output_mode": "content", "pattern": "needle", "limit": 2 }),
+            ),
             &dir,
             &mcp,
             &progress,
@@ -6991,7 +7018,10 @@ mod tests {
         // Pi's default is a regular expression, so a pattern a model writes
         // from knowledge of its tools matches without a second call.
         let matched = execute(
-            &call("grep", json!({ "pattern": pattern })),
+            &call(
+                "grep",
+                json!({ "output_mode": "content", "pattern": pattern }),
+            ),
             &dir,
             &mcp,
             &progress,
@@ -7008,21 +7038,29 @@ mod tests {
         // A caller that means the characters themselves asks for a literal
         // search; the old `regex: false` spelling keeps working.
         for args in [
-            json!({ "pattern": pattern, "literal": true }),
-            json!({ "pattern": pattern, "regex": false }),
-            json!({ "pattern": pattern, "use_regex": false }),
+            json!({ "output_mode": "content", "pattern": pattern, "literal": true }),
+            json!({ "output_mode": "content", "pattern": pattern, "regex": false }),
+            json!({ "output_mode": "content", "pattern": pattern, "use_regex": false }),
         ] {
             let literal = execute(&call("grep", args), &dir, &mcp, &progress).await;
             assert_eq!(literal.text, NO_MATCHES);
         }
 
         assert_eq!(
-            grep(&dir, &json!({ "pattern": "missing" })).unwrap(),
+            grep(
+                &dir,
+                &json!({ "output_mode": "content", "pattern": "missing" })
+            )
+            .unwrap(),
             NO_MATCHES
         );
 
         std::fs::write(dir.join("literal.txt"), pattern).unwrap();
-        let literal = grep(&dir, &json!({ "pattern": pattern, "literal": true })).unwrap();
+        let literal = grep(
+            &dir,
+            &json!({ "output_mode": "content", "pattern": pattern, "literal": true }),
+        )
+        .unwrap();
         assert!(literal.contains("literal.txt:1:"), "{literal}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -7042,7 +7080,10 @@ mod tests {
 
         // A pattern written as a regex matches by default.
         let regex = execute(
-            &call("grep", json!({ "pattern": "@Placeholder.*hotel" })),
+            &call(
+                "grep",
+                json!({ "output_mode": "content", "pattern": "@Placeholder.*hotel" }),
+            ),
             &dir,
             &mcp,
             &progress,
@@ -7054,7 +7095,7 @@ mod tests {
         let literal = execute(
             &call(
                 "grep",
-                json!({ "pattern": "@Placeholder.*hotel", "literal": true }),
+                json!({ "output_mode": "content", "pattern": "@Placeholder.*hotel", "literal": true }),
             ),
             &dir,
             &mcp,
@@ -7067,7 +7108,7 @@ mod tests {
         // literally is what the caller meant, and one saved round trip.
         std::fs::write(dir.join("b.txt"), "before ([ after\n").unwrap();
         let bad = execute(
-            &call("grep", json!({ "pattern": "([" })),
+            &call("grep", json!({ "output_mode": "content", "pattern": "([" })),
             &dir,
             &mcp,
             &progress,
@@ -7909,6 +7950,15 @@ mod tests {
 
     #[test]
     fn shell_errors_from_sessions_have_specific_recovery_hints() {
+        for (failure, advice) in [
+            ("bash: nvm: command not found", ".nvmrc"),
+            ("zsh: command not found: nvm", ".nvmrc"),
+            ("bash: timeout: command not found", "milliseconds"),
+            ("zsh: command not found: timeout", "milliseconds"),
+            ("fatal: ambiguous argument 'origin/topic': unknown revision or path not in the working tree", "FETCH_HEAD"),
+        ] {
+            assert!(bash_failure_hint(failure).unwrap().contains(advice));
+        }
         for failure in [
             "Corepack: Error when performing the request to https://registry.npmjs.org/pnpm/-/pnpm.tgz",
             "corepack.cjs: Network access disabled by the environment",
@@ -8750,10 +8800,7 @@ mod tests {
             .function
             .description
             .contains("instead of calling `bash`"));
-        assert!(grep
-            .function
-            .description
-            .contains("runs ripgrep when available"));
+        assert!(grep.function.description.contains("using ripgrep"));
     }
 
     #[test]
@@ -9301,19 +9348,19 @@ mod tests {
         for (command, expected) in [
             (
                 r#"grep -rn 'Definition  of Done' 'source files' --include='*.rs'"#,
-                json!({"pattern": "Definition  of Done", "path": "source files", "glob": "*.rs"}),
+                json!({"output_mode": "content", "pattern": "Definition  of Done", "path": "source files", "glob": "*.rs"}),
             ),
             (
                 r#"grep -rnF 'a.b' src"#,
-                json!({"pattern": "a.b", "path": "src", "literal": true}),
+                json!({"output_mode": "content", "pattern": "a.b", "path": "src", "literal": true}),
             ),
             (
                 r#"grep -rn "can't  stop" source\ files --include "*.rs""#,
-                json!({"pattern": "can't  stop", "path": "source files", "glob": "*.rs"}),
+                json!({"output_mode": "content", "pattern": "can't  stop", "path": "source files", "glob": "*.rs"}),
             ),
             (
                 r#"grep -rn '"quoted"' src"#,
-                json!({"pattern": "\"quoted\"", "path": "src"}),
+                json!({"output_mode": "content", "pattern": "\"quoted\"", "path": "src"}),
             ),
         ] {
             let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
