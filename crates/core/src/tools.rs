@@ -14,6 +14,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::time::{timeout, Duration};
 
+mod code_search;
 mod grep_files;
 
 /// Pi's truncation budget (`core/tools/truncate.ts`): 2000 lines or 50 KB,
@@ -170,11 +171,18 @@ static TRUNCATION_ID: AtomicU64 = AtomicU64::new(0);
 /// must lead with the pattern: leading with the project path makes several
 /// different searches look identical in every front-end.
 pub fn search_tool_summary(name: &str, args: &str) -> Option<String> {
-    if !matches!(name, "grep" | "find") {
+    if !matches!(name, "grep" | "find" | "code_search") {
         return None;
     }
     let value: Value = serde_json::from_str(args).ok()?;
-    let pattern = value.get("pattern")?.as_str()?.trim();
+    let pattern = value
+        .get(if name == "code_search" {
+            "query"
+        } else {
+            "pattern"
+        })?
+        .as_str()?
+        .trim();
     if pattern.is_empty() {
         return None;
     }
@@ -195,7 +203,8 @@ pub fn search_tool_summary(name: &str, args: &str) -> Option<String> {
 /// The raw text remains in the event/session stream for the model; renderers
 /// use this classification to replace a large body with a compact count.
 pub fn is_empty_search_result(name: &str, output: &str) -> bool {
-    matches!(name, "grep" | "find") && matches!(output.trim(), NO_MATCHES | NO_FILES_FOUND)
+    matches!(name, "grep" | "find" | "code_search")
+        && matches!(output.trim(), NO_MATCHES | NO_FILES_FOUND)
 }
 
 /// A line-numbered diff of a file edit, carried alongside the tool result for
@@ -464,6 +473,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
             }),
         ),
     ];
+    specs.push(code_search::spec(read_scope));
     let configured = mcp.configured_servers();
     if !configured.is_empty() {
         specs.push(spec(
@@ -616,6 +626,7 @@ pub async fn execute_with_scope(
             },
             "bash" => bash_with_network_retry(cwd, &args, progress).await,
             "webfetch" => webfetch_guarded(&args, mcp).await.map(ToolOutput::text),
+            "code_search" => code_search::search(cwd, &args).await.map(ToolOutput::text),
             "grep" if args.get("output_mode").and_then(Value::as_str) != Some("content") => {
                 grep_files::search(cwd, &args).await.map(ToolOutput::text)
             }
@@ -699,6 +710,7 @@ fn expected_arguments(name: &str) -> &'static str {
         "edit" => " with a string `path` and an `edits` array of {oldText,newText} objects",
         "find" => " with a string `pattern` and optional `path`",
         "grep" => " with a string `pattern` and optional `path`, `glob`, and search options",
+        "code_search" => " with a string `query` and optional local directory `path`",
         "bash" => " with a shell command string in `command`",
         "webfetch" => " with a URL string in `url`",
         "mcp_load" => " with an MCP server name string in `server`",
@@ -752,7 +764,7 @@ fn enforce_path_scope(cwd: &Path, tool: &str, args: &Value, scope: PathScope<'_>
     }
     let path = match tool {
         "read" | "write" | "ls" => args.get("path").and_then(Value::as_str),
-        "find" | "grep" => args.get("path").and_then(Value::as_str).or(Some(".")),
+        "find" | "grep" | "code_search" => args.get("path").and_then(Value::as_str).or(Some(".")),
         "edit" => edit_path_value(args),
         "bash" => {
             let command = args
@@ -4873,7 +4885,7 @@ where
     let mut total_bytes = 0usize;
     let mut total_lines = 0usize;
     let mut last_byte = None;
-    let mut progress_batch = VecDeque::new();
+    let mut progress_batch: VecDeque<u8> = VecDeque::new();
     let mut last_progress = std::time::Instant::now();
     let mut buffer = [0u8; 8_192];
 
@@ -5787,7 +5799,16 @@ mod tests {
     fn specs_expose_pi_tool_names() {
         let mcp = McpRegistry::default();
         let names: Vec<String> = specs(&mcp).into_iter().map(|s| s.function.name).collect();
-        for name in ["read", "write", "edit", "bash", "grep", "find", "ls"] {
+        for name in [
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "grep",
+            "find",
+            "ls",
+            "code_search",
+        ] {
             assert!(
                 names.iter().any(|n| n == name),
                 "missing {name} in {names:?}"

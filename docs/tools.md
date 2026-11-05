@@ -3,7 +3,7 @@
 The tools the agent can call, their parameters, and the limits their results are
 subject to.
 
-Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`,
+Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`, `code_search`,
 `find`, `ls`, and `webfetch`. Agent-level tools: `task`, `skill`, `command`,
 `memory`, `diagnostics`, `ask`, and `tool_search`. Enabled MCP servers connect
 in the background; `tool_search` discovers capabilities and declares only the
@@ -22,6 +22,7 @@ server error is not replayed: the outcome of a writing tool may be unknown.
 | `edit` | `path`, `edits: [{ oldText, newText }]` |
 | `bash` | `command`, `timeout?` in milliseconds (default 120000) |
 | `grep` | `pattern` (regex), `path?`, `include?` (`glob?` alias), `limit?`, `output_mode?` (`files_with_matches` default or `content`), `ignoreCase?`, `literal?`, `context?` (content only) |
+| `code_search` | `query`, `path?` (local directory), `limit?` (default 5, 1–20), `content?` (`code` default, `docs`, `config`, `all`), `max_snippet_lines?` (default 80, 0–200) |
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
@@ -29,6 +30,97 @@ server error is not replayed: the outcome of a writing tool may be unknown.
 | `mcp_load` | `server` |
 
 ## Behavior
+
+`code_search` discovers implementations from natural-language questions, returning
+ranked paths, line ranges and numbered snippets. It complements `grep` for exact
+or exhaustive matches and `read` for surrounding context. An empty ranked result
+is a successful `No matches found`; model, download and filesystem failures are
+reported as errors.
+
+The implementation is native Rust, inspired by
+[Semble](https://github.com/MinishLab/semble): the official `model2vec-rs` library
+loads the same `minishlab/potion-code-16M-v2` static embedding model; BM25 lexical
+scores and embedding similarities are combined with reciprocal rank fusion.
+Identifier-like queries receive more lexical weight. This is not a full port of
+Semble's language coverage or reranking heuristics, and its benchmark claims do
+not establish oxide's retrieval quality or token savings.
+
+Rust, JavaScript, TypeScript/TSX and Python use tree-sitter boundaries. Other
+recognised code, documentation and configuration extensions use text chunks.
+Chunks are capped at 60 lines / 6000 bytes, with five-line overlap inside long
+regions; longer individual lines are skipped. Overlapping results are collapsed.
+The walker honours `.gitignore` and `.sembleignore` exclusions, including outside
+Git repositories, skips dependency/build directories, and does not follow symlinks.
+Files above 1 MiB are skipped with a note; scopes above 64 MiB of source or 50,000
+chunks require a narrower `path`.
+
+The first call downloads about 34 MB of public model assets from Hugging Face at
+a pinned revision. Source code and queries stay local. Set
+`OXIDE_CODE_SEARCH_MODEL` to a local directory containing `config.json`,
+`tokenizer.json` and `model.safetensors` to run without downloads. Models and
+indexes live in the OS cache directory under `oxide/code-search/`; indexes
+contain source snippets and can be removed there. Content hashes refresh added,
+changed, deleted and newly ignored files on every search, reusing embeddings for
+unchanged files. Model changes invalidate cached vectors. Cache write failures
+are reported as notes while the search result remains usable.
+
+The shared tool registry, permission rules and filesystem scope checks apply in
+CLI, Desktop and VS Code. `code_search` defaults to allowed and honours explicit
+ask/deny rules, like other read tools. Calls run sequentially because they refresh
+the index cache. No Python installation, Semble CLI or subprocess is used.
+
+**When to upgrade or replace the code-search model**
+
+The model has no scheduled expiry. Keep the pinned revision while retrieval
+quality, resource usage and availability meet the project's needs. A newer
+upstream release is a reason to evaluate a candidate, not to update automatically.
+
+Review the model when:
+
+- Representative natural-language queries repeatedly miss known implementations
+  or rank irrelevant snippets above them, especially for languages or domains
+  newly important to the project.
+- Cold indexing time, warm search latency or memory usage exceeds the product's
+  budget on representative repositories and supported hardware.
+- Upstream publishes a relevant retrieval correction, or the pinned assets
+  become unavailable or incompatible with the supported Rust loader.
+- Licensing or distribution requirements change and the current model no longer
+  meets them.
+
+Before attributing a missed result to the model, check ignore rules, supported
+extensions, file/chunk limits and chunk boundaries. Changing the embedding model
+cannot recover source that never entered the index. Use `grep` and `read` to
+establish the expected location.
+
+Prefer a revision upgrade when the same model family resolves the observed
+problem. Consider replacing it when another compatible Model2Vec model provides
+better measured retrieval or resource usage. A transformer or hosted embedding
+service requires a separate loader and execution design; it cannot be selected
+by changing the model name alone.
+
+Evaluate candidates through `OXIDE_CODE_SEARCH_MODEL` using separate local model
+directories. Compare the current model and candidate on the same repository
+snapshots and labelled queries, covering natural-language discovery, exact
+identifiers and important languages. Record top-5 retrieval of expected locations,
+cold indexing time, warm latency and peak memory, including regressions. Set
+acceptance budgets before comparing and retain the current pin if the candidate
+does not justify the change. Confirm the candidate's license and distribution
+terms as part of that decision.
+
+To promote an accepted candidate, update `MODEL` and its immutable `REVISION` in
+`crates/core/src/tools/code_search.rs`, check its three asset names and download
+size limits, and update the documented model name and size. Run the native model
+smoke test explicitly (`cargo test -p oxide-core native_model_smoke -- --ignored
+--nocapture`) alongside normal tests and Clippy. The smoke test verifies loading
+and basic retrieval; the labelled comparison establishes whether to upgrade.
+
+Model asset hashes automatically invalidate persisted vectors; the next search
+rebuilds the selected index. If chunking, embedding input preparation or index
+format changes, also increment `INDEX_VERSION`. Ranking-only changes do not
+require re-embedding. Restart running clients after changing a local model to
+ensure cached weights are reloaded, including when file timestamps were preserved.
+Keep the previous model/revision and evaluation results in the PR so a regression
+can be rolled back by restoring the pin; indexes rebuild on the next search.
 
 `edit` performs targeted text replacement: each `oldText` is matched against the
 original file (never incrementally) and must be unique, so a non-unique or
