@@ -101,7 +101,7 @@ impl Action {
 
 fn default_action(tool: &str) -> Action {
     match tool {
-        "read" | "ls" | "find" | "grep" | "webfetch" => Action::Allow,
+        "read" | "ls" | "find" | "grep" | "webfetch" | "code_search" => Action::Allow,
         "write" | "edit" | "bash" => Action::Ask,
         _ => Action::Allow,
     }
@@ -152,6 +152,7 @@ mod tests {
     fn defaults_allow_reads_and_ask_writes() {
         let permissions = Permissions::default();
         assert_eq!(permissions.decide("read", "a.rs"), Action::Allow);
+        assert_eq!(permissions.decide("code_search", "."), Action::Allow);
         assert_eq!(permissions.decide("bash", "ls"), Action::Ask);
         assert_eq!(permissions.decide("write", "a.rs"), Action::Ask);
     }
@@ -170,6 +171,14 @@ mod tests {
         let permissions = Permissions::from_value(&json!({ "edit": "deny", "*": "allow" }));
         assert_eq!(permissions.decide("edit", "a.rs"), Action::Deny);
         assert_eq!(permissions.decide("bash", "ls"), Action::Allow);
+    }
+
+    #[test]
+    fn code_search_preserves_explicit_permission_rules() {
+        let permissions =
+            Permissions::from_value(&json!({"code_search": {"*": "deny", "src": "ask"}}));
+        assert_eq!(permissions.decide("code_search", "."), Action::Deny);
+        assert_eq!(permissions.decide("code_search", "src"), Action::Ask);
     }
 
     #[test]

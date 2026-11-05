@@ -3,7 +3,7 @@
 The tools the agent can call, their parameters, and the limits their results are
 subject to.
 
-Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`,
+Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`, `code_search`,
 `find`, `ls`, and `webfetch`. Agent-level tools: `task`, `skill`, `command`,
 `memory`, `diagnostics`, `ask`, and `tool_search`. Enabled MCP servers connect
 in the background; `tool_search` discovers capabilities and declares only the
@@ -22,6 +22,7 @@ server error is not replayed: the outcome of a writing tool may be unknown.
 | `edit` | `path`, `edits: [{ oldText, newText }]` |
 | `bash` | `command`, `timeout?` in milliseconds (default 120000) |
 | `grep` | `pattern` (regex), `path?`, `include?` (`glob?` alias), `limit?`, `output_mode?` (`files_with_matches` default or `content`), `ignoreCase?`, `literal?`, `context?` (content only) |
+| `code_search` | `query`, `path?` (local directory), `limit?` (default 5, 1–20), `content?` (`code` default, `docs`, `config`, `all`), `max_snippet_lines?` (default 80, 0–200) |
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
@@ -29,6 +30,44 @@ server error is not replayed: the outcome of a writing tool may be unknown.
 | `mcp_load` | `server` |
 
 ## Behavior
+
+`code_search` discovers implementations from natural-language questions, returning
+ranked paths, line ranges and numbered snippets. It complements `grep` for exact
+or exhaustive matches and `read` for surrounding context. An empty ranked result
+is a successful `No matches found`; model, download and filesystem failures are
+reported as errors.
+
+The implementation is native Rust, inspired by
+[Semble](https://github.com/MinishLab/semble): the official `model2vec-rs` library
+loads the same `minishlab/potion-code-16M-v2` static embedding model; BM25 lexical
+scores and embedding similarities are combined with reciprocal rank fusion.
+Identifier-like queries receive more lexical weight. This is not a full port of
+Semble's language coverage or reranking heuristics, and its benchmark claims do
+not establish oxide's retrieval quality or token savings.
+
+Rust, JavaScript, TypeScript/TSX and Python use tree-sitter boundaries. Other
+recognised code, documentation and configuration extensions use text chunks.
+Chunks are capped at 60 lines / 6000 bytes, with five-line overlap inside long
+regions; longer individual lines are skipped. Overlapping results are collapsed.
+The walker honours `.gitignore` and `.sembleignore` exclusions, including outside
+Git repositories, skips dependency/build directories, and does not follow symlinks.
+Files above 1 MiB are skipped with a note; scopes above 64 MiB of source or 50,000
+chunks require a narrower `path`.
+
+The first call downloads about 34 MB of public model assets from Hugging Face at
+a pinned revision. Source code and queries stay local. Set
+`OXIDE_CODE_SEARCH_MODEL` to a local directory containing `config.json`,
+`tokenizer.json` and `model.safetensors` to run without downloads. Models and
+indexes live in the OS cache directory under `oxide/code-search/`; indexes
+contain source snippets and can be removed there. Content hashes refresh added,
+changed, deleted and newly ignored files on every search, reusing embeddings for
+unchanged files. Model changes invalidate cached vectors. Cache write failures
+are reported as notes while the search result remains usable.
+
+The shared tool registry, permission rules and filesystem scope checks apply in
+CLI, Desktop and VS Code. `code_search` defaults to allowed and honours explicit
+ask/deny rules, like other read tools. Calls run sequentially because they refresh
+the index cache. No Python installation, Semble CLI or subprocess is used.
 
 `edit` performs targeted text replacement: each `oldText` is matched against the
 original file (never incrementally) and must be unique, so a non-unique or
