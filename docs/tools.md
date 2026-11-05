@@ -21,7 +21,7 @@ server error is not replayed: the outcome of a writing tool may be unknown.
 | `write` | `path`, `content` |
 | `edit` | `path`, `edits: [{ oldText, newText }]` |
 | `bash` | `command`, `timeout?` in milliseconds (default 120000) |
-| `grep` | `pattern` (regex), `path?`, `glob?`, `ignoreCase?`, `literal?`, `context?`, `limit?` |
+| `grep` | `pattern` (regex), `path?`, `include?` (`glob?` alias), `limit?`, `output_mode?` (`files_with_matches` default or `content`), `ignoreCase?`, `literal?`, `context?` (content only) |
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
@@ -59,12 +59,34 @@ U+FFFD content can be written with `bash`.
 
 `read`, `ls`, `find`, and `grep` accept absolute paths, so they can inspect files
 outside the project without a shell; `ls` marks directories with a trailing `/`
-and renders symlink targets as `name -> target`. `find` and `grep` respect
-`.gitignore`, and `grep` treats `pattern` as a regular expression by default (set
-`literal: true` to search for plain text, and a pattern that is not valid regex
-syntax is searched literally with a note instead of failing the call) and prefers `ripgrep`
-(`rg`) when it is on `PATH`, falling back to a dependency-free parallel walker
-that skips binary files. A `read` the platform refuses — macOS keeps the
+and renders symlink targets as `name -> target`.
+
+By default `grep` follows the last public Codex `grep_files` contract:
+[`openai/codex` at `32c4993`](https://github.com/openai/codex/blob/32c4993c8a17cb0608d747f268e3d543745de962/codex-rs/core/src/tools/handlers/grep_files.rs).
+It invokes `rg --files-with-matches --sortr=modified --regexp <pattern>
+--no-messages`, returning one filename per matching file, newest modified first.
+`path` can name a file or directory (default: the working directory), and `include`
+restricts files by glob; surrounding whitespace in `pattern` and `include` is
+trimmed. The default limit is 100 files, capped at 2000; zero and invalid limits
+are rejected. Searches time out after 30 seconds, and cancellation kills the child.
+Invalid regexes, missing paths, missing ripgrep, and unsuccessful searches report
+errors; exit 1 is an ordinary empty result (`No matches found`). Filename mode uses
+ripgrep's own hidden-file and ignore rules, including its requirement for a Git
+repository when applying `.gitignore`. It does not impose content mode's extra
+dependency-directory exclusions. Oxide keeps its ordinary success classification
+for empty results and accepts `glob`, `ignoreCase`, and `literal` as extensions.
+Codex removed its dedicated handler from main; this compatibility target is pinned.
+
+Use `output_mode: "content"` for the existing `path:line: text` matches and context
+lines. This mode, like `find`, respects `.gitignore` even outside Git repositories
+and skips `.git`, `target`, `node_modules`, and `.venv`. It prefers ripgrep and
+falls back to a parallel built-in walker that skips binary files. Patterns are
+regexes by default (`literal: true` searches plain text); invalid regex syntax is
+searched literally with a note. Content mode's default limit is 100 output rows,
+with the shared 2000-line / 50 KB output budget. Shell searches redirected to
+`grep` explicitly select content mode to preserve their output.
+
+A `read` the platform refuses — macOS keeps the
 Desktop, Documents and Downloads folders behind a per-app grant — is reported
 with the reason and the grant to give, naming the app the run was started from
 and the name that app's own bundle carries (so VS Code, whose bundle is
@@ -136,7 +158,8 @@ carry recovery hints that ask for the installed command or project configuration
 The agent saves verified, reusable environment fixes and test commands in memory
 with their project and version context.
 
-Shell failures caused by unsupported grep repetition counts, unclosed quotes,
+Shell failures caused by missing `nvm` or `timeout`, absent Git tracking refs,
+unsupported grep repetition counts, unclosed quotes,
 or selecting a package outside the current Cargo workspace carry a specific
 recovery hint, as does a command whose request never completed over the network
 — `gh`, `curl` and `git` report a TLS handshake timeout, a reset or a DNS
