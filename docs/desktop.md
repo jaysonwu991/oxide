@@ -143,14 +143,16 @@ On macOS, native traffic lights sit inside this draggable toolbar. Windows and
 Linux retain their native window controls.
 
 A narrow navigation rail stays available when the sidebar is hidden. It opens
-a new chat, projects, chat search, the command menu, worktrees, Customize
+a new chat, projects, the command menu, worktrees, Customize
 and settings. The sidebar header places the plain Oxide title, activity bell
 and search together above New Chat. Activity is also available from the command
 menu when the sidebar is hidden. These controls use the same actions and
 saved preferences as their keyboard and menu counterparts.
 
-The rail's Projects, Search, Commands and Worktrees controls toggle
-panels beside the rail. The selected control carries an accent and announces its
+The rail's Projects control opens a full-page directory with project search,
+activity sorting, Create project, and each row's options, pin and new-chat actions.
+The composer keeps its smaller project picker. The Commands and Worktrees
+controls toggle panels beside the rail. The selected control carries an accent and announces its
 expanded state. Switching controls closes the previous panel; Escape returns
 focus to its rail control, and clicking outside dismisses it. Composer pickers
 retain their position above the composer. Welcome suggestions use a responsive
@@ -319,7 +321,7 @@ The menu bar is the window's own: `installMenu` builds it with
 `Menu.buildFromTemplate` from the platform's own roles (`about`, `quit`,
 `hideOthers`, `undo`/`copy`/`paste`, `minimize`/`zoom`/`close`) plus the items
 the app answers itself: **Check for Updates…**, which sends the page the
-`check-updates` event and so ends at the same dialog the Settings update button
+`check-updates` event and so ends at the same dialog the rail update button
 opens, and the **File** menu's **New Tab** (`⌘T`/`Ctrl+T`) and **Close Tab**
 (`⌘W`/`Ctrl+W`), which go to the page as its `chat-tab` event rather than
 inventing a second tab model. macOS is the only platform that gets one;
@@ -388,8 +390,9 @@ The regions, top to bottom:
   menu provide chat and project actions. Activity's bell carries a dot while something is running,
   unread or waiting for an answer; the **Projects**
   tree. The navigation rail keeps the settings gear at the bottom. Theme and interface
-  language are under Settings → Appearance; Check for updates is under Settings
-  → General and in the native menu. The sidebar has no separate footer. The tree groups each project's sessions
+  language are under Settings → Appearance; Check for updates is in the native menu. When an update is known, a blue circular
+  download button appears above Settings in the rail. It reopens the update
+  dialog, including a background download or a restart postponed with Later. The sidebar has no separate footer. The tree groups each project's sessions
   under it. Project options and **New task**, and a stored thread's pin and
   archive actions, appear when their row is hovered or holds keyboard focus,
   matching Codex's quiet resting tree. The key a thread answers to is nowhere
@@ -1313,9 +1316,12 @@ the window shipped with, so a hand-edited file never stops the window opening.
 **Settings** is a full page with its own sidebar, opened from the gear at the bottom of the navigation rail, the app
 menu's **Settings…** (`⌘,`) or the command menu. Its sections are named by id so
 every control the markup declares is a control the page wired, and it paints what
-the store answered rather than what a click hoped to store:
+the store answered rather than what a click hoped to store. A fixed-width
+navigation column sits beside centered, width-limited pages. Related preferences
+share a bordered group with descriptions and controls aligned in rows; narrow
+pages stack those controls below their descriptions:
 
-- **General** — Check for updates, the key that sends (`Enter` sends and `Shift+Enter` is a newline,
+- **General** — the key that sends (`Enter` sends and `Shift+Enter` is a newline,
 or `⌘Enter` sends and `Enter` is a newline), and what a message sent while a turn
 runs does (wait for the next run, or steer the one in flight). The follow-up
 choice is the same state the composer's badge and its `⌘⇧Enter` override read.
@@ -1503,7 +1509,9 @@ being kept warm, so it is what the store holds now.
 Four ways, each answering a different question.
 
 **Search chats** (`⌘⇧F`, the sidebar's magnifier, or **Oxide → Search chats…**)
-scans every stored thread the sidebar lists — its name, preview, messages and
+opens a centered palette with quick actions and recent chats. All, Actions and
+Chats filter its categories; arrow keys move selection and Enter opens it.
+Typing a phrase scans every stored thread the sidebar lists — its name, preview, messages and
 project/worktree paths — and answers with the line each match was found on.
 Each result shows its folder to distinguish chats with the same name. Opening
 a result with message matches opens **Find in chat** on the searched phrase at
@@ -1512,7 +1520,7 @@ on a blocking task because it reads every log on disk, and it is asked once the
 reader settles on a phrase rather than once a keystroke: an answer that is no
 longer the newest is dropped by its own sequence number instead of racing the
 one that is, including its error state. Closing the search cancels a pending
-debounce. A phrase blank finds nothing rather than everything, a log that
+debounce. A blank palette shows recent chats without scanning their logs; a log that
 cannot be read is skipped so one damaged file is not the reason nothing is
 found, a thread is counted at most 200 matches and the listing at 40 rows, and a
 snippet is clipped by characters and joined onto one line so a phrase from the
@@ -1698,10 +1706,10 @@ and results for removed messages or old themes are discarded. Run
 
 ## Check for updates
 
-The check-for-updates button under Settings → General — or **Check for Updates…**
-in the macOS app menu,
-directly under **About**, which asks the open window to run the same check —
-reports the newest **Oxide Desktop** release and installs it. The app's own
+**Check for Updates…** in the macOS app menu, directly under **About**,
+opens the update dialog to report the newest **Oxide Desktop** release and
+install it. The blue update button in the navigation rail reopens that dialog
+when an update is available, downloading, or waiting for a restart. The app's own
 release train is `desktop-v*` and nothing else: the engine resolves it with the
 same check the terminal's `oxide update --check --json --component desktop`
 performs,

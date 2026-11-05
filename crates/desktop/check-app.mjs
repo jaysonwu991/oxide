@@ -1261,7 +1261,7 @@ const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
     "\nglobalThis.__app = { send, stop, startPrompt, runSlashCommand, state, createProjectState, ICONS," +
-    " newChatFromSidebar, openProjects, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
+    " newChatFromSidebar, openProjects, closeOverlays, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
     " openEditProject, projectActivity, formatTime, openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
     " openConnect, renderProviders, saveConnect, renderLoginFields," +
     " refreshPaletteEntries, paletteMatches, renderPalette, runPaletteEntry," +
@@ -2411,8 +2411,12 @@ check(
   `rail: ${idsIn(railUtilities)} · composer: ${idsIn(composerLeft)}`,
 );
 check(
-  "left only Settings in the rail utilities",
+  "kept update access above Settings in the rail utilities",
   ["theme", "language", "update"].every((id) => !railUtilities.includes(`id="${id}"`)) &&
+    railUtilities.includes('id="rail-update"') &&
+    railUtilities.indexOf('id="rail-update"') < railUtilities.indexOf('id="settings"') &&
+    buttonFor("rail-update").includes("hidden") &&
+    buttonFor("rail-update").includes('aria-haspopup="dialog"') &&
     railUtilities.includes('id="settings"') && buttonFor("settings").includes('class="rail-button"') && !shell.includes('class="sidebar-foot"') && !shell.includes('id="rail-settings"'),
   idsIn(railUtilities),
 );
@@ -2992,14 +2996,11 @@ check(
 
 const appearanceSettings = shell.slice(shellAt('id="settings-page-appearance"'), shellAt('id="settings-page-notifications"'));
 const generalSettings = shell.slice(shellAt('id="settings-page-general"'), shellAt('id="settings-page-appearance"'));
-const updateButton = buttonFor("update");
 check("showed theme choices and language directly in Appearance",
   appearanceSettings.includes('id="settings-theme-list"') &&
   appearanceSettings.includes('<select id="settings-language"') &&
   !appearanceSettings.includes('aria-controls="themes-modal"'));
-check("offered Check for updates in General settings",
-  generalSettings.includes('id="update"') && updateButton.includes('class="ghost"') &&
-    updateButton.includes('aria-label="Check for updates"'));
+check("kept update checks out of General settings", !generalSettings.includes('id="update"'));
 check(
   "put the dialog among the overlays Escape closes",
   /<div id="update-modal" class="overlay" role="dialog" aria-modal="true" aria-labelledby="update-title" hidden>/.test(
@@ -7627,13 +7628,13 @@ const offered = (button) => button.hidden === false;
 
 app.openSettings("general");
 calls.length = 0;
-elementFor("update").onclick(press({ target: elementFor("update") }));
+await emit("check-updates", {});
 check(
   "asked the app's own update check",
   projectCalls("check_updates").length === 1,
   JSON.stringify(calls.map(([name]) => name)),
 );
-check("opened the dialog from the Settings update button", updateOpen(), String(elementFor("update-modal").hidden));
+check("opened the dialog from the native update menu", updateOpen(), String(elementFor("update-modal").hidden));
 await nextTick();
 check(
   "named the release the app's own train resolved",
@@ -7936,6 +7937,7 @@ check(
   updateBody(),
 );
 check("offered no update for an app that has none", !offered(installButton));
+check("hid the rail notice when the app is current", elementFor("rail-update").hidden);
 check("offered no advice it does not need", !updateBody().includes("update-advice"), updateBody());
 
 // A copy the app may not write over — a checkout's build, a copy an
@@ -8284,6 +8286,16 @@ check(
   `${restartButton.hidden} / ${cancelButton.hidden}`,
 );
 
+await backgroundButton.onclick();
+check("kept the update accessible while downloading in the background",
+  elementFor("update-modal").hidden && !elementFor("rail-update").hidden &&
+    elementFor("rail-update").getAttribute("aria-label") === "Downloading update");
+calls.length = 0;
+await elementFor("rail-update").onclick();
+check("reopened the running download without a second check or install",
+  updateOpen() && updateTitle() === "Downloading update" &&
+    projectCalls("check_updates").length === 0 && projectCalls("install_update").length === 0);
+
 // The release is on disk and the process is not: what the dialog offers is the
 // restart that runs it.
 const launchAnswer = {
@@ -8302,6 +8314,14 @@ check(
   updateTitle() === "Restart and install update" && offered(restartButton) && offered(laterButton),
   `${updateTitle()} / ${restartButton.hidden} / ${laterButton.hidden}`,
 );
+await laterButton.onclick();
+check("kept the restart accessible after Later",
+  elementFor("update-modal").hidden && !elementFor("rail-update").hidden &&
+    elementFor("rail-update").getAttribute("aria-label") === "Restart and install update");
+calls.length = 0;
+await elementFor("rail-update").onclick();
+check("reopened the restart without needing the network",
+  updateOpen() && offered(restartButton) && projectCalls("check_updates").length === 0);
 calls.length = 0;
 await restartButton.onclick();
 check(
@@ -9735,26 +9755,36 @@ app.closeCommandMenu();
 elementFor("settings").onclick();
 check("the rail opens the existing settings sheet", elementFor("settings-modal").hidden === false);
 app.closeSettings();
-elementFor("rail-search").onclick();
-check("the rail searches saved chats", elementFor("search-modal").hidden === false);
-check("anchored search to the rail and announced it as expanded",
-  elementFor("search-modal").classList.contains("rail-panel") && elementFor("rail-search").getAttribute("aria-expanded") === "true");
-elementFor("rail-search").onclick();
-check("a second press dismissed the rail search",
-  elementFor("search-modal").hidden && elementFor("rail-search").getAttribute("aria-expanded") === "false");
-elementFor("rail-search").onclick();
+check("removed the duplicate rail search", !shell.includes('id="rail-search"'));
+elementFor("search-chats").focus();
+elementFor("search-chats").onclick();
+check("opened search as a centered dialog", !elementFor("search-modal").hidden && !elementFor("search-modal").classList.contains("rail-panel"));
 document.fire("keydown", { key: "Escape" });
-check("Escape dismissed search and returned keyboard focus to the rail",
-  elementFor("search-modal").hidden && document.activeElement === elementFor("rail-search"));
+check("Escape returned search focus to its sidebar control", elementFor("search-modal").hidden && document.activeElement === elementFor("search-chats"));
+const directoryProjects = app.state.projects;
+app.state.projects = [
+  { id: "older", name: "Older folder", path: "/tmp/older", last_session_at: 100 },
+  { id: "newer", name: "Newer folder", path: "/tmp/newer", last_session_at: 200 },
+];
 elementFor("rail-projects").onclick();
-check("project navigation opens beside the rail",
-  !elementFor("projects-modal").hidden && elementFor("projects-modal").classList.contains("rail-panel"));
-elementFor("rail-search").onclick();
-check("switching rail destinations dismisses the previous panel",
-  elementFor("projects-modal").hidden && !elementFor("search-modal").hidden && elementFor("rail-projects").getAttribute("aria-expanded") === "false");
-document.fire("mousedown", { target: elementFor("prompt") });
-check("clicking the composer dismisses the rail panel",
-  elementFor("search-modal").hidden && elementFor("rail-search").getAttribute("aria-expanded") === "false");
+check("opened a full-page project directory", !elementFor("projects-page").hidden && document.body.classList.contains("projects-open") && elementFor("projects-modal").hidden);
+check("sorted the directory by newest activity", elementFor("projects-directory").children[0]?.dataset.project === "newer");
+elementFor("projects-sort").onclick();
+check("reversed the activity sort", elementFor("projects-directory").children[0]?.dataset.project === "older");
+elementFor("projects-sort").onclick();
+elementFor("projects-filter").value = "newer";
+elementFor("projects-filter").oninput();
+check("filtered projects by name", elementFor("projects-directory").children.length === 1 && elementFor("projects-directory").children[0]?.dataset.project === "newer");
+elementFor("projects-filter").value = "no such folder";
+elementFor("projects-filter").oninput();
+check("reported a project search with no matches", elementFor("projects-directory").children[0]?.textContent === "No projects match your search.");
+elementFor("projects-page-create").onclick();
+check("opened the existing Create project dialog over the directory", !elementFor("create-project-modal").hidden && !elementFor("projects-page").hidden);
+app.closeOverlays();
+elementFor("settings").onclick();
+check("switching destinations left the project directory", elementFor("projects-page").hidden && !document.body.classList.contains("projects-open"));
+app.closeSettings();
+app.state.projects = directoryProjects;
 app.closeSearch();
 const savedNavigation = { stack: app.state.navStack, index: app.state.navIndex };
 app.state.navStack = [];
@@ -9774,13 +9804,18 @@ check("the title bar reflects the saved sidebar visibility",
 const settleSearch = () => new Promise((resolve) => setTimeout(resolve, 200));
 elementFor("search-chats").onclick();
 check("opened search from the sidebar control", elementFor("search-modal").hidden === false);
-// Before a phrase there is nothing to list, and the row says what to type rather
-// than showing an empty box.
-check(
-  "said what to type before anything was searched",
-  elementFor("search-results").children[0]?.textContent === "Type a phrase from a chat, or a name",
-  String(elementFor("search-results").children[0]?.textContent),
-);
+check("offered quick actions before typing", elementFor("search-actions").children.length === 2);
+elementFor("search-input").fire("keydown", { key: "ArrowDown", preventDefault() {} });
+check("arrow keys selected the next palette action", app.state.searchIndex === 1 && elementFor("search-input").getAttribute("aria-activedescendant") === "search-choice-1");
+elementFor("search-input").fire("keydown", { key: "Enter", preventDefault() {} });
+check("Enter ran the selected Open folder action", elementFor("search-modal").hidden && !elementFor("projects-modal").hidden);
+app.closeOverlays();
+app.openSearch();
+elementFor("search-category-actions").onclick();
+check("Actions hides chat results", elementFor("search-results").hidden && !elementFor("search-actions").hidden);
+elementFor("search-category-chats").onclick();
+check("Chats hides quick actions", elementFor("search-actions").hidden && !elementFor("search-results").hidden);
+elementFor("search-category-all").onclick();
 searchAnswer = [
   {
     id: "s31",
