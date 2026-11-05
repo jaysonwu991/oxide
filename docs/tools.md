@@ -69,6 +69,59 @@ CLI, Desktop and VS Code. `code_search` defaults to allowed and honours explicit
 ask/deny rules, like other read tools. Calls run sequentially because they refresh
 the index cache. No Python installation, Semble CLI or subprocess is used.
 
+**When to upgrade or replace the code-search model**
+
+The model has no scheduled expiry. Keep the pinned revision while retrieval
+quality, resource usage and availability meet the project's needs. A newer
+upstream release is a reason to evaluate a candidate, not to update automatically.
+
+Review the model when:
+
+- Representative natural-language queries repeatedly miss known implementations
+  or rank irrelevant snippets above them, especially for languages or domains
+  newly important to the project.
+- Cold indexing time, warm search latency or memory usage exceeds the product's
+  budget on representative repositories and supported hardware.
+- Upstream publishes a relevant retrieval correction, or the pinned assets
+  become unavailable or incompatible with the supported Rust loader.
+- Licensing or distribution requirements change and the current model no longer
+  meets them.
+
+Before attributing a missed result to the model, check ignore rules, supported
+extensions, file/chunk limits and chunk boundaries. Changing the embedding model
+cannot recover source that never entered the index. Use `grep` and `read` to
+establish the expected location.
+
+Prefer a revision upgrade when the same model family resolves the observed
+problem. Consider replacing it when another compatible Model2Vec model provides
+better measured retrieval or resource usage. A transformer or hosted embedding
+service requires a separate loader and execution design; it cannot be selected
+by changing the model name alone.
+
+Evaluate candidates through `OXIDE_CODE_SEARCH_MODEL` using separate local model
+directories. Compare the current model and candidate on the same repository
+snapshots and labelled queries, covering natural-language discovery, exact
+identifiers and important languages. Record top-5 retrieval of expected locations,
+cold indexing time, warm latency and peak memory, including regressions. Set
+acceptance budgets before comparing and retain the current pin if the candidate
+does not justify the change. Confirm the candidate's license and distribution
+terms as part of that decision.
+
+To promote an accepted candidate, update `MODEL` and its immutable `REVISION` in
+`crates/core/src/tools/code_search.rs`, check its three asset names and download
+size limits, and update the documented model name and size. Run the native model
+smoke test explicitly (`cargo test -p oxide-core native_model_smoke -- --ignored
+--nocapture`) alongside normal tests and Clippy. The smoke test verifies loading
+and basic retrieval; the labelled comparison establishes whether to upgrade.
+
+Model asset hashes automatically invalidate persisted vectors; the next search
+rebuilds the selected index. If chunking, embedding input preparation or index
+format changes, also increment `INDEX_VERSION`. Ranking-only changes do not
+require re-embedding. Restart running clients after changing a local model to
+ensure cached weights are reloaded, including when file timestamps were preserved.
+Keep the previous model/revision and evaluation results in the PR so a regression
+can be rolled back by restoring the pin; indexes rebuild on the next search.
+
 `edit` performs targeted text replacement: each `oldText` is matched against the
 original file (never incrementally) and must be unique, so a non-unique or
 missing match is rejected rather than silently corrupting a file. Matching is
