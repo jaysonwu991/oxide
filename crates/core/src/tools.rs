@@ -391,7 +391,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
                     "path": { "type": "string", "description": path_description },
                     "edits": {
                         "type": "array",
-                        "description": "One or more replacements for the top-level path only. Each edit is matched against the original file, not incrementally. Omit no-op edits. Do not include overlapping or nested edits. If any edit fails, nothing in this batch is written.",
+                        "description": "Pass a JSON array of replacement objects, not a string containing JSON. One or more replacements for the top-level path only. Each edit is matched against the original file, not incrementally. Copy targets from a current read; do not reconstruct or guess them. Omit no-op edits. Do not include overlapping or nested edits. If any edit fails, nothing in this batch is written.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1255,15 +1255,16 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
     Ok(raw)
 }
 
-/// Parses a stringified `edits` value, tolerating the extra `}` some models
-/// emit when they double-encode the array (`[{"oldText":"...","newText":
-/// "..."}}]`). Strict parsing is tried first, so a well-formed string is
-/// never rewritten.
+/// Repairs syntax outside quoted strings only; replacement contents must stay
+/// byte-for-byte as supplied, including literal escapes and code punctuation.
 fn parse_edits_string(text: &str) -> Option<Value> {
     if let Ok(value) = serde_json::from_str::<Value>(text) {
         return Some(value);
     }
-    let mut candidate = text.trim().to_string();
+    let mut candidate = strip_trailing_json_commas(text.trim());
+    if let Ok(value) = serde_json::from_str::<Value>(&candidate) {
+        return Some(value);
+    }
     while candidate.ends_with("}}]") {
         candidate.truncate(candidate.len() - 2);
         candidate.push(']');
@@ -1272,6 +1273,37 @@ fn parse_edits_string(text: &str) -> Option<Value> {
         }
     }
     None
+}
+
+fn strip_trailing_json_commas(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut start = 0;
+    let mut result = String::with_capacity(text.len());
+    for (index, &byte) in bytes.iter().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else if byte == b'"' {
+            quoted = true;
+        } else if byte == b',' {
+            let next = bytes[index + 1..]
+                .iter()
+                .find(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'));
+            if matches!(next, Some(b'}' | b']')) {
+                result.push_str(&text[start..index]);
+                start = index + 1;
+            }
+        }
+    }
+    result.push_str(&text[start..]);
+    result
 }
 
 fn collect_edits(value: &Value, out: &mut Vec<Replacement>) -> Result<()> {
@@ -10210,6 +10242,57 @@ mod tests {
             "after\n"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn edit_repairs_trailing_commas_without_rewriting_quoted_code() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_edit_commas_{}_{}",
+            std::process::id(),
+            TRUNCATION_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = "const label = \"旧,}\";\nconst pattern = /,]/;\n";
+        let new = "const label = \"新,}\";\nconst pattern = /,]/;\n";
+        std::fs::write(dir.join("a.js"), old).unwrap();
+        let stringified = format!(
+            "[ {{\"oldText\":{}, \"newText\":{},\n}},\n]",
+            json!(old),
+            json!(new)
+        );
+        let parsed = parse_edits_string(&stringified).unwrap();
+        assert_eq!(parsed, json!([{ "oldText": old, "newText": new }]));
+        edit(&dir, &json!({"path": "a.js", "edits": stringified})).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.js")).unwrap(), new);
+
+        let rejected = format!(
+            "[{{\"oldText\":{},\"newText\":{},}},{{\"oldText\":\"absent\",\"newText\":\"guess\",}},]",
+            json!(new),
+            json!(old)
+        );
+        assert!(edit(&dir, &json!({"path": "a.js", "edits": rejected})).is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("a.js")).unwrap(), new);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn edit_json_repair_preserves_escapes_and_rejects_other_malformed_syntax() {
+        let expected = json!([{
+            "oldText": "a\\\" ,}\\n",
+            "newText": "b\\\\\" ,]\\n"
+        }]);
+        let valid = expected.to_string();
+        assert_eq!(parse_edits_string(&valid), Some(expected.clone()));
+        let trailing = format!("{},]", valid.strip_suffix(']').unwrap());
+        assert_eq!(parse_edits_string(&trailing), Some(expected));
+        for invalid in [
+            r#"[{"oldText":"a","newText":"b",}, garbage]"#,
+            r#"[{"oldText":"a","newText":"unterminated,}]"#,
+            r#"[{"oldText":"a" "newText":"b"}]"#,
+            r#"[{"oldText":"a","newText":"b"},,]"#,
+        ] {
+            assert!(parse_edits_string(invalid).is_none(), "{invalid}");
+        }
     }
 
     #[test]

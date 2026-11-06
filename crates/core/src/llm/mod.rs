@@ -5,6 +5,7 @@ mod client;
 pub mod copilot;
 mod gemini;
 pub(crate) mod gitlab;
+mod responses;
 mod types;
 pub(crate) mod vertex;
 

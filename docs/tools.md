@@ -141,6 +141,10 @@ no-op that is supplied is still validated. If any replacement fails, the entire
 batch is rejected without writing anything, including the replacements that
 matched. The error names the failures and tells the agent to re-read the correct
 file and resend the corrected batch. CLI, Extension and Desktop share these rules.
+Pass `edits` as an array of objects, rather than a JSON string. For compatibility,
+stringified arrays tolerate trailing commas outside quoted strings; code and
+escapes inside `oldText` and `newText` are preserved. Missing or ambiguous targets
+still reject the whole batch after this syntax repair.
 
 A `write` or `edit` that increases the count of U+FFFD replacement characters
 is refused as likely encoding corruption. A write compares the full file; an

@@ -7,7 +7,7 @@ use crate::llm::types::{
     push_thinking, AssistantTurn, ChatRequest, FunctionCall, Message, StreamChunk, StreamOptions,
     ToolCall, ToolSpec, Usage,
 };
-use crate::llm::{aws, bedrock, copilot, gemini, gitlab, vertex};
+use crate::llm::{aws, bedrock, copilot, gemini, gitlab, responses, vertex};
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use serde_json::Value;
@@ -640,6 +640,11 @@ impl LlmClient {
                 .stream_anthropic(messages, tools, max_tokens, hooks)
                 .await;
         }
+        if self.config.is_portkey() && responses::supports_model(&self.config.model) {
+            return self
+                .stream_responses(messages, tools, max_tokens, hooks)
+                .await;
+        }
         match self.config.provider_kind() {
             ProviderKind::Anthropic => {
                 self.stream_anthropic(messages, tools, max_tokens, hooks)
@@ -674,6 +679,7 @@ impl LlmClient {
         if status == reqwest::StatusCode::BAD_REQUEST
             && rejects_effort(&error)
             && (body.get("reasoning_effort").is_some()
+                || body.pointer("/reasoning/effort").is_some()
                 || body.pointer("/output_config/effort").is_some())
         {
             anyhow::bail!(
@@ -687,6 +693,45 @@ impl LlmClient {
             );
         }
         anyhow::bail!("provider returned {status}: {}", error.trim());
+    }
+
+    async fn stream_responses(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        max_tokens: u32,
+        hooks: &mut StreamHooks<'_>,
+    ) -> Result<AssistantTurn> {
+        let url = format!(
+            "{}/responses",
+            self.config.base_url.trim().trim_end_matches('/')
+        );
+        let mut config = self.config.clone();
+        config.max_tokens = max_tokens;
+        let body = responses::request_body(&config, messages, tools);
+        let mut builder = self.authenticate_openai(self.http.post(url))?;
+        if let Some(session) = self.session_id.as_deref() {
+            builder = builder
+                .header("x-session-id", session)
+                .header("x-client-request-id", session);
+        }
+        let response = self.send_compatible_request(builder, body).await?;
+        let mut turn = AssistantTurn::default();
+        let mut items = BTreeMap::new();
+        read_sse(response, |data| {
+            let event: Value = serde_json::from_str(data).context("decoding Responses event")?;
+            if let Some(model) = event.pointer("/response/model").and_then(Value::as_str) {
+                validate_gateway_model(&config, model)?;
+                turn.response_model = Some(model.into());
+            }
+            responses::apply_event(&event, &mut turn, &mut items, hooks.text, hooks.thinking)
+        })
+        .await?;
+        if turn.finish_reason.is_none() {
+            anyhow::bail!("provider stream ended before completing the response");
+        }
+        responses::finish(&config, &mut turn, items);
+        Ok(turn)
     }
 
     async fn stream_openai(
@@ -1425,7 +1470,10 @@ fn openai_reasoning(
     Option<serde_json::Value>,
     Option<serde_json::Value>,
 ) {
-    if config.is_zai() {
+    if config.is_zai()
+        || (config.is_portkey()
+            && crate::catalog::metadata_provider("portkey", &config.model) == "zai")
+    {
         return glm_reasoning(config);
     }
     if config.is_deepseek_api() {
@@ -2352,6 +2400,80 @@ mod tests {
     }
 
     #[test]
+    fn portkey_glm_uses_native_thinking_controls_at_every_level() {
+        for reasoning in [
+            Reasoning::Auto,
+            Reasoning::Off,
+            Reasoning::Minimal,
+            Reasoning::Low,
+            Reasoning::Medium,
+            Reasoning::High,
+            Reasoning::Xhigh,
+            Reasoning::Max,
+        ] {
+            let direct = Config {
+                provider: "zai".into(),
+                model: "glm-5.2".into(),
+                reasoning,
+                ..Config::default()
+            };
+            let gateway = Config {
+                provider: "portkey".into(),
+                ..direct.clone()
+            };
+            assert_eq!(openai_reasoning(&gateway), openai_reasoning(&direct));
+        }
+    }
+
+    #[tokio::test]
+    async fn portkey_gpt_models_stream_thinking_through_responses() {
+        for model in ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"] {
+            let body = [
+                serde_json::json!({"type":"response.created","response":{"model":model}}),
+                serde_json::json!({"type":"response.reasoning_summary_text.delta","delta":"Checking the result"}),
+                serde_json::json!({"type":"response.output_text.delta","delta":"Done"}),
+                serde_json::json!({"type":"response.completed","response":{"model":model,"usage":{"input_tokens":30,"output_tokens":20,"output_tokens_details":{"reasoning_tokens":15}}}}),
+            ].iter().map(|event| format!("data: {event}\n\n")).collect::<String>();
+            let (addr, server) = scripted_sse_server(vec![(body, false)]).await;
+            let config = Config {
+                provider: "portkey".into(),
+                model: model.into(),
+                base_url: format!("http://{addr}/v1"),
+                api_key: "test".into(),
+                portkey_config: "test-route".into(),
+                reasoning: Reasoning::High,
+                ..Config::default()
+            };
+            let client = LlmClient::new(config);
+            let mut thinking = String::new();
+            let turn = client
+                .stream_provider(
+                    &[Message::user("Check")],
+                    &[],
+                    2048,
+                    &mut StreamHooks {
+                        text: &mut |_| {},
+                        thinking: &mut |text| thinking.push_str(&text),
+                        retry: &mut |_| {},
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(thinking, "Checking the result");
+            assert_eq!(turn.content, "Done");
+            assert_eq!(turn.usage.reasoning, 15);
+            let requests = server.await.unwrap();
+            assert!(requests[0].starts_with("POST /v1/responses "));
+            assert!(requests[0].contains("x-portkey-config: test-route"));
+            let sent: Value =
+                serde_json::from_str(requests[0].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert_eq!(sent["reasoning"]["effort"], "high");
+            assert_eq!(sent["reasoning"]["summary"], "auto");
+            assert_eq!(sent["max_output_tokens"], 2048);
+        }
+    }
+
+    #[test]
     fn glm_uses_thinking_type_and_its_own_effort_levels() {
         let config = |model: &str, reasoning: Reasoning| Config {
             provider: "zai".into(),
@@ -3059,7 +3181,7 @@ mod tests {
                 ])
             } else {
                 sse(&[
-                    serde_json::json!({"model":wrong_model,"choices":[{"delta":{"content":"wrong answer"},"finish_reason":"stop"}]}),
+                    serde_json::json!({"type":"response.created","response":{"model":wrong_model}}),
                 ])
             };
             let (addr, server) = sse_server(vec![body]).await;
@@ -3178,14 +3300,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portkey_non_claude_models_keep_the_openai_transport() {
-        for model in [
-            "glm-5.2",
-            "gpt-5.4",
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-        ] {
+    async fn portkey_glm_keeps_the_openai_transport() {
+        for model in ["glm-5.2"] {
             let (addr, server) = sse_server(vec![completed_turn("done")]).await;
             let client = LlmClient::new(Config {
                 model: model.into(),
@@ -3212,7 +3328,8 @@ mod tests {
             );
             let body: Value =
                 serde_json::from_str(requests[0].split_once("\r\n\r\n").unwrap().1).unwrap();
-            assert_eq!(body["reasoning_effort"], "medium");
+            assert_eq!(body["reasoning_effort"], "high");
+            assert_eq!(body["thinking"]["type"], "enabled");
             assert!(body.get("output_config").is_none());
         }
     }
@@ -3247,7 +3364,8 @@ mod tests {
                     serde_json::from_str(requests[0].split_once("\r\n\r\n").unwrap().1).unwrap();
                 let effort = body
                     .get("reasoning_effort")
-                    .or_else(|| body.pointer("/output_config/effort"));
+                    .or_else(|| body.pointer("/output_config/effort"))
+                    .or_else(|| body.pointer("/reasoning/effort"));
                 assert_eq!(effort.and_then(Value::as_str), Some(level.label()));
             }
         }
@@ -3256,8 +3374,8 @@ mod tests {
     #[tokio::test]
     async fn accepted_gateway_levels_reach_the_provider_unchanged() {
         let (addr, server) = status_server(vec![
-            (200, completed_turn("medium")),
-            (200, completed_turn("high")),
+            (200, responses_turn("medium", "", 0, false)),
+            (200, responses_turn("high", "", 0, false)),
         ])
         .await;
         for level in [Reasoning::Medium, Reasoning::High] {
@@ -3282,7 +3400,7 @@ mod tests {
         for (request, effort) in requests.iter().zip(["medium", "high"]) {
             let body: Value =
                 serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
-            assert_eq!(body["reasoning_effort"], effort);
+            assert_eq!(body["reasoning"]["effort"], effort);
         }
     }
 
@@ -3422,21 +3540,14 @@ mod tests {
         ])
     }
 
-    /// An empty turn that reasoned but stopped without reporting the output
-    /// limit, as some gateways do when reasoning consumes the budget.
-    fn reasoning_only_turn(finish: &str) -> String {
-        sse(&[
-            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": "thinking"}, "logprobs": null, "finish_reason": null}]}),
-            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": finish}]}),
-        ])
-    }
-
-    /// An empty turn whose only output was hidden reasoning reported in the
-    /// usage, as OpenAI-family models do (they never stream the text).
-    fn billed_reasoning_turn() -> String {
-        sse(&[
-            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": null}]}),
-            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "reasoning_content": null}, "logprobs": null, "finish_reason": "stop"}], "usage": {"prompt_tokens": 10, "completion_tokens": 8192, "completion_tokens_details": {"reasoning_tokens": 8192}}}),
+    fn responses_turn(text: &str, thinking: &str, output: u64, incomplete: bool) -> String {
+        anthropic_sse(&[
+            serde_json::json!({"type":"response.output_text.delta","delta":text}),
+            serde_json::json!({"type":"response.reasoning_summary_text.delta","delta":thinking}),
+            serde_json::json!({"type":if incomplete {"response.incomplete"} else {"response.completed"},"response":{
+                "incomplete_details":{"reason":"max_output_tokens"},
+                "usage":{"input_tokens":100,"output_tokens":output,"output_tokens_details":{"reasoning_tokens":output}}
+            }}),
         ])
     }
 
@@ -3473,6 +3584,7 @@ mod tests {
         let body = request.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
         let body = serde_json::from_str::<serde_json::Value>(body).unwrap();
         body.get("max_completion_tokens")
+            .or_else(|| body.get("max_output_tokens"))
             .or_else(|| body.get("max_tokens"))
             .unwrap()
             .as_u64()
@@ -3824,7 +3936,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_portkey_gpt5_turn_escalates_like_any_openai_compatible_model() {
-        let (addr, server) = sse_server(vec![length_limited_turn(), completed_turn("done")]).await;
+        let (addr, server) = sse_server(vec![
+            responses_turn("", "", 8192, true),
+            responses_turn("done", "", 0, false),
+        ])
+        .await;
         let client = LlmClient::new(portkey_test_config(addr, 8192));
 
         let mut text = String::new();
@@ -3848,8 +3964,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_reasoning_only_empty_turn_escalates_without_a_reported_limit() {
-        let (addr, server) =
-            sse_server(vec![reasoning_only_turn("stop"), completed_turn("done")]).await;
+        let (addr, server) = sse_server(vec![
+            responses_turn("", "Thinking", 0, false),
+            responses_turn("done", "", 0, false),
+        ])
+        .await;
         let client = LlmClient::new(portkey_test_config(addr, 8192));
 
         let mut text = String::new();
@@ -3873,8 +3992,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_billed_reasoning_turn_escalates_even_without_streamed_text() {
-        let (addr, server) =
-            sse_server(vec![billed_reasoning_turn(), completed_turn("done")]).await;
+        let (addr, server) = sse_server(vec![
+            responses_turn("", "", 100, false),
+            responses_turn("done", "", 0, false),
+        ])
+        .await;
         let client = LlmClient::new(portkey_test_config(addr, 8192));
 
         let mut text = String::new();

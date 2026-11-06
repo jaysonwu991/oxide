@@ -76,6 +76,15 @@ Adaptive Anthropic Messages requests explicitly set `thinking.display = summariz
 instead of their default empty, signed thinking blocks. This controls visibility,
 not the requested effort.
 
+Portkey models resolve capabilities through their upstream catalogs: Anthropic
+for Claude, OpenAI for GPT, and Z.AI for GLM. GPT uses Portkey's `/responses`
+endpoint with `reasoning.summary: auto`, streaming available summaries into the
+thinking panel and preserving encrypted reasoning across tool calls for the same
+model. Explicit Off sends `reasoning.effort: none`; Auto leaves effort at the
+provider default. GLM uses its native `thinking.type` and effort mapping. A model
+switch refreshes the advertised levels; summaries still depend on upstream access
+and whether the model emits one for that response.
+
 ### max_tokens and context_window
 
 `max_tokens` caps the output of a single model turn, reasoning included. When a

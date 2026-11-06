@@ -322,18 +322,28 @@ pub fn reasoning_for(provider: &str, model: &str) -> Option<ModelReasoning> {
     model.reasoning_levels()
 }
 
-/// Portkey forwards Claude requests but has no pi.dev catalog of its own.
-/// Resolve its model capabilities against Anthropic's published metadata;
+/// Portkey has no pi.dev catalog of its own.
+/// Resolve known model families against their upstream published metadata;
 /// every lookup still requires a matching model entry.
 pub fn metadata_provider<'a>(provider: &'a str, model: &str) -> &'a str {
     let model = model.to_ascii_lowercase();
-    if crate::config::canonical_provider(provider) == "portkey"
-        && crate::config::vendorless(&model).starts_with("claude-")
-    {
-        "anthropic"
-    } else {
-        provider
+    if crate::config::canonical_provider(provider) == "portkey" {
+        let name = crate::config::vendorless(&model);
+        if name.starts_with("claude-") {
+            return "anthropic";
+        }
+        if name.starts_with("gpt-")
+            || name.starts_with("o1")
+            || name.starts_with("o3")
+            || name.starts_with("o4")
+        {
+            return "openai";
+        }
+        if name.starts_with("glm-") {
+            return "zai";
+        }
     }
+    provider
 }
 
 /// The entry an id names, under the same spellings [`window_for`] accepts and
@@ -521,7 +531,7 @@ pub fn launch_providers(active: &str) -> Vec<String> {
     let mut providers = crate::auth::stored_providers();
     providers.push(crate::config::canonical_provider(active));
     if providers.iter().any(|provider| provider == "portkey") {
-        providers.push("anthropic".to_string());
+        providers.extend(["anthropic", "openai", "zai"].map(str::to_string));
     }
     providers.sort();
     providers.dedup();
@@ -1196,6 +1206,60 @@ mod tests {
         }
         .is_stale());
         assert!(CatalogEntry::default().is_stale());
+    }
+
+    #[tokio::test]
+    async fn portkey_warms_gpt_and_glm_capabilities_after_model_switches() {
+        let _env = crate::env_lock::hold();
+        let dir = temp_dir("portkey-model-switch");
+        std::env::set_var(FILE_ENV, dir.join(FILE_NAME));
+        std::env::set_var(ENV_NAME, "true");
+        let gpt = r#"{"gpt-5.6-sol":{"id":"gpt-5.6-sol","reasoning":true,"thinkingLevelMap":{"minimal":null,"xhigh":"xhigh","max":"max"}}}"#;
+        let glm = r#"{"glm-5.2":{"id":"glm-5.2","reasoning":true,"thinkingLevelMap":{"minimal":null,"medium":null,"xhigh":null,"max":"max"}}}"#;
+        let server = TestServer::start(vec![
+            Response::new(200, gpt, &[], &[]),
+            Response::new(200, glm, &[], &[]),
+        ]);
+        std::env::set_var(URL_ENV, server.url());
+        let mut config = crate::config::Config {
+            provider: "portkey".into(),
+            model: "gpt-5.6-sol".into(),
+            base_url: server.url(),
+            api_key: "test".into(),
+            ..Default::default()
+        };
+        for (model, upstream) in [("gpt-5.6-sol", "openai"), ("glm-5.2", "zai")] {
+            config.model = model.into();
+            config.ensure_reasoning_supported(None).await;
+            assert!(config.supports_reasoning(), "{model}");
+            assert!(config.reasoning_levels().contains(&Reasoning::High));
+            assert!(config.reasoning_levels().contains(&Reasoning::Max));
+            assert!(!config.reasoning_levels().contains(&Reasoning::Minimal));
+            assert_eq!(metadata_provider("portkey", model), upstream);
+        }
+        assert_eq!(server.requests().len(), 2);
+        assert_eq!(server.requests()[0].path, "/api/models/providers/openai");
+        assert_eq!(server.requests()[1].path, "/api/models/providers/zai");
+        for (model, upstream) in [
+            ("claude-haiku-4-5", "anthropic"),
+            ("claude-opus-4-8", "anthropic"),
+            ("claude-opus-5", "anthropic"),
+            ("claude-sonnet-4-6", "anthropic"),
+            ("claude-sonnet-5", "anthropic"),
+            ("gpt-5.4", "openai"),
+            ("gpt-5.6-luna", "openai"),
+            ("gpt-5.6-sol", "openai"),
+            ("gpt-5.6-terra", "openai"),
+            ("glm-5.2", "zai"),
+            ("OPENAI/GPT-5.6-SOL", "openai"),
+            ("private-alias", "portkey"),
+        ] {
+            assert_eq!(metadata_provider("portkey", model), upstream);
+        }
+        std::env::remove_var(FILE_ENV);
+        std::env::remove_var(ENV_NAME);
+        std::env::remove_var(URL_ENV);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
