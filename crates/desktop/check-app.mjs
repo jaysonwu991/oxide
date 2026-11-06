@@ -5031,7 +5031,15 @@ sourceCall.chatTool = { name: "webfetch", args: '{"url":"https://example.com"}' 
 elementFor("transcript").append(sourceMessage, sourceCall);
 app.paintProjectSources();
 check("listed the chat's attachment and web source", app.chatSources().some((source) => source.name === "reference.png") && app.chatSources().some((source) => source.name === "Web search"));
+let scrolledToWebSource = false;
+sourceCall.scrollIntoView = () => { scrolledToWebSource = true; };
+elementFor("details-add-source").click();
+check("opened source actions from Add sources", !elementFor("sources-modal").hidden && typeof elementFor("sources-attach").onclick === "function");
+elementFor("sources-list").children.find((row) => row.title === "Web search").click();
+check("returned to the web result from its source row", scrolledToWebSource && elementFor("sources-modal").hidden);
 const imageSource = elementFor("details-sources").children.find((row) => row.title === "reference.png");
+check("gave source names and icons independent inline layout",
+  elementFor("details-sources").children.find((row) => row.title === "Web search").children[0].className === "source-icon" && imageSource.children[1].className === "source-name");
 imageSource.click();
 check("opened the attachment source preview", !elementFor("image-modal").hidden);
 elementFor("image-modal").hidden = true;
@@ -5873,6 +5881,15 @@ check(
 // ---------- markdown ----------
 
 console.log("markdown");
+
+for (const [mark, tag] of [["**", "strong"], ["*", "em"], ["~~", "del"]]) {
+  const url = "https://example.com/storybook/refs/pull/11699/merge/index.html";
+  const html = app.renderMarkdown(`${mark}${url}${mark}.`);
+  check("rendered emphasized bare URLs without linking their delimiters: " + mark,
+    html === `<p><${tag}><a href="${url}" target="_blank" rel="noreferrer">${url}</a></${tag}>.</p>`, html);
+}
+check("kept a URL next to inline code from consuming its placeholder",
+  app.renderMarkdown("https://example.com`code`") === '<p><a href="https://example.com" target="_blank" rel="noreferrer">https://example.com</a><code>code</code></p>');
 
 for (const [source, expected] of [
   ["[outer [inner [key]] title](https://example.com)", '<a href="https://example.com" target="_blank" rel="noreferrer">outer [inner [key]] title</a>'],

@@ -161,6 +161,11 @@ card grid with visible keyboard focus.
 The project summary uses a fixed-width right panel. It hides automatically when
 widening the left sidebar or narrowing the window leaves too little room for the
 chat, and returns when space is available. The sidebar remains resizable.
+Repository, changes and source actions keep their SVG icons inline with their
+labels. Source names truncate independently of their thumbnails and connection
+status; hovering a server exposes its full status. **Add sources** opens the
+source list with actions to attach files or manage MCP servers. Image sources
+open their preview, and **Web search** returns to the chat's first web result.
 
 Use the header's **New tab** button or `⌘T` / `Ctrl+T` to open another chat tab.
 Each tab keeps its draft, attachments and scroll position. `⌘W` / `Ctrl+W` closes
@@ -1674,7 +1679,9 @@ Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks), blockquotes, rules, pipe tables, fenced code with
 lightweight syntax highlighting (Rust, JS/TS, Python, Go, Bash, JSON), and
 inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
-clicking any link opens it in the system browser through `open_url`: the window
+surrounding emphasis markers stay outside the destination, so a bold URL stays
+bold and opens the original address. The extension uses the same matching rule.
+Clicking any link opens it in the system browser through `open_url`: the window
 is the half that has the machine's handler, so it answers the page's request
 directly — checking the scheme first (http(s) alone), so a `file:` path or a
 custom scheme reaches nothing at all rather than the platform's handler, calling

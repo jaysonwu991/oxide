@@ -514,15 +514,15 @@
     <aside id="details-panel" class="details-pane" aria-label="Project details" data-i18n-aria="topbar.projectDetails" hidden>
       <div class="details-card">
         <div class="details-head"><span id="details-project"></span><button id="details-more" class="icon" title="Project options" aria-label="Project options" aria-haspopup="menu" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
-        <button id="details-changes" class="details-row"><span id="details-changes-icon" aria-hidden="true"></span><span data-i18n="topbar.viewChanges">Changes</span><span id="details-stats" class="change-stats"></span></button>
+        <button id="details-changes" class="details-row"><span id="details-changes-icon" aria-hidden="true"></span><span data-i18n="topbar.viewChanges">View changes</span><span id="details-stats" class="change-stats"></span></button>
         <details class="details-repository">
-          <summary data-i18n="review.repository">Repository</summary>
+          <summary><span id="details-repository-icon" aria-hidden="true"></span><span data-i18n="review.repository">Repository</span></summary>
         <div id="details-checkout" class="details-row"></div>
         <button id="details-branch" type="button" class="details-row" hidden></button>
         </details>
-        <div class="details-sources-head"><span data-i18n="dialog.sources.title">Sources</span><button id="details-add-source" class="icon" title="Add sources" aria-label="Add sources" data-i18n-title="dialog.sources.add" data-i18n-aria="dialog.sources.add"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
+        <div class="details-sources-head"><span class="details-label"><span id="details-sources-icon" aria-hidden="true"></span><span data-i18n="dialog.sources.title">Sources</span></span><button id="details-add-source" class="icon" title="Add sources" aria-label="Add sources" data-i18n-title="dialog.sources.add" data-i18n-aria="dialog.sources.add"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
         <div id="details-sources"></div>
-        <button id="details-view-sources" class="details-row" data-i18n="dialog.sources.viewAll">View all</button>
+        <button id="details-view-sources" class="details-row"><span id="details-view-icon" aria-hidden="true"></span><span data-i18n="dialog.sources.viewAll">View all</span></button>
       </div>
     </aside>
 
@@ -607,7 +607,8 @@
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="sources-title">
         <div class="dialog-head"><h2 id="sources-title" data-i18n="dialog.sources.title">Sources</h2><button id="sources-close" class="icon" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
         <div id="sources-list" class="sources-list"></div>
-        <button id="sources-manage" class="details-row" data-i18n="dialog.mcps.manage">Manage MCP servers</button>
+        <button id="sources-attach" class="details-row"><span id="sources-attach-icon" aria-hidden="true"></span><span data-i18n="composer.attach">Attach files</span></button>
+        <button id="sources-manage" class="details-row"><span id="sources-manage-icon" aria-hidden="true"></span><span data-i18n="dialog.mcps.manage">Manage MCP servers</span></button>
       </div>
     </div>
 

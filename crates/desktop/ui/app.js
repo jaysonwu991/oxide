@@ -1517,7 +1517,15 @@ function inline(text, references = false, hardBreaks = false) {
   }
   s = inlineLinks(s, stash);
   s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
-  s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
+  s = s.replace(/\bhttps?:\/\/[^\s<>"'`\u0000]+/g, (url, offset, input) => {
+    const delimiter = /(\*\*|\*|~~)$/.exec(input.slice(0, offset))?.[1];
+    const punctuation = /[.,;:!?]+$/.exec(url)?.[0] || "";
+    const body = punctuation ? url.slice(0, -punctuation.length) : url;
+    if (delimiter && body.endsWith(delimiter)) {
+      return autolink(body.slice(0, -delimiter.length), stash) + delimiter + punctuation;
+    }
+    return autolink(url, stash);
+  });
   if (references) {
     s = s.replace(/(^|[\s(])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|org|net|io|dev|app|co|edu|gov|ai|me|info|uk|cn|de|fr|jp)(?::\d{1,5})?(?:[/?#][^\s<>"'`\u0000]*)?)(?=$|[\s),.;:!?])/gi,
       (_, prefix, url) => prefix + autolink(url, stash, true));
@@ -5268,7 +5276,7 @@ function chatSources() {
       sources.set(attachment.dataUrl, { kind: "attachment", name: attachment.name || t("composer.attachment", "Attachment"), attachment });
     }
     if (/^(?:webfetch|web_search|websearch|search_query)$/.test(node.chatTool?.name || "")) {
-      sources.set("web", { kind: "web", name: t("ui.webSearch", "Web search") });
+      if (!sources.has("web")) sources.set("web", { kind: "web", name: t("ui.webSearch", "Web search"), node });
     }
   }
   if (state.sourceServers?.project === runFolder()) {
@@ -5291,21 +5299,30 @@ function sourceRow(source) {
     row.appendChild(thumbnail);
   } else {
     const icon = document.createElement("span");
+    icon.className = "source-icon";
+    icon.setAttribute("aria-hidden", "true");
     icon.innerHTML = source.kind === "mcp" ? ICONS.power : source.kind === "web" ? ICONS.globe : ICONS.file;
     row.appendChild(icon);
   }
   const name = document.createElement("span");
+  name.className = "source-name";
   name.textContent = source.name;
   row.appendChild(name);
   if (source.server) {
     const status = document.createElement("span");
     status.className = "source-state";
     status.textContent = mcpStatusText(source.server);
+    status.title = status.textContent;
+    row.title = `${source.name}: ${status.textContent}`;
     row.appendChild(status);
   }
   row.onclick = () => {
     if (attachment && isPaintableImage(attachment.dataUrl)) openImage(attachment.dataUrl, attachment.name);
     else if (source.kind === "mcp") openMcps();
+    else if (source.kind === "web") {
+      el("sources-modal").hidden = true;
+      source.node.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    }
     else if (attachment) { setStatus(t("ui.isIncludedInThisChat", "{value0} is included in this chat.", { value0: attachment.name || "Attachment" })); }
     else openSources();
   };
@@ -11457,11 +11474,17 @@ function init() {
     if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
   };
   el("details-changes").onclick = openRepositoryChanges;
-  el("details-add-source").onclick = () => el("attach-input").click();
+  el("details-add-source").onclick = openSources;
   el("details-view-sources").onclick = openSources;
   el("sources-close").onclick = () => { el("sources-modal").hidden = true; el("details-view-sources").focus(); };
   el("sources-manage").onclick = openMcps;
-  el("details-changes-icon").innerHTML = ICONS.file;
+  el("sources-attach").onclick = () => { el("sources-modal").hidden = true; el("attach-input").click(); };
+  el("details-changes-icon").innerHTML = ICONS.changes;
+  el("details-repository-icon").innerHTML = ICONS.folder;
+  el("details-sources-icon").innerHTML = ICONS.globe;
+  el("details-view-icon").innerHTML = ICONS.caret;
+  el("sources-attach-icon").innerHTML = ICONS.plus;
+  el("sources-manage-icon").innerHTML = ICONS.power;
   el("review-scope").onchange = changeReviewScope;
   el("review-refresh").onclick = changeReviewScope;
 
