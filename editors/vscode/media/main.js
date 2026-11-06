@@ -613,7 +613,15 @@ function installMarkdownInput(editor, render) {
     }
     s = inlineLinks(s, stash);
     s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
-    s = s.replace(/\bhttps?:\/\/[^\s<>"'`]+/g, (url) => autolink(url, stash));
+    s = s.replace(/\bhttps?:\/\/[^\s<>"'`\u0000]+/g, (url, offset, input) => {
+      const delimiter = /(\*\*|\*|~~)$/.exec(input.slice(0, offset))?.[1];
+      const punctuation = /[.,;:!?]+$/.exec(url)?.[0] || "";
+      const body = punctuation ? url.slice(0, -punctuation.length) : url;
+      if (delimiter && body.endsWith(delimiter)) {
+        return autolink(body.slice(0, -delimiter.length), stash) + delimiter + punctuation;
+      }
+      return autolink(url, stash);
+    });
     if (references) {
       s = s.replace(/(^|[\s(])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|org|net|io|dev|app|co|edu|gov|ai|me|info|uk|cn|de|fr|jp)(?::\d{1,5})?(?:[/?#][^\s<>"'`\u0000]*)?)(?=$|[\s),.;:!?])/gi,
         (_, prefix, url) => prefix + autolink(url, stash, true));
