@@ -898,6 +898,15 @@ async fn run_loop(
         }
         skip_steering_poll = false;
 
+        if crate::efficiency::prune_tool_images(
+            &mut messages,
+            measured_at,
+            &config.token_efficiency.tool_history,
+            tools::save_tool_image,
+        ) > 0
+        {
+            seen_media = deduplicate_tool_media(&mut messages);
+        }
         let reclaimed = crate::efficiency::prune_tool_history(
             &mut messages,
             measured_at,
@@ -4515,6 +4524,58 @@ mod tests {
     use super::*;
     use crate::ecosystem::{AgentDef, Skill};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    #[ignore = "set OXIDE_REPLAY_SESSION to a saved JSONL session; no provider calls are made"]
+    fn replay_saved_session_image_history() {
+        let path = std::env::var("OXIDE_REPLAY_SESSION").expect("OXIDE_REPLAY_SESSION is required");
+        let input = std::fs::read_to_string(path).unwrap();
+        let config = crate::efficiency::ToolHistory::default();
+        let mut baseline = Vec::new();
+        let mut optimized = Vec::new();
+        let mut requests = 0;
+        let mut seen_through = 0;
+        let mut before_images = 0;
+        let mut after_images = 0;
+        let mut before_bytes = 0;
+        let mut after_bytes = 0;
+        let count = |messages: &[Message]| {
+            messages
+                .iter()
+                .filter_map(|message| match &message.content {
+                    Some(MessageContent::Parts(parts)) => Some(parts),
+                    _ => None,
+                })
+                .flatten()
+                .filter(|part| matches!(part, ContentPart::ImageUrl { .. }))
+                .count()
+        };
+        for line in input.lines() {
+            let entry: Value = serde_json::from_str(line).unwrap();
+            if entry["type"] != "message" {
+                continue;
+            }
+            let message: Message = serde_json::from_value(entry["message"].clone()).unwrap();
+            if message.role == "assistant" {
+                deduplicate_tool_media(&mut baseline);
+                deduplicate_tool_media(&mut optimized);
+                crate::efficiency::prune_tool_images(&mut optimized, seen_through, &config, |_| {
+                    Some("/tmp/replay-image.png".into())
+                });
+                seen_through = optimized.len();
+                requests += 1;
+                before_images += count(&baseline);
+                after_images += count(&optimized);
+                before_bytes += serde_json::to_vec(&baseline).unwrap().len();
+                after_bytes += serde_json::to_vec(&optimized).unwrap().len();
+            }
+            baseline.push(message.clone());
+            optimized.push(message);
+        }
+        println!("Replay: {requests} assistant boundaries; image appearances {before_images} -> {after_images}; serialized history bytes {before_bytes} -> {after_bytes}");
+        assert!(after_images <= before_images);
+        assert!(after_bytes <= before_bytes);
+    }
 
     #[tokio::test]
     async fn repeated_file_reads_reuse_only_current_content_and_allow_fresh_reads() {
