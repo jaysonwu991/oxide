@@ -10,9 +10,9 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    /// Anthropic extended-thinking blocks captured from the assistant turn so
-    /// they can be replayed with tool results. Never sent to OpenAI as blocks;
-    /// DeepSeek receives their text as `reasoning_content` instead.
+    /// Provider thinking and encrypted Responses reasoning items retained for
+    /// tool loops. Each transport replays only its compatible blocks; DeepSeek
+    /// receives visible text as `reasoning_content` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Vec<Value>>,
 }
