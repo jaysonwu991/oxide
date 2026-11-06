@@ -5571,6 +5571,32 @@ pub(crate) fn save_tool_output(text: &str) -> Option<PathBuf> {
     save_truncated(&truncation_dir()?, text)
 }
 
+pub(crate) fn save_tool_image(image: &crate::llm::ImageUrl) -> Option<PathBuf> {
+    save_tool_image_in(&truncation_dir()?, image)
+}
+
+fn save_tool_image_in(dir: &Path, image: &crate::llm::ImageUrl) -> Option<PathBuf> {
+    let (header, data) = image.url.split_once(',')?;
+    if !header.starts_with("data:image/") || !header.ends_with(";base64") {
+        return None;
+    }
+    let bytes = media::base64_decode(data)?;
+    let extension = match media::sniff_image_mime(&bytes)? {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    std::fs::create_dir_all(dir).ok()?;
+    cleanup_truncated(dir);
+    let stamp = now_millis();
+    let id = TRUNCATION_ID.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("image_{stamp}_{id}.{extension}"));
+    std::fs::write(&path, bytes).ok()?;
+    Some(path)
+}
+
 fn save_truncated(dir: &Path, text: &str) -> Option<PathBuf> {
     std::fs::create_dir_all(dir).ok()?;
     cleanup_truncated(dir);
@@ -5604,6 +5630,49 @@ fn cleanup_truncated(dir: &Path) {
 mod tests {
     use super::*;
     use crate::llm::FunctionCall;
+
+    #[test]
+    fn saved_tool_images_restore_the_original_bytes_and_reject_unrecoverable_urls() {
+        let dir = std::env::temp_dir().join(format!("oxide_image_history_{}", std::process::id()));
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&[0u8; 17]);
+        let image = crate::llm::ImageUrl {
+            url: format!("data:image/png;base64,{}", media::base64_encode(&png)),
+            detail: None,
+        };
+        let saved = save_tool_image_in(&dir, &image).unwrap();
+        assert_eq!(std::fs::read(&saved).unwrap(), png);
+        let restored = read(&dir, &json!({"path": saved})).unwrap();
+        assert_eq!(
+            restored.media,
+            vec![ContentPart::ImageUrl {
+                image_url: image.clone()
+            }]
+        );
+        let second = save_tool_image_in(&dir, &image).unwrap();
+        assert_ne!(saved, second);
+        assert_eq!(std::fs::read(&saved).unwrap(), png);
+        for url in [
+            "https://example.org/image.png",
+            "data:image/png;base64,%%%",
+            "data:image/png;base64,bm90LWFuLWltYWdl",
+        ] {
+            assert!(save_tool_image_in(
+                &dir,
+                &crate::llm::ImageUrl {
+                    url: url.into(),
+                    detail: None
+                }
+            )
+            .is_none());
+        }
+        let blocked = dir.join("not-a-directory");
+        std::fs::write(&blocked, "file").unwrap();
+        assert!(save_tool_image_in(&blocked, &image).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn call(name: &str, args: Value) -> ToolCall {
         ToolCall {

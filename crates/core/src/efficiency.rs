@@ -1,4 +1,4 @@
-use crate::llm::{Message, MessageContent, Usage};
+use crate::llm::{ContentPart, ImageUrl, Message, MessageContent, Usage};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,6 +36,7 @@ pub struct ToolHistory {
     pub prune_above_tokens: usize,
     pub keep_recent: usize,
     pub max_result_bytes: usize,
+    pub keep_recent_images: usize,
 }
 
 impl Default for ToolHistory {
@@ -45,6 +46,7 @@ impl Default for ToolHistory {
             prune_above_tokens: 32_000,
             keep_recent: 8,
             max_result_bytes: 2048,
+            keep_recent_images: 8,
         }
     }
 }
@@ -365,6 +367,63 @@ fn failed_shell(text: &str) -> bool {
         .is_some_and(|code| code != 0)
 }
 
+pub(crate) fn prune_tool_images(
+    messages: &mut [Message],
+    seen_through: usize,
+    config: &ToolHistory,
+    mut save: impl FnMut(&ImageUrl) -> Option<PathBuf>,
+) -> usize {
+    let keep = config.keep_recent_images;
+    if !config.enabled || keep == 0 {
+        return 0;
+    }
+    let count = messages
+        .iter()
+        .filter(|message| message.role == "tool")
+        .filter_map(|message| match &message.content {
+            Some(MessageContent::Parts(parts)) => Some(parts),
+            _ => None,
+        })
+        .flatten()
+        .filter(|part| matches!(part, ContentPart::ImageUrl { .. }))
+        .count();
+    // Rewriting an early result invalidates the cached prefix after it. Reclaim
+    // a batch instead of moving that boundary on every new screenshot.
+    if count <= keep.saturating_mul(2) {
+        return 0;
+    }
+    let mut remaining = count - keep;
+    let mut removed = 0;
+    for message in messages
+        .iter_mut()
+        .take(seen_through)
+        .filter(|message| message.role == "tool")
+    {
+        let Some(MessageContent::Parts(parts)) = &mut message.content else {
+            continue;
+        };
+        for part in parts {
+            if remaining == 0 {
+                return removed;
+            }
+            let ContentPart::ImageUrl { image_url } = part else {
+                continue;
+            };
+            remaining -= 1;
+            if let Some(path) = save(image_url) {
+                *part = ContentPart::Text {
+                    text: format!(
+                        "[older tool image saved: {}. Use read on this path to inspect it again.]",
+                        path.display()
+                    ),
+                };
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,5 +652,116 @@ mod tests {
             0
         );
         assert_eq!(messages[0].display().unwrap().len(), 10_000);
+    }
+
+    #[test]
+    fn image_history_batches_reclamation_and_allows_reinspection() {
+        let image = |id: usize| ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: format!("data:image/png;base64,{}-{id}", "a".repeat(10_000)),
+                detail: None,
+            },
+        };
+        let mut messages = vec![Message::tool_parts(
+            "one",
+            "first screenshot",
+            vec![image(1)],
+        )];
+        let user = Message {
+            role: "user".into(),
+            ..Message::tool_parts("user", "reference", vec![image(0)])
+        };
+        messages.insert(0, user.clone());
+        let config = ToolHistory {
+            keep_recent_images: 1,
+            ..Default::default()
+        };
+        messages.push(Message::tool_parts("two", "second", vec![image(2)]));
+        assert_eq!(
+            prune_tool_images(&mut messages, usize::MAX, &config, |_| panic!("not yet")),
+            0
+        );
+        let latest = Message::tool_parts("three", "latest", vec![image(3)]);
+        messages.push(latest.clone());
+        let before = serde_json::to_vec(&messages).unwrap().len();
+        let mut saved = Vec::new();
+        assert_eq!(
+            prune_tool_images(&mut messages, usize::MAX, &config, |image| {
+                saved.push(image.clone());
+                Some(format!("/tmp/screenshot-{}.png", saved.len()).into())
+            }),
+            2
+        );
+        assert_eq!(saved.len(), 2);
+        assert_eq!(messages[0].content, user.content);
+        assert_eq!(messages[3].content, latest.content);
+        assert_eq!(messages[1].tool_call_id.as_deref(), Some("one"));
+        assert!(messages[1].display().unwrap().contains("first screenshot"));
+        assert!(messages[1].display().unwrap().contains("read on this path"));
+        assert!(serde_json::to_vec(&messages).unwrap().len() < before * 3 / 4);
+        assert_eq!(
+            prune_tool_images(&mut messages, usize::MAX, &config, |_| panic!(
+                "already pruned"
+            )),
+            0
+        );
+        messages.push(Message::tool_parts("reinspect", "restored", vec![image(1)]));
+        assert_eq!(
+            prune_tool_images(&mut messages, usize::MAX, &config, |_| panic!(
+                "keep restored"
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn image_history_preserves_unsaved_images_documents_and_disabled_history() {
+        let mut messages = vec![
+            Message::tool_parts(
+                "mixed",
+                "evidence",
+                vec![
+                    ContentPart::File {
+                        file: crate::llm::FileData {
+                            filename: Some("report.pdf".into()),
+                            file_data: "data:application/pdf;base64,abc".into()
+                        }
+                    },
+                    ContentPart::ImageUrl {
+                        image_url: ImageUrl {
+                            url: "https://example.org/image.png".into(),
+                            detail: None
+                        }
+                    },
+                ]
+            );
+            3
+        ];
+        let original = serde_json::to_vec(&messages).unwrap();
+        let mut config = ToolHistory {
+            keep_recent_images: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            prune_tool_images(&mut messages, 0, &config, |_| panic!("unseen images")),
+            0
+        );
+        assert_eq!(serde_json::to_vec(&messages).unwrap(), original);
+        assert_eq!(
+            prune_tool_images(&mut messages, usize::MAX, &config, |_| None),
+            0
+        );
+        assert_eq!(serde_json::to_vec(&messages).unwrap(), original);
+        config.enabled = false;
+        assert_eq!(
+            prune_tool_images(&mut messages, usize::MAX, &config, |_| panic!("disabled")),
+            0
+        );
+        config.enabled = true;
+        config.keep_recent_images = 0;
+        assert_eq!(
+            prune_tool_images(&mut messages, usize::MAX, &config, |_| panic!("unlimited")),
+            0
+        );
     }
 }

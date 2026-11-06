@@ -694,7 +694,8 @@ win. Defaults enable read reuse and stale-output shortening, with no run budget:
       "enabled": true,
       "pruneAboveTokens": 32000,
       "keepRecent": 8,
-      "maxResultBytes": 2048
+      "maxResultBytes": 2048,
+      "keepRecentImages": 8
     },
     "turnBudget": {
       "maxModelCalls": null,
@@ -735,9 +736,19 @@ results.
 Once history reaches `pruneAboveTokens`, successful tool results older than the
 last `keepRecent` results are shortened to a head/tail excerpt. A pointer lets the
 model retrieve the full saved evidence. User requests, assistant decisions,
-errors, attachments and recent results remain intact; session storage retains
+errors, documents and recent results remain intact; session storage retains
 the original transcript. This reduces context without another summarizer call.
 Disable `toolHistory.enabled` to retain all tool results until ordinary compaction.
+
+Tool screenshots are reclaimed separately from text: once more than twice
+`keepRecentImages` images accumulate, older tool images are saved locally and
+replaced with paths, keeping the newest `keepRecentImages` images in context.
+New tool images are always delivered to the model before becoming eligible.
+Batching avoids changing the cached prefix on every screenshot. `read` on a
+saved path restores the original image; originals stay in the session log too.
+User attachments and documents are never removed by this policy. Images that
+cannot be saved remain in context. Saved images share truncated output's
+seven-day retention. Set `keepRecentImages` to `0` to keep all tool images.
 
 MCP discovery still searches all enabled servers. Only the bounded active tool
 set contributes schemas and server instructions to each request. New search
