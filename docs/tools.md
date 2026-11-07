@@ -226,6 +226,11 @@ The same script reader decides the pending `gh` exits below, so a wait written a
 `sleep 270; cd . && gh pr checks 260 2>&1 | tail -12` is still read through the
 `gh` command that produced the status.
 
+After the shell exits, stdout and stderr drain concurrently for up to one second.
+A background descendant holding either pipe open cannot double that grace period.
+On expiry the readers are cancelled and awaited before recovering their spool
+files, so buffered output is flushed before its preview is read.
+
 A command's two streams are shown in order under one `[stderr]` marker, and only
 when both have content: the marker is the boundary between them, so a command
 that wrote nothing to stdout — a failing script whose whole result is its
