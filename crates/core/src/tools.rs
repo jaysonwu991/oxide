@@ -4325,8 +4325,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
             None
         }
     };
-    let stdout = join_stream(stdout_task, stdout_path).await?;
-    let stderr = join_stream(stderr_task, stderr_path).await?;
+    let (stdout, stderr) = join_streams(stdout_task, stdout_path, stderr_task, stderr_path).await?;
     #[cfg(unix)]
     let pipeline_status = {
         if matches!(
@@ -4889,6 +4888,20 @@ impl StreamCapture {
     }
 }
 
+// Both pipes share one grace period, even when a descendant holds both open.
+async fn join_streams(
+    stdout: tokio::task::JoinHandle<Result<StreamCapture>>,
+    stdout_path: PathBuf,
+    stderr: tokio::task::JoinHandle<Result<StreamCapture>>,
+    stderr_path: PathBuf,
+) -> Result<(StreamCapture, StreamCapture)> {
+    let (stdout, stderr) = tokio::join!(
+        join_stream(stdout, stdout_path),
+        join_stream(stderr, stderr_path),
+    );
+    Ok((stdout?, stderr?))
+}
+
 /// Wait for a command-output reader to finish, but never block forever: a
 /// background process can hold the pipe open after the shell exits. On timeout
 /// the reader is aborted and whatever it spooled so far is salvaged.
@@ -4900,6 +4913,9 @@ async fn join_stream(
         Ok(result) => result.context("joining command output reader")?,
         Err(_) => {
             handle.abort();
+            // Cancellation completes on the task's next poll. Wait for its
+            // BufWriter to drop and flush before reading the spool back.
+            let _ = handle.await;
             Ok(StreamCapture::from_spool(path))
         }
     }
@@ -9110,6 +9126,38 @@ mod tests {
         assert!(out.text.contains("`grep`/`find` tools"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn held_output_pipes_share_a_grace_period_and_keep_buffered_bytes() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut stdout_writer, stdout_reader) = tokio::io::duplex(1024);
+        let (mut stderr_writer, stderr_reader) = tokio::io::duplex(1024);
+        stdout_writer.write_all(b"buffered stdout\n").await.unwrap();
+        stderr_writer.write_all(b"buffered stderr\n").await.unwrap();
+        let stdout_path = stream_temp_path("held-stdout");
+        let stderr_path = stream_temp_path("held-stderr");
+        let progress = Progress::new(Arc::new(|_: &str| {}));
+        let stdout = tokio::spawn(read_stream(
+            stdout_reader,
+            progress.clone(),
+            stdout_path.clone(),
+        ));
+        let stderr = tokio::spawn(read_stream(stderr_reader, progress, stderr_path.clone()));
+        // Leave both writers alive: the readers cannot finish through EOF.
+        let (stdout, stderr) = timeout(
+            STREAM_DRAIN_GRACE + Duration::from_millis(700),
+            join_streams(stdout, stdout_path, stderr, stderr_path),
+        )
+        .await
+        .expect("both readers should use one grace period")
+        .unwrap();
+        assert_eq!(stdout.tail_text(), "buffered stdout\n");
+        assert_eq!(stderr.tail_text(), "buffered stderr\n");
+        assert_eq!(std::fs::read(&stdout.path).unwrap(), b"buffered stdout\n");
+        assert_eq!(std::fs::read(&stderr.path).unwrap(), b"buffered stderr\n");
+        remove_stream_files(&[&stdout, &stderr]);
     }
 
     #[tokio::test]
