@@ -39,6 +39,7 @@
         </button>
         <div class="topbar-actions"><button id="window-commands" class="icon" type="button" title="Command menu" aria-label="Command menu" data-i18n-title="menu.title" data-i18n-aria="menu.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <button id="changes-toggle" class="icon" title="View changes" aria-label="View changes" aria-expanded="false" data-i18n-title="topbar.viewChanges" data-i18n-aria="topbar.viewChanges"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 9h8M12 5v8M8 17h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
+          <button id="computer-use-toggle" class="icon" type="button" title="Computer use" aria-label="Computer use" aria-haspopup="dialog" hidden></button>
           <button id="details-toggle" class="icon" title="Project details" aria-label="Project details" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="5" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="5" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 6h9M11 12h9M11 18h9M3 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
           <button id="new-tab" class="icon" title="New tab (⌘T / Ctrl+T)" aria-label="New tab" data-i18n-title="topbar.newTab" data-i18n-aria="topbar.newTab"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v10M7 12h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         </div>
@@ -524,6 +525,14 @@
         <div id="details-sources"></div>
         <button id="details-view-sources" class="details-row"><span id="details-view-icon" aria-hidden="true"></span><span data-i18n="dialog.sources.viewAll">View all</span></button>
       </div>
+      <section id="computer-use-card" class="details-card computer-use-card" aria-label="Computer use" hidden>
+        <h3 data-i18n="computerUse.title">Computer use</h3>
+        <div id="computer-use-status" class="computer-use-status" role="status" aria-live="polite"></div>
+        <p id="computer-use-action" class="computer-use-action"></p>
+        <div id="computer-use-preview" class="computer-use-preview"></div>
+        <p id="computer-use-snapshot" class="computer-use-caption"></p>
+        <button id="computer-use-stop" type="button" class="secondary" data-i18n="computerUse.stop">Stop task</button>
+      </section>
     </aside>
 
       </div>
@@ -603,6 +612,16 @@
       </div>
     </div>
 
+    <div id="computer-use-modal" class="overlay" hidden>
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="computer-use-title">
+        <div class="dialog-head"><h2 id="computer-use-title" data-i18n="computerUse.title">Computer use</h2><button id="computer-use-close" type="button" class="icon" title="Close" aria-label="Close"></button></div>
+        <div id="computer-use-dialog-status" class="computer-use-status" role="status" aria-live="polite"></div>
+        <p id="computer-use-dialog-action" class="computer-use-action"></p>
+        <div id="computer-use-dialog-preview" class="computer-use-preview"></div>
+        <p id="computer-use-dialog-snapshot" class="computer-use-caption"></p>
+        <button id="computer-use-dialog-stop" type="button" class="secondary" data-i18n="computerUse.stop">Stop task</button>
+      </div>
+    </div>
     <div id="sources-modal" class="overlay" hidden>
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="sources-title">
         <div class="dialog-head"><h2 id="sources-title" data-i18n="dialog.sources.title">Sources</h2><button id="sources-close" class="icon" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>

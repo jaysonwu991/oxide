@@ -2074,3 +2074,22 @@ where available, but pointer and keyboard events use the foreground desktop.
 This does not provide Codex's isolated background control or a continuous live
 preview. Screenshot image bytes keep their original dimensions so model
 coordinates do not silently change under coordinate-based tools.
+
+### Computer-use activity and native helper
+
+Computer-use tool cards carry a mouse glyph. A topbar mouse control opens the
+computer-use dialog even when the details dock has no room; the dock shows the
+same status and latest returned screenshot. Text-only actions preserve that
+snapshot with its original app label. Active calls, waiting between actions,
+failed actions and stopped turns have distinct states. **Stop task** uses the
+existing conversation cancellation path. Activity and screenshots belong to the
+originating conversation, including live background runs and restored sessions.
+These are snapshots, not a continuous stream or an input-isolated desktop.
+
+An opt-in macOS companion app launches the configured `computer-use` runtime
+under a separate LaunchServices app instance, with private local MCP transport,
+a native cursor menu, permission diagnostics and a stop control. It is a separate
+development build and is not yet bundled into the Desktop installer. See the
+[helper build/connect guide](../crates/desktop/computer-use/README.md) and
+[Codex parity review](computer-use-parity.md). Packaging the runtime does not
+implement background input or Codex's app-specific approval/settings behavior.

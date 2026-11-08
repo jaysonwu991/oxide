@@ -34,3 +34,14 @@ and structured tool errors. Cargo tests and clippy could not resolve uncached
 registry dependencies; crates.io failed with DNS errors in the sandbox and TLS
 errors on the escalated fetch. The sibling server's Rust tests and native input
 paths remain unverified; a live smoke test requires user-granted OS permissions.
+
+## Later sessions and native-helper follow-up
+
+Two further sessions from the live Oxide store were reviewed later on November 8.
+The 12:00 session reports both permissions granted to Oxide.app and retains four
+screenshot-bearing tool results. The earlier conclusions above describe only
+the original 10:28 root dump. The new Desktop controls keep the latest screenshot
+beside the conversation and indicate computer-use calls with a mouse glyph.
+An opt-in native helper provides a separate app bundle and permission setup menu.
+See [the expanded review and parity matrix](computer-use-parity.md) for evidence,
+verification and the substantial behaviors still needed for Codex parity.
