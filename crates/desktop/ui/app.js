@@ -195,6 +195,7 @@ const ICONS = {
   pin: glyph('<path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z" ' + STROKE_24 + '/>'),
   archive: glyph('<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6" ' + STROKE_24 + '/>'),
   chat: glyph('<path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" ' + STROKE_24 + '/>'),
+  pointer: glyph('<path d="m5 3 14 9-7 1-3 7Z" ' + STROKE_24 + '/><path d="m12 13 5 7" ' + STROKE_24 + '/>'),
   computer: glyph('<rect x="3" y="4" width="18" height="13" rx="2" ' + STROKE_24 + '/><path d="M8 21h8M12 17v4" ' + STROKE_24 + '/>'),
   branch: glyph('<circle cx="4" cy="3" r="1.5" ' + STROKE_16 + '/><circle cx="4" cy="13" r="1.5" ' + STROKE_16 + '/><circle cx="12" cy="5" r="1.5" ' + STROKE_16 + '/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5" ' + STROKE_16 + '/>', 16),
   // A worktree: a checkout of this project beside it, on its own branch. Drawn
@@ -388,6 +389,7 @@ function threadRecord(key) {
       stopRequested: false,
       pendingSends: [],
       tools: [],
+      computerUse: null,
       currentAssistant: null,
       currentThinking: null,
       runError: "",
@@ -498,6 +500,7 @@ for (const key of [
   "stopRequested",
   "pendingSends",
   "tools",
+  "computerUse",
   "currentAssistant",
   "currentThinking",
   "runError",
@@ -3114,6 +3117,7 @@ function clearPaint() {
   }
   state.currentAssistant = null;
   state.tools = [];
+  paintComputerUse();
   state.currentThinking = null;
 }
 
@@ -4004,7 +4008,8 @@ function clearAttachments() {
 let imageReturnFocus = null;
 
 function openImage(dataUrl, name = t("ui.attachmentPreview", "Attachment preview")) {
-  imageReturnFocus = document.activeElement || null;
+  imageReturnFocus = !el("computer-use-modal").hidden
+    ? el("computer-use-toggle") : document.activeElement || null;
   el("image-view-img").src = dataUrl;
   el("image-view-img").alt = name || t("ui.attachmentPreview", "Attachment preview");
   el("image-view-img").title = name || t("ui.attachmentPreview", "Attachment preview");
@@ -4283,6 +4288,7 @@ async function stop() {
 async function stopThread(record) {
   if (!record?.busy) return;
   record.stopRequested = true;
+  paintComputerUse();
   if (record === visibleThread()) setStatus(t("composer.stopping", "Stopping…"));
   if (record.runId == null) return;
   try {
@@ -4416,6 +4422,7 @@ function createToolCard(name, args) {
   const block = document.createElement("div");
   block.chatTool = { name, args };
   block.className = "tool running";
+  if (isComputerTool(name)) block.classList.add("computer-tool");
   const head = document.createElement("div");
   head.className = "thead";
   // The caret the card folds by: the same drawing the change card and its rows
@@ -4427,6 +4434,12 @@ function createToolCard(name, args) {
   const tname = document.createElement("span");
   tname.className = "tname";
   tname.textContent = name;
+  if (isComputerTool(name)) {
+    const icon = document.createElement("span");
+    icon.className = "computer-tool-icon";
+    icon.innerHTML = ICONS.pointer;
+    head.appendChild(icon);
+  }
   const targ = document.createElement("span");
   targ.className = "targ";
   const summary = toolSummary(name, args);
@@ -4443,6 +4456,8 @@ function createToolCard(name, args) {
   hint.hidden = true;
   const tool = {
     name,
+    args,
+    owner: paintingThread(),
     block,
     head,
     pre,
@@ -4480,6 +4495,7 @@ function startTool(name, args) {
   const transcript = runTranscript();
   transcript.appendChild(tool.block);
   state.tools.push(tool);
+  updateComputerUse(tool);
   startToolTimer(tool);
   scrollDown(transcript);
   return tool;
@@ -4567,6 +4583,7 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0, a
   }
   tool.inline = Boolean(diff);
   tool.isError = isError;
+  updateComputerUse(tool, images);
   paintTool(tool);
 }
 
@@ -4645,6 +4662,8 @@ function toggleTool(tool) {
 /// Replays a stored session: user/assistant text as bubbles, each turn's tool
 /// calls as finished cards, with results matched back by `toolCallId`.
 function renderStoredTranscript(container, messages) {
+  state.computerUse = null;
+  paintComputerUse();
   const results = new Map();
   for (const message of messages) {
     if (message.role === "tool" && message.toolCallId) {
@@ -4669,6 +4688,89 @@ function renderStoredTranscript(container, messages) {
       }
     }
   }
+}
+
+// ---------- computer use ----------
+
+function isComputerTool(name) {
+  return /^computer[-_]use(?:[-_][\w-]+)?__/.test(name);
+}
+
+function updateComputerUse(tool, images = []) {
+  if (!isComputerTool(tool.name)) return;
+  let args = tool.args;
+  if (typeof args === "string") {
+    try { args = JSON.parse(args); } catch { args = {}; }
+  }
+  const record = tool.owner;
+  const previous = record.computerUse;
+  const app = typeof args?.app === "string" ? args.app : "";
+  record.computerUse = {
+    app,
+    action: tool.name.split("__").at(-1).replaceAll("_", " "),
+    isError: Boolean(tool.isError),
+    image: images.at(-1) || previous?.image || null,
+    imageApp: images.length ? app : previous?.imageApp || "",
+  };
+  // Background events update their owner; shared controls describe only the
+  // visible conversation, including when another thread is being replayed.
+  if (record === visibleThread()) paintComputerUse();
+}
+
+function paintComputerUse() {
+  if (paintThread && paintThread !== visibleThread()) return;
+  const record = visibleThread();
+  const activity = record.computerUse;
+  const toggle = el("computer-use-toggle");
+  const card = el("computer-use-card");
+  toggle.hidden = card.hidden = !activity;
+  if (!activity) {
+    el("computer-use-modal").hidden = true;
+    for (const id of ["computer-use-preview", "computer-use-dialog-preview"]) {
+      el(id).replaceChildren();
+      el(id).computerImage = null;
+    }
+    return;
+  }
+  const active = record.tools.filter((tool) => isComputerTool(tool.name) && !tool.done);
+  const running = record.busy && active.length > 0;
+  const label = record.stopRequested
+    ? record.busy ? t("computerUse.stopping", "Stopping…") : t("computerUse.stopped", "Stopped")
+    : activity.isError || record.runError ? t("computerUse.failed", "Action failed")
+    : running ? t("computerUse.working", "Using computer")
+    : record.busy ? t("computerUse.waiting", "Waiting for next action")
+    : t("computerUse.finished", "Finished");
+  toggle.classList.toggle("computer-active", running);
+  toggle.innerHTML = ICONS.pointer;
+  toggle.title = `${t("computerUse.title", "Computer use")} · ${label}`;
+  toggle.setAttribute("aria-label", toggle.title);
+  toggle.setAttribute("aria-expanded", String(!el("computer-use-modal").hidden));
+  for (const prefix of ["computer-use", "computer-use-dialog"]) {
+    const status = el(`${prefix}-status`);
+    status.textContent = label;
+    const action = el(`${prefix}-action`);
+    action.textContent = [activity.app, activity.action].filter(Boolean).join(" · ");
+    const preview = el(`${prefix}-preview`);
+    // Keep the image node across status updates, preserving keyboard focus.
+    if (preview.computerImage !== activity.image) {
+      preview.replaceChildren();
+      if (activity.image) preview.appendChild(openableImage(activity.image.dataUrl, activity.image.name || activity.imageApp));
+      preview.computerImage = activity.image;
+    }
+    el(`${prefix}-snapshot`).textContent = activity.image
+      ? `${t("computerUse.snapshot", "Last captured screenshot")}${activity.imageApp ? ` · ${activity.imageApp}` : ""}`
+      : t("computerUse.noScreenshot", "No screenshot captured yet. Accessibility actions do not always return an image.");
+    const stopButton = el(`${prefix}-stop`);
+    stopButton.hidden = !record.busy;
+    stopButton.disabled = record.stopRequested;
+  }
+}
+
+function openComputerUse() {
+  closeOverlays("computer-use-modal");
+  el("computer-use-modal").hidden = false;
+  paintComputerUse();
+  el("computer-use-close").focus();
 }
 
 // ---------- turn changes ----------
@@ -5217,6 +5319,7 @@ let detailsChangesTimer = null;
 function paintDockToggles() {
   // The selected chat owns the dock throughout its lifetime. The welcome
   // page has no chat, even when another conversation is running.
+  paintComputerUse();
   const panel = el("details-panel");
   document.body.classList.toggle("chat-open", hasChat());
   const wasHidden = panel.hidden;
@@ -5311,7 +5414,9 @@ function sourceRow(source) {
     const icon = document.createElement("span");
     icon.className = "source-icon";
     icon.setAttribute("aria-hidden", "true");
-    icon.innerHTML = source.kind === "mcp" ? ICONS.power : source.kind === "web" ? ICONS.globe : ICONS.file;
+    icon.innerHTML = source.kind === "mcp"
+      ? isComputerTool(`${source.name}__`) ? ICONS.pointer : ICONS.power
+      : source.kind === "web" ? ICONS.globe : ICONS.file;
     row.appendChild(icon);
   }
   const name = document.createElement("span");
@@ -5806,6 +5911,7 @@ const OVERLAYS = [
   "question",
   "connect-modal",
   "sources-modal",
+  "computer-use-modal",
   "create-project-modal",
   "projects-modal",
   "worktrees-modal",
@@ -5834,6 +5940,7 @@ function closeOverlays(except) {
     if (id !== except) el(id).hidden = true;
     else el(id).classList.remove("rail-panel");
   }
+  el("computer-use-toggle").setAttribute("aria-expanded", String(!el("computer-use-modal").hidden));
   // The review's state is its card and the file it is showing, so closing the
   // panel drops it along with the markup rather than leaving it half-open.
 
@@ -11480,6 +11587,15 @@ function init() {
     state.detailsOpen = !state.detailsOpen;
     paintDockToggles();
   };
+  el("computer-use-toggle").onclick = openComputerUse;
+  el("computer-use-stop").onclick = stop;
+  el("computer-use-dialog-stop").onclick = stop;
+  el("computer-use-close").innerHTML = ICONS.close;
+  el("computer-use-close").onclick = () => {
+    el("computer-use-modal").hidden = true;
+    paintComputerUse();
+    el("computer-use-toggle").focus();
+  };
   el("details-more").onclick = () => {
     const project = state.projects.find((project) => project.path === state.project);
     if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
@@ -11630,6 +11746,7 @@ function init() {
   const BACKDROP_DISMISS = {
     "agents-modal": "agents-close",
     "sources-modal": "sources-close",
+    "computer-use-modal": "computer-use-close",
     "confirm-modal": "confirm-cancel",
     "connect-modal": "login-cancel",
     "create-project-modal": "create-project-cancel",
@@ -11740,6 +11857,7 @@ function init() {
     if (event.key === "Escape") {
       const railControl = Object.entries(RAIL_PANELS).find(([, [id]]) => !el(id).hidden && el(id).classList.contains("rail-panel"))?.[0];
       el("message-preview").hidden = true;
+      const computerOpen = !el("computer-use-modal").hidden;
       const modalOpen = OVERLAYS.some((id) => !el(id).hidden);
       closeSidebarCards();
       closeImage();
@@ -11758,6 +11876,7 @@ function init() {
       // hidden, so the turn continues instead of waiting out the timeout.
       if (!el("question").hidden) answerQuestion(true);
       closeOverlays();
+      if (computerOpen) el("computer-use-toggle").focus();
       if (railControl) el(railControl).focus();
       if (!modalOpen) {
         if (!el("projects-page").hidden) { closeProjectDirectory(); el("rail-projects").focus(); }

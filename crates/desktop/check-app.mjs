@@ -1276,7 +1276,7 @@ vm.runInThisContext(
     " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
     " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkThread, restoreThread, captureChatTab, threads, visibleThread, withThread, turnInThread, backgroundRun, openThreadRecord, threadForRunId," +
-    " startTool, finishTool, toggleTool, renderStoredTranscript, openUpdate, installUpdate, cancelUpdate," +
+    " startTool, finishTool, toggleTool, renderStoredTranscript, paintComputerUse, isComputerTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
     " bubble, renderMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog," +
@@ -4452,9 +4452,84 @@ app.renderStoredTranscript(replayScreen, [
     attachments: [{ name: "Edge", dataUrl: toolShot }] },
 ]);
 check("restored MCP screenshot previews from session history", Boolean(replayScreen.querySelector(".att-open")));
+check("restored the persistent computer-use screenshot from session history",
+  app.visibleThread().computerUse?.image?.dataUrl === toolShot &&
+  Boolean(app.el("computer-use-preview").children.length));
 const unsafeCard = app.startTool("computer-use__screenshot", '{}');
 app.finishTool(unsafeCard, "image", { attachments: [{ dataUrl: "https://example.com/track.png" }] });
 check("refused remote tool images in previews", !unsafeCard.block.querySelector(".att-open"));
+
+// Computer-use controls must keep the originating conversation's state,
+// including when a later AX-only result carries no new screenshot.
+console.log("computer-use activity and persistent preview");
+const computerThread = app.visibleThread();
+computerThread.computerUse = null;
+computerThread.tools = [];
+computerThread.busy = true;
+computerThread.runError = "";
+computerThread.stopRequested = false;
+check("recognized local computer-use server names without matching unrelated tools",
+  app.isComputerTool("computer-use-local__click") && app.isComputerTool("computer_use__screenshot") && !app.isComputerTool("other__computer-use"));
+const pointerCard = app.startTool("computer-use__click", '{"app":"Edge"}');
+check("showed a mouse icon and active computer-use status",
+  Boolean(pointerCard.block.querySelector(".computer-tool-icon")) &&
+  app.el("computer-use-toggle").classList.contains("computer-active") &&
+  app.el("computer-use-status").textContent === "Using computer");
+app.finishTool(pointerCard, "Clicked", { attachments: [{ name: "Edge", dataUrl: toolShot }] });
+const persistentPreview = app.el("computer-use-preview").children[0];
+const axCard = app.startTool("computer-use__get_app_state", '{"app":"Finder"}');
+app.finishTool(axCard, "Accessibility tree");
+check("kept the last screenshot and its original app label after an AX-only action",
+  app.el("computer-use-preview").children[0] === persistentPreview &&
+  app.el("computer-use-snapshot").textContent.endsWith("Edge") &&
+  app.el("computer-use-action").textContent.startsWith("Finder"));
+check("did not describe a snapshot as a live feed",
+  app.el("computer-use-status").textContent === "Waiting for next action" &&
+  app.el("computer-use-snapshot").textContent.startsWith("Last captured screenshot"));
+app.el("computer-use-toggle").onclick();
+check("opened computer-use controls independently of the details dock",
+  !app.el("computer-use-modal").hidden && Boolean(app.el("computer-use-dialog-preview").children.length));
+const dialogScreenshot = app.el("computer-use-dialog-preview").children[0];
+dialogScreenshot.focus();
+dialogScreenshot.onclick();
+check("opened the dialog screenshot at full size", !app.el("image-modal").hidden);
+app.el("image-view-close").onclick();
+check("returned screenshot focus to a visible computer-use control",
+  document.activeElement === app.el("computer-use-toggle"));
+app.el("computer-use-toggle").onclick();
+app.el("computer-use-close").onclick();
+check("returned keyboard focus from the computer-use dialog",
+  app.el("computer-use-modal").hidden && document.activeElement === app.el("computer-use-toggle"));
+const foregroundActivity = computerThread.computerUse;
+const otherComputerThread = { ...computerThread, key: "computer-background", tools: [], computerUse: null };
+app.withThread(otherComputerThread, () => {
+  const backgroundCard = app.startTool("computer-use__screenshot", '{"app":"Notes"}');
+  app.finishTool(backgroundCard, "Screenshot", { attachments: [{ name: "Notes", dataUrl: toolShot + "AA" }] });
+});
+check("kept a background screenshot and activity out of the visible conversation",
+  computerThread.computerUse === foregroundActivity && otherComputerThread.computerUse.imageApp === "Notes" &&
+  app.el("computer-use-preview").children[0] === persistentPreview);
+computerThread.stopRequested = true;
+app.paintComputerUse();
+check("disabled repeated stop requests while cancellation was pending",
+  app.el("computer-use-status").textContent === "Stopping…" && app.el("computer-use-stop").disabled);
+computerThread.busy = false;
+app.paintComputerUse();
+check("kept stopped activity distinct from a successful finish",
+  app.el("computer-use-status").textContent === "Stopped" && app.el("computer-use-stop").hidden);
+computerThread.computerUse = null;
+app.paintComputerUse();
+computerThread.computerUse = foregroundActivity;
+computerThread.stopRequested = false;
+app.paintComputerUse();
+check("restored a screenshot after switching through an empty conversation",
+  Boolean(app.el("computer-use-preview").children.length));
+const failedComputerCard = app.startTool("computer-use__click", '{"app":"Edge"}');
+app.finishTool(failedComputerCard, "Permission denied", { isError: true });
+check("reported a failed action in computer-use controls",
+  app.el("computer-use-status").textContent === "Action failed");
+computerThread.computerUse = null;
+app.paintComputerUse();
 
 // ---------- an edited file's own card ----------
 

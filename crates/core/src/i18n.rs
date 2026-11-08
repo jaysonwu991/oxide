@@ -923,6 +923,16 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
         "A turn is running in “{title}”",
         "“{title}”中有回合正在运行",
     ),
+    ("computerUse.title", "Computer use", "电脑操作"),
+    ("computerUse.stop", "Stop task", "停止任务"),
+    ("computerUse.stopping", "Stopping…", "正在停止…"),
+    ("computerUse.stopped", "Stopped", "已停止"),
+    ("computerUse.failed", "Action failed", "操作失败"),
+    ("computerUse.working", "Using computer", "正在操作电脑"),
+    ("computerUse.waiting", "Waiting for next action", "等待下一步操作"),
+    ("computerUse.finished", "Finished", "已结束"),
+    ("computerUse.snapshot", "Last captured screenshot", "最近截取的屏幕截图"),
+    ("computerUse.noScreenshot", "No screenshot captured yet. Accessibility actions do not always return an image.", "尚未截取屏幕截图。辅助功能操作不一定返回图片。"),
     // The composer: the box, its chips and what a message's controls say.
     ("composer.chooseProject", "Choose a project", "选择项目"),
     (
