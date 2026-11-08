@@ -720,7 +720,11 @@ impl LlmClient {
         let mut items = BTreeMap::new();
         read_sse(response, |data| {
             let event: Value = serde_json::from_str(data).context("decoding Responses event")?;
-            if let Some(model) = event.pointer("/response/model").and_then(Value::as_str) {
+            if let Some(model) = event
+                .pointer("/response/model")
+                .and_then(Value::as_str)
+                .filter(|model| !model.trim().is_empty())
+            {
                 validate_gateway_model(&config, model)?;
                 turn.response_model = Some(model.into());
             }
@@ -789,7 +793,7 @@ impl LlmClient {
             if let Some(error) = parsed.error {
                 anyhow::bail!("provider error: {}", error.describe());
             }
-            if let Some(model) = parsed.model.filter(|model| !model.is_empty()) {
+            if let Some(model) = parsed.model.filter(|model| !model.trim().is_empty()) {
                 validate_gateway_model(&self.config, &model)?;
                 turn.response_model = Some(model);
             }
@@ -962,7 +966,11 @@ impl LlmClient {
         let outcome = read_sse(response, |data| {
             if self.config.is_portkey() {
                 if let Ok(value) = serde_json::from_str::<Value>(data) {
-                    if let Some(model) = value.pointer("/message/model").and_then(Value::as_str) {
+                    if let Some(model) = value
+                        .pointer("/message/model")
+                        .and_then(Value::as_str)
+                        .filter(|model| !model.trim().is_empty())
+                    {
                         validate_gateway_model(&self.config, model)?;
                     }
                 }
@@ -1414,7 +1422,8 @@ impl std::error::Error for GatewayModelMismatch {}
 /// Known picker models must not silently fall through a gateway's default
 /// route. Opaque user-defined aliases remain the gateway's responsibility.
 fn validate_gateway_model(config: &Config, actual: &str) -> Result<()> {
-    if !config.is_portkey() {
+    // Empty stream metadata does not identify a substituted model.
+    if !config.is_portkey() || actual.trim().is_empty() {
         return Ok(());
     }
     let requested = crate::config::vendorless(&config.model).to_ascii_lowercase();
@@ -3143,6 +3152,8 @@ mod tests {
                 "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
             ),
             ("claude-opus-5", "eu.anthropic.claude-opus-5"),
+            ("gpt-5.6-sol", ""),
+            ("gpt-5.6-sol", " \t"),
             ("gpt-5.6-sol", "gpt-5.6-sol-2026-07-09"),
             ("gpt-5.6-sol", "gpt-5.6-sol-example-deployment-1"),
             ("glm-5.2", "glm-5.2"),
@@ -3169,6 +3180,49 @@ mod tests {
         }
         config.model = "company-fast-alias".into();
         validate_gateway_model(&config, "claude-haiku-4-5").unwrap();
+    }
+
+    #[tokio::test]
+    async fn gateway_blank_model_metadata_does_not_hide_later_identity() {
+        for blank in ["", " \t"] {
+            for actual in ["gpt-5.6-sol-2026-07-09", "claude-haiku-4-5"] {
+                let body = sse(&[
+                    serde_json::json!({"type":"response.created","response":{"model":blank}}),
+                    serde_json::json!({"type":"response.in_progress","response":{"model":actual}}),
+                    serde_json::json!({"type":"response.output_text.delta","delta":"Done"}),
+                    serde_json::json!({"type":"response.completed","response":{"model":blank}}),
+                ]);
+                let (addr, server) = sse_server(vec![body]).await;
+                let client = LlmClient::new(Config {
+                    model: "gpt-5.6-sol".into(),
+                    ..portkey_test_config(addr, 4096)
+                });
+                let mut text = String::new();
+                let result = client
+                    .stream_chat(
+                        &[Message::user("hi")],
+                        &[],
+                        &mut StreamHooks {
+                            text: &mut |delta| text.push_str(&delta),
+                            thinking: &mut |_| {},
+                            retry: &mut |_| panic!("model metadata must not trigger retries"),
+                        },
+                    )
+                    .await;
+                if actual.starts_with("gpt") {
+                    let turn = result.unwrap();
+                    assert_eq!(text, "Done");
+                    assert_eq!(turn.response_model.as_deref(), Some(actual));
+                } else {
+                    assert!(result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("gateway model mismatch"));
+                    assert!(text.is_empty());
+                }
+                assert_eq!(server.await.unwrap().len(), 1);
+            }
+        }
     }
 
     #[tokio::test]
