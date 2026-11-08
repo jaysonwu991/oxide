@@ -69,7 +69,7 @@ Codex's workflows must preserve those contracts.
 | Pull request review | Partial: `gh`/`glab` provide repository requests, description, checks, comments and diffs. No cross-repository personal review inbox, viewed-revision markers or cloud review service. |
 | Integrated terminal | Partial: real PTY and keyboard input, with a limited ANSI renderer. Full-screen terminal programs, complete terminal emulation and persistent hidden terminal sessions are not supported. |
 | File and artifact preview | Partial: images, text, Markdown, diagrams and CSV previews. No live document/spreadsheet/presentation authoring canvas or account artifact lifecycle. |
-| Browser/computer use | No built-in browser session or native computer-control subsystem. Configured MCP tools can supply capabilities but do not establish native product parity. |
+| Browser/computer use | Configured MCP tools drive local apps. Tool images render as clickable previews during runs and when reopening a chat. No built-in browser session, continuous screen mirror, or isolated background input. |
 | Voice and image generation | No native recording/voice workflow or first-party generation UI. Provider/MCP capabilities depend on configuration. |
 | Notifications and activity | Implemented: unread/activity states, approval/question notifications, completion settings and keeping the machine awake during a turn. |
 | Settings, accessibility and release | Implemented: shared language/theme, keyboard remapping, native menu, focus behavior, platform installers and updater checks. Actual packaged accessibility and visual parity remain unverified. |
@@ -2052,3 +2052,25 @@ and is marked a pre-release so `/releases/latest` keeps naming a versioned
 release — which is what the installer table in `README.md` links to. A
 `workflow_dispatch` build publishes nothing and needs no more than a read-only
 token.
+
+## Computer-Use screenshots
+
+Register the local `computer-use` server with `computer-use install --client oxide`.
+Desktop uses the same MCP registry and approval store as the CLI. Discover its
+tools with `tool_search`; use `permissions` on newer server builds to check the
+actual MCP process. A `doctor` run from another terminal can report different
+macOS permissions. Grant Accessibility and Screen Recording to the hosting app
+(Oxide.app for Desktop); only the user can approve those grants.
+
+MCP image content travels as media through `McpToolResult`, `ToolOutput` and
+`AgentEvent::ToolResult`. The JSON event's `attachments` carry data URLs, and
+Desktop shows them on the originating run's tool card. Clicking a thumbnail
+opens the existing full-size image dialog. Stored tool results retain those
+images and restore the same previews when a chat is reopened. Remote image
+URLs are not fetched by this preview renderer.
+
+These previews are tool snapshots. The local server uses AXPress and AXValue
+where available, but pointer and keyboard events use the foreground desktop.
+This does not provide Codex's isolated background control or a continuous live
+preview. Screenshot image bytes keep their original dimensions so model
+coordinates do not silently change under coordinate-based tools.

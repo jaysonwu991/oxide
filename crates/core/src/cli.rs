@@ -323,12 +323,19 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             name,
             output,
             is_error,
+            media,
             ..
         } => json!({
             "type": "tool_execution_end",
             "toolName": name,
             "result": output,
             "isError": is_error,
+            "attachments": media.iter().filter_map(|part| match part {
+                crate::llm::ContentPart::ImageUrl { image_url } => Some(json!({
+                    "name": "Tool image", "dataUrl": image_url.url,
+                })),
+                _ => None,
+            }).collect::<Vec<_>>(),
         }),
         AgentEvent::Usage {
             model_calls,
@@ -692,11 +699,21 @@ mod tests {
             output: "nope".into(),
             is_error: true,
             diff: None,
+            media: vec![crate::llm::ContentPart::ImageUrl {
+                image_url: crate::llm::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                    detail: None,
+                },
+            }],
             millis: 0,
         })
         .unwrap();
         assert_eq!(result["isError"], true);
         assert_eq!(result["result"], "nope");
+        assert_eq!(
+            result["attachments"][0]["dataUrl"],
+            "data:image/png;base64,AAAA"
+        );
 
         let done = event_json(&AgentEvent::ThoughtDone { millis: 12 }).unwrap();
         assert_eq!(done["type"], "thinking_done");

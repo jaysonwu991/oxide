@@ -610,11 +610,13 @@ pub async fn execute_with_scope(
     }
     let result = if mcp.is_tool(name) {
         mcp.call(name, args).await.map(|result| {
-            if result.is_error {
+            let mut output = if result.is_error {
                 ToolOutput::error(result.text)
             } else {
                 ToolOutput::text(result.text)
-            }
+            };
+            output.media = result.media;
+            output
         })
     } else {
         match canonical {

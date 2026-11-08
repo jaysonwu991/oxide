@@ -1,5 +1,5 @@
 use crate::ecosystem::{service_aliases, McpKind, McpServer};
-use crate::llm::{FunctionSpec, ToolSpec};
+use crate::llm::{ContentPart, FunctionSpec, ImageUrl, ToolSpec};
 use crate::mcp_oauth::OAuthState;
 use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
@@ -80,9 +80,10 @@ impl fmt::Display for AuthorizationRequired {
 
 impl std::error::Error for AuthorizationRequired {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct McpToolResult {
     pub text: String,
+    pub media: Vec<ContentPart>,
     pub is_error: bool,
 }
 
@@ -1128,10 +1129,50 @@ fn format_content(result: &Value) -> String {
 }
 
 fn mcp_tool_result(result: &Value) -> McpToolResult {
+    let mut text = format_content(result);
+    let mut media = Vec::new();
+    for item in result
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if item.get("type").and_then(Value::as_str) != Some("image") {
+            continue;
+        }
+        if let Some(part) = mcp_image(item) {
+            media.push(part);
+        } else {
+            text.push_str("\n[MCP image unavailable: invalid, unsupported, or exceeds the attachment size limit]");
+        }
+    }
     McpToolResult {
-        text: format_content(result),
+        text,
+        media,
         is_error: result.get("isError").and_then(Value::as_bool) == Some(true),
     }
+}
+
+fn mcp_image(item: &Value) -> Option<ContentPart> {
+    let data = item.get("data")?.as_str()?;
+    if data.len() > crate::media::MAX_ATTACHMENT_BYTES.div_ceil(3) * 4 {
+        return None;
+    }
+    let bytes = crate::media::base64_decode(data)?;
+    if bytes.len() > crate::media::MAX_ATTACHMENT_BYTES {
+        return None;
+    }
+    let mime = crate::media::sniff_image_mime(&bytes)?;
+    if !crate::media::is_supported_image_mime(mime) {
+        return None;
+    }
+    // Preserve screenshot dimensions: coordinate tools act in the captured space.
+    Some(ContentPart::ImageUrl {
+        image_url: ImageUrl {
+            url: format!("data:{mime};base64,{}", crate::media::base64_encode(&bytes)),
+            detail: None,
+        },
+    })
 }
 
 /// The guidance a server ships in its `initialize` result, trimmed and capped.
@@ -1473,9 +1514,35 @@ mod tests {
             mcp_tool_result(&result),
             McpToolResult {
                 text: "lookup failed".to_string(),
+                media: Vec::new(),
                 is_error: true,
             }
         );
+    }
+
+    #[test]
+    fn mcp_images_keep_their_bytes_and_do_not_become_text_only_results() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+        let result = mcp_tool_result(&json!({ "content": [
+            { "type": "text", "text": "Edge screenshot" },
+            { "type": "image", "mimeType": "image/png", "data": png }
+        ] }));
+        assert!(result.text.contains("Edge screenshot"));
+        assert_eq!(
+            result.media,
+            vec![ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:image/png;base64,{png}"),
+                    detail: None,
+                }
+            }]
+        );
+        let invalid = mcp_tool_result(&json!({ "content": [
+            { "type": "image", "mimeType": "image/png", "data": "invalid!" }
+        ], "isError": true }));
+        assert!(invalid.media.is_empty());
+        assert!(invalid.text.contains("MCP image unavailable"));
+        assert!(invalid.is_error);
     }
 
     #[test]
@@ -1648,7 +1715,10 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": msg["id"], "result": {"tools": [{"name": "echo", "description": "Echo text back", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}]}})
     elif method == "tools/call":
         args = msg.get("params", {}).get("arguments", {})
-        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"content": [{"type": "text", "text": "echo:" + str(args.get("text", ""))}]}})
+        content = [{"type": "text", "text": "echo:" + str(args.get("text", ""))}]
+        if args.get("text") == "image":
+            content.append({"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="})
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"content": content}})
 "#;
 
     #[tokio::test]
@@ -1696,6 +1766,28 @@ for line in sys.stdin:
             .unwrap();
         assert_eq!(output.text, "echo:hi");
         assert!(!output.is_error);
+
+        let image_call = crate::llm::ToolCall {
+            id: "image-call".into(),
+            kind: "function".into(),
+            signature: None,
+            function: crate::llm::FunctionCall {
+                name: "mock__echo".into(),
+                arguments: r#"{"text":"image"}"#.into(),
+            },
+        };
+        let image = crate::tools::execute(
+            &image_call,
+            &dir,
+            &registry,
+            &crate::tools::Progress::default(),
+        )
+        .await;
+        assert!(!image.is_error);
+        assert_eq!(image.media.len(), 1, "MCP image must reach tool output");
+        assert!(
+            matches!(&image.media[0], ContentPart::ImageUrl { image_url } if image_url.url.starts_with("data:image/png;base64,"))
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

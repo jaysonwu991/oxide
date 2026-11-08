@@ -402,6 +402,7 @@ pub enum AgentEvent {
         output: String,
         is_error: bool,
         diff: Option<tools::DiffPreview>,
+        media: Vec<ContentPart>,
         /// Wall-clock time the tool spent running, in milliseconds.
         millis: u64,
     },
@@ -586,6 +587,7 @@ pub fn run_subagent(
                     output,
                     is_error,
                     diff,
+                    media,
                     millis,
                 } => {
                     let _ = tx.send(AgentEvent::ToolResult {
@@ -594,6 +596,7 @@ pub fn run_subagent(
                         output,
                         is_error,
                         diff,
+                        media,
                         millis,
                     });
                 }
@@ -1542,6 +1545,7 @@ async fn run_loop(
                     output: "cancelled by the user".to_string(),
                     is_error: true,
                     diff: None,
+                    media: Vec::new(),
                     millis: 0,
                 });
                 let message =
@@ -1701,6 +1705,7 @@ async fn run_loop(
                     };
                     failure_loop.observe(&original.function.name, arguments, &output);
                     output.text = tools::truncate(&original.function.name, output.text);
+                    let preview_media = output.media.clone();
                     omit_duplicate_media(&mut output, &mut seen_media);
                     let args = serde_json::from_str::<Value>(&original.function.arguments)
                         .unwrap_or(Value::Null);
@@ -1717,6 +1722,7 @@ async fn run_loop(
                         output: output.text.clone(),
                         is_error: output.is_error,
                         diff: output.diff.clone(),
+                        media: preview_media,
                         millis,
                     });
                     let model_text = output.model_text();
@@ -1864,6 +1870,7 @@ async fn run_loop(
                     }
                     failure_loop.observe(&name, &call.function.arguments, &output);
                     output.text = tools::truncate(&name, output.text);
+                    let preview_media = output.media.clone();
                     omit_duplicate_media(&mut output, &mut seen_media);
                     let millis = started.elapsed().as_millis() as u64;
                     verification.record_result(
@@ -1904,6 +1911,7 @@ async fn run_loop(
                         output: text.clone(),
                         is_error: output.is_error,
                         diff: output.diff.clone(),
+                        media: preview_media,
                         millis,
                     });
                     let model_text = output.model_text();
