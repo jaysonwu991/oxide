@@ -1276,7 +1276,7 @@ vm.runInThisContext(
     " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
     " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkThread, restoreThread, captureChatTab, threads, visibleThread, withThread, turnInThread, backgroundRun, openThreadRecord, threadForRunId," +
-    " startTool, finishTool, toggleTool, openUpdate, installUpdate, cancelUpdate," +
+    " startTool, finishTool, toggleTool, renderStoredTranscript, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
     " bubble, renderMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog," +
@@ -4435,6 +4435,26 @@ check(
     ),
   `${questionGutter && questionGutter[1]}px inset beside a ${questionLane && questionLane[1]}px track`,
 );
+
+const toolShot = "data:image/png;base64,iVBORw0KGgo=";
+const screenCard = app.startTool("computer-use__screenshot", '{}');
+app.handleEvent({ type: "tool_execution_end", toolName: "computer-use__screenshot",
+  result: "Captured screenshot", attachments: [{ name: "Edge", dataUrl: toolShot }] });
+const screenButton = screenCard.block.querySelector(".att-open");
+check("rendered a live MCP screenshot as a preview button", screenButton?.tagName === "BUTTON");
+screenButton?.onclick();
+check("opened the tool screenshot at full size", !app.el("image-modal").hidden);
+app.closeOverlays();
+const replayScreen = document.createElement("div");
+app.renderStoredTranscript(replayScreen, [
+  { role: "assistant", toolCalls: [{ id: "shot", name: "computer-use__screenshot", arguments: "{}" }] },
+  { role: "tool", toolCallId: "shot", content: "Captured screenshot",
+    attachments: [{ name: "Edge", dataUrl: toolShot }] },
+]);
+check("restored MCP screenshot previews from session history", Boolean(replayScreen.querySelector(".att-open")));
+const unsafeCard = app.startTool("computer-use__screenshot", '{}');
+app.finishTool(unsafeCard, "image", { attachments: [{ dataUrl: "https://example.com/track.png" }] });
+check("refused remote tool images in previews", !unsafeCard.block.querySelector(".att-open"));
 
 // ---------- an edited file's own card ----------
 

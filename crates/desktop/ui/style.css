@@ -1073,7 +1073,7 @@ body.running .composer { border-radius: 20px; }
 /* WebKit drags a picture out of the page by default, and the drag session takes
    the click that opens the preview with it. */
 .att-open img { -webkit-user-drag: none; user-select: none; }
-.msg .msg-attachments .att-open { border-radius: 8px; }
+:is(.msg, .tool) .msg-attachments .att-open { border-radius: 8px; }
 .attachment .att-file {
   width: 44px;
   height: 44px;
@@ -1100,8 +1100,8 @@ body.running .composer { border-radius: 20px; }
   color: var(--faint);
 }
 .attachment .att-remove:hover { color: var(--error); background: transparent; }
-.msg .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.msg .msg-attachments img {
+:is(.msg, .tool) .msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+:is(.msg, .tool) .msg-attachments img {
   width: 96px;
   height: 96px;
   object-fit: cover;

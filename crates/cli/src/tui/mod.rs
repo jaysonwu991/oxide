@@ -5768,6 +5768,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             is_error,
             diff,
             millis,
+            ..
         } => {
             app.running_tool = None;
             app.subagent = None;
@@ -6203,6 +6204,7 @@ mod tests {
                 output: app.t("terminal.message.Denied").into(),
                 is_error: true,
                 diff: None,
+                media: Vec::new(),
                 millis: 1,
             },
             &mut app,
@@ -6406,6 +6408,7 @@ mod tests {
                 output: "the report".into(),
                 is_error: false,
                 diff: None,
+                media: Vec::new(),
                 millis: 500,
             },
             &mut app,
@@ -7972,6 +7975,7 @@ mod tests {
                     output: "done".into(),
                     is_error: false,
                     diff: None,
+                    media: Vec::new(),
                     millis: 1000,
                 },
                 AgentEvent::Text("Next step".into()),

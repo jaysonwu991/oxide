@@ -4528,7 +4528,7 @@ function paintLiveChanges() {
 /// header builds — the path, and how many lines moved — and keeps its own diff
 /// for the reader who expands the card: the turn's changes are listed together
 /// by the change card, so the same diff is not painted twice.
-function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } = {}) {
+function finishTool(tool, output, { isError = false, diff = null, elapsed = 0, attachments = [] } = {}) {
   // A call that landed may have written a file, which is what the dock's own
   // Changes row is read out of (see `scheduleProjectChanges`).
   scheduleProjectChanges();
@@ -4555,6 +4555,15 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0 } 
     tool.diffEl = diffBlock(diff);
     tool.diffEl.hidden = true;
     tool.block.appendChild(tool.diffEl);
+  }
+  const images = attachments.filter((attachment) => isPaintableImage(attachment.dataUrl));
+  if (images.length) {
+    const strip = document.createElement("div");
+    strip.className = "msg-attachments";
+    for (const attachment of images) {
+      strip.appendChild(openableImage(attachment.dataUrl, attachment.name));
+    }
+    tool.block.appendChild(strip);
   }
   tool.inline = Boolean(diff);
   tool.isError = isError;
@@ -4639,7 +4648,7 @@ function renderStoredTranscript(container, messages) {
   const results = new Map();
   for (const message of messages) {
     if (message.role === "tool" && message.toolCallId) {
-      results.set(message.toolCallId, message.content || "");
+      results.set(message.toolCallId, message);
     }
   }
   for (const message of messages) {
@@ -4650,11 +4659,12 @@ function renderStoredTranscript(container, messages) {
         container.appendChild(bubble("assistant", message.content, []));
       }
       for (const call of message.toolCalls || []) {
-        const output = results.get(call.id) || "";
+        const result = results.get(call.id);
+        const output = result?.content || "";
         const isError = output.startsWith("error:");
         const displayOutput = isError ? output.replace(/^error:\s*/, "") : output;
         const tool = createToolCard(call.name || "tool", call.arguments);
-        finishTool(tool, displayOutput, { isError });
+        finishTool(tool, displayOutput, { isError, attachments: result?.attachments || [] });
         container.appendChild(tool.block);
       }
     }
@@ -5507,6 +5517,7 @@ function handleEvent(event) {
         finishTool(tool, event.result || tool.live, {
           isError: event.isError,
           diff: event.diff,
+          attachments: event.attachments || [],
           elapsed: Math.max(0, Math.round(performance.now() - tool.started)),
         });
         scrollDown(runTranscript());
