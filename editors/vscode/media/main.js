@@ -58,6 +58,123 @@ function referenceRanges(text) {
   return ranges;
 }
 
+// The caret a read of the rendered composer marks its position with, and the
+// placeholder a typed newline in the editable tail is held behind so that
+// trimming the wrappers a block adds cannot eat one the reader typed.
+const CARET = "\uE000oxide-caret\uE001";
+const TAIL_NEWLINE = "\uE002";
+
+// The Markdown a rendered editable surface stands for — the inverse of
+// `renderMarkdown`, which is what the composer is: every keystroke paints the
+// model, and the next one reads it back, so the two have to agree or the text
+// under the caret changes by itself.
+function markdownToText(node, point = null, root = node) {
+  if (node.nodeType === 3) {
+    const raw = node.nodeValue || "";
+    // A typed newline waits behind a placeholder so the trim readMarkdown does
+    // cannot eat one the reader wrote.
+    const text = node.parentNode?.hasAttribute?.("data-editor-tail") ? raw.replace(/\n/g, TAIL_NEWLINE) : raw;
+    return point?.node === node ? text.slice(0, point.offset) + CARET + text.slice(point.offset) : text;
+  }
+  const children = Array.from(node.childNodes || []);
+  const parts = children.map((child, i) =>
+    (point?.node === node && point.offset === i ? CARET : "") + markdownToText(child, point, root),
+  );
+  let text = parts.reduce((all, part, index) => {
+    // What the reader typed after the last block belongs under it, not after the
+    // blank line that block wrote to separate itself from the next one.
+    if (children[index]?.hasAttribute?.("data-editor-tail")) return all.replace(/\n+$/, "") + part;
+    if ((node === root || node.tagName === "BLOCKQUOTE") && /\n$/.test(all) && /^\n/.test(part)) {
+      return all.replace(/\n+$/, "") + "\n\n" + part.replace(/^\n+/, "");
+    }
+    return all + part;
+  }, "");
+  if (point?.node === node && point.offset === children.length) text += CARET;
+  const tag = node.tagName;
+  if (node.hasAttribute?.("data-editor-padding")) return "";
+  if (tag === "BR") {
+    const pad = node.parentNode?.hasAttribute?.("data-editor-pad") ? node.parentNode.getAttribute("data-editor-pad") : "";
+    return `\n${pad}`;
+  }
+  if (tag === "STRONG" || tag === "B" || tag === "EM" || tag === "I") {
+    // The delimiter the writer used, so `__bold__` is not rewritten to `**bold**`.
+    const bare = tag === "STRONG" || tag === "B";
+    const marker = node.getAttribute("data-editor-marker");
+    const delimiter = marker === "underscore" ? (bare ? "__" : "_") : marker || (bare ? "**" : "*");
+    return `${delimiter}${text}${delimiter}`;
+  }
+  if (tag === "DEL" || tag === "S") return `~~${text}~~`;
+  if (tag === "PRE") {
+    const fence = node.getAttribute("data-editor-fence") || "```";
+    const open = `${fence}${node.getAttribute("data-lang") || ""}\n${text}`;
+    return node.hasAttribute("data-editor-open") ? `\n\n${open}\n\n` : `\n\n${open}\n${fence}\n\n`;
+  }
+  if (tag === "CODE" && node.parentNode?.tagName !== "PRE") {
+    const run = Math.max(1, ...(text.match(/`+/g) || []).map((ticks) => ticks.length + 1));
+    return `${"`".repeat(run)}${text}${"`".repeat(run)}`;
+  }
+  if (tag === "A") {
+    const url = node.getAttribute("href") || "";
+    const title = node.getAttribute("title");
+    if (node.hasAttribute("data-editor-angle")) return `<${text}>`;
+    if (!node.hasAttribute("data-editor-autolink") && text.replace(CARET, "") !== url) {
+      const destination = /\s/.test(url) ? `<${url}>` : url;
+      return `[${text}](${destination}${title == null ? "" : ` "${title}"`})`;
+    }
+    return text;
+  }
+  if (node.hasAttribute?.("data-editor-escape")) return `\\${text}`;
+  if (/^H[1-6]$/.test(tag)) {
+    const underline = node.getAttribute("data-editor-marker");
+    if (underline) return `\n\n${text}\n${underline}\n\n`;
+    return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
+  }
+  if (tag === "BLOCKQUOTE") {
+    const lines = text.trim() === "" ? [""] : text.trim().split("\n");
+    return `\n\n${lines.map((line) => (line ? `> ${line}` : ">")).join("\n")}\n\n`;
+  }
+  if (tag === "LI") {
+    const prefix = node.getAttribute("data-editor-prefix") || "- ";
+    const line = text.replace(/^☑ /, "[x] ").replace(/^☐ /, "[ ] ");
+    return `${prefix}${line}${line.endsWith("\n") || line === "" ? "" : "\n"}`;
+  }
+  if (tag === "UL" || tag === "OL") {
+    return node.parentNode?.tagName === "LI" ? `\n${text}` : `\n\n${text}\n`;
+  }
+  if (tag === "HR") return `\n\n${node.getAttribute("data-editor-marker") || "---"}\n\n`;
+  if (tag === "TH" || tag === "TD") return text + " | ";
+  if (tag === "TR") return `| ${text.replace(/ \| $/, "")} |\n`;
+  if (tag === "THEAD") {
+    const typed = node.parentNode?.getAttribute?.("data-editor-separator");
+    const cells = Array.from(children[0]?.children || []);
+    const align = (cell) => {
+      const value = cell?.getAttribute?.("data-align");
+      return value === "left" ? ":---" : value === "center" ? ":---:" : value === "right" ? "---:" : "---";
+    };
+    return `${text}${typed ? `${typed}\n` : `| ${cells.map(align).join(" | ")} |\n`}`;
+  }
+  if (tag === "TABLE") return `\n\n${text}\n\n`;
+  if (tag === "P") return `\n\n${text}\n\n`;
+  if (tag === "DIV" && node !== root) return `\n${text || "\n"}`;
+  return text;
+}
+
+// The Markdown a rendered surface stands for, with the caret marker where the
+// point falls. A blank line a block writes around itself belongs to the
+// renderer, not to the reader: what they typed waits in the tail behind its own
+// placeholder, so trimming on either side of the marker is safe — a typed
+// newline is not a `\n` yet, and one no block asked for never survives.
+function readMarkdown(surface, point = null) {
+  const marked = markdownToText(surface, point).replace(/\u00a0/g, " ");
+  const caret = marked.indexOf(CARET);
+  const body = caret < 0 ? marked : marked.slice(0, caret) + marked.slice(caret + CARET.length);
+  const lead = /^\n+/.exec(body)?.[0].length || 0;
+  const text = body.replace(/^\n+/, "").replace(/\n+$/, "");
+  const at = caret < 0 ? -1 : Math.max(0, Math.min(text.length, caret - lead));
+  const written = at < 0 ? text : text.slice(0, at) + CARET + text.slice(at);
+  return written.replaceAll(TAIL_NEWLINE, "\n");
+}
+
 // One rendered, editable surface. The value/selection facade keeps completion,
 // recall and sending on Markdown while the browser edits the rendered nodes.
 function installMarkdownInput(editor, render) {
@@ -68,58 +185,10 @@ function installMarkdownInput(editor, render) {
   let savedEnd = 0;
   const history = [""];
   let historyIndex = 0;
-  const marker = "\uE000oxide-caret\uE001";
-
-  function markdown(node, point = null) {
-    if (node.nodeType === 3) {
-      const raw = node.nodeValue || "";
-      // Preserve typed newlines when read() strips paragraph wrapper newlines.
-      const text = node.parentNode?.hasAttribute?.("data-editor-tail") ? raw.replace(/\n/g, "\uE002") : raw;
-      return point?.node === node ? text.slice(0, point.offset) + marker + text.slice(point.offset) : text;
-    }
-    const children = Array.from(node.childNodes || []);
-    const parts = children.map((child, i) =>
-      (point?.node === node && point.offset === i ? marker : "") + markdown(child, point),
-    );
-    let text = parts.reduce((all, part) => {
-      if ((node === editor || node.tagName === "BLOCKQUOTE") && /\n$/.test(all) && /^\n/.test(part)) {
-        return all.replace(/\n+$/, "") + "\n\n" + part.replace(/^\n+/, "");
-      }
-      return all + part;
-    }, "");
-    if (point?.node === node && point.offset === children.length) text += marker;
-    const tag = node.tagName;
-    if (node.hasAttribute?.("data-editor-padding")) return "";
-    if (tag === "BR") return "\n";
-    if (tag === "STRONG" || tag === "B") return `**${text}**`;
-    if (tag === "EM" || tag === "I") return `*${text}*`;
-    if (tag === "DEL" || tag === "S") return `~~${text}~~`;
-    if (tag === "PRE") return `\n\n\`\`\`${node.dataset.lang || ""}\n${text}\n\`\`\`\n\n`;
-    if (tag === "CODE" && node.parentNode?.tagName !== "PRE") return `\`${text}\``;
-    if (tag === "A") {
-      const url = node.getAttribute("href") || "";
-      return node.hasAttribute("data-editor-autolink") || text.replace(marker, "") === url ? text : `[${text}](${url})`;
-    }
-    if (/^H[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
-    if (tag === "BLOCKQUOTE") return `\n\n${text.trim().split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
-    if (tag === "LI") {
-      const index = Array.from(node.parentNode.children).indexOf(node) + 1;
-      const prefix = node.parentNode.tagName === "OL" ? `${index}. ` : "- ";
-      return prefix + text.replace(/^☑ /, "[x] ").replace(/^☐ /, "[ ] ") + "\n";
-    }
-    if (tag === "UL" || tag === "OL") return `\n\n${text}\n`;
-    if (tag === "HR") return "\n\n---\n\n";
-    if (tag === "TH" || tag === "TD") return text + " | ";
-    if (tag === "TR") return "| " + text + "\n";
-    if (tag === "THEAD") return text + "| " + Array(children[0]?.children.length || 1).fill("---").join(" | ") + " |\n";
-    if (tag === "TABLE") return `\n\n${text}\n\n`;
-    if (tag === "P") return `\n\n${text}\n\n`;
-    if (tag === "DIV" && node !== editor) return `\n${text || "\n"}`;
-    return text;
-  }
+  const marker = CARET;
 
   function read(point = null) {
-    return markdown(editor, point).replace(/\u00a0/g, " ").replace(/^\n+|\n+$/g, "").replace(/\uE002/g, "\n");
+    return readMarkdown(editor, point);
   }
 
   function selectionOffset(end) {
@@ -551,9 +620,11 @@ function installMarkdownInput(editor, render) {
 
   // ---------- inline markdown ----------
 
-  function anchor(href, label, bare = false) {
+  function anchor(href, label, bare = false, angle = false, title = null) {
     const text = label == null ? escapeHtml(href) : label;
-    return `<a href="${escapeHtml(href)}"${bare ? ' data-editor-autolink=""' : ""} target="_blank" rel="noreferrer">${text}</a>`;
+    const marker = bare ? ' data-editor-autolink=""' : angle ? ' data-editor-angle=""' : "";
+    const held = title == null ? "" : ` title="${escapeHtml(title)}"`;
+    return `<a href="${escapeHtml(href)}"${marker}${held} target="_blank" rel="noreferrer">${text}</a>`;
   }
 
   // A bare URL often ends a sentence, so trailing punctuation stays outside the
@@ -580,10 +651,17 @@ function installMarkdownInput(editor, render) {
         starts.push(i);
       } else if (text[i] === "]" && starts.length) {
         const start = starts.pop();
-        const destination = /^\(([^)\s]+)\)/.exec(text.slice(i + 1));
-        if (!destination) continue;
+        // A link may be written `<destination>` and may carry a title, which is
+        // kept on the anchor so a read gives the line back as it was written.
+        const destination = /^\(\s*(?:<([^>]*)>|([^)\s]+))?(?:\s+(?:"([^"]*)"|'([^']*)'))?\s*\)/.exec(text.slice(i + 1));
+        if (!destination || (destination[1] == null && destination[2] == null)) continue;
+        const title = destination[3] ?? destination[4];
+        const url = destination[1] ?? destination[2];
+        // A destination holding a stashed escape is not a URL any more, so the
+        // line stays literal rather than building a link out of a placeholder.
+        if (url.includes("\u0000")) continue;
         output += text.slice(copied, start) + stash(anchor(
-          destination[1], escapeHtml(text.slice(start + 1, i)),
+          url, escapeHtml(text.slice(start + 1, i)), false, false, title,
         ));
         i += destination[0].length;
         copied = i + 1;
@@ -593,17 +671,36 @@ function installMarkdownInput(editor, render) {
     return output + text.slice(copied);
   }
 
+  // The named and numeric references a writer may hold: the character they stand
+  // for is what the reader sees, so an entity in a prompt is not shown as `&amp;`.
+  const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
+
+  function decodeEntities(text) {
+    return String(text).replace(/&(#[xX]?[0-9a-fA-F]+|[a-zA-Z]+);/g, (all, name) => {
+      if (!name.startsWith("#")) return ENTITIES[name.toLowerCase()] ?? all;
+      const code = /^#[xX]/.test(name) ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+      if (!Number.isFinite(code) || code < 32 || code > 0x10ffff) return all;
+      return String.fromCodePoint(code);
+    });
+  }
+
   function inline(text, references = false, hardBreaks = false) {
     const stashed = [];
     const stash = (html) => {
       stashed.push(html);
       return `\u0000${stashed.length - 1}\u0000`;
     };
-    // Links and code spans are stashed on the raw text, before escaping, so a
-    // URL is never folded into an HTML entity and an entity is never read as
-    // part of a URL.
+    // Links and code spans are stashed on the raw text (before escaping), so a
+    // URL is never folded into an HTML entity (`&lt;`, `&gt;`, `&amp;`) and an
+    // entity is never read as part of the URL. Whatever is left is escaped once,
+    // after the placeholders are in place.
     let s = String(text);
     s = s.replace(/(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (_, _ticks, code) => stash(`<code>${escapeHtml(code.replace(/\n/g, " "))}</code>`));
+    // A backslash makes the next character literal, so an escaped delimiter never
+    // opens a span — `\*stars\*` reads as the stars a writer meant, and the
+    // editable surface keeps the backslash it takes to say so again.
+    s = s.replace(/\\([\\`*_{}\[\]()#+\-.!~>|])/g, (_, char) =>
+      stash(references ? `<span data-editor-escape="">${escapeHtml(char)}</span>` : escapeHtml(char)));
     if (references) {
       for (const [start, end] of referenceRanges(s).reverse()) {
         const reference = s.slice(start, end);
@@ -612,7 +709,7 @@ function installMarkdownInput(editor, render) {
       }
     }
     s = inlineLinks(s, stash);
-    s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url)));
+    s = s.replace(/<(https?:\/\/[^\s<>]+)>/g, (_, url) => stash(anchor(url, null, false, true)));
     s = s.replace(/\bhttps?:\/\/[^\s<>"'`\u0000]+/g, (url, offset, input) => {
       const delimiter = /(\*\*|\*|~~)$/.exec(input.slice(0, offset))?.[1];
       const punctuation = /[.,;:!?]+$/.exec(url)?.[0] || "";
@@ -627,15 +724,35 @@ function installMarkdownInput(editor, render) {
         (_, prefix, url) => prefix + autolink(url, stash, true));
     }
     if (hardBreaks) s = s.replace(/ {2,}\n|\\\n/g, () => stash("<br>")).replace(/\n/g, " ");
-    s = escapeHtml(s);
-    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-    s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-    s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => stashed[Number(i)]);
+    s = escapeHtml(decodeEntities(s));
+    // Emphasis needs a non-space on both sides of its delimiters, so `2 * 3 * 4`
+    // stays arithmetic and `** spaced **` stays literal; `_` additionally may not
+    // open or close inside a word, which keeps `snake_case_name` a name. Each pass
+    // runs twice so a span wrapped in the other delimiter bolds its contents too.
+    const del = () => s.replace(/~~(\S(?:[^~]*?\S)?)~~/g, "<del>$1</del>");
+    const strong = () => s.replace(/\*\*(\S(?:[^*]*?\S)?)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^\w_])__(\S(?:[^_]*?\S)?)__/g, (_, before, body) =>
+        `${before}<strong${references ? ' data-editor-marker="underscore"' : ""}>${body}</strong>`);
+    const em = () => s.replace(/(^|[^*\w])\*(\S(?:[^*\n]*?\S)?)\*(?![*\w])/g, "$1<em>$2</em>")
+      .replace(/(^|[^\w_])_(\S(?:[^_\n]*?\S)?)_(?![\w_])/g, (_, before, body) =>
+        `${before}<em${references ? ' data-editor-marker="underscore"' : ""}>${body}</em>`);
+    s = del();
+    s = strong();
+    s = em();
+    s = strong();
+    s = em();
+    // A stashed span can hold another one — a code span inside a link's label —
+    // so placeholders are restored until none is left.
+    while (/\u0000\d+\u0000/.test(s)) s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => stashed[Number(i)]);
     return s;
   }
 
-  const BLOCK_START = /^\s*(```|#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)/;
+  const BLOCK_START = /^\s*(```|~~~|#{1,6}\s|[-*+]\s|\d+[.)]\s|>)/;
+
+  // A line of nothing but `-`, `*` or `_` runs is a rule, which ends the block
+  // beside it rather than continuing it.
+  const RULE = /^\s*((?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+
 
   // ---------- syntax highlighting ----------
 
@@ -784,12 +901,126 @@ function installMarkdownInput(editor, render) {
     return /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(line) && line.includes("-");
   }
 
-  function tableHtml(header, rows, references = false) {
-    const head = header.map((cell) => `<th>${inline(cell, references)}</th>`).join("");
+  // The alignment a separator row asks for, so the rendered cells line up the way
+  // the source says and a read of the table can write the row back as it was.
+  function tableAligns(separator) {
+    return splitRow(separator).map((cell) => {
+      const left = cell.startsWith(":");
+      const right = cell.endsWith(":");
+      return left && right ? "center" : left ? "left" : right ? "right" : "";
+    });
+  }
+
+  function tableHtml(header, rows, references = false, aligns = [], separator = "") {
+    const cell = (tag, text, index) => {
+      const align = aligns[index] ? ` data-align="${aligns[index]}"` : "";
+      return `<${tag}${align}>${inline(text, references)}</${tag}>`;
+    };
+    const head = header.map((text, index) => cell("th", text, index)).join("");
     const body = rows
-      .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell, references)}</td>`).join("")}</tr>`)
+      .map((row) => `<tr>${row.map((text, index) => cell("td", text, index)).join("")}</tr>`)
       .join("");
-    return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    // The separator row is drawn, not restated: it is the one line of a table that
+    // says how its columns line up, and a read of the table has to give back the
+    // row the reader typed rather than one inferred from the headers.
+    const row = separator && references ? ` data-editor-separator="${escapeHtml(separator.trim())}"` : "";
+    return `<table${row}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  }
+
+  /// A closing fence is a run of the same character at least as long as the one
+  /// that opened the block.
+  function isFenceEnd(line, run) {
+    const trimmed = line.trim();
+    return trimmed.length >= run.length && trimmed === run[0].repeat(trimmed.length);
+  }
+
+  /// A line that opens a table: the row under it is the separator, so the two are
+  /// one block rather than a paragraph — which is what keeps a table being typed
+  /// row by row from being split by the blank line between two paragraphs.
+  function startsTable(lines, index) {
+    return Boolean(lines[index]?.includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1]));
+  }
+
+  // A list item's prefix — the indentation, the bullet or number, and the space
+  // after it — is what a rendered list has to give back, so it is carried on the
+  // item itself: a composer that normalized `*` to `-`, or renumbered `3.` to
+  // `1.`, would be editing the text under the reader's caret.
+  // A list item's prefix — the indentation, the bullet or number, and the space
+  // after it — is what a rendered list has to give back, so it is carried on the
+  // item itself: a composer that normalized `*` to `-`, or renumbered `3.` to
+  // `1.`, would be editing the text under the reader's caret.
+  const LIST_ITEM = /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+)(.*)$/;
+
+  function listItem(line) {
+    const match = LIST_ITEM.exec(line);
+    if (!match) return null;
+    const prefix = match[1];
+    const number = /(\d+)[.)][ \t]+$/.exec(prefix)?.[1];
+    return {
+      prefix,
+      indent: /^[ \t]*/.exec(prefix)[0].length,
+      number: number == null ? null : Number(number),
+      content: match[2],
+      task: /^\[([ xX])\][ \t]+(.*)$/.exec(match[2]),
+    };
+  }
+
+  // One list run, item by item: an item indented past the one before it nests
+  // inside it, so a nested list keeps its levels instead of being flattened into
+  // its parent's, and a line under an item that is not a block of its own
+  // continues the item rather than starting a paragraph beside it.
+  function renderList(lines, start, softBreaks) {
+    const out = [];
+    const open = [];
+    let i = start;
+    while (i < lines.length) {
+      const item = listItem(lines[i]);
+      if (!item) break;
+      const tag = item.number == null ? "ul" : "ol";
+      while (open.length && item.indent < open[open.length - 1].indent) out.push(`</li></${open.pop().tag}>`);
+      if (open.length && open[open.length - 1].indent === item.indent && open[open.length - 1].tag !== tag) {
+        out.push(`</li></${open.pop().tag}>`);
+      }
+      let level = open[open.length - 1];
+      let opened = false;
+      if (level && level.indent === item.indent) {
+        out.push("</li>");
+      } else {
+        const begin = tag === "ol" && item.number !== 1 ? ` start="${item.number}"` : "";
+        out.push(`<${tag}${begin}${item.task && tag === "ul" ? ' class="tasks"' : ""}>`);
+        level = { tag, indent: item.indent, expected: item.number == null ? null : item.number + 1 };
+        open.push(level);
+        opened = true;
+      }
+      let attributes = "";
+      if (tag === "ol") {
+        // `start` numbers the first item; a number that does not continue the run
+        // after it is written on the item itself.
+        if (!opened && item.number !== level.expected) attributes += ` value="${item.number}"`;
+        level.expected = item.number + 1;
+      }
+      if (item.task) attributes += ' class="task"';
+      const body = [item.task ? item.task[2] : item.content];
+      let pad = 0;
+      while (i + 1 < lines.length) {
+        const next = lines[i + 1];
+        if (next.trim() === "" || BLOCK_START.test(next) || RULE.test(next) || startsTable(lines, i + 1)) break;
+        const indent = /^[ \t]*/.exec(next)[0].length;
+        if (body.length === 1) pad = indent;
+        body.push(next.slice(indent));
+        i += 1;
+      }
+      if (body.length > 1 && softBreaks) attributes += ` data-editor-pad="${escapeHtml(" ".repeat(pad))}"`;
+      const mark = item.task ? `${item.task[1].toLowerCase() === "x" ? "☑" : "☐"} ` : "";
+      const text = softBreaks
+        ? body.map((line) => inline(line, true)).join("<br>")
+        : inline(body.join("\n"), false, true);
+      const prefix = softBreaks ? ` data-editor-prefix="${escapeHtml(item.prefix)}"` : "";
+      out.push(`<li${attributes}${prefix}>${mark}${text}`);
+      i += 1;
+    }
+    while (open.length) out.push(`</li></${open.pop().tag}>`);
+    return { html: out.join(""), next: i };
   }
 
   function paintMarkdown(body, text) {
@@ -804,44 +1035,41 @@ function installMarkdownInput(editor, render) {
     const lines = String(text).split("\n");
     const out = [];
     let i = 0;
-    let list = null;
-
-    const closeList = () => {
-      if (list) {
-        out.push(`</${list}>`);
-        list = null;
-      }
-    };
 
     while (i < lines.length) {
       const line = lines[i];
 
-      const fence = line.match(/^\s*```([\w+-]*)\s*$/);
+      const fence = line.match(/^\s*(`{3,}|~{3,})[ \t]*([\w+.#-]*)\s*$/);
       if (fence) {
-        closeList();
+        const run = fence[1];
         const code = [];
         i += 1;
-        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+        while (i < lines.length && !isFenceEnd(lines[i], run)) {
           code.push(lines[i]);
           i += 1;
         }
-        const complete = i < lines.length && fence[1].toLowerCase() === "mermaid" && !softBreaks;
+        // A fence still being typed has no closing run yet, and reading one back
+        // as closed would put a fence the reader never wrote under the caret.
+        const closed = i < lines.length;
+        const complete = closed && fence[2].toLowerCase() === "mermaid" && !softBreaks;
         i += 1;
-        const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1].toLowerCase())}"` : "";
-        out.push(`<pre${lang}${complete ? ' data-complete="true"' : ""}><code>${highlight(code.join("\n"), fence[1])}</code></pre>`);
+        const lang = fence[2] ? ` data-lang="${escapeHtml(fence[2].toLowerCase())}"` : "";
+        const open = closed || !softBreaks ? "" : ' data-editor-open=""';
+        const marker = run === "```" || !softBreaks ? "" : ` data-editor-fence="${escapeHtml(run)}"`;
+        out.push(`<pre${lang}${complete ? ' data-complete="true"' : ""}${marker}${open}><code>${highlight(code.join("\n"), fence[2])}</code></pre>`);
         continue;
       }
 
-      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-        closeList();
-        out.push("<hr />");
+      const rule = line.match(RULE);
+      if (rule) {
+        const marker = rule[1].trim();
+        out.push(marker === "---" || !softBreaks ? "<hr />" : `<hr data-editor-marker="${escapeHtml(marker)}" />`);
         i += 1;
         continue;
       }
 
       const heading = line.match(/^(#{1,6})\s+(.*)$/);
       if (heading) {
-        closeList();
         const level = heading[1].length;
         out.push(`<h${level}>${inline(heading[2], softBreaks)}</h${level}>`);
         i += 1;
@@ -849,7 +1077,6 @@ function installMarkdownInput(editor, render) {
       }
 
       if (/^\s*>\s?/.test(line)) {
-        closeList();
         const quote = [];
         while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
           quote.push(lines[i].replace(/^\s*>\s?/, ""));
@@ -859,72 +1086,52 @@ function installMarkdownInput(editor, render) {
         continue;
       }
 
-      const task = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/);
-      if (task) {
-        if (list !== "ul") {
-          closeList();
-          out.push('<ul class="tasks">');
-          list = "ul";
-        }
-        const mark = task[1].toLowerCase() === "x" ? "☑" : "☐";
-        out.push(`<li class="task">${mark} ${inline(task[2], softBreaks)}</li>`);
-        i += 1;
+      if (listItem(line)) {
+        const list = renderList(lines, i, softBreaks);
+        out.push(list.html);
+        i = list.next;
         continue;
       }
 
-      const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
-      if (bullet) {
-        if (list !== "ul") {
-          closeList();
-          out.push("<ul>");
-          list = "ul";
-        }
-        out.push(`<li>${inline(bullet[1], softBreaks)}</li>`);
-        i += 1;
+      // An underlined line is the other way a heading is written; the line that
+      // underlines it is carried on the heading so a read gives it back. It comes
+      // after the list and quote branches, so their own `-` markers win.
+      const underline = line.trim() && /^ {0,3}(=+|-+)[ \t]*$/.exec(lines[i + 1] || "");
+      if (underline) {
+        const level = underline[1][0] === "=" ? 1 : 2;
+        const marker = softBreaks ? ` data-editor-marker="${escapeHtml(underline[1])}"` : "";
+        out.push(`<h${level}${marker}>${inline(line, softBreaks)}</h${level}>`);
+        i += 2;
         continue;
       }
 
-      const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
-      if (ordered) {
-        if (list !== "ol") {
-          closeList();
-          out.push("<ol>");
-          list = "ol";
-        }
-        out.push(`<li>${inline(ordered[1], softBreaks)}</li>`);
-        i += 1;
-        continue;
-      }
-
-      if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
-        closeList();
+      if (startsTable(lines, i)) {
         const header = splitRow(line);
+        const separator = lines[i + 1];
+        const aligns = tableAligns(separator);
         const rows = [];
         i += 2;
         while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
           rows.push(splitRow(lines[i]));
           i += 1;
         }
-        out.push(tableHtml(header, rows, softBreaks));
+        out.push(tableHtml(header, rows, softBreaks, aligns, separator));
         continue;
       }
 
       if (line.trim() === "") {
-        closeList();
         i += 1;
         continue;
       }
 
-      closeList();
       const para = [line];
       i += 1;
-      while (i < lines.length && lines[i].trim() !== "" && !BLOCK_START.test(lines[i])) {
+      while (i < lines.length && lines[i].trim() !== "" && !BLOCK_START.test(lines[i]) && !RULE.test(lines[i]) && !startsTable(lines, i)) {
         para.push(lines[i]);
         i += 1;
       }
       out.push(`<p>${softBreaks ? para.map((line) => inline(line, true)).join("<br>") : inline(para.join("\n"), false, true)}</p>`);
     }
-    closeList();
     return out.join("");
   }
 

@@ -20,9 +20,24 @@ const referenceCode = (source) => {
   const start = source.indexOf("function referenceRanges");
   return source.slice(start, source.indexOf("\n}\n", start) + 3);
 };
+// The composer paints with `renderMarkdown` and reads the page back with
+// `readMarkdown`, so both halves have to ride along into the page.
+const readerCode = (source) => source.slice(source.indexOf("const CARET"), source.indexOf("function installMarkdownInput"));
 
 function exerciseEditor() {
   const editor = document.querySelector("[contenteditable]");
+  // Force a DOM-backed edit: reading only the saved source would hide a damaged
+  // rendering until a paste, deletion or IME commit reads it back.
+  const editInPage = (text = "!") => {
+    const tail = editor.querySelector("[data-editor-tail]").firstChild;
+    tail.appendData(text);
+    const caret = document.createRange();
+    caret.setStart(tail, tail.length);
+    caret.collapse(true);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(caret);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  };
   const results = document.querySelector("#results");
   installMarkdownInput(editor, (text) => renderMarkdown(text, true));
   const check = (name, pass) => {
@@ -248,16 +263,7 @@ function exerciseEditor() {
       editor.focus();
       check("inline code survives reference decoration", JSON.stringify([...editor.querySelectorAll("code")].map((node) => node.textContent)) === JSON.stringify(code));
       check("no unresolved placeholders", !/[\u0000\uFFFD]/.test(editor.innerHTML));
-      // Force a DOM-backed edit: reading only the saved source would hide a
-      // damaged rendering until a paste, deletion or IME commit reads it back.
-      const tail = editor.querySelector("[data-editor-tail]").firstChild;
-      tail.appendData("!");
-      const caret = document.createRange();
-      caret.setStart(tail, tail.length);
-      caret.collapse(true);
-      window.getSelection().removeAllRanges();
-      window.getSelection().addRange(caret);
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      editInPage();
       check("DOM-backed editing preserves the full Markdown prompt", editor.value === source + "!");
       check("caret follows the DOM edit", editor.selectionStart === source.length + 1);
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
@@ -265,6 +271,46 @@ function exerciseEditor() {
     }
     editor.value = "";
     check("clearing", editor.innerHTML === "");
+    // Every construct the box can draw has to come back as the text that was
+    // typed: what the page holds is re-read on the next keystroke, so a block
+    // that writes a blank line around itself, a list that normalizes `*` to `-`
+    // or a fence that invents a closing run would edit the reader's own text.
+    for (const source of [
+      "- one\n- two",
+      "* star\n+ plus",
+      "1) paren\n2) again",
+      "3. three\n4. four",
+      "1. one\n1. repeated",
+      "- outer\n  - inner",
+      "- an item\n  continued under itself",
+      "- [ ] todo\n- [x] done",
+      "# Heading",
+      "> quoted",
+      "***",
+      "```\ncode\n```",
+      "~~~\ncode\n~~~",
+      "```\nstill being typed",
+      "| a | b |\n| --- | --- |\n| 1 | 2 |",
+      "| a | b |\n| :-- | --: |\n| 1 | 2 |",
+      "2 * 3 * 4",
+      "_italic_ and __bold__ and snake_case_name",
+      "an \\*escaped\\* star",
+      "``a ` b``",
+      "see https://example.com/a_b",
+      "[label](https://example.com \"a title\")",
+      "Title\n=====",
+    ]) {
+      editor.value = source;
+      editor.focus();
+      editInPage();
+      check(`kept ${JSON.stringify(source)} as it was typed`, editor.value === source + "!", JSON.stringify(editor.value));
+    }
+    // An entity is the one construct the box settles rather than keeps: it shows
+    // the character the entity stands for, and reads back as that character.
+    editor.value = "a &amp; b";
+    editor.focus();
+    editInPage();
+    check("showed an entity as the character it stands for", editor.value === "a & b!" && editor.textContent === "a & b!", JSON.stringify(editor.value));
     results.textContent += "ALL PASSED";
   } catch (error) {
     results.textContent += `FAIL ${error.stack}`;
@@ -279,7 +325,7 @@ try {
   ]) {
     const escape = source.match(/function escapeHtml\(text\) \{[\s\S]*?\n {0,2}\}(?=\r?\n)/)[0];
     const helpers = source.slice(source.indexOf("function anchor"), source.indexOf(lastHelper));
-    const script = `${escape}\n${referenceCode(source)}\n${helpers}\n${editorCode(source)}\n(${exerciseEditor})();`.replaceAll("</script", "<\\/script");
+    const script = `${escape}\n${referenceCode(source)}\n${helpers}\n${readerCode(source)}\n${editorCode(source)}\n(${exerciseEditor})();`.replaceAll("</script", "<\\/script");
     const page = join(scratch, `${name}.html`);
     const css = readFileSync(new URL(name === "Desktop" ? "ui/style.css" : "../../editors/vscode/media/style.css", import.meta.url), "utf8");
     const id = name === "Desktop" ? "prompt" : "input";

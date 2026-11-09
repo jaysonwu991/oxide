@@ -1280,7 +1280,7 @@ vm.runInThisContext(
     " startTool, finishTool, toggleTool, renderStoredTranscript, paintComputerUse, isComputerTool, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
-    " bubble, renderMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog," +
+    " bubble, renderMarkdown, markdownToText, readMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog," +
     " openSettings, closeSettings, showSettingsSection, paintSettingsControls, renderShortcuts," +
     " openCommandMenu, closeCommandMenu, renderCommandMenu, runCommand, commandMatches, commandActions," +
     " loadPrefs, savePrefs, resizeText, toggleSidebar, announceShortcuts, formatChord, matchShortcut," +
@@ -9287,11 +9287,139 @@ const renderedInputCode = (code) => {
 };
 check("kept rendered input editing identical in Desktop and Extension",
   renderedInputCode(source) === renderedInputCode(extensionIcons));
+// The composer paints with `renderMarkdown` and reads the rendered nodes back
+// with `markdownToText`, so those two are one implementation in both front-ends
+// as well: syntax that one learns and the other does not is a prompt that reads
+// differently in the panel than in the window. The panel's copy sits one block
+// deeper than the window's, so each piece is measured from its own first line's
+// indentation before the two are compared.
+const stripIndent = (text) =>
+  text.replace(new RegExp(`^ {${/^ */.exec(text)[0].length}}`, "gm"), "");
+const functionCode = (code, name) => {
+  const start = new RegExp(`^ *function ${name}\\(`, "m").exec(code);
+  if (!start) return "";
+  let depth = 0;
+  for (let i = code.indexOf("{", start.index); i < code.length; i += 1) {
+    if (code[i] === "{") depth += 1;
+    if (code[i] === "}") depth -= 1;
+    if (!depth) return stripIndent(code.slice(start.index, i + 1));
+  }
+  return "";
+};
+const constCode = (code, name) => stripIndent((code.match(new RegExp(`^ *const ${name} = .*$`, "m")) || [""])[0]);
+const markdownPieces = ["markdownToText", "readMarkdown", "anchor", "autolink", "inlineLinks", "decodeEntities", "inline",
+  "splitRow", "isTableSeparator", "tableAligns", "tableHtml", "startsTable", "isFenceEnd", "listItem", "renderList",
+  "renderMarkdown"];
+const markdownConstants = ["BLOCK_START", "RULE", "LIST_ITEM", "ENTITIES", "CARET", "TAIL_NEWLINE"];
+check(
+  "kept the Markdown the composer paints and reads back identical in Desktop and Extension",
+  markdownPieces.every((name) => functionCode(source, name) && functionCode(source, name) === functionCode(extensionIcons, name)) &&
+    markdownConstants.every((name) => constCode(source, name) && constCode(source, name) === constCode(extensionIcons, name)),
+  [...markdownPieces.filter((name) => functionCode(source, name) !== functionCode(extensionIcons, name)),
+    ...markdownConstants.filter((name) => constCode(source, name) !== constCode(extensionIcons, name))].join(", "),
+);
 const referenceCode = (code) => {
   const start = code.indexOf("function referenceRanges");
   return code.slice(start, code.indexOf("\n}\n", start) + 3);
 };
 check("kept file reference decoration identical in Desktop and Extension", referenceCode(source) === referenceCode(extensionIcons));
+
+// The composer draws what it is typed and reads the drawing back on the next
+// keystroke, so every construct it can draw has to come back as the text that
+// was typed. These read what `renderMarkdown` emits the way the browser holds
+// it — including the trailing whitespace the composer keeps in its tail — and
+// put it through `readMarkdown`, the inverse the composer itself runs.
+const entities = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
+const decodeText = (value) => value.replace(/&(amp|lt|gt|quot|#39);/g, (all, name) => entities[name]);
+const nodesFromHtml = (html) => {
+  const element = (tagName, parent, attributes = {}) => ({
+    nodeType: 1,
+    tagName: tagName.toUpperCase(),
+    parentNode: parent,
+    childNodes: [],
+    attributes,
+    get children() {
+      return this.childNodes.filter((child) => child.nodeType === 1);
+    },
+    hasAttribute: (name) => name in attributes,
+    getAttribute: (name) => (name in attributes ? attributes[name] : null),
+  });
+  const root = element("div", null);
+  const open = [root];
+  for (const [, close, tag, raw, body] of html.matchAll(/<\/([a-zA-Z0-9]+)>|<([a-zA-Z0-9]+)((?:\s+[^>]*?)?)\/?>|([^<]+)/g)) {
+    if (close) {
+      if (open.length > 1) open.pop();
+      continue;
+    }
+    if (tag) {
+      const attributes = {};
+      for (const [, name, value] of raw.matchAll(/([a-zA-Z-]+)(?:="([^"]*)")?/g)) attributes[name] = decodeText(value || "");
+      const node = element(tag, open.at(-1), attributes);
+      open.at(-1).childNodes.push(node);
+      if (!["br", "hr"].includes(tag.toLowerCase())) open.push(node);
+      continue;
+    }
+    if (body) open.at(-1).childNodes.push({ nodeType: 3, nodeValue: decodeText(body), parentNode: open.at(-1), childNodes: [] });
+  }
+  return root;
+};
+/// What `paint` leaves on screen for a value: the body drawn, and the spacing
+/// after it kept in the tail of the last paragraph or of the surface itself.
+const painted = (text) => {
+  const whitespace = text.match(/\s*$/)[0];
+  const surface = nodesFromHtml(app.renderMarkdown(text.slice(0, text.length - whitespace.length), true));
+  if (text && surface.childNodes.length) {
+    const tail = nodesFromHtml(`<span data-editor-tail="">${whitespace}</span>`).childNodes[0];
+    const last = surface.childNodes.at(-1);
+    (last.tagName === "P" ? last : surface).childNodes.push(tail);
+  }
+  return surface;
+};
+const roundTrip = (text) => app.readMarkdown(painted(text));
+for (const [name, text, expected] of [
+  ["a bulleted list", "- one\n- two", "- one\n- two"],
+  ["the markers a list was written with", "* one\n+ two", "* one\n+ two"],
+  ["a numbered list's own numbers", "3. three\n4. four", "3. three\n4. four"],
+  ["a numbered list's own delimiter", "1) one\n2) two", "1) one\n2) two"],
+  ["a nested list", "- outer\n  - inner", "- outer\n  - inner"],
+  ["a list item continued under itself", "- an item\n  on two lines", "- an item\n  on two lines"],
+  ["a task list", "- [ ] todo\n- [x] done", "- [ ] todo\n- [x] done"],
+  ["a heading", "# Heading", "# Heading"],
+  ["a quote", "> quoted", "> quoted"],
+  ["a rule", "***", "***"],
+  ["a fence", "```\ncode\n```", "```\ncode\n```"],
+  ["a fence still being typed", "```\ncode", "```\ncode"],
+  ["a tilde fence", "~~~\ncode\n~~~", "~~~\ncode\n~~~"],
+  ["a table", "| a | b |\n| --- | --- |\n| 1 | 2 |", "| a | b |\n| --- | --- |\n| 1 | 2 |"],
+  ["a table's alignment", "| a | b |\n| :-- | --: |\n| 1 | 2 |", "| a | b |\n| :-- | --: |\n| 1 | 2 |"],
+  ["a table's pipes", "a | b\n--- | ---\n1 | 2", "| a | b |\n--- | ---\n| 1 | 2 |"],
+  ["an underlined heading", "Title\n=====", "Title\n====="],
+  ["an underlined second-level heading", "Title\n---", "Title\n---"],
+  ["a link with a title", "[label](https://example.com \"a title\")", "[label](https://example.com \"a title\")"],
+  ["a link with a spaced destination", "[label](<https://example.com/a b>)", "[label](<https://example.com/a b>)"],
+  ["an escaped delimiter", "an \\*escaped\\* star", "an \\*escaped\\* star"],
+  ["a code span holding a backtick", "``a ` b``", "``a ` b``"],
+  ["the delimiter an emphasis was written with", "_i_ and __b__", "_i_ and __b__"],
+  ["arithmetic rather than emphasis", "2 * 3 * 4", "2 * 3 * 4"],
+  ["a name with underscores", "snake_case_name", "snake_case_name"],
+  ["the line a reader typed after a list", "- one\n- two\n", "- one\n- two\n"],
+]) {
+  const back = roundTrip(text);
+  check(`read back ${name} as it was typed`, back === expected, JSON.stringify(back));
+}
+// A construct that is normalized (a block gets its own line) must settle after
+// one read, never keep growing: a composer that adds a blank line every time it
+// is read pushes the caret down the box as the reader types.
+for (const text of ["- one\n- two", "# Heading", "text\n\nmore", "| a |\n| --- |\n| 1 |", "> quoted"]) {
+  const once = roundTrip(text);
+  check(`settled ${JSON.stringify(text)} after one read`, roundTrip(once) === once, JSON.stringify(roundTrip(once)));
+}
+check(
+  "drew no editable markers into a transcript",
+  !/data-editor-(?:prefix|pad|open|fence|marker|escape)/.test(
+    app.renderMarkdown("- a\n  - b\n\n---\n\n```\nx\n```\n\n| a |\n| :-- |\n| 1 |\n\n_em_ and \\*literal\\*"),
+  ),
+);
 for (const prompt of [
   "Update @README using `cargo fmt` and Cargo.toml",
   'Update @"README" using `cargo fmt` and Cargo.toml',
