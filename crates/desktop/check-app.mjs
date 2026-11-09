@@ -741,6 +741,7 @@ const languageAnswer = {
 // and nothing everywhere else.
 let projectInfo = null;
 let modelCatalog = { providers: [] };
+let modelCatalogReplyGate = null;
 // What `git_info` answers for the folder's repository: the bar's own read, so a
 // check can drive a branch, a worktree or a folder that is no repository.
 let gitAnswer = {
@@ -968,7 +969,7 @@ const invoke = async (command, args = {}) => {
     case "list_providers":
       return providersAnswer;
     case "list_models":
-      return modelCatalog;
+      return modelCatalogReplyGate || modelCatalog;
     case "list_themes":
       return { current: selectedTheme, names: ["dark", "light", "ocean"] };
     case "theme_colors":
@@ -2938,6 +2939,11 @@ const ruleFor = (selector) => {
   }
   return "";
 };
+check("kept dialog titles and close controls on one row with Close at the right",
+  /display:\s*flex/.test(ruleFor(".dialog-head")) &&
+    /justify-content:\s*space-between/.test(ruleFor(".dialog-head")) &&
+    /margin-left:\s*auto/.test(ruleFor(".dialog-head .icon")) &&
+    /margin:\s*0/.test(ruleFor(".dialog-head h2")));
 const restingThumb = ruleFor("::-webkit-scrollbar-thumb");
 const shownThumb = ruleFor(".scrolling::-webkit-scrollbar-thumb");
 // The transcript is a vertical log. A tool card streaming a long path or a fenced
@@ -9183,6 +9189,29 @@ check("selected a model and refreshed its visible name",
   elementFor("models-modal").hidden && elementFor("model-value").textContent === "gpt-5" &&
     projectCalls("set_model").at(-1)?.[1].model === "gpt-5");
 await app.openModels();
+await elementFor("models-refresh").onclick();
+check("forced a fresh provider catalog from the model picker",
+  projectCalls("list_models").at(-1)?.[1].refresh === true);
+modelCatalog.providers[0].error = "provider unavailable";
+await app.openModels();
+check("showed catalog errors beside remembered model choices",
+  elementFor("model-list").children.some((row) => row.textContent.includes("provider unavailable")));
+delete modelCatalog.providers[0].error;
+const freshCatalog = modelCatalog;
+let releaseOldCatalog;
+modelCatalogReplyGate = new Promise((resolve) => { releaseOldCatalog = resolve; });
+const oldCatalogRead = app.openModels();
+modelCatalogReplyGate = null;
+await app.openModels(true);
+releaseOldCatalog({ providers: [{ provider: "openai", models: ["stale-model"] }] });
+await oldCatalogRead;
+check("kept the refreshed catalog when an older request arrived later", app.state.models === freshCatalog);
+app.state.reasoningLevels = ["auto"];
+app.state.supportsReasoning = false;
+await app.openModels(true);
+await nextTick();
+check("retried missing effort metadata when refreshing the model catalog",
+  app.state.supportsReasoning && app.state.reasoningLevels.includes("high"));
 elementFor("prompt").focus();
 document.fire("click", { target: elementFor("prompt") });
 check("dismissed the model dropdown outside without taking focus",

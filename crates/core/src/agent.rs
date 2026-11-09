@@ -878,6 +878,7 @@ async fn run_loop(
         if !skip_steering_poll {
             for queued in runtime.steering.drain_labeled(runtime.steering_mode) {
                 mid_run_input_reminder = true;
+                follow_through_nudged = false;
                 let Queued {
                     message: steered,
                     label,
@@ -1380,6 +1381,8 @@ async fn run_loop(
             .with_thinking(turn.thinking.clone());
 
         if tool_calls.is_empty() {
+            let unfinished =
+                announces_unfinished_work(assistant.display().as_deref().unwrap_or(""));
             // The final empty check and closing the input queues are one atomic
             // decision. A sender racing this boundary is therefore either
             // included below or told to start a new turn.
@@ -1395,20 +1398,22 @@ async fn run_loop(
             // answer is held back so its re-check extends the same assistant
             // turn instead of adding a second summary.
             if !queued && !runtime.cancel.is_cancelled() {
-                let reminder = verification.reminder().or_else(|| {
-                    if !follow_through_nudged
-                        && announces_unfinished_work(assistant.display().as_deref().unwrap_or(""))
-                    {
-                        follow_through_nudged = true;
-                        follow_through_pending = true;
-                        Some("You ended by announcing work without doing it. Complete the announced \
+                let mut reminder = verification.reminder();
+                if !follow_through_nudged && unfinished {
+                    follow_through_nudged = true;
+                    follow_through_pending = true;
+                    let follow_through = "You ended by announcing work without doing it. Complete the announced \
                               action or summary now, using tools when needed. If blocked, give the \
                               specific evidence and the completed outcome rather than another promise. \
-                              Preserve the user's requested scope and stopping conditions.".to_string())
-                    } else {
-                        None
+                              Preserve the user's requested scope and stopping conditions.";
+                    match &mut reminder {
+                        Some(reminder) => {
+                            reminder.push('\n');
+                            reminder.push_str(follow_through);
+                        }
+                        None => reminder = Some(follow_through.to_string()),
                     }
-                });
+                }
                 if let Some(reminder) = reminder {
                     let (held, held_usage) = match held_summary.take() {
                         Some((prior, prior_usage)) if held_is_tail => {
@@ -1482,11 +1487,17 @@ async fn run_loop(
                 millis: started.elapsed().as_millis() as u64,
             });
             if !queued {
+                if unfinished && follow_through_nudged && !runtime.cancel.is_cancelled() {
+                    let _ = tx.send(AgentEvent::Error(
+                        "the model stopped before completing its announced work after the follow-through request".to_string(),
+                    ));
+                }
                 // Nothing is queued and no re-check is due, so the run is done.
                 finish(&runtime, &tx, messages, depth);
                 return;
             }
             mid_run_input_reminder = true;
+            follow_through_nudged = false;
             for queued in steered {
                 let Queued { message, label } = queued;
                 let _ = tx.send(AgentEvent::Steered {
@@ -3157,24 +3168,82 @@ fn inspected_by_shell(command: &str, output: &str, path: &str) -> bool {
     })
 }
 
-/// A short final paragraph ending in an announced action is a handoff to
-/// another step, not an answer. One follow-through request is enough to avoid
+/// A short final paragraph announcing an action or an absent report hands off
+/// to another step. One follow-through request is enough to avoid
 /// silently stopping there without turning ambiguous prose into a retry loop.
 fn announces_unfinished_work(text: &str) -> bool {
     let tail = text.trim_end().rsplit("\n\n").next().unwrap_or("").trim();
-    if !tail.ends_with(':') || tail.len() > 600 || tail.starts_with(['>', '`', '"', '\'']) {
+    if tail.len() > 600 || tail.starts_with(['>', '`', '"', '\'']) {
         return false;
     }
     let tail = tail.to_ascii_lowercase();
-    let sentence = tail.rsplit(['.', '!', '?']).next().unwrap_or(&tail).trim();
+    let last = tail.trim_end_matches(['.', ':', '!', ' ']);
+    if [
+        "here's ",
+        "here’s ",
+        "here is ",
+        "below is ",
+        "here are ",
+        "below are ",
+    ]
+    .iter()
+    .any(|prefix| {
+        last.rsplit(['.', '!', '?'])
+            .next()
+            .unwrap_or(last)
+            .trim()
+            .starts_with(prefix)
+    }) && ["report", "summary", "findings", "results", "breakdown"]
+        .iter()
+        .any(|noun| last.ends_with(noun))
+    {
+        return true;
+    }
+    let sentence = last.rsplit(['!', '?']).next().unwrap_or(last);
+    let sentence = sentence.rsplit(". ").next().unwrap_or(sentence).trim();
     let sentence = ["now ", "now, ", "next ", "next, ", "then ", "then, "]
         .iter()
         .find_map(|prefix| sentence.strip_prefix(prefix))
         .unwrap_or(sentence);
-    !sentence.starts_with("let me know")
-        && ["let me ", "i'll ", "i will ", "i’ll ", "i am going to "]
-            .iter()
-            .any(|prefix| sentence.starts_with(prefix))
+    if sentence.starts_with("let me know") {
+        return false;
+    }
+    let Some(action) = ["let me ", "i'll ", "i will ", "i’ll ", "i am going to "]
+        .iter()
+        .find_map(|prefix| sentence.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    tail.ends_with(':')
+        || [
+            "check ",
+            "inspect ",
+            "verify ",
+            "read ",
+            "write ",
+            "run ",
+            "fetch ",
+            "compare ",
+            "prepare ",
+            "provide ",
+            "summarize ",
+            "generate ",
+            "review ",
+            "fix ",
+            "update ",
+            "apply ",
+            "post ",
+            "reply ",
+            "continue ",
+            "finish ",
+            "complete ",
+            "commit ",
+            "push ",
+            "open ",
+            "create ",
+        ]
+        .iter()
+        .any(|verb| action.starts_with(verb))
 }
 
 /// Whether a failed model call may end the run quietly. The Definition-of-Done
@@ -3400,18 +3469,41 @@ fn review_shell_words(command: &str) -> Vec<&str> {
 }
 
 /// Whether a shell command runs `git push` as the invoked program (not, say,
-/// `echo git push`) and is not a dry run. Clearing the delivery flag is only an
-/// optimization: [`repo_has_pending_delivery`] is the authority.
+/// `echo git push`) and is not a dry run. The repository check also catches
+/// changes made outside the tracked tools.
 fn runs_git_push(command: &str) -> bool {
-    command.split(['\n', ';', '&', '|']).any(|segment| {
-        if segment.contains("--dry-run") {
+    tools::shell_segments(command).into_iter().any(|segment| {
+        let words = review_shell_words(segment);
+        let Some(index) = tools::shell_command_index(&words) else {
+            return false;
+        };
+        if !matches!(
+            words[index].rsplit(['/', '\\']).next(),
+            Some("git" | "git.exe")
+        ) {
             return false;
         }
-        let mut words = segment.split_whitespace();
-        words
-            .find(|word| !matches!(*word, "cd" | "env" | "sudo" | "time" | "nohup"))
-            .is_some_and(|program| program == "git")
-            && segment.contains(" push")
+        let mut args = words[index + 1..].iter().copied();
+        while let Some(arg) = args.next() {
+            match arg {
+                "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" => {
+                    args.next();
+                }
+                "--no-pager" | "--paginate" | "--literal-pathspecs" => {}
+                option
+                    if option.starts_with("--git-dir=") || option.starts_with("--work-tree=") => {}
+                "push" => {
+                    return !args.any(|arg| {
+                        arg == "--dry-run"
+                            || (arg.starts_with('-')
+                                && !arg.starts_with("--")
+                                && arg[1..].contains('n'))
+                    })
+                }
+                _ => return false,
+            }
+        }
+        false
     })
 }
 
@@ -3436,20 +3528,8 @@ async fn repo_has_pending_delivery(cwd: &Path) -> bool {
     if !unpushed {
         return false;
     }
-    // A normal clone gives the current branch a remote-tracking ref, so the
-    // non-zero count is trustworthy (the commit really is unpushed). A
-    // single-branch clone does not — its fetch refspec maps only the default
-    // branch, so `--remotes` reports a pushed feature branch as unpushed
-    // forever. Ask the remote for the tip only in that case.
-    if let Some((remote, branch)) = tracking_branch(cwd).await {
-        let reference = format!("refs/remotes/{remote}/{branch}");
-        if git_stdout(cwd, &["rev-parse", "--verify", "--quiet", &reference])
-            .await
-            .is_some()
-        {
-            return true;
-        }
-    }
+    // A ref can be missing or stale after a push outside the fetch refspec.
+    // Confirm with the remote before blocking a reply based on local refs.
     !remote_has_head(cwd).await
 }
 
@@ -3464,7 +3544,11 @@ async fn tracking_branch(cwd: &Path) -> Option<(String, String)> {
     .await
     .filter(|remote| !remote.is_empty())
     .unwrap_or_else(|| "origin".to_string());
-    Some((remote, branch))
+    let target = git_stdout(cwd, &["config", "--get", &format!("branch.{branch}.merge")])
+        .await
+        .and_then(|reference| reference.strip_prefix("refs/heads/").map(str::to_string))
+        .unwrap_or(branch);
+    Some((remote, target))
 }
 
 /// Runs `git` in `cwd` and returns trimmed stdout, or `None` on any failure.
@@ -3486,8 +3570,8 @@ async fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
 
 /// Whether the current branch's `HEAD` is already delivered to the same-named
 /// branch on its remote. Only consulted when the branch has no remote-tracking
-/// ref, so it corrects the single-branch-clone blind spot without adding a
-/// network round trip to the common case. A remote that cannot be reached is
+/// ref or the local refs say it is unpushed, so it corrects missing and stale
+/// tracking refs. A remote that cannot be reached is
 /// treated as not delivered, preserving the guard.
 async fn remote_has_head(cwd: &Path) -> bool {
     let Some((remote, branch)) = tracking_branch(cwd).await else {
@@ -5336,6 +5420,13 @@ mod tests {
     async fn scripted_http_server(
         responses: Vec<(u16, String, bool)>,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
+        scripted_http_server_with_hook(responses, |_| {}).await
+    }
+
+    async fn scripted_http_server_with_hook(
+        responses: Vec<(u16, String, bool)>,
+        mut before_response: impl FnMut(usize) + Send + 'static,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
         use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5348,6 +5439,7 @@ mod tests {
                     .expect("the agent stopped short of every scripted request")
                     .unwrap();
                 seen.push(read_request(&mut socket).await);
+                before_response(seen.len() - 1);
                 let declared = if truncated {
                     body.len() + 64
                 } else {
@@ -5707,6 +5799,11 @@ mod tests {
             "Excellent! Now let me set the session title and provide my review:",
             "Perfect! Now I'll verify the build:",
             "The build passed. Next, I will summarize the findings:",
+            "All three files passed every check. Here's the consolidated report.",
+            "Here are the results:",
+            "I'll inspect the logs.",
+            "The first check passed. Next, I will verify src/main.rs.",
+            "Now let me provide the final report.",
         ] {
             assert!(announces_unfinished_work(text), "{text}");
         }
@@ -5721,6 +5818,9 @@ mod tests {
             "Excellent! Now the review is complete:",
             "Now let me know which endpoint you prefer:",
             "Excellent! Now let me provide my review:\n\nNo issues found.",
+            "Here's the consolidated report:\n\nAll three files passed the six checks.",
+            "I'll wait for your feedback.",
+            "I will need your answer before continuing.",
         ] {
             assert!(!announces_unfinished_work(text), "{text}");
         }
@@ -5728,28 +5828,91 @@ mod tests {
 
     #[tokio::test]
     async fn a_titled_review_announcement_still_requires_the_review() {
-        let announcement = "Excellent! Now let me set the session title and provide my review:";
-        let review = "Review complete. No correctness issues found; the build passed.";
-        let (addr, server) = sse_server(vec![
-            bash_call_body("printf 'build passed'"),
-            titled_answer_body("Review coding agent guide split PR", announcement),
-            answer_body(review),
-        ])
+        for announcement in [
+            "Excellent! Now let me set the session title and provide my review:",
+            "All three files passed every check. Here's the consolidated report.",
+            "I'll inspect the logs and provide the report.",
+        ] {
+            let review = "Review complete. No correctness issues found; the build passed.";
+            let (addr, server) = sse_server(vec![
+                bash_call_body("printf 'build passed'"),
+                titled_answer_body("Review coding agent guide split PR", announcement),
+                answer_body(review),
+            ])
+            .await;
+            let config = Config {
+                provider: "deepseek".into(),
+                model: "deepseek-flash".into(),
+                base_url: format!("http://{addr}"),
+                api_key: "sk-test".into(),
+                auto_approve: true,
+                ..Config::default()
+            };
+            let runtime = test_runtime().await;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            run(
+                config,
+                std::env::temp_dir(),
+                vec![Message::user("Review the coding agent guide split PR")],
+                tx,
+                runtime,
+            )
+            .await;
+            let mut finished = None;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    AgentEvent::Error(error) => panic!("{error}"),
+                    AgentEvent::Finished(history) => finished = Some(history),
+                    _ => {}
+                }
+            }
+            let history = finished.expect("the turn must finish");
+            let answer = history.last().unwrap().display().unwrap();
+            assert!(answer.contains(review), "{answer}");
+            assert!(history
+                .iter()
+                .flat_map(|message| message.tool_calls.iter().flatten())
+                .all(|call| call.function.name != "session_title"));
+            let requests = server.await.unwrap();
+            assert_eq!(requests.len(), 3);
+            assert!(requests[2].contains("Complete the announced action or summary now"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_queued_request_gets_its_own_follow_through() {
+        let runtime = test_runtime().await;
+        let follow_ups = runtime.follow_ups.clone();
+        let responses = vec![
+            answer_body("Let me prepare the first report:"),
+            answer_body("First report delivered."),
+            answer_body("Here's the second report."),
+            answer_body("Second report delivered with the requested findings."),
+        ];
+        let (addr, server) = scripted_http_server_with_hook(
+            responses
+                .into_iter()
+                .map(|body| (200, body, false))
+                .collect(),
+            move |index| {
+                if index == 1 {
+                    assert!(follow_ups.push(Message::user("Now provide the second report")));
+                }
+            },
+        )
         .await;
         let config = Config {
             provider: "deepseek".into(),
             model: "deepseek-flash".into(),
             base_url: format!("http://{addr}"),
             api_key: "sk-test".into(),
-            auto_approve: true,
             ..Config::default()
         };
-        let runtime = test_runtime().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         run(
             config,
             std::env::temp_dir(),
-            vec![Message::user("Review the coding agent guide split PR")],
+            vec![Message::user("Provide the first report")],
             tx,
             runtime,
         )
@@ -5762,16 +5925,16 @@ mod tests {
                 _ => {}
             }
         }
-        let history = finished.expect("the turn must finish");
-        let answer = history.last().unwrap().display().unwrap();
-        assert!(answer.contains(review), "{answer}");
+        let history = finished.unwrap();
         assert!(history
-            .iter()
-            .flat_map(|message| message.tool_calls.iter().flatten())
-            .all(|call| call.function.name != "session_title"));
+            .last()
+            .unwrap()
+            .display()
+            .unwrap()
+            .contains("Second report delivered"));
         let requests = server.await.unwrap();
-        assert_eq!(requests.len(), 3);
-        assert!(requests[2].contains("Complete the announced action or summary now"));
+        assert_eq!(requests.len(), 4);
+        assert!(requests[3].contains("Complete the announced action or summary now"));
     }
 
     #[tokio::test]
@@ -5810,11 +5973,19 @@ mod tests {
             );
             assert!(requests[1].contains("Complete the announced action or summary now"));
             let mut finished = None;
+            let mut errors = Vec::new();
             while let Ok(event) = rx.try_recv() {
-                if let AgentEvent::Finished(history) = event {
-                    finished = Some(history);
+                match event {
+                    AgentEvent::Finished(history) => finished = Some(history),
+                    AgentEvent::Error(error) => errors.push(error),
+                    _ => {}
                 }
             }
+            assert_eq!(
+                errors.is_empty(),
+                !announces_unfinished_work(final_answer),
+                "{errors:?}"
+            );
             let history = finished.expect("the turn must finish");
             assert!(history
                 .last()
@@ -6507,6 +6678,52 @@ mod tests {
     /// and the provider answered the reminder with an empty turn. The summary
     /// must survive as the result instead of the user reading
     /// `the model returned an empty response` after a complete answer.
+    #[tokio::test]
+    async fn an_unfinished_answer_is_not_an_advisory_verification_nudge() {
+        let dir = std::env::temp_dir().join(format!("oxide_required_nudge_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("catalog.yaml");
+        let (addr, server) = sse_server(vec![
+            write_call_body(path.to_str().unwrap()),
+            answer_body("Here's the consolidated report."),
+            empty_body(),
+            empty_body(),
+            empty_body(),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("Update the catalog and provide a report")],
+            tx,
+            test_runtime().await,
+        )
+        .await;
+        let mut errors = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Error(error) = event {
+                errors.push(error);
+            }
+        }
+        let requests = server.await.unwrap();
+        assert!(
+            !errors.is_empty(),
+            "an absent report must not finish silently"
+        );
+        assert!(requests[2].contains("Complete the announced action or summary now"));
+        assert!(requests[2].contains("Before you finish"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[tokio::test]
     async fn an_empty_answer_to_the_verification_nudge_ends_the_run_quietly() {
         let dir = std::env::temp_dir().join(format!("oxide_nudge_{}", std::process::id()));
@@ -8201,6 +8418,34 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn push_detection_handles_paths_and_preserves_dry_run_guards() {
+        for command in [
+            "/usr/bin/git push",
+            "command git push",
+            "env GIT_TERMINAL_PROMPT=0 git -C repo push origin HEAD",
+            "git -c core.hooksPath=/dev/null push",
+            r#""C:\Program Files\Git\bin\git.exe" push"#,
+        ] {
+            assert!(runs_git_push(command), "{command}");
+        }
+        for command in [
+            "echo git push",
+            "git log --grep='git push'",
+            "git push --dry-run",
+            "git push -n",
+            "git push -qn",
+        ] {
+            assert!(!runs_git_push(command), "{command}");
+        }
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path":"new.rs"}), "ok");
+        state.record("bash", &json!({"command":"git push -n"}), "[exit: 0]");
+        assert!(state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+        state.record("bash", &json!({"command":"/usr/bin/git push"}), "[exit: 0]");
+        assert!(!state.blocks_review_reply("gh pr comment 5 --body fixed", false));
+    }
+
+    #[test]
     fn review_replies_are_held_until_the_code_is_pushed() {
         assert!(posts_review_reply("gh pr comment 5 --body fixed"));
         assert!(posts_review_reply(
@@ -8258,6 +8503,37 @@ for line in sys.stdin:
         run_git(&dir, &["push"]);
         assert!(!repo_has_pending_delivery(&dir).await, "pushed");
 
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(format!("{}.origin.git", dir.display())).ok();
+    }
+
+    #[tokio::test]
+    async fn repo_delivery_checks_stale_tracking_refs_and_configured_target() {
+        let dir = std::env::temp_dir().join(format!("oxide_pending_stale_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        add_git_remote(&dir);
+        let branch = git_text(&dir, &["symbolic-ref", "--short", "HEAD"]);
+        let previous = git_text(&dir, &["rev-parse", "HEAD"]);
+        std::fs::write(dir.join("catalog.yaml"), "updated\n").unwrap();
+        run_git(&dir, &["add", "catalog.yaml"]);
+        run_git(&dir, &["commit", "-q", "-m", "update"]);
+        assert!(repo_has_pending_delivery(&dir).await);
+        run_git(&dir, &["push", "origin", "HEAD:review-target"]);
+        run_git(
+            &dir,
+            &[
+                "config",
+                &format!("branch.{branch}.merge"),
+                "refs/heads/review-target",
+            ],
+        );
+        run_git(
+            &dir,
+            &["update-ref", "refs/remotes/origin/review-target", &previous],
+        );
+        assert!(!repo_has_pending_delivery(&dir).await);
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(format!("{}.origin.git", dir.display())).ok();
     }

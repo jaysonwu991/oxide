@@ -424,6 +424,10 @@ pub fn load_opts(cwd: &Path, options: LoadOptions) -> Ecosystem {
         }
     }
 
+    let base = project_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    for server in &mut ecosystem.mcp {
+        resolve_mcp_cwd(server, &base);
+    }
     ecosystem
 }
 
@@ -603,7 +607,8 @@ fn load_plugin_dir(
 
     if let Some(servers) = manifest.mcp_servers.as_ref().and_then(Json::as_object) {
         for (server_name, config) in servers {
-            if let Some(server) = mcp_from_claude(server_name, config) {
+            if let Some(mut server) = mcp_from_claude(server_name, config) {
+                resolve_mcp_cwd(&mut server, dir);
                 upsert_mcp(ecosystem, server);
                 contribution.mcp += 1;
             }
@@ -663,7 +668,12 @@ fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) -> usize {
     let Some(servers) = servers else { return 0 };
     let mut loaded = 0;
     for (name, config) in servers {
-        if let Some(server) = mcp_from_claude(name, config) {
+        if let Some(mut server) = mcp_from_claude(name, config) {
+            if path.file_name().is_some_and(|name| name == ".mcp.json") {
+                if let Some(dir) = path.parent() {
+                    resolve_mcp_cwd(&mut server, dir);
+                }
+            }
             upsert_mcp(ecosystem, server);
             loaded += 1;
         }
@@ -690,6 +700,27 @@ fn bare_mcp_servers(json: &Json) -> Option<&serde_json::Map<String, Json>> {
         Some(object)
     } else {
         None
+    }
+}
+
+fn resolve_mcp_cwd(server: &mut McpServer, base: &Path) {
+    if let McpKind::Local { cwd, .. } = &mut server.kind {
+        let base = if base.is_absolute() {
+            base.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|root| root.join(base))
+                .unwrap_or_else(|_| base.to_path_buf())
+        };
+        let directory = cwd.as_deref().map(Path::new).unwrap_or(&base);
+        let directory = if directory.is_absolute() {
+            directory.to_path_buf()
+        } else if cwd.is_some() {
+            base.join(directory)
+        } else {
+            base.to_path_buf()
+        };
+        *cwd = Some(directory.to_string_lossy().into_owned());
     }
 }
 
@@ -727,7 +758,7 @@ pub(crate) fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
         kind: McpKind::Local {
             command,
             environment: string_map(config.get("env")),
-            cwd: None,
+            cwd: config.get("cwd").and_then(Json::as_str).map(str::to_string),
         },
         domains,
     })
@@ -1468,9 +1499,10 @@ mod tests {
         let dir = temp_dir("oxide_mcp");
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::create_dir_all(dir.join(".oxide")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
             dir.join(".mcp.json"),
-            r#"{"mcpServers":{"shared":{"url":"https://example.com/mcp"},"claude":{"command":"npx"}}}"#,
+            r#"{"mcpServers":{"shared":{"url":"https://example.com/mcp"},"claude":{"command":"npx"},"scoped":{"command":"uv","cwd":"tools"}}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -1479,10 +1511,25 @@ mod tests {
         )
         .unwrap();
 
-        let ecosystem = load(&dir);
+        let ecosystem = load(&dir.join("src"));
 
         let shared = ecosystem.mcp.iter().find(|s| s.name == "shared").unwrap();
         assert!(matches!(shared.kind, McpKind::Local { .. }));
+        for (name, directory) in [
+            ("shared", dir.clone()),
+            ("claude", dir.clone()),
+            ("scoped", dir.join("tools")),
+        ] {
+            let server = ecosystem
+                .mcp
+                .iter()
+                .find(|server| server.name == name)
+                .unwrap();
+            let McpKind::Local { cwd, .. } = &server.kind else {
+                panic!("expected a local server")
+            };
+            assert_eq!(cwd.as_deref(), directory.to_str());
+        }
         assert!(ecosystem.mcp.iter().any(|s| s.name == "claude"));
 
         std::fs::remove_dir_all(&dir).ok();

@@ -1263,7 +1263,7 @@ fn handle_key(
                     let fetched = futures::future::join_all(providers.into_iter().map(
                         |(name, provider_config)| async move {
                             let models = LlmClient::new(provider_config)
-                                .list_models()
+                                .refresh_models()
                                 .await
                                 .map_err(|err| format!("{err:#}"));
                             (name, models)

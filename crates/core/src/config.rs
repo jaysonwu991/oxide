@@ -19,6 +19,9 @@ symbols and read bounded regions instead of repeatedly reading whole large files
 is truncated, read the saved full output or narrow the query; do not rerun the same oversized \
 request. After a tool fails, use its diagnostic to change the next attempt rather than repeat \
 the same call. Batch independent reads and searches together, keeping dependent edits ordered. \
+Before running project automation, check its documented arguments and required executables. \
+Check command output for service errors before parsing it or declaring success; a successful \
+shell exit alone does not prove that every command in a script succeeded. \
 Run checks appropriate to the change; repeat a passing check only after relevant changes or \
 new evidence. Prefer the project's existing validation tools before building a new harness. \
 Be concise while you work and finish with a clear summary of the outcome, meaningful changes \
@@ -3798,6 +3801,13 @@ mod tests {
 
     #[test]
     fn zai_runtime_fields_and_fallback_catalog() {
+        let _env = crate::env_lock::hold();
+        let path = std::env::temp_dir().join(format!(
+            "oxide-zai-empty-catalog-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, "{}").unwrap();
+        std::env::set_var("OXIDE_MODEL_CATALOG_FILE", &path);
         let mut config = Config {
             provider: "openai".into(),
             model: "gpt-4o-mini".into(),
@@ -3821,6 +3831,8 @@ mod tests {
             ..config.clone()
         };
         assert_eq!(explicit.model_catalog(), vec!["glm-custom"]);
+        std::env::remove_var("OXIDE_MODEL_CATALOG_FILE");
+        std::fs::remove_file(path).ok();
     }
 
     #[test]

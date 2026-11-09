@@ -264,6 +264,9 @@ enum Command {
         /// Query only the active provider (for latency-sensitive clients)
         #[arg(long)]
         active: bool,
+        /// Fetch fresh catalogs instead of using cached listings
+        #[arg(long)]
+        refresh: bool,
     },
     /// Print the active model's reasoning levels and current choice
     Reasoning {
@@ -977,9 +980,13 @@ async fn run() -> Result<()> {
                 }
                 Ok(())
             }
-            Command::Model { json, active } => {
+            Command::Model {
+                json,
+                active,
+                refresh,
+            } => {
                 let current_dir = std::env::current_dir().context("resolving current directory")?;
-                list_models(&current_dir, json, active).await
+                list_models(&current_dir, json, active, refresh).await
             }
             Command::Reasoning {
                 json,
@@ -1694,7 +1701,12 @@ async fn connect_provider(
 /// Prints the same provider catalogs the TUI's `/models` and desktop model
 /// picker use. Front-ends call this rather than reimplementing authentication,
 /// provider endpoints, bundled fallbacks or catalog normalization.
-async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -> Result<()> {
+async fn list_models(
+    current_dir: &Path,
+    json_output: bool,
+    active_only: bool,
+    refresh: bool,
+) -> Result<()> {
     let config = Config::load(current_dir, None, None, None, None)?;
     let active = auth::canonical_provider(&config.provider);
     let mut providers = config::provider_configs(&config);
@@ -1707,14 +1719,19 @@ async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -
     let fetched = futures::future::join_all(providers.into_iter().map(
         |(name, provider_config)| async move {
             let current = provider_config.model.clone();
-            let result = llm::LlmClient::new(provider_config).list_models().await;
-            (name, current, result)
+            let client = llm::LlmClient::new(provider_config);
+            let result = if refresh {
+                client.refresh_models().await
+            } else {
+                client.list_models().await
+            };
+            (name, current, result, client.remembered_models())
         },
     ))
     .await;
     let catalogs = fetched
         .into_iter()
-        .map(|(provider, current, result)| match result {
+        .map(|(provider, current, result, remembered)| match result {
             Ok(models) => json!({
                 "active": provider == active,
                 "provider": provider,
@@ -1725,7 +1742,7 @@ async fn list_models(current_dir: &Path, json_output: bool, active_only: bool) -
                 "active": provider == active,
                 "provider": provider,
                 "current": current,
-                "models": [],
+                "models": remembered,
                 "error": format!("{error:#}"),
             }),
         })
@@ -2747,8 +2764,14 @@ mod tests {
             cli.command,
             Some(Command::Model {
                 json: true,
-                active: true
+                active: true,
+                refresh: false
             })
+        ));
+        let cli = Cli::try_parse_from(["oxide", "model", "--json", "--refresh"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Model { refresh: true, .. })
         ));
     }
 

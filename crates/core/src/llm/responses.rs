@@ -24,7 +24,7 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         if message.role == "tool" {
             input.push(
                 json!({"type":"function_call_output", "call_id":message.tool_call_id,
-                "output": content(message, false)}),
+                "output": tool_output(message)}),
             );
             continue;
         }
@@ -83,6 +83,23 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
             .collect::<Vec<_>>());
     }
     body
+}
+
+fn tool_output(message: &Message) -> Value {
+    // Gateways may translate Responses to Chat Completions without converting
+    // input_text blocks in tool results. Plain text uses the shared string form.
+    match &message.content {
+        None => json!(""),
+        Some(MessageContent::Text(text)) => json!(text),
+        Some(MessageContent::Parts(parts))
+            if parts
+                .iter()
+                .all(|part| matches!(part, ContentPart::Text { .. })) =>
+        {
+            json!(message.content.as_ref().unwrap().display())
+        }
+        _ => json!(content(message, false)),
+    }
 }
 
 fn content(message: &Message, assistant: bool) -> Vec<Value> {
@@ -215,6 +232,16 @@ mod tests {
             "o123",
         ] {
             assert!(!supports_model(model));
+        }
+    }
+
+    #[test]
+    fn text_tool_results_use_strings_for_gateway_compatibility() {
+        for message in [
+            Message::tool("call_1", "read result"),
+            Message::tool_parts("call_1", "read result", Vec::new()),
+        ] {
+            assert_eq!(tool_output(&message), json!("read result"));
         }
     }
 

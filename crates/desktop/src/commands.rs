@@ -1499,7 +1499,7 @@ pub async fn clear_approvals(project: String, state: &DesktopState) -> CmdResult
 // ---------- models ----------
 
 /// Model catalogs for every logged-in provider, plus the active selection.
-pub async fn list_models(project: String, state: &DesktopState) -> CmdResult<Value> {
+pub async fn list_models(project: String, refresh: bool, state: &DesktopState) -> CmdResult<Value> {
     let config = {
         let manager = state.manager.lock().await;
         manager.config_for(&PathBuf::from(&project)).map_err(err)?
@@ -1512,15 +1512,22 @@ pub async fn list_models(project: String, state: &DesktopState) -> CmdResult<Val
     let mut result = Vec::new();
     for (name, provider_config) in providers {
         let current = provider_config.model.clone();
-        let models = LlmClient::new(provider_config)
-            .list_models()
-            .await
-            .unwrap_or_default();
+        let client = LlmClient::new(provider_config);
+        let fetched = if refresh {
+            client.refresh_models().await
+        } else {
+            client.list_models().await
+        };
+        let (models, error) = match fetched {
+            Ok(models) => (models, None),
+            Err(error) => (client.remembered_models(), Some(format!("{error:#}"))),
+        };
         result.push(json!({
             "provider": name,
             "active": name == active,
             "current": current,
             "models": models,
+            "error": error,
         }));
     }
     Ok(json!({ "active": active, "current": config.model, "providers": result }))
@@ -2124,7 +2131,14 @@ pub async fn dispatch(
         }
         "list_approvals" => command_value(list_approvals(arg(&args, "project")?, &state).await),
         "clear_approvals" => command_value(clear_approvals(arg(&args, "project")?, &state).await),
-        "list_models" => command_value(list_models(arg(&args, "project")?, &state).await),
+        "list_models" => command_value(
+            list_models(
+                arg(&args, "project")?,
+                args["refresh"].as_bool().unwrap_or(false),
+                &state,
+            )
+            .await,
+        ),
         "set_reasoning" => command_value(set_reasoning(arg(&args, "reasoning")?).await),
         "set_model" => {
             command_value(set_model(arg(&args, "provider")?, arg(&args, "model")?).await)

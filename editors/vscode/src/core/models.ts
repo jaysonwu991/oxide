@@ -28,7 +28,7 @@ export function modelsListArgs(): string[] {
   // slowest provider rather than the sum of them. `--active` narrows this to the
   // one in use, which is what a caller that only wants the current catalog's
   // name should ask for instead.
-  return ["model", "--json"];
+  return ["model", "--json", "--refresh"];
 }
 
 /// A model's id as a **choice**: qualified by the provider that serves it, since

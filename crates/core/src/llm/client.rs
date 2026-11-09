@@ -209,6 +209,13 @@ impl LlmClient {
         Ok(self.config.merge_model_catalog(models))
     }
 
+    /// Last known choices without a network request, for a failed refresh.
+    pub fn remembered_models(&self) -> Vec<String> {
+        cached_models(&model_cache_key(&self.config))
+            .map(|entry| self.config.merge_model_catalog(entry.models))
+            .unwrap_or_else(|| self.config.model_catalog())
+    }
+
     /// The reasoning levels the provider advertised for `model`, read from the
     /// model cache. `None` when the listing carried none, the cache is cold, or
     /// the model is not in it.
@@ -297,6 +304,7 @@ impl LlmClient {
         };
 
         let response = request
+            .timeout(Duration::from_secs(20))
             .send()
             .await
             .with_context(|| format!("requesting {url}"))?;
@@ -1431,6 +1439,15 @@ fn validate_gateway_model(config: &Config, actual: &str) -> Result<()> {
         return Ok(());
     }
     let actual = actual.to_ascii_lowercase();
+    // The gateway deliberately keeps its GLM-5.2 picker alias on GLM-5.3.
+    if requested == "glm-5.2"
+        && matches!(
+            actual.as_str(),
+            "fw-glm-5.3" | "glm-5.3" | "accounts/fireworks/models/glm-5p3"
+        )
+    {
+        return Ok(());
+    }
     // Fireworks publishes this model under its canonical registry slug;
     // Azure deployments may report that slug instead of FW-GLM-5.2.
     let actual = if actual == "accounts/fireworks/models/glm-5p2" {
@@ -1498,7 +1515,7 @@ fn openai_reasoning(
         level if adaptive => (
             None,
             Some(serde_json::json!({ "type": "adaptive" })),
-            Some(serde_json::json!({ "effort": level.effort() })),
+            Some(serde_json::json!({ "effort": anthropic::adaptive_effort(level) })),
         ),
         level => (level.effort().map(str::to_string), None, None),
     }
@@ -3159,6 +3176,8 @@ mod tests {
             ("glm-5.2", "glm-5.2"),
             ("glm-5.2", "FW-GLM-5.2-example-deployment-1"),
             ("glm-5.2", "accounts/fireworks/models/glm-5p2"),
+            ("glm-5.2", "FW-GLM-5.3"),
+            ("glm-5.2", "accounts/fireworks/models/glm-5p3"),
         ] {
             config.model = requested.into();
             validate_gateway_model(&config, actual).unwrap();
@@ -3257,6 +3276,66 @@ mod tests {
                 "{error}"
             );
             assert_eq!(server.await.unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn portkey_gpt_models_replay_text_tool_results_over_responses() {
+        for model in ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"] {
+            let first = sse(&[
+                serde_json::json!({"type":"response.completed","response":{"output":[{"type":"function_call","call_id":"lookup","name":"read","arguments":"{\"path\":\"a.rs\"}"}]}}),
+            ]);
+            let last = sse(&[
+                serde_json::json!({"type":"response.output_text.delta","delta":"done"}),
+                serde_json::json!({"type":"response.completed","response":{}}),
+            ]);
+            let (addr, server) = sse_server(vec![first, last]).await;
+            let client = LlmClient::new(Config {
+                model: model.into(),
+                ..portkey_test_config(addr, 4096)
+            });
+            let tools = vec![crate::llm::ToolSpec {
+                kind: "function",
+                function: crate::llm::FunctionSpec {
+                    name: "read".into(),
+                    description: "Read a file".into(),
+                    parameters: serde_json::json!({"type":"object"}),
+                },
+            }];
+            let mut hooks = StreamHooks {
+                text: &mut |_| {},
+                thinking: &mut |_| {},
+                retry: &mut |_| panic!("the tool loop must not need retries"),
+            };
+            let mut messages = vec![Message::user("read a.rs")];
+            let turn = client
+                .stream_chat(&messages, &tools, &mut hooks)
+                .await
+                .unwrap();
+            assert_eq!(turn.tool_calls.len(), 1);
+            messages.push(
+                Message::assistant(turn.content, turn.tool_calls).with_thinking(turn.thinking),
+            );
+            messages.push(Message::tool("lookup", "file contents"));
+            let turn = client
+                .stream_chat(&messages, &tools, &mut hooks)
+                .await
+                .unwrap();
+            assert_eq!(turn.content, "done");
+            let requests = server.await.unwrap();
+            assert!(requests
+                .iter()
+                .all(|request| request.starts_with("POST /responses ")));
+            let body: Value =
+                serde_json::from_str(requests[1].split_once("\r\n\r\n").unwrap().1).unwrap();
+            let output = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["type"] == "function_call_output")
+                .unwrap();
+            assert_eq!(output["call_id"], "lookup");
+            assert_eq!(output["output"], "file contents", "{model}");
         }
     }
 
