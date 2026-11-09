@@ -466,6 +466,14 @@ pre,
   text-align: left;
 }
 
+:is(.assistant .body, .user .body, .markdown-input) [data-align="center"] {
+  text-align: center;
+}
+
+:is(.assistant .body, .user .body, .markdown-input) [data-align="right"] {
+  text-align: right;
+}
+
 /* syntax tokens, mapped onto the editor's own token colors */
 .tok-keyword {
   color: var(--vscode-charts-purple, #c586c0);

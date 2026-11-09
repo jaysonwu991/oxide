@@ -1289,6 +1289,18 @@ intersects a reference removes the entire reference. Quoted paths, spaces and
 line suffixes remain part of the reference, and Undo restores it in one step.
 Code spans and surrounding prose keep normal editing behavior.
 
+The two composers are the same renderer read back, so what `renderMarkdown`
+draws and `readMarkdown` reads have to agree. Every construct the box can draw
+comes back as the text that was typed: a list's own markers (`*`, `+`, `1)`), its
+nesting and the lines an item continues onto, a fence's run (backticks or tildes,
+including one still being typed), a rule's own marks, a table's separator row,
+the delimiter an emphasis was written with and a backslash escape all ride on
+the rendered elements as `data-editor-*` and are read back as written. What the
+reader cannot mean settles after one read and never grows: the blank line a
+block needs around itself, an entity's character, a table's added outer pipes.
+A construct that rewrote itself on every keystroke would move the reader's own
+text under the caret.
+
 Bare website addresses such as `github.com`, `www.example.org` and
 `docs.example.dev/setup` are linked in the composer with HTTPS destinations.
 The message keeps the text that was typed rather than gaining Markdown link

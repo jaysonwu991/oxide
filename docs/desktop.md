@@ -1675,10 +1675,27 @@ syntax after editing. Email addresses, file names, references and code spans are
 excluded from this decoration. `check-markdown-input.mjs` exercises both
 composers in Chromium.
 
+The two composers are the same renderer read back, so what `renderMarkdown`
+draws and `readMarkdown` reads have to agree. Every construct the box can draw
+comes back as the text that was typed: a list's own markers (`*`, `+`, `1)`), its
+nesting and the lines an item continues onto, a fence's run (backticks or
+tildes, including one still being typed), a rule's own marks, a table's
+separator row, the delimiter an emphasis was written with and a backslash escape
+all ride on the rendered elements as `data-editor-*` and are read back as
+written. What the reader cannot mean settles after one read and never grows: the
+blank line a block needs around itself, an entity's character, a table's added
+outer pipes. A construct that rewrote itself on every keystroke would move the
+reader's own text under the caret.
+
 Assistant replies render as Markdown: headings, ordered/unordered lists
-(including `- [ ]` tasks), blockquotes, rules, pipe tables, fenced code with
-lightweight syntax highlighting (Rust, JS/TS, Python, Go, Bash, JSON), and
-inline emphasis/code/links. Bare `http(s)://` URLs are auto-linked too, and
+(including `- [ ]` tasks, nesting and an item's own continuation lines),
+blockquotes, rules, pipe tables with their alignment, fenced code (backticks or
+tildes, including one still being typed) with lightweight syntax highlighting
+(Rust, JS/TS, Python, Go, Bash, JSON), and inline emphasis/code/links — `*`/`_`
+and `**`/`__`, with a delimiter that needs a non-space on both sides so
+`2 * 3 * 4` stays arithmetic and `snake_case_name` stays a name. A backslash
+escapes the character after it, and an entity such as `&amp;` is shown as the
+character it stands for. Bare `http(s)://` URLs are auto-linked too, and
 surrounding emphasis markers stay outside the destination, so a bold URL stays
 bold and opens the original address. The extension uses the same matching rule.
 Clicking any link opens it in the system browser through `open_url`: the window
