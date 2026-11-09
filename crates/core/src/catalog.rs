@@ -318,8 +318,20 @@ pub fn window_for(models: &Models, model: &str) -> Option<u64> {
 /// carries no `effort` metadata.
 pub fn reasoning_for(provider: &str, model: &str) -> Option<ModelReasoning> {
     let entry = cached(metadata_provider(provider, model))?;
-    let (_, model) = matching_entry(&entry.models, model, |_| true)?;
-    model.reasoning_levels()
+    let (id, metadata) = matching_entry(&entry.models, model, |_| true)?;
+    let lower = model.trim().to_ascii_lowercase();
+    let requested = crate::config::vendorless(&lower);
+    let id = id.to_ascii_lowercase();
+    let published = crate::config::vendorless(&id);
+    // Context windows can use a family fallback; selectable effort cannot be
+    // inferred for a gateway alias or another model sharing that prefix.
+    if requested != published
+        && !dated_from(published, requested)
+        && !dated_from(requested, published)
+    {
+        return None;
+    }
+    metadata.reasoning_levels()
 }
 
 /// Portkey has no pi.dev catalog of its own.
@@ -998,6 +1010,9 @@ mod tests {
         assert_eq!(reasoning_for("portkey", "gpt-5"), None);
         assert_eq!(reasoning_for("ollama", "claude-haiku-4-5"), None);
         assert!(reasoning_for("anthropic", "gpt-5").is_some());
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5-custom", "gpt-5.6"] {
+            assert_eq!(reasoning_for("anthropic", model), None, "{model}");
+        }
         for model in [
             "gpt-5-chat",
             "GPT-5-CHAT",

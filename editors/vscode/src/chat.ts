@@ -3602,7 +3602,11 @@ export class ChatController {
     if (probe !== this.modelProbe) return;
     const catalog = result.code === 0 && !result.error ? parseModelCatalog(result.stdout) : null;
     if (catalog) {
-      this.modelCatalog = mergeModels(catalog.models, this.modelCatalog);
+      const unavailable = new Set(catalog.errors.map((entry) => entry.provider));
+      this.modelCatalog = mergeModels(
+        catalog.models,
+        this.modelCatalog.filter((entry) => unavailable.has(entry.provider)),
+      );
       // One provider whose catalog could not be listed is said, since the rows
       // for it are the ones missing rather than the whole listing having failed.
       const failed = catalog.errors.map((entry) => `${entry.provider}: ${firstLine(entry.error)}`);

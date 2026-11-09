@@ -6007,6 +6007,7 @@ function positionSettingsDropdowns() {
 
 function closeModels(restoreFocus = true) {
   if (el("models-modal").hidden) return;
+  modelCatalogEpoch += 1;
   el("models-modal").hidden = true;
   syncSettingsDropdowns();
   if (restoreFocus) el("model").focus();
@@ -6194,7 +6195,9 @@ async function saveConnect() {
 
 // ---------- models ----------
 
-async function openModels() {
+let modelCatalogEpoch = 0;
+
+async function openModels(refresh = false) {
   // The catalog is read from this project's config, and the request would
   // otherwise resolve against the directory the app was launched in — the same
   // reason the message box asks for a folder before it sends anything.
@@ -6211,12 +6214,15 @@ async function openModels() {
   el("model-filter").value = "";
   el("model-filter").focus();
   const project = state.project;
+  const epoch = ++modelCatalogEpoch;
   try {
-    const models = await invoke("list_models", { project });
-    if (state.project !== project || el("models-modal").hidden) return;
+    const models = await invoke("list_models", { project, refresh: refresh === true });
+    if (epoch !== modelCatalogEpoch || state.project !== project || el("models-modal").hidden) return;
     state.models = models;
     renderModels();
+    if (refresh === true) await ensureReasoningLevels(true);
   } catch (error) {
+    if (epoch !== modelCatalogEpoch || state.project !== project || el("models-modal").hidden) return;
     el("model-list").innerHTML = `<div class="empty" style="margin:14px">${escapeHtml(String(error))}</div>`;
   }
 }
@@ -6227,6 +6233,12 @@ function renderModels() {
   if (!state.models) return;
   const filter = el("model-filter").value.trim().toLowerCase();
   for (const provider of state.models.providers) {
+    if (provider.error) {
+      const error = document.createElement("div");
+      error.className = "empty";
+      error.textContent = `${provider.provider}: ${provider.error}`;
+      box.appendChild(error);
+    }
     const models = provider.models.filter((model) => !filter || model.toLowerCase().includes(filter));
     if (!models.length) continue;
     const header = document.createElement("div");
@@ -6292,12 +6304,12 @@ async function openReasoning() {
   focusReasoning();
 }
 
-function ensureReasoningLevels() {
+function ensureReasoningLevels(refresh = false) {
   // A cold model cache has no advertised levels yet; ask the host, which warms
   // it from the provider's listing, and repaint the open picker with the model's
   // own levels. The selector stays hidden until metadata arrives, and a late
   // answer for a project or model the reader has left is dropped.
-  if (!state.project || state.reasoningLevels) return Promise.resolve();
+  if (!state.project || (!refresh && state.reasoningLevels)) return Promise.resolve();
   const epoch = ++reasoningEpoch;
   const project = state.project;
   return invoke("reasoning_levels", { project })
@@ -11516,6 +11528,7 @@ function init() {
   el("provider-filter").addEventListener("input", renderProviders);
   el("models-close").onclick = () => closeModels();
   el("model-filter").addEventListener("input", renderModels);
+  el("models-refresh").onclick = () => openModels(true);
   el("themes-close").onclick = () => (el("themes-modal").hidden = true);
   el("permissions-close").onclick = () => (el("permissions-modal").hidden = true);
   el("permissions-clear").onclick = clearApprovals;

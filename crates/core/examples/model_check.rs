@@ -1,7 +1,7 @@
-//! Opt-in live gateway check: cargo run -p oxide-core --example model_check -- medium
+//! Opt-in live gateway check: cargo run -p oxide-core --example model_check -- auto
 use anyhow::{bail, ensure, Result};
 use futures::{stream, StreamExt};
-use oxide_core::config::Config;
+use oxide_core::config::{Config, Reasoning};
 use oxide_core::llm::{FunctionSpec, LlmClient, Message, StreamHooks, ToolSpec};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -9,38 +9,57 @@ use std::time::{Duration, Instant};
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let effort = args.next().unwrap_or_else(|| "medium".into());
-    let base = Config::load(&std::env::current_dir()?, None, None, None, Some(effort))?;
+    let effort = args.next().unwrap_or_else(|| "auto".into());
+    let all_efforts = effort == "all";
+    let base = Config::load(
+        &std::env::current_dir()?,
+        None,
+        None,
+        None,
+        Some(if all_efforts { "auto".into() } else { effort }),
+    )?;
     ensure!(
         base.is_portkey(),
         "this model matrix requires a configured Portkey provider"
     );
     let selected: Vec<String> = args.collect();
     let models = if selected.is_empty() {
-        oxide_core::config::PORTKEY_FALLBACK_MODELS
-            .iter()
-            .map(|model| model.to_string())
-            .collect()
+        LlmClient::new(base.clone()).refresh_models().await?
     } else {
         selected
     };
-    let mut checks = stream::iter(models.into_iter().map(|model| {
+    let mut cases = Vec::new();
+    for model in models {
         let mut config = base.clone();
         config.model = model.clone();
         config.max_tokens = 4096;
         config.refresh_reasoning_supported();
-        async move {
-            let started = Instant::now();
-            let result = tokio::time::timeout(Duration::from_secs(90), check(config)).await;
-            let mut report = match result {
-                Ok(Ok(report)) => report,
-                Ok(Err(error)) => json!({"ok":false,"error":error.to_string()}),
-                Err(_) => json!({"ok":false,"error":"90s timeout"}),
-            };
-            report["model"] = json!(model);
-            report["seconds"] = json!(started.elapsed().as_secs_f64());
-            report
+        let levels = if all_efforts {
+            std::iter::once(Reasoning::Auto)
+                .chain(config.reasoning_levels())
+                .collect()
+        } else {
+            vec![config.reasoning]
+        };
+        for reasoning in levels {
+            let mut config = config.clone();
+            config.reasoning = reasoning;
+            cases.push((model.clone(), config));
         }
+    }
+    let mut checks = stream::iter(cases.into_iter().map(|(model, config)| async move {
+        let started = Instant::now();
+        let effort = config.effective_reasoning().label();
+        let result = tokio::time::timeout(Duration::from_secs(90), check(config)).await;
+        let mut report = match result {
+            Ok(Ok(report)) => report,
+            Ok(Err(error)) => json!({"ok":false,"error":error.to_string()}),
+            Err(_) => json!({"ok":false,"error":"90s timeout"}),
+        };
+        report["model"] = json!(model);
+        report["effort"] = json!(effort);
+        report["seconds"] = json!(started.elapsed().as_secs_f64());
+        report
     }))
     .buffer_unordered(3);
     let mut failed = false;
@@ -75,6 +94,7 @@ async fn check(config: Config) -> Result<Value> {
     let mut calls = 0;
     let mut retries = 0;
     let mut response_models = Vec::new();
+    let mut identity_verified = true;
     for step in 1..=3 {
         let mut hooks = StreamHooks {
             text: &mut |_| {},
@@ -84,11 +104,12 @@ async fn check(config: Config) -> Result<Value> {
             },
         };
         let turn = client.stream_chat(&messages, &tools, &mut hooks).await?;
-        let model = turn.response_model.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("provider omitted its model ID; identity cannot be verified")
-        })?;
-        if !response_models.contains(model) {
-            response_models.push(model.clone());
+        if let Some(model) = turn.response_model.as_ref() {
+            if !response_models.contains(model) {
+                response_models.push(model.clone());
+            }
+        } else {
+            identity_verified = false;
         }
         input += turn.usage.input;
         output += turn.usage.output;
@@ -101,7 +122,7 @@ async fn check(config: Config) -> Result<Value> {
                 "wrong or missing final result"
             );
             return Ok(
-                json!({"ok":true,"effort":effort,"requests":step + retries,"steps":step,"input":input,"output":output,"cached":cached,"reasoning":reasoning,"response_models":response_models}),
+                json!({"ok":true,"identity_verified":identity_verified,"effort":effort,"requests":step + retries,"steps":step,"input":input,"output":output,"cached":cached,"reasoning":reasoning,"response_models":response_models}),
             );
         }
         let assistant =

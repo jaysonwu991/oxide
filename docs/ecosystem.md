@@ -32,6 +32,13 @@ the Claude Code layout.
 This repository keeps its own agents, commands, prompts, skills, and plugins in
 `.oxide/`.
 
+Local MCP servers run from the project root, including when the app was launched
+from another directory or the CLI is in a project subdirectory. Plugin servers
+use their plugin directory. An optional `cwd` overrides that default (relative
+to the project or plugin directory). Local servers use the same conventional
+user command directories as shell tools, so Desktop can find tools such as `uv`
+and `npx`; a server's explicit `env.PATH` is preserved.
+
 ## Command routing
 
 A command's frontmatter can route it: `agent: <name>` runs the command with that

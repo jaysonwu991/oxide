@@ -1569,7 +1569,16 @@ fn closest_region(
             return false;
         }
         let width = base.len().min(old.len());
-        base == old || (width >= 8 && (base.starts_with(old) || old.starts_with(base)))
+        let (prefix, letters) = base
+            .chars()
+            .zip(old.chars())
+            .take_while(|(left, right)| left == right)
+            .fold((0, 0), |(length, letters), (ch, _)| {
+                (length + 1, letters + usize::from(ch.is_alphanumeric()))
+            });
+        base == old
+            || (width >= 8 && (base.starts_with(old) || old.starts_with(base)))
+            || (prefix >= 16 && letters >= 8)
     };
     let mut best: Option<(usize, usize)> = None;
     for start in 0..=base_lines.len() - width {
@@ -3390,7 +3399,7 @@ impl ShellGrep {
         if self.fixed {
             call.insert("literal".to_string(), json!(true));
         } else if pattern.contains([
-            '\\', '[', ']', '^', '$', '.', '*', '+', '?', '(', ')', '{', '}', '|',
+            '\\', '[', ']', '^', '$', '*', '+', '?', '(', ')', '{', '}', '|',
         ]) {
             // BRE/ERE and the tool's regex dialect do not always agree.
             return None;
@@ -3601,7 +3610,7 @@ fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
                 Some(base) => (base, true),
                 None => {
                     grep.restatable &= index == 0;
-                    (cwd, grep.restatable && index == 0)
+                    (cwd, false)
                 }
             };
             if !grep.recursive || !recursive_grep_sweeps(&grep.operands, base, verified) {
@@ -3618,7 +3627,25 @@ fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
 /// cannot follow, which makes its own and every later relative operand
 /// unverifiable.
 fn changes_directory_opaquely(segment: &str) -> bool {
-    if segment.contains(['(', ')', '{', '}', '`']) {
+    let mut quote = None;
+    let mut chars = segment.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && quote != Some('\'') {
+            chars.next();
+            continue;
+        }
+        match (quote, ch) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => {}
+            (_, '`') => return true,
+            (Some('"'), '$') if chars.peek() == Some(&'(') => return true,
+            (Some('"'), _) => {}
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, '(' | ')' | '{' | '}') => return true,
+            _ => {}
+        }
+    }
+    if quote.is_some() {
         return true;
     }
     let words = grep_shell_words(segment);
@@ -3748,15 +3775,43 @@ fn recursive_shell_grep_refusal(grep: &ShellGrep) -> String {
 }
 
 fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
-    // Translate only a standalone literal search. Compound commands, shell
-    // expansions and redirects must never disappear when repairing a call.
+    let command = command.trim();
+    let first = *shell_segments(command).first()?;
+    let words = grep_shell_words(first);
+    let (command, base) = if words.first().copied() == Some("cd") {
+        if words.len() != 2 {
+            return None;
+        }
+        let target = decode_directory(words[1])?;
+        let base = resolved_directory(cwd, &target)?;
+        let rest = &command[first.len()..];
+        let search = rest
+            .strip_prefix("&&")
+            .or_else(|| rest.strip_prefix('\n'))?;
+        (search.trim(), base)
+    } else {
+        (command, cwd.to_path_buf())
+    };
+    // Only discard the conventional stderr sink. Other redirects and compound
+    // operations must not disappear when converting a search.
+    let command = command
+        .strip_suffix(" 2>/dev/null")
+        .unwrap_or(command)
+        .trim();
     if command.contains(['|', ';', '&', '\n', '\r', '<', '>', '(', ')', '#'])
         || grep_shell_words(command).first().copied() != Some("grep")
     {
         return None;
     }
-    let grep = recursive_shell_grep(command, cwd)?;
-    serde_json::from_str(&grep.equivalent_call()?).ok()
+    let mut grep = recursive_shell_grep(command, &base)?;
+    if base != cwd {
+        grep.base = Some(base.clone());
+    }
+    let mut call: Value = serde_json::from_str(&grep.equivalent_call()?).ok()?;
+    if base != cwd && call.get("path").is_none() {
+        call["path"] = json!(base);
+    }
+    Some(call)
 }
 
 /// Resolve bounded, ordinary shell globs component by component, including
@@ -3819,7 +3874,10 @@ fn grep_glob_names_files(operand: &str, cwd: &Path) -> bool {
 fn recursive_grep_sweeps(operands: &[String], cwd: &Path, verified: bool) -> bool {
     operands.is_empty()
         || operands.iter().any(|operand| {
-            if verified && grep_glob_names_files(operand, cwd) {
+            if !verified {
+                return true;
+            }
+            if grep_glob_names_files(operand, cwd) {
                 return false;
             }
             let operand = operand.trim_matches(['\'', '"']);
@@ -4160,7 +4218,7 @@ fn bash_path() -> Option<OsString> {
     Some(augment_path(&inherited, &home))
 }
 
-fn project_bash_path(cwd: &Path) -> Option<OsString> {
+pub(crate) fn project_command_path(cwd: &Path) -> Option<OsString> {
     let home = dirs::home_dir()?;
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     Some(project_runtime_path(cwd, &home, &inherited))
@@ -4293,7 +4351,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         shell.arg(command);
         shell
     };
-    if let Some(path) = project_bash_path(cwd) {
+    if let Some(path) = project_command_path(cwd) {
         shell.env("PATH", path);
     }
     crate::child::detach_terminal(&mut shell);
@@ -6578,6 +6636,25 @@ mod tests {
     }
 
     #[test]
+    fn stale_edit_reports_a_changed_line_without_applying_the_other_replacements() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_stale_log_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let current = "// header\nconsole.log(`  S3 file count: ${keys.length} (release)`);\n";
+        std::fs::write(dir.join("prepare.mjs"), current).unwrap();
+        let error = edit(&dir, &json!({"path":"prepare.mjs", "edits":[
+            {"oldText":"// header", "newText":"// updated header"},
+            {"oldText":"console.log(`  S3 file count: ${files.length}`);", "newText":"console.log('count ready');"}
+        ]})).unwrap_err().to_string();
+        assert!(error.contains("closest text (lines 2-2)"), "{error}");
+        assert!(error.contains("${keys.length} (release)"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("prepare.mjs")).unwrap(),
+            current
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn closest_edit_hint_requires_shared_content() {
         let english = "---\ntitle: Agent\n---\n\n# How to Build an AI Coding Agent Like Pi\n\nEnglish paragraph\n";
         let chinese =
@@ -8617,6 +8694,35 @@ mod tests {
     }
 
     #[test]
+    fn recursive_grep_distinguishes_quoted_patterns_from_shell_groups() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_grep_pattern_quotes_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(dir.join("config/main.tf"), "${basename(path.cwd)}\n").unwrap();
+        for pattern in [
+            r#""basename(path.cwd)""#,
+            "'${basename(path.cwd)}'",
+            "'critical {'",
+            r#""critical {""#,
+        ] {
+            let command = format!(
+                "cd '{}' && grep -rn {pattern} config/*.tf | head -20",
+                dir.display()
+            );
+            assert!(!uses_recursive_shell_grep(&command, &dir), "{command}");
+        }
+        for pattern in [r#""$(cd elsewhere)""#, "`pwd`", "$(pwd)"] {
+            let command = format!("grep -rn {pattern} config/*.tf");
+            assert!(uses_recursive_shell_grep(&command, &dir), "{command}");
+        }
+        assert!(uses_recursive_shell_grep(
+            "(cd config && grep -rn needle *.tf)",
+            &dir
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn recursive_grep_over_named_files_is_not_a_directory_sweep() {
         let root = Path::new(".");
         // A recursive grep over files named one by one cannot reach a build
@@ -8829,12 +8935,10 @@ mod tests {
             "grep -rn needle .; touch changed",
             "grep -rn needle . && touch changed",
             "grep -rn needle . > result",
-            "grep -rn needle . 2>/dev/null",
             "grep -rn $(touch changed) .",
             "grep -rn `touch changed` .",
             "grep -rn needle . # comment",
             "grep -rn needle .\ntouch changed",
-            "cd src && grep -rn needle .",
             "LC_ALL=C grep -rn needle .",
             "grep -rni needle .",
             "grep -rn needle src docs",
@@ -8846,6 +8950,54 @@ mod tests {
                 "{command}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn bash_recovers_a_cd_prefixed_documentation_search() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_cd_docs_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(
+            dir.join("docs/helper.md"),
+            "https://learn.chatgpt.com/docs/example\n",
+        )
+        .unwrap();
+        for separator in ["\n", " && "] {
+            let command = format!(
+                "cd '{}'{}grep -rn \"learn.chatgpt.com/docs/example\" docs/ 2>/dev/null\n",
+                dir.display(),
+                separator
+            );
+            let output = execute(
+                &call("bash", json!({"command":command})),
+                &dir,
+                &McpRegistry::default(),
+                &Progress::default(),
+            )
+            .await;
+            assert!(!output.is_error, "{}", output.text);
+            assert!(output.text.contains("bounded `grep`"), "{}", output.text);
+            assert!(output.text.contains("helper.md:1:"), "{}", output.text);
+        }
+        assert!(bounded_shell_grep("cd missing && grep -rn needle .", &dir).is_none());
+        assert!(bounded_shell_grep("cd docs | grep -rn needle .", &dir).is_none());
+        assert!(bounded_shell_grep("grep -rn needle . > saved", &dir).is_none());
+        let outside = execute_with_scope(
+            &call(
+                "bash",
+                json!({"command":"cd .. && grep -rn needle . 2>/dev/null"}),
+            ),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+            PathScope::CurrentProject,
+        )
+        .await;
+        assert!(
+            outside.is_error && outside.text.contains("project boundary"),
+            "{}",
+            outside.text
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -9560,7 +9712,6 @@ mod tests {
             r#"grep -rn "$PATTERN" src"#,
             "grep -rn needle '$unterminated",
             "grep -rn needle src*",
-            "grep -rn 'a.b' src",
         ] {
             let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
             assert!(grep.equivalent_call().is_none(), "{command}");
@@ -10343,6 +10494,28 @@ mod tests {
         ] {
             assert!(parse_edits_string(invalid).is_none(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn stringified_multiline_edits_with_trailing_commas_keep_source_escapes() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_edit_preflight_shape_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("preflight.mjs"),
+            "// prerequisite check\n// checks node/aws/psql\nconst label = 'old';\n",
+        )
+        .unwrap();
+        let edits = r#"[
+            {"oldText":"// prerequisite check\n// checks node/aws/psql", "newText":"// prerequisite check\n// checks node/aws/logs",},
+            {"oldText":"const label = 'old';", "newText":"const label = 'new\\nvalue';",},
+        ]"#;
+        edit(&dir, &json!({"path":"preflight.mjs", "edits":edits})).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("preflight.mjs")).unwrap(),
+            "// prerequisite check\n// checks node/aws/logs\nconst label = 'new\\nvalue';\n"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

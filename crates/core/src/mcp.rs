@@ -754,6 +754,15 @@ impl McpConnection {
                     format!("MCP server `{}` has an empty command", server.name)
                 })?;
                 let mut process = tokio::process::Command::new(program);
+                if !environment
+                    .keys()
+                    .any(|key| key.eq_ignore_ascii_case("PATH"))
+                {
+                    let dir = std::path::Path::new(cwd.as_deref().unwrap_or("."));
+                    if let Some(path) = crate::tools::project_command_path(dir) {
+                        process.env("PATH", path);
+                    }
+                }
                 process
                     .args(args)
                     .stdin(Stdio::piped())
@@ -767,9 +776,13 @@ impl McpConnection {
                     process.current_dir(dir);
                 }
                 crate::child::detach_terminal(&mut process);
-                let mut child = process
-                    .spawn()
-                    .with_context(|| format!("spawning MCP server `{}`", server.name))?;
+                let mut child = process.spawn().with_context(|| {
+                    format!(
+                        "spawning MCP server `{}` with command {program:?} in {}",
+                        server.name,
+                        cwd.as_deref().unwrap_or("the inherited working directory")
+                    )
+                })?;
                 let stdin = child.stdin.take().context("capturing MCP stdin")?;
                 let stdout = child.stdout.take().context("capturing MCP stdout")?;
                 Transport::Local {
@@ -1720,6 +1733,79 @@ for line in sys.stdin:
             content.append({"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="})
         send({"jsonrpc": "2.0", "id": msg["id"], "result": {"content": content}})
 "#;
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn local_stdio_servers_use_desktop_command_paths() {
+        const CHILD: &str = "OXIDE_MCP_PATH_FIXTURE";
+        if let Some(dir) = std::env::var_os(CHILD) {
+            let server = McpServer {
+                name: "desktop-path".into(),
+                enabled: true,
+                domains: Vec::new(),
+                kind: McpKind::Local {
+                    command: vec!["oxide-mcp-path-fixture".into()],
+                    environment: Default::default(),
+                    cwd: Some(
+                        std::path::Path::new(&dir)
+                            .join("project")
+                            .to_string_lossy()
+                            .into_owned(),
+                    ),
+                },
+            };
+            let connection =
+                tokio::time::timeout(Duration::from_secs(5), McpConnection::connect(&server))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            drop(connection);
+            let mut overridden = server.clone();
+            if let McpKind::Local { environment, .. } = &mut overridden.kind {
+                environment.insert("PATH".into(), "/usr/bin:/bin".into());
+            }
+            assert!(
+                McpConnection::connect(&overridden).await.is_err(),
+                "an explicit PATH must be preserved"
+            );
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("oxide_mcp_desktop_path_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".local/bin")).unwrap();
+        std::fs::create_dir_all(dir.join("project")).unwrap();
+        std::fs::write(dir.join("project/cwd-marker"), "project").unwrap();
+        let program = dir.join(".local/bin/oxide-mcp-path-fixture");
+        std::fs::write(&program, r#"#!/bin/sh
+[ -f cwd-marker ] || exit 23
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}';;
+  esac
+done
+"#).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "mcp::tests::local_stdio_servers_use_desktop_command_paths",
+                "--test-threads=1",
+            ])
+            .env(CHILD, &dir)
+            .env("HOME", &dir)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[tokio::test]
     async fn connects_to_stdio_server_and_calls_tool() {

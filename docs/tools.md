@@ -128,7 +128,7 @@ missing match is rejected rather than silently corrupting a file. Matching is
 byte-exact first, then tolerates trailing whitespace and the `N|` / `N+|` line numbers
 `read` prints. Continuation chunks are joined back into their original line in both
 the target and replacement. When text has genuinely changed, a closest-region hint
-is offered only when it shares meaningful content; blank lines and punctuation
+is offered only when it shares meaningful content or a substantial source prefix; blank lines and punctuation
 alone do not identify a region. Read the current target before retrying. Line
 endings and a leading BOM are preserved. `write` and `edit` append LSP diagnostics
 for the edited file when its language server is already running; the first edit
@@ -270,11 +270,13 @@ network is also retried once on its own before that hint is returned: `gh` read
 commands (`api` without a method or field, `pr view`, `search`, and the like), a
 GET-shaped `curl`, and `git ls-remote`, optionally piped through a text filter,
 so a transport failure does not cost the run a step, while anything that could
-change something is left alone. A standalone literal recursive `grep` that can
+change something is left alone. A standalone compatible recursive `grep` that can
 be represented by the search tool runs through its bounded, ignore-aware search
 without a failed call and model retry. The result names the substitution, and
-the requested path still passes the front-end's project boundary check. Shell
-pipelines, redirections, expansions, multiple paths and unsupported options are
+the requested path still passes the front-end's project boundary check. A literal
+leading `cd` joined by `&&` or a newline and a trailing `2>/dev/null` are also
+recognized; the search retains that directory. Dots in a basic grep pattern keep
+their regex meaning. Other shell pipelines, redirections, expansions, multiple paths and unsupported options are
 never dropped to make a call fit. The recursive-search guard refuses any other
 recursive `grep` that could
 walk a directory — no operand, a folder, an unresolved path, or an unverified glob —

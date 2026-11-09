@@ -104,7 +104,7 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         Reasoning::Auto => {}
         level if adaptive => {
             body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
-            body["output_config"] = json!({ "effort": level.effort() });
+            body["output_config"] = json!({ "effort": adaptive_effort(level) });
         }
         level => {
             if let Some(budget) = level.budget_tokens(config.max_tokens) {
@@ -113,6 +113,13 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         }
     }
     body
+}
+
+pub(crate) fn adaptive_effort(level: Reasoning) -> Option<&'static str> {
+    match level {
+        Reasoning::Minimal => Some("low"),
+        level => level.effort(),
+    }
 }
 
 /// Apply one parsed SSE event to the in-progress assistant turn.
@@ -561,6 +568,12 @@ mod tests {
         let body = request_body(&cfg, &[Message::user("hi")], &[]);
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "medium");
+        let cfg = Config {
+            reasoning: Reasoning::Minimal,
+            ..cfg
+        };
+        let body = request_body(&cfg, &[Message::user("hi")], &[]);
+        assert_eq!(body["output_config"]["effort"], "low");
     }
 
     #[test]
