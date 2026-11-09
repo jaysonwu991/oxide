@@ -21,8 +21,9 @@ const MODEL_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Bumped when the cached shape changes, so an entry written by an older build
 /// is refetched instead of served without the newer fields (a pre-reasoning
 /// cache deserializes `reasoning` as empty but would otherwise stay fresh for
-/// the whole TTL, hiding a model's advertised levels).
-const MODEL_CACHE_VERSION: u32 = 2;
+/// the whole TTL, hiding a model's advertised levels). Older builds also
+/// cached bundled fallback IDs after a forbidden listing.
+const MODEL_CACHE_VERSION: u32 = 3;
 const MODEL_CACHE_FILE: &str = "model-cache.json";
 /// How many times a transient stream failure is retried before giving up.
 const MAX_STREAM_ATTEMPTS: u32 = 3;
@@ -191,6 +192,14 @@ impl LlmClient {
             }
             Err(err) => match cached {
                 Some(entry) => Ok(self.config.merge_model_catalog(entry.models)),
+                None if self.config.is_portkey()
+                    && err
+                        .downcast_ref::<reqwest::Error>()
+                        .and_then(reqwest::Error::status)
+                        == Some(reqwest::StatusCode::FORBIDDEN) =>
+                {
+                    Ok(self.config.model_catalog())
+                }
                 None => Err(err),
             },
         }
@@ -310,10 +319,8 @@ impl LlmClient {
             .with_context(|| format!("requesting {url}"))?;
         let status = response.status();
         if !status.is_success() {
+            let error = response.error_for_status_ref().err();
             let body = response.text().await.unwrap_or_default();
-            if self.config.is_portkey() && status == reqwest::StatusCode::FORBIDDEN {
-                return Ok((self.config.model_catalog(), BTreeMap::new()));
-            }
             // Z.AI does not document a model listing endpoint, so a missing or
             // restricted one falls back to the bundled catalog.
             if self.config.is_zai()
@@ -332,6 +339,10 @@ impl LlmClient {
                 || self.config.auth_style() == AuthStyle::Vertex
             {
                 return Ok((self.config.model_catalog(), BTreeMap::new()));
+            }
+            if let Some(error) = error {
+                return Err(error)
+                    .with_context(|| format!("provider returned {status}: {}", body.trim()));
             }
             anyhow::bail!("provider returned {status}: {}", body.trim());
         }
@@ -3095,12 +3106,15 @@ mod tests {
                 continue;
             };
             if expected.is_none() {
-                expected = text[..head_end].lines().find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())
-                        .flatten()
-                });
+                expected = text[..head_end]
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .or(Some(0));
             }
             if let Some(len) = expected {
                 if raw.len() - (head_end + 4) >= len {
@@ -3154,6 +3168,32 @@ mod tests {
             requests
         });
         (addr, server)
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_portkey_refresh_does_not_cache_a_bundled_catalog() {
+        let (addr, server) = status_server(vec![
+            (403, "catalog access denied".into()),
+            (403, "catalog access denied".into()),
+        ])
+        .await;
+        let config = Config {
+            provider: "portkey".into(),
+            base_url: format!("http://{addr}/v1"),
+            api_key: "pk-test".into(),
+            ..Config::default()
+        };
+        let key = model_cache_key(&config);
+        let fallback = config.model_catalog();
+        let client = LlmClient::new(config);
+        assert!(cached_models(&key).is_none());
+        let error = client.refresh_models().await.unwrap_err().to_string();
+        assert!(error.contains("403 Forbidden"), "{error}");
+        assert!(error.contains("catalog access denied"), "{error}");
+        assert!(cached_models(&key).is_none());
+        assert_eq!(client.list_models().await.unwrap(), fallback);
+        assert!(cached_models(&key).is_none());
+        assert_eq!(server.await.unwrap().len(), 2);
     }
 
     #[test]
@@ -3283,7 +3323,7 @@ mod tests {
     async fn portkey_gpt_models_replay_text_tool_results_over_responses() {
         for model in ["gpt-5.4", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"] {
             let first = sse(&[
-                serde_json::json!({"type":"response.completed","response":{"output":[{"type":"function_call","call_id":"lookup","name":"read","arguments":"{\"path\":\"a.rs\"}"}]}}),
+                serde_json::json!({"type":"response.completed","response":{"output":[{"type":"function_call","call_id":"lookup","name":"read","arguments":"{\"path\":\"a.rs\"}"},{"type":"function_call","call_id":"lookup_b","name":"read","arguments":"{\"path\":\"b.rs\"}"}]}}),
             ]);
             let last = sse(&[
                 serde_json::json!({"type":"response.output_text.delta","delta":"done"}),
@@ -3312,11 +3352,12 @@ mod tests {
                 .stream_chat(&messages, &tools, &mut hooks)
                 .await
                 .unwrap();
-            assert_eq!(turn.tool_calls.len(), 1);
+            assert_eq!(turn.tool_calls.len(), 2);
             messages.push(
                 Message::assistant(turn.content, turn.tool_calls).with_thinking(turn.thinking),
             );
             messages.push(Message::tool("lookup", "file contents"));
+            messages.push(Message::tool("lookup_b", "second file contents"));
             let turn = client
                 .stream_chat(&messages, &tools, &mut hooks)
                 .await
@@ -3336,6 +3377,19 @@ mod tests {
                 .unwrap();
             assert_eq!(output["call_id"], "lookup");
             assert_eq!(output["output"], "file contents", "{model}");
+            let items = body["input"].as_array().unwrap();
+            let calls: Vec<_> = items
+                .iter()
+                .filter(|item| item["type"] == "function_call")
+                .collect();
+            assert_eq!(calls.len(), 2);
+            let (pairs, rest) = items[1..].as_chunks::<2>();
+            assert!(rest.is_empty(), "unpaired input items: {rest:?}");
+            for pair in pairs {
+                assert_eq!(pair[0]["type"], "function_call");
+                assert_eq!(pair[1]["type"], "function_call_output");
+                assert_eq!(pair[0]["call_id"], pair[1]["call_id"]);
+            }
         }
     }
 
