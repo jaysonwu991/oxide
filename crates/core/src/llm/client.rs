@@ -3383,7 +3383,9 @@ mod tests {
                 .filter(|item| item["type"] == "function_call")
                 .collect();
             assert_eq!(calls.len(), 2);
-            for pair in items[1..].chunks_exact(2) {
+            let (pairs, rest) = items[1..].as_chunks::<2>();
+            assert!(rest.is_empty(), "unpaired input items: {rest:?}");
+            for pair in pairs {
                 assert_eq!(pair[0]["type"], "function_call");
                 assert_eq!(pair[1]["type"], "function_call_output");
                 assert_eq!(pair[0]["call_id"], pair[1]["call_id"]);
