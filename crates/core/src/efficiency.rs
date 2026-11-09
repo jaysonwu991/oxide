@@ -328,11 +328,7 @@ pub(crate) fn prune_tool_history(
         let Some(MessageContent::Text(text)) = &mut message.content else {
             continue;
         };
-        if text.len() <= config.max_result_bytes
-            || text.starts_with("[tool output compacted;")
-            || text.starts_with("error:")
-            || failed_shell(text)
-        {
+        if text.len() <= config.max_result_bytes || text.starts_with("[tool output compacted;") {
             continue;
         }
         let Some(path) = save(text) else {
@@ -347,7 +343,12 @@ pub(crate) fn prune_tool_history(
         while !text.is_char_boundary(tail) {
             tail += 1;
         }
-        let shortened = format!("[tool output compacted; full: {}. Read this file for omitted evidence.]\n{}\n… omitted stale output …\n{}", path.display(), &text[..head], &text[tail..]);
+        let status = if text.starts_with("error:") || failed_shell(text) {
+            " original tool failed;"
+        } else {
+            ""
+        };
+        let shortened = format!("[tool output compacted;{status} full: {}. Read this file for omitted evidence.]\n{}\n… omitted stale output …\n{}", path.display(), &text[..head], &text[tail..]);
         if shortened.len() < text.len() {
             *text = shortened;
         }
@@ -578,14 +579,16 @@ mod tests {
     }
 
     #[test]
-    fn pruning_preserves_errors_recent_results_and_full_evidence() {
+    fn pruning_preserves_failure_status_recent_results_and_full_evidence() {
         let dir = temp_dir();
         let original = "古い出力".repeat(2000);
         let failure = format!("{}\n[exit: 1]", "failure".repeat(2000));
+        let tool_error = format!("error: {}", "diagnostic".repeat(2000));
         let mut messages = vec![
             Message::user("keep this request"),
             Message::tool("old", &original),
             Message::tool("failed", &failure),
+            Message::tool("tool-error", &tool_error),
             Message::tool("recent", &original),
             Message::assistant("decision", vec![]),
         ];
@@ -594,19 +597,29 @@ mod tests {
             keep_recent: 1,
             ..Default::default()
         };
-        let saved = dir.join("full.txt");
+        let mut saved = Vec::new();
         let reclaimed = prune_tool_history(&mut messages, usize::MAX, &config, |text| {
-            std::fs::write(&saved, text).unwrap();
-            Some(saved.clone())
+            let path = dir.join(format!("full-{}.txt", saved.len()));
+            std::fs::write(&path, text).unwrap();
+            saved.push(path.clone());
+            Some(path)
         });
         assert!(reclaimed > 0);
         assert_eq!(messages[1].tool_call_id.as_deref(), Some("old"));
-        assert!(messages[1].display().unwrap().contains("full.txt"));
-        assert_eq!(std::fs::read_to_string(saved).unwrap(), original);
-        assert_eq!(messages[2].display().unwrap(), failure);
-        assert_eq!(messages[3].display().unwrap(), original);
+        assert!(messages[1].display().unwrap().contains("full-0.txt"));
+        assert_eq!(std::fs::read_to_string(&saved[0]).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(&saved[1]).unwrap(), failure);
+        assert_eq!(std::fs::read_to_string(&saved[2]).unwrap(), tool_error);
+        for index in [2, 3] {
+            let excerpt = messages[index].display().unwrap();
+            assert!(excerpt.contains("original tool failed;"));
+            assert!(excerpt.len() < config.max_result_bytes + 300);
+        }
+        assert!(messages[2].display().unwrap().ends_with("[exit: 1]"));
+        assert!(messages[3].display().unwrap().contains("\nerror: "));
+        assert_eq!(messages[4].display().unwrap(), original);
         assert_eq!(messages[0].display().unwrap(), "keep this request");
-        assert_eq!(messages[4].display().unwrap(), "decision");
+        assert_eq!(messages[5].display().unwrap(), "decision");
         assert_eq!(
             prune_tool_history(&mut messages, usize::MAX, &config, |_| panic!(
                 "already pruned"

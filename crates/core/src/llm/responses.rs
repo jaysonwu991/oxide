@@ -20,12 +20,9 @@ pub fn supports_model(model: &str) -> bool {
 
 pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -> Value {
     let mut input = Vec::new();
-    for message in &repair_tool_pairs(messages) {
+    let messages = repair_tool_pairs(messages);
+    for (index, message) in messages.iter().enumerate() {
         if message.role == "tool" {
-            input.push(
-                json!({"type":"function_call_output", "call_id":message.tool_call_id,
-                "output": tool_output(message)}),
-            );
             continue;
         }
         if message.role == "assistant" {
@@ -56,6 +53,17 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
         for call in message.tool_calls.iter().flatten() {
             input.push(json!({"type":"function_call", "call_id":call.id,
                 "name":call.function.name,"arguments":call.function.arguments}));
+            // Gateways may translate each call into a separate assistant turn.
+            // Pair its result before the next call so that translated history
+            // never contains an unanswered assistant tool call.
+            if let Some(result) = messages[index + 1..]
+                .iter()
+                .take_while(|result| result.role == "tool")
+                .find(|result| result.tool_call_id.as_deref() == Some(call.id.as_str()))
+            {
+                input.push(json!({"type":"function_call_output", "call_id":call.id,
+                    "output":tool_output(result)}));
+            }
         }
     }
     let mut body = json!({"model":config.model,"input":input,"stream":true,"store":false,
@@ -243,6 +251,42 @@ mod tests {
         ] {
             assert_eq!(tool_output(&message), json!("read result"));
         }
+    }
+
+    #[test]
+    fn parallel_calls_replay_with_their_own_results_before_the_next_call() {
+        let call = |id: &str| ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "lookup".into(),
+                arguments: "{}".into(),
+            },
+            signature: None,
+        };
+        let body = request_body(
+            &Config::default(),
+            &[
+                Message::user("Look up both values"),
+                Message::assistant("", vec![call("first"), call("second"), call("interrupted")]),
+                Message::tool("second", "second value"),
+                Message::tool("first", "first value"),
+                Message::assistant("Both checked", vec![]),
+            ],
+            &[],
+        );
+        let input = body["input"].as_array().unwrap();
+        for (index, id) in [(1, "first"), (3, "second"), (5, "interrupted")] {
+            assert_eq!(input[index]["type"], "function_call");
+            assert_eq!(input[index]["call_id"], id);
+            assert_eq!(input[index + 1]["type"], "function_call_output");
+            assert_eq!(input[index + 1]["call_id"], id);
+        }
+        assert_eq!(input[2]["output"], "first value");
+        assert_eq!(input[4]["output"], "second value");
+        assert!(input[6]["output"].as_str().unwrap().starts_with("error:"));
+        assert_eq!(input[7]["phase"], "final_answer");
+        assert_eq!(input.len(), 8);
     }
 
     #[test]

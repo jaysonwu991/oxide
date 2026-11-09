@@ -80,7 +80,9 @@ Portkey models resolve capabilities through their upstream catalogs: Anthropic
 for Claude, OpenAI for GPT, and Z.AI for GLM. GPT uses Portkey's `/responses`
 endpoint with `reasoning.summary: auto`, streaming available summaries into the
 thinking panel and preserving encrypted reasoning across tool calls for the same
-model. Explicit Off sends `reasoning.effort: none`; Auto leaves effort at the
+model. Parallel tool calls replay as call/result pairs so gateways translating
+Responses into Chat Completions receive a completed tool turn before the next
+call. Explicit Off sends `reasoning.effort: none`; Auto leaves effort at the
 provider default. GLM uses its native `thinking.type` and effort mapping. A model
 switch refreshes the advertised levels; summaries still depend on upstream access
 and whether the model emits one for that response.
@@ -742,10 +744,12 @@ writes and shell commands: each read checks the file's current digest, so change
 content is returned in full. Compaction drops references to removed or shortened
 results.
 
-Once history reaches `pruneAboveTokens`, successful tool results older than the
+Once history reaches `pruneAboveTokens`, large tool results older than the
 last `keepRecent` results are shortened to a head/tail excerpt. A pointer lets the
 model retrieve the full saved evidence. User requests, assistant decisions,
-errors, documents and recent results remain intact; session storage retains
+documents and recent results remain intact. Older failures keep an explicit
+failure label and their head/tail diagnostics, including the shell exit status;
+the full output is saved before shortening. Session storage retains
 the original transcript. This reduces context without another summarizer call.
 Disable `toolHistory.enabled` to retain all tool results until ordinary compaction.
 

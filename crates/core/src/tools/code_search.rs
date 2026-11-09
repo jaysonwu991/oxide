@@ -25,7 +25,7 @@ pub(super) fn spec(scope: &str) -> ToolSpec {
         &format!("Find relevant code snippets using native local semantic search plus BM25. Use natural-language questions to discover implementations; use grep for exact matches or exhaustive references and read for surrounding context. Results are ranked, not exhaustive. Rust, JavaScript, TypeScript and Python use syntax-aware chunks; other files use overlapping text chunks. Changed files are reindexed on every call. First use downloads public embedding weights (about 34 MB); no source code is sent over the network. Requires network only for the initial model download, or OXIDE_CODE_SEARCH_MODEL pointing to a local Model2Vec directory.{scope}"),
         json!({"type":"object","properties":{
             "query":{"type":"string","description":"Natural-language question or code to search for"},
-            "path":{"type":"string","description":"Local directory to index (default: .)"},
+            "path":{"type":"string","description":"Local directory to index (default: .). For large repositories, use find or grep to locate the relevant subdirectory first, then set path to it; indexing the whole repository may exceed the scope limits."},
             "limit":{"type":"integer","minimum":1,"maximum":20,"description":"Maximum ranked snippets (default: 5)"},
             "content":{"type":"string","enum":["code","docs","config","all"],"description":"Files to search (default: code)"},
             "max_snippet_lines":{"type":"integer","minimum":0,"maximum":200,"description":"Lines per snippet (default: 80; 0 returns locations only)"}
