@@ -2108,5 +2108,6 @@ under a separate LaunchServices app instance, with private local MCP transport,
 a native cursor menu, permission diagnostics and a stop control. It is a separate
 development build and is not yet bundled into the Desktop installer. See the
 [helper build/connect guide](../crates/desktop/computer-use/README.md) and
-[Codex parity review](computer-use-parity.md). Packaging the runtime does not
-implement background input or Codex's app-specific approval/settings behavior.
+[Codex parity review](oxide-reins-parity.md). Packaging the runtime does not
+implement background input, and the runtime's per-app approvals have no settings
+pane in the window yet.

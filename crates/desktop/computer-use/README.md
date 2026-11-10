@@ -80,9 +80,9 @@ never requests OS grants or sends input to another app. Close other instances of
 bundle first. The Desktop regressions are in `check-app.mjs` and `check-shell.mjs`.
 
 This is not complete Codex parity. The underlying server still uses foreground
-keyboard/pointer input, its existing app policy, and tool-triggered snapshots.
+keyboard/pointer input, and only returns a screenshot when a tool asks for one.
 A helper bundle does not implement input isolation, continuous screen streaming,
-app-specific approval dialogs/settings, a system-wide cursor overlay, automatic
-unlock, or a built-in browser. Native permission prompts, actual capture/input,
+a settings pane for the server's per-app approvals, a system-wide cursor overlay,
+automatic unlock, or a built-in browser. Native permission prompts, actual capture/input,
 helper-crash recovery, install/update paths and notarization still need end-to-end
-validation. See [the parity review](../../../docs/computer-use-parity.md).
+validation. See [the parity review](../../../docs/oxide-reins-parity.md).

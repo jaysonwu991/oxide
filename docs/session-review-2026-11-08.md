@@ -43,5 +43,5 @@ screenshot-bearing tool results. The earlier conclusions above describe only
 the original 10:28 root dump. The new Desktop controls keep the latest screenshot
 beside the conversation and indicate computer-use calls with a mouse glyph.
 An opt-in native helper provides a separate app bundle and permission setup menu.
-See [the expanded review and parity matrix](computer-use-parity.md) for evidence,
+See [the expanded review and parity matrix](oxide-reins-parity.md) for evidence,
 verification and the substantial behaviors still needed for Codex parity.
