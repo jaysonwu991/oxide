@@ -1,4 +1,4 @@
-# Computer Use parity review — 2026-11-08
+# Computer Use parity review — the window, the helper and the runtime
 
 Target: the user-visible behavior in the supplied screenshots and the
 [official Computer Use documentation](https://learn.chatgpt.com/docs/computer-use),
@@ -34,12 +34,12 @@ later sessions now included in this review.
 | Distinct computer-use activity | Mouse glyph in tool cards and topbar; active styling only while computer tools run. | No global screen cursor overlay. |
 | Preview beside chat | Last returned screenshot in the details dock, plus a dialog available in compact windows. Text-only calls preserve the image and its original app label. | Snapshots are explicitly labeled. Continuous capture/streaming is absent. |
 | Independent chats | Per-thread activity, snapshot, stop state; background updates cannot paint into the visible chat. Covered by Desktop behavior checks. | Native runtime uses the shared foreground desktop. Separate helper instances do not isolate input. |
-| Stop / takeover | Desktop cancels the visible turn through existing `cancel_run`; helper menu terminates its MCP runtime. EOF and proxy-death cleanup tested. | No cursor takeover arbitration. Already completed clicks/writes cannot be undone. |
+| Stop / takeover | Desktop cancels the visible turn through existing `cancel_run`; helper menu terminates its MCP runtime. EOF and proxy-death cleanup tested. The runtime now yields to a person's keyboard or pointer input during a paced drag or a long `type_text`, releases what it holds and reports `user takeover`. | A synchronous AX call or a single click is not arbitrated, and the window has no separate control for it. Already completed clicks/writes cannot be undone. |
 | Separate native app | `dev.oxide.computer-use`, native menu-bar cursor, LaunchServices launch, private local IPC, bundled MCP runtime. Native handshake and observed helper ancestry tested. | Opt-in development build, not installed automatically or included in the release installer. |
 | OS permissions | Native permission diagnostics and user-initiated request menu. MCP reports the helper as its host with both grants missing, while the existing Oxide session reported its own grants. | User must grant helper access. Actual System Settings entries, granted capture and input need live validation. |
-| Per-app approvals and settings | Existing shared Oxide tool approvals plus the server's allow/deny policy remain in force. | Codex-style per-app Allow / Always allow / revoke settings and app identity validation are not implemented. |
+| Per-app approvals and settings | The runtime decides per app — allow, deny, approve one call, or a default for an app nobody decided about — and pins an approval to the app's bundle identity, which a changed identity fails. Decisions are re-read on every call, so one made in a terminal reaches a running server. Shared Oxide tool approvals remain a separate gate. | No settings UI in the window: decisions are made with `oxide-reins apps allow\|grant-once\|deny\|revoke\|policy`. |
 | Background macOS use | Existing AXPress/AXValue paths can avoid foreground input for supported controls. | Keyboard/pointer still activate apps. True background input requires native runtime work; packaging cannot provide it. |
-| Signed distribution | Build script can sign the helper and explicit runtime with a supplied identity. Ad-hoc bundle built and signature verified locally. | Notarization, pinned runtime provenance/version, CI architectures, installer/update integration, stable identity through updates. |
+| Signed distribution | Build script can sign the helper and explicit runtime with a supplied identity. Ad-hoc bundle built and signature verified locally. The runtime writes an install marker beside its binary and `doctor --json` reports that marker, its build, its target and whether it is a debug or release binary; its CI builds both Mac architectures. | Notarization, an installer/update path, and a stable identity through updates. |
 | Browser, app selection and lock behavior | Existing MCP discovery and native app tools. | Built-in browser, native `@App` selection/settings, automatic unlock/cover displays/local-input relock are not implemented. |
 | Platform coverage | This helper is macOS-only; Desktop controls are platform-neutral. | Windows native computer-use runtime and foreground behavior are not validated or supplied by this helper. |
 
@@ -66,3 +66,19 @@ and release paths remain unverified. No claim of complete Codex parity is made.
 
 Build/connect instructions and the repeatable read-only smoke check live in
 [the helper guide](../crates/desktop/computer-use/README.md).
+
+## Where the runtime side is recorded
+
+The server's half of this list is tracked against the runtime that implements it,
+in [oxide-reins#3](https://github.com/jaysonwu991/oxide-reins/pull/3) and the
+`docs/parity.md` it adds: per follow-up, what the runtime now does, what belongs
+to the client, and what is still unverified. The rows above that name the
+runtime follow that record.
+
+That work is verified in its own repository: `cargo test`, `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings` and a build of the non-macOS stub.
+A granted run is still not part of it — the machine that implemented it has
+neither Accessibility nor Screen Recording, so a live bundle identity, granted
+capture and input, the takeover callback and visual QA are compiled and
+unit-tested only. The same gaps listed under Verification above apply to the
+window, and none of this is a claim of complete Codex parity.
