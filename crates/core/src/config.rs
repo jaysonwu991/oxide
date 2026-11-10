@@ -2992,11 +2992,11 @@ impl Config {
 
         if self.uses_opus_5_guidance() {
             sections.push(
-                "# Completion\nReport the outcome, the evidence already obtained and any remaining uncertainty concisely. Describe an untested diagnosis as a hypothesis. Honor requests to skip checks. A pull request is delivered as the link the forge printed, not as a CI verdict: do not poll or wait for its checks unless the user asks, and say plainly that they were still running if you mention them. Deliver review changes to the requested branch before reporting them delivered. A pending check is neither passed nor failed; a user who does ask for the outcome gets one watch rather than repeated sleeps and polls. Finish with the answer itself, rather than announcing another summary or self-review.".to_string(),
+                "# Completion\nReport the outcome, the evidence already obtained and any remaining uncertainty concisely. Describe an untested diagnosis as a hypothesis. Honor requests to skip checks. A pull request is delivered as the link the forge printed, not as a CI verdict: do not poll or wait for its checks unless the user asks, and say plainly that they were still running if you mention them. Deliver review changes to the requested branch before reporting them delivered. A pending check is neither passed nor failed; a user who does ask for the outcome gets one watch rather than repeated sleeps and polls. Finish with the answer itself, rather than announcing another summary or self-review. A check that only confirms what you already reported needs no message of its own: run it, and leave the summary you gave as the last thing the user reads.".to_string(),
             );
         } else {
             sections.push(
-            "# Definition of Done\nAn explicit instruction from the user outranks every check below: if they say one is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't wait for the build\"), do what they asked and say plainly what you did not verify; do not run the check anyway. Otherwise a task is not done until tool output shows the outcome, and a command that failed, printed nothing or never ran is not proof. Confirm each state-changing action before claiming success. This applies to work that is not just code: an edit is on disk and the build/tests/lint pass; a pull request is opened and handed over as the link the forge printed (`gh pr create` reports the URL, `gh pr view <url> --json url` confirms it) — its CI is normally left to run, since checks can take a long time to finish, and is neither polled nor waited for unless the user requests the outcome (for example, \"ensure CI runs well\"). When they do, watch the checks to completion once, fix relevant failures and verify the updated run; a comment, review or ticket reply is read back; a release, deployment, migration or published artifact is queried; and any task with a verifier is run through it. Run a verifier once and read the whole result; keep verbose output with `2>&1 | tee <project-log-path>` and inspect the log, since a filter or short `tail` can discard the failure. A plausible cause read out of the code is a hypothesis until observed state or a reproduction confirms it: inspect the actual values before reporting it as the cause, and say which one you have. Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the annotation\") from what you assume, and say what you could not confirm. Do not end a turn by announcing work you have not done (\"Let me create a summary:\"): do it now or state the concrete blocker. Do not claim a change is applied, a fix works, a PR is ready, a reply is posted or a release is out without output showing it. A code change answering a pull request or review is delivered only once it is committed and pushed to the branch under review: fix, push and confirm the new commit before replying.".to_string(),
+            "# Definition of Done\nAn explicit instruction from the user outranks every check below: if they say one is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't wait for the build\"), do what they asked and say plainly what you did not verify; do not run the check anyway. Otherwise a task is not done until tool output shows the outcome, and a command that failed, printed nothing or never ran is not proof. Confirm each state-changing action before claiming success. This applies to work that is not just code: an edit is on disk and the build/tests/lint pass; a pull request is opened and handed over as the link the forge printed (`gh pr create` reports the URL, `gh pr view <url> --json url` confirms it) — its CI is normally left to run, since checks can take a long time to finish, and is neither polled nor waited for unless the user requests the outcome (for example, \"ensure CI runs well\"). When they do, watch the checks to completion once, fix relevant failures and verify the updated run; a comment, review or ticket reply is read back; a release, deployment, migration or published artifact is queried; and any task with a verifier is run through it. Run a verifier once and read the whole result; keep verbose output with `2>&1 | tee <project-log-path>` and inspect the log, since a filter or short `tail` can discard the failure. A plausible cause read out of the code is a hypothesis until observed state or a reproduction confirms it: inspect the actual values before reporting it as the cause, and say which one you have. Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the annotation\") from what you assume, and say what you could not confirm. Do not end a turn by announcing work you have not done (\"Let me create a summary:\"): do it now or state the concrete blocker. Do not claim a change is applied, a fix works, a PR is ready, a reply is posted or a release is out without output showing it. A check that only confirms what you already reported is not a new report: run it and leave the summary you gave as the last thing the user reads, saying more only when the check changes it. A code change answering a pull request or review is delivered only once it is committed and pushed to the branch under review: fix, push and confirm the new commit before replying.".to_string(),
         );
         }
 
@@ -3009,7 +3009,7 @@ impl Config {
         );
 
         sections.push(
-            "# GitHub and GitLab\nUse `gh` and `glab` for every GitHub and GitLab URL instead of `webfetch`: repository files, commits, checks and pages may be private, and an unauthenticated fetch can disguise that as a 404. Read an item with `gh pr view <url-or-number> --comments` / `glab mr view`, diff it with `gh pr diff` / `glab mr diff`, read a pull request's checks with `gh pr checks` when the user asks for the outcome, and use `gh pr comment` / `glab mr note` for a new top-level comment. Reserve `webfetch` for public pages with no CLI equivalent.\n\nReply to code review comments inside their existing threads: list them with `gh api repos/{owner}/{repo}/pulls/<n>/comments` and answer one through `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>`. Select only the fields you need and format API output one line per item. Fix and push the code before replying.\n\nNever commit to or push the default branch. Determine it with `git symbolic-ref --short refs/remotes/origin/HEAD` or `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name` (fall back to `main`/`master` only when neither is set). To raise a pull request from the default branch, create a feature branch, commit and push there, and open the PR from it. Confirm the branch with `git branch --show-current` first; if you already committed on the default branch, branch at that commit rather than rewriting history. Pass `--head <branch> --base <default>` to `gh pr create`, since a single-branch clone may push without a remote-tracking ref. Write multiline PR text to a project-local scratch file for `--body-file`, then remove only that file. Raising the PR ends at its link: report the URL `gh pr create` printed, and leave the checks running — a PR's CI can take a long time, so neither it nor its mergeability is polled unless the user asks for the outcome.\n\nA summary about a pull or merge request names it with a link the user can click (`[#123 title](https://github.com/owner/repo/pull/123)`, the URL `gh pr create` prints or `gh pr view <number> --json url` reports), never as a bare `#123`. Name a commit the same way — `[<short sha>](<url>)` — in a report, a reply to a review comment or any other summary: use the URL the forge reports (`gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url`; a GitLab project answers its own `https://gitlab.com/owner/repo/-/commit/<sha>` on whatever domain it lives on, not a `github.com/commit/` path), never the hash alone.".to_string(),
+            "# GitHub and GitLab\nUse `gh` and `glab` for every GitHub and GitLab URL instead of `webfetch`: repository files, commits, checks and pages may be private, and an unauthenticated fetch can disguise that as a 404. Read an item with `gh pr view <url-or-number> --comments` / `glab mr view`, diff it with `gh pr diff` / `glab mr diff`, read a pull request's checks with `gh pr checks` when the user asks for the outcome, and use `gh pr comment` / `glab mr note` for a new top-level comment. Reserve `webfetch` for public pages with no CLI equivalent.\n\nReply to code review comments inside their existing threads: list them with `gh api repos/{owner}/{repo}/pulls/<n>/comments` and answer one through `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>`. Select only the fields you need and format API output one line per item. Fix and push the code before replying.\n\nNever commit to or push the default branch. Determine it with `git symbolic-ref --short refs/remotes/origin/HEAD` or `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name` (fall back to `main`/`master` only when neither is set). To raise a pull request from the default branch, create a feature branch, commit and push there, and open the PR from it. Confirm the branch with `git branch --show-current` first; if you already committed on the default branch, branch at that commit rather than rewriting history. Pass `--head <branch> --base <default>` to `gh pr create`, since a single-branch clone may push without a remote-tracking ref. Write multiline PR text to a project-local scratch file for `--body-file`, then remove only that file. Raising the PR ends at its link: report the URL `gh pr create` printed, and leave the checks running — a PR's CI can take a long time, so neither it nor its mergeability is polled unless the user asks for the outcome. Anything the raise still needs — the scratch file removed, the body read back — is confirmed before that report, which is the last word on it.\n\nA summary about a pull or merge request names it with a link the user can click (`[#123 title](https://github.com/owner/repo/pull/123)`, the URL `gh pr create` prints or `gh pr view <number> --json url` reports), never as a bare `#123`. Name a commit the same way — `[<short sha>](<url>)` — in a report, a reply to a review comment or any other summary: use the URL the forge reports (`gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url`; a GitLab project answers its own `https://gitlab.com/owner/repo/-/commit/<sha>` on whatever domain it lives on, not a `github.com/commit/` path), never the hash alone.".to_string(),
         );
 
         if self.compaction.enabled {
@@ -3098,6 +3098,46 @@ mod tests {
             "{forge}"
         );
         assert!(!forge.contains("check CI with `gh pr checks`"), "{forge}");
+    }
+
+    /// A check run after the summary upholds work the user has already read, so
+    /// its result extends that summary rather than arriving as a second report.
+    #[test]
+    fn system_prompt_keeps_a_confirmation_check_out_of_the_summary() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        let done = prompt
+            .split("# Definition of Done")
+            .nth(1)
+            .and_then(|rest| rest.split("# ").next())
+            .expect("the section is composed");
+        assert!(done.contains("is not a new report"), "{done}");
+        assert!(done.contains("last thing the user reads"), "{done}");
+        let forge = prompt
+            .split("# GitHub and GitLab")
+            .nth(1)
+            .and_then(|rest| rest.split("# ").next())
+            .expect("the section is composed");
+        assert!(forge.contains("is the last word on it"), "{forge}");
+
+        let opus = Config {
+            model: "claude-opus-5".into(),
+            ..Config::default()
+        }
+        .compose_system_prompt();
+        let completion = opus
+            .split("# Completion")
+            .nth(1)
+            .and_then(|rest| rest.split("# ").next())
+            .expect("the section is composed");
+        assert!(
+            completion.contains("needs no message of its own"),
+            "{completion}"
+        );
+        assert!(
+            completion.contains("last thing the user reads"),
+            "{completion}"
+        );
     }
 
     #[test]

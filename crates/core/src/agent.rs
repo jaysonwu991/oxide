@@ -828,6 +828,10 @@ async fn run_loop(
     // Whether the held summary is still the newest message, which is what lets
     // the re-check merge into it rather than start a second one.
     let mut held_is_tail = false;
+    // Whether a summary the user already read is being re-checked. The re-check
+    // is internal: an answer with nothing to add ends the run there instead of
+    // reporting the check, so the summary stays the last thing the user reads.
+    let mut recheck_open = false;
     // A response boundary that already injected a steering message sets this so
     // the top-of-loop poll does not immediately take the next one too: under
     // `one-at-a-time` only one queued message may precede a model call.
@@ -1098,15 +1102,11 @@ async fn run_loop(
         // confirm work it already summarized, so a provider that answers it
         // with nothing must not fail the turn the user already saw complete.
         let following_through = std::mem::take(&mut follow_through_pending);
-        let nudging = match verification_reminder.take() {
-            Some(reminder) => {
-                // A system-only tail is lifted into the leading system prompt
-                // by Anthropic gateways, leaving an unsupported assistant prefill.
-                request.push(Message::user(reminder));
-                true
-            }
-            None => false,
-        };
+        if let Some(reminder) = verification_reminder.take() {
+            // A system-only tail is lifted into the leading system prompt
+            // by Anthropic gateways, leaving an unsupported assistant prefill.
+            request.push(Message::user(reminder));
+        }
         let tool_specs = build_tool_specs(&config, &runtime, depth, offer_session_title);
         // The held summary's text, replayed when the re-check is retried: the
         // failed attempt's item is discarded, and the retry has to restart the
@@ -1211,7 +1211,7 @@ async fn run_loop(
                     finish(&runtime, &tx, messages, depth);
                     return;
                 }
-                Err(err) if nudge_failed_quietly(nudging && !following_through, &err) => {
+                Err(err) if nudge_failed_quietly(recheck_open && !following_through, &err) => {
                     // The reminder is advisory: the model already summarized its
                     // work and nothing more will arrive, so finish with the
                     // answer in hand instead of reporting `err`. The held
@@ -1436,6 +1436,7 @@ async fn run_loop(
                     }
                     held_summary = Some((held, held_usage));
                     held_is_tail = true;
+                    recheck_open = true;
                     verification_reminder = Some(reminder);
                     continue;
                 }
@@ -1476,6 +1477,7 @@ async fn run_loop(
                 None => (assistant, usage),
             };
             held_is_tail = false;
+            recheck_open = false;
             record_usage(&runtime.session, depth, &assistant, usage);
             messages.push(assistant);
             if let Some(context) = response_context {
@@ -2769,8 +2771,9 @@ impl VerificationState {
                 if looks_like_verification_command(raw) {
                     self.edited.clear();
                 } else if !output_failed_with_state(output, is_error) {
-                    self.edited
-                        .retain(|edited| !inspected_by_shell(raw, output, edited));
+                    self.edited.retain(|edited| {
+                        !inspected_by_shell(raw, output, edited) && !deletes_path(raw, edited)
+                    });
                 }
                 let command = raw.to_ascii_lowercase();
                 let failed = output_failed_with_state(output, is_error);
@@ -2888,6 +2891,9 @@ impl VerificationState {
             "# Definition of Done\nInternal verification reminder from Oxide, not a new user \
              message or correction. Preserve the user's intent and constraints; do not attribute \
              this reminder to the user or acknowledge it as their feedback. Before you finish: {} \
+             This verifies work you have already reported: when the check upholds the summary \
+             you gave, finish there rather than sending a second message about it, and report \
+             again only what it changes. \
              An explicit instruction from the user \
              outranks these checks — if they said one is not needed, do what they asked and say \
              plainly what you did not verify instead of running it anyway.",
@@ -3165,6 +3171,32 @@ fn inspected_by_shell(command: &str, output: &str, path: &str) -> bool {
                 && (shown.contains("@@") || shown.contains(path));
         }
         false
+    })
+}
+
+/// Whether a shell command deleted the path it edited — `rm`, `git rm`, or a
+/// plain `unlink`. Nothing is left on disk to read back, and a scratch file the
+/// run removed itself (a pull request's body file) is the run finishing its own
+/// work rather than a change the user needs confirmed.
+fn deletes_path(command: &str, path: &str) -> bool {
+    command.split(['\n', ';', '|', '&']).any(|segment| {
+        let mut words = segment.split_whitespace();
+        let Some(tool) = words
+            .next()
+            .map(|word| word.rsplit('/').next().unwrap_or(word))
+        else {
+            return false;
+        };
+        let arguments: Vec<&str> = words.map(|word| word.trim_matches(['\'', '"'])).collect();
+        let operands = match tool {
+            "rm" | "unlink" => &arguments[..],
+            "git" if arguments.first() == Some(&"rm") => &arguments[1..],
+            _ => return false,
+        };
+        operands
+            .iter()
+            .filter(|argument| !argument.starts_with('-'))
+            .any(|argument| same_path(path, argument))
     })
 }
 
@@ -6800,6 +6832,85 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A re-check can need a tool of its own. Once it upholds the summary, the
+    /// run ends with that summary: the check is internal work, so a model that
+    /// reports nothing more leaves the user with one answer instead of two, and
+    /// its silence is not reported as an empty response.
+    #[tokio::test]
+    async fn a_recheck_that_ran_a_tool_ends_with_the_summary_it_confirmed() {
+        let dir = std::env::temp_dir().join(format!("oxide_recheck_tool_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let edited = dir.join("catalog.yaml");
+        let edited = edited.to_str().unwrap().to_string();
+
+        let (addr, server) = sse_server(vec![
+            write_call_body(&edited),
+            answer_body("Upgrade complete."),
+            bash_call_body("ls ."),
+            empty_body(),
+            empty_body(),
+            empty_body(),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("upgrade the package")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut errors = Vec::new();
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Error(message) => errors.push(message),
+                AgentEvent::Finished(messages) => finished = Some(messages),
+                _ => {}
+            }
+        }
+        assert!(errors.is_empty(), "{errors:?}");
+        let finished = finished.expect("the run finished");
+        // One user-facing summary: the check's answer added nothing, so the run
+        // ended with the summary it had already given.
+        let summaries = finished
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .filter_map(|message| message.display())
+            .collect::<Vec<_>>();
+        assert_eq!(summaries, vec!["Upgrade complete.".to_string()]);
+        assert!(
+            finished.iter().any(|message| message.role == "tool"),
+            "the re-check ran a tool"
+        );
+
+        // The reminder asked for the check, and the check really used a tool, so
+        // the silence that followed is the re-check's, not the summary's.
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 6);
+        assert!(requests[2].contains("Before you finish"), "{}", requests[2]);
+        assert!(
+            requests[2].contains("rather than sending a second message about it"),
+            "{}",
+            requests[2]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A generic gateway's catalog is discovered independently of its name;
     /// only searched capabilities are declared on the following model call.
     #[tokio::test]
@@ -7916,6 +8027,38 @@ for line in sys.stdin:
             diff,
             "/repo/a.rs"
         ));
+    }
+
+    #[test]
+    fn a_scratch_file_the_run_deleted_needs_no_readback() {
+        // A pull request's body file lives in the project only while the command
+        // that reads it runs: the run removed the file itself, so there is no
+        // change left on disk to confirm.
+        let mut state = VerificationState::default();
+        state.record("write", &json!({"path": "/repo/.pr-body.md"}), "ok");
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --body-file .pr-body.md && rm -f .pr-body.md"}),
+            "https://github.com/owner/repo/pull/14\n[exit: 0]",
+        );
+        assert!(state.edited.is_empty());
+        let reminder = state.reminder().unwrap_or_default();
+        assert!(!reminder.contains(".pr-body.md"), "{reminder}");
+
+        // Only the path a command deletes is cleared, and only by a command that
+        // actually deletes it.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "/repo/a.rs"}), "ok");
+        state.record("edit", &json!({"path": "/repo/b.rs"}), "ok");
+        state.record("bash", &json!({"command": "git rm a.rs"}), "[exit: 0]");
+        assert_eq!(state.edited.iter().collect::<Vec<_>>(), vec!["/repo/b.rs"]);
+
+        assert!(!deletes_path("ls -la a.rs", "/repo/a.rs"));
+        assert!(!deletes_path("grep -n \"rm a.rs\" notes.md", "/repo/a.rs"));
+        assert!(!deletes_path("git rm a.rs", "/repo/b.rs"));
+        assert!(deletes_path("git rm a.rs", "/repo/a.rs"));
+        assert!(deletes_path("rm -rf build/ && rm a.rs", "/repo/a.rs"));
+        assert!(deletes_path("unlink 'a.rs'", "/repo/a.rs"));
     }
 
     #[test]
