@@ -44,9 +44,12 @@ later sessions now included in this review.
 | Platform coverage | This helper is macOS-only; Desktop controls are platform-neutral. | Windows native computer-use runtime and foreground behavior are not validated or supplied by this helper. |
 
 The documented Codex policy also restricts terminal/self automation and OS
-security approvals. The current server's configurable policy is different;
-these policies must be specified and tested rather than described as equivalent.
-OS permissions, app approvals, and action-specific approval are distinct layers.
+security approvals. The runtime now refuses both by default — a terminal by
+bundle identity over nine known emulators, and the hosting bundle — each with the
+command that lifts it (`apps terminals allow`, `apps self-automation allow`).
+OS security approvals are untouched: this runtime never answers a permission
+dialog. OS permissions, app approvals, and action-specific approval remain
+distinct layers, and Oxide's own tool approvals are a further, separate gate.
 
 ## Verification
 
@@ -70,10 +73,17 @@ Build/connect instructions and the repeatable read-only smoke check live in
 ## Where the runtime side is recorded
 
 The server's half of this list is tracked against the runtime that implements it,
-in [oxide-reins#3](https://github.com/jaysonwu991/oxide-reins/pull/3) and the
-`docs/parity.md` it adds: per follow-up, what the runtime now does, what belongs
-to the client, and what is still unverified. The rows above that name the
-runtime follow that record.
+in oxide-reins PRs [#3](https://github.com/jaysonwu991/oxide-reins/pull/3) and
+[#4](https://github.com/jaysonwu991/oxide-reins/pull/4) and the `docs/parity.md`
+they add: per follow-up, what the runtime now does, what belongs to the client,
+and what is still unverified. The rows above that name the runtime follow that
+record.
+
+The runtime also gained `oxide-reins verify`, which exercises each native path
+behind these rows — the accessibility tree, a capture, a bundle identity, the
+takeover tap, background typing — and reports `ok`, `MISSING` or `skipped` with
+the evidence, exiting nonzero on a gap. Every "unverified" above is one command
+away from a report instead of a reading exercise.
 
 That work is verified in its own repository: `cargo test`, `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings` and a build of the non-macOS stub.
