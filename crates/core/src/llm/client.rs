@@ -2001,7 +2001,9 @@ mod tests {
             ),
             &image_only,
         );
-        assert!(generic.to_string().contains("confirm that the selected LLM"));
+        assert!(generic
+            .to_string()
+            .contains("confirm that the selected LLM"));
     }
 
     #[test]
