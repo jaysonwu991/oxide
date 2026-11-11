@@ -1797,16 +1797,24 @@ pub fn context_overflow(error: &anyhow::Error) -> Option<ContextOverflow> {
 /// the selected LLM is the source of truth, and its capabilities can change
 /// independently of Oxide.
 fn media_request_error(error: anyhow::Error, messages: &[Message]) -> anyhow::Error {
-    let has_media = messages.iter().any(|message| {
+    let has_file = messages.iter().any(|message| {
         matches!(
             message.content.as_ref(),
             Some(crate::llm::MessageContent::Parts(parts))
-                if parts.iter().any(|part| matches!(
-                    part,
-                    crate::llm::ContentPart::ImageUrl { .. } | crate::llm::ContentPart::File { .. }
-                ))
+                if parts.iter().any(|part| matches!(part, crate::llm::ContentPart::File { .. }))
         )
     });
+    let has_media = has_file
+        || messages.iter().any(|message| {
+            matches!(
+                message.content.as_ref(),
+                Some(crate::llm::MessageContent::Parts(parts))
+                    if parts.iter().any(|part| matches!(
+                        part,
+                        crate::llm::ContentPart::ImageUrl { .. }
+                    ))
+            )
+        });
     let detail = format!("{error:#}").to_ascii_lowercase();
     let media_rejection = ["image", "pdf", "media", "multimodal", "unsupported content"]
         .iter()
@@ -1820,13 +1828,24 @@ fn media_request_error(error: anyhow::Error, messages: &[Message]) -> anyhow::Er
         ]
         .iter()
         .any(|marker| detail.contains(marker));
-    if has_media && media_rejection && context_overflow(&error).is_none() {
-        error.context(
-            "the request included rich media attachments; confirm that the selected LLM supports them",
-        )
-    } else {
-        error
+    if !has_media || !media_rejection || context_overflow(&error).is_some() {
+        return error;
     }
+    // A gateway that enumerates its accepted content blocks and lists
+    // `image_url` while a file part is what the request carried is telling
+    // us something more specific than "media is unsupported": images reach
+    // this backend fine, only the document/file block does not. Naming that
+    // distinction saves a round trip of removing the wrong attachment.
+    if has_file && detail.contains("image_url") && !detail.contains("\"file\"") {
+        return error.context(
+            "the request included a document/file attachment that this model's backend does \
+             not accept (it does accept images); remove the file attachment and resend, or \
+             switch to a route that supports file uploads",
+        );
+    }
+    error.context(
+        "the request included rich media attachments; confirm that the selected LLM supports them",
+    )
 }
 
 /// Whether the provider stopped because the output token budget ran out
@@ -1947,6 +1966,42 @@ mod tests {
             &[Message::user("hi")],
         );
         assert_eq!(plain.to_string(), "provider unavailable");
+    }
+
+    #[test]
+    fn a_gateway_that_still_accepts_images_gets_told_the_file_block_is_the_problem() {
+        let file = crate::llm::ContentPart::File {
+            file: crate::llm::FileData {
+                filename: Some("notes.pdf".into()),
+                file_data: "data:application/pdf;base64,AAAA".into(),
+            },
+        };
+        let messages = vec![Message::user_parts("summarize", vec![file])];
+        let error = media_request_error(
+            anyhow::anyhow!(
+                "azure-ai error: Invalid chat format. Content blocks are expected to be \
+                 either text, image_url or input_audio type."
+            ),
+            &messages,
+        );
+        assert!(error.to_string().contains("document/file attachment"));
+        assert!(error.to_string().contains("it does accept images"));
+
+        let image = crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: None,
+            },
+        };
+        let image_only = vec![Message::user_parts("look", vec![image])];
+        let generic = media_request_error(
+            anyhow::anyhow!(
+                "azure-ai error: Invalid chat format. Content blocks are expected to be \
+                 either text, image_url or input_audio type."
+            ),
+            &image_only,
+        );
+        assert!(generic.to_string().contains("confirm that the selected LLM"));
     }
 
     #[test]
