@@ -143,7 +143,12 @@ matched. The error names the failures and tells the agent to re-read the correct
 file and resend the corrected batch. CLI, Extension and Desktop share these rules.
 Pass `edits` as an array of objects, rather than a JSON string. For compatibility,
 stringified arrays tolerate trailing commas outside quoted strings; code and
-escapes inside `oldText` and `newText` are preserved. Missing or ambiguous targets
+escapes inside `oldText` and `newText` are preserved. `old_text`/`new_text` and
+`oldString`/`new_string` are accepted as spellings of the two fields. A
+replacement that carries only one of them is rejected naming the missing half:
+`oldText` is the exact text to replace (an insertion repeats a unique
+neighboring block around the new text), and an empty `newText` deletes the
+match. Missing or ambiguous targets
 still reject the whole batch after this syntax repair.
 
 A `write` or `edit` that increases the count of U+FFFD replacement characters
@@ -284,7 +289,13 @@ and steers it to the `grep` tool, which applies the repository's ignore rules
 and bounds its results; when the command spells out its pattern, path and
 `--include` filter as literal shell arguments, the refusal suggests a `grep` call
 with those values. Quoted spaces and glob filters are decoded, and `-F` maps to
-`literal: true`. Multiple paths or patterns, unsupported matching options, shell
+`literal: true`. `-i` maps to `ignoreCase`, `-l` to the default filename output
+mode, `-I` is a no-op the tool already applies, and several `--include` filters
+that each name an extension become one brace glob (`--include=*.ts
+--include=*.tsx` is `*.{ts,tsx}`). A trailing `| head -N` is the search's
+`limit`, so a bounded sweep written as a pipeline converts instead of being
+refused; any other downstream command still keeps the pipeline as written.
+Multiple paths or patterns, unsupported matching options, shell
 expansions, regex dialect differences and preceding commands keep the generic
 guidance rather than suggesting a search with different meaning. A
 recursive search scoped to files named one by one
@@ -378,7 +389,13 @@ failure. This guard does not replace transport retry/backoff for transient error
 `read` can return a reference to an unchanged earlier read instead of repeating
 its contents. Set `fresh: true` to force the full result. Content hashes, read
 ranges and retained context determine whether reuse is safe; mutable remote
-queries are never cached. See [token efficiency settings](configuration.md#token-efficiency-and-run-budgets)
+queries are never cached. This memory lives for one run, but the conversation
+outlives it, so a run starts by seeding it from the `read` results the
+conversation still holds (the 64 most recent, excluding compacted, failed and
+pointer results): a follow-up turn that reads the same unchanged file answers
+with the pointer instead of the file again. A candidate is kept only when the
+recorded call renders exactly the text the conversation shows, so a file edited
+since that read is read again. See [token efficiency settings](configuration.md#token-efficiency-and-run-budgets)
 for selective stale-output shortening and active MCP schema limits.
 
 ## Concurrency and steering

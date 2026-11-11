@@ -848,6 +848,7 @@ async fn run_loop(
     // cannot turn that fallback into an unbounded request loop.
     let mut title_attempted = false;
     let read_reuse = Arc::new(Mutex::new(crate::efficiency::ReadReuse::default()));
+    seed_read_reuse(&config, &cwd, &messages, &read_reuse).await;
     let mut failure_loop = FailureLoop::default();
     // A title-only response is not a valid conversation message. Hold its
     // usage until a real assistant response arrives, then persist both API
@@ -1971,6 +1972,40 @@ fn budget_checkpoint(
     record(&runtime.session, depth, &message);
     let _ = tx.send(AgentEvent::Text(reason.to_string()));
     messages.push(message);
+}
+
+/// Points this run's read memory at the `read` results the conversation still
+/// holds, so a follow-up turn that reads the same unchanged file answers with
+/// the pointer instead of the file's content again. Each candidate is
+/// re-rendered from disk and kept only when it matches the recorded text, so
+/// this never offers a stale result; the work is local file I/O, bounded to
+/// the most recent reads.
+async fn seed_read_reuse(
+    config: &Config,
+    cwd: &Path,
+    messages: &[Message],
+    reuse: &Arc<Mutex<crate::efficiency::ReadReuse>>,
+) {
+    if !config.token_efficiency.reuse_reads || !tool_enabled(config, "read") {
+        return;
+    }
+    let reads = crate::efficiency::recorded_reads(messages, 64);
+    if reads.is_empty() {
+        return;
+    }
+    let cwd = cwd.to_path_buf();
+    let reuse = Arc::clone(reuse);
+    let _ = tokio::task::spawn_blocking(move || {
+        let render = |arguments: &str| {
+            let args: Value = serde_json::from_str(arguments).ok()?;
+            tools::read_text(&cwd, &args)
+        };
+        reuse
+            .lock()
+            .expect("read reuse poisoned")
+            .seed(&cwd, &reads, render);
+    })
+    .await;
 }
 
 #[allow(clippy::too_many_arguments)]
