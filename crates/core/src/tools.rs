@@ -1014,6 +1014,15 @@ fn embedded_absolute_paths(command: &str) -> Vec<&str> {
     paths
 }
 
+/// The text a `read` call renders right now, used to confirm that a result
+/// already in the conversation still matches the file before that result is
+/// offered for reuse instead of the content. A directory listing or an
+/// attachment answers `None`, since neither is a reusable file read.
+pub(crate) fn read_text(cwd: &Path, args: &Value) -> Option<String> {
+    let output = read(cwd, args).ok()?;
+    (!output.is_error && output.media.is_empty()).then_some(output.text)
+}
+
 fn read(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     let path = required_string(args, "read", "path", r#"{"path":"src/main.rs"}"#)?;
 
@@ -1318,6 +1327,11 @@ fn edit_path_value(value: &Value) -> Option<&str> {
         .find_map(|key| value.get(key).and_then(Value::as_str))
 }
 
+/// The replacement text under any of the spellings models send for it.
+fn edit_text_value<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    keys.iter().find_map(|key| value.get(*key))
+}
+
 fn collect_edits_with_path(
     value: &Value,
     out: &mut Vec<Replacement>,
@@ -1332,13 +1346,26 @@ fn collect_edits_with_path(
         }
         Value::Object(_) => {
             let path = edit_path_value(value).or(inherited);
-            let old = value.get("oldText");
-            let new = value.get("newText");
+            let old = edit_text_value(value, &["oldText", "old_text", "oldString", "old_string"]);
+            let new = edit_text_value(value, &["newText", "new_text", "newString", "new_string"]);
             if old.is_some() || new.is_some() {
                 let (Some(old), Some(new)) =
                     (old.and_then(Value::as_str), new.and_then(Value::as_str))
                 else {
-                    anyhow::bail!("{location} requires string `oldText` and `newText` fields");
+                    // Naming the one missing half, and how an insertion is
+                    // written, is what the retry needs: a replacement without
+                    // `oldText` has no place in the file to apply.
+                    let detail = if old.is_none() {
+                        "is missing `oldText`, the exact text to replace. To insert, use a unique \
+                         neighboring block as `oldText` and repeat it around the new text in \
+                         `newText`; to replace a whole file, use `write`"
+                    } else if new.is_none() {
+                        "is missing `newText`, the replacement text. Pass an empty string to delete \
+                         the matched block"
+                    } else {
+                        "requires `oldText` and `newText` to be strings"
+                    };
+                    anyhow::bail!("{location} {detail}");
                 };
                 out.push(Replacement {
                     old: old.to_string(),
@@ -3359,8 +3386,16 @@ struct ShellGrep {
     pattern: Option<String>,
     /// The search operands: the paths grep was pointed at.
     operands: Vec<String>,
-    /// A `--include` file-name filter, which maps to the tool's `glob`.
-    glob: Option<String>,
+    /// The `--include` file-name filters, which map to the tool's `glob`.
+    /// Several of them are restated as one brace glob when each names an
+    /// extension (`--include=*.ts --include=*.tsx` is `*.{ts,tsx}`).
+    globs: Vec<String>,
+    /// `-i`, which maps to the tool's `ignoreCase`.
+    ignore_case: bool,
+    /// `-l`, which maps to the tool's default filename output mode.
+    files_only: bool,
+    /// A trailing `| head -N`, which maps to the tool's `limit`.
+    limit: Option<usize>,
     recursive: bool,
     restatable: bool,
     fixed: bool,
@@ -3380,7 +3415,10 @@ impl ShellGrep {
         let pattern = literal_grep_word(self.pattern.as_ref()?)?;
         let mut call = serde_json::Map::new();
         call.insert("pattern".to_string(), json!(pattern));
-        call.insert("output_mode".to_string(), json!("content"));
+        // `grep -l` answers with file names, which is the tool's default mode.
+        if !self.files_only {
+            call.insert("output_mode".to_string(), json!("content"));
+        }
         if let Some(path) = self.operands.first() {
             let path = literal_grep_word(path)?;
             // The tool starts in the project root, so an operand written after a
@@ -3393,8 +3431,14 @@ impl ShellGrep {
             };
             call.insert("path".to_string(), json!(path));
         }
-        if let Some(glob) = &self.glob {
-            call.insert("glob".to_string(), json!(literal_grep_word(glob)?));
+        if let Some(glob) = self.combined_glob()? {
+            call.insert("glob".to_string(), json!(glob));
+        }
+        if self.ignore_case {
+            call.insert("ignoreCase".to_string(), json!(true));
+        }
+        if let Some(limit) = self.limit {
+            call.insert("limit".to_string(), json!(limit));
         }
         if self.fixed {
             call.insert("literal".to_string(), json!(true));
@@ -3406,6 +3450,55 @@ impl ShellGrep {
         }
         Some(Value::Object(call).to_string())
     }
+
+    /// The single `glob` that stands for every `--include` the command wrote,
+    /// or `None` for the call when it wrote none. The whole restatement is
+    /// abandoned (`Err`-like outer `None`) when a filter cannot be restated.
+    fn combined_glob(&self) -> Option<Option<String>> {
+        let mut extensions: Vec<String> = Vec::new();
+        for glob in &self.globs {
+            let glob = literal_grep_glob(glob)?;
+            if self.globs.len() == 1 {
+                return Some(Some(glob));
+            }
+            let extension = glob.strip_prefix("*.")?.to_string();
+            if extension.is_empty()
+                || !extension
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            {
+                return None;
+            }
+            if !extensions.contains(&extension) {
+                extensions.push(extension);
+            }
+        }
+        Some(match extensions.len() {
+            0 => None,
+            1 => Some(format!("*.{}", extensions[0])),
+            _ => Some(format!("*.{{{}}}", extensions.join(","))),
+        })
+    }
+}
+
+/// A `--include` filter restated for the tool: quotes and escapes are removed,
+/// but the wildcards are kept, since the tool matches the glob itself. An
+/// expansion is not decoded, so it leaves the command unrestatable.
+fn literal_grep_glob(word: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut quote = None;
+    let mut chars = word.chars();
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => result.push(ch),
+            (_, '$' | '`') => return None,
+            (None, '\'' | '"') => quote = Some(ch),
+            (_, '\\') => result.push(chars.next()?),
+            _ => result.push(ch),
+        }
+    }
+    quote.is_none().then_some(result)
 }
 
 /// Keep quotes and escapes so decoding a suggestion never evaluates shell code.
@@ -3479,7 +3572,10 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
     let mut grep = ShellGrep {
         pattern: None,
         operands: Vec::new(),
-        glob: None,
+        globs: Vec::new(),
+        ignore_case: false,
+        files_only: false,
+        limit: None,
         recursive: false,
         restatable: grep_index == 0,
         fixed: false,
@@ -3501,13 +3597,22 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                 continue;
             }
             if let Some(glob) = word.strip_prefix("--include=") {
-                grep.restatable &= grep.glob.is_none();
-                grep.glob = Some(glob.to_string());
+                grep.globs.push(glob.to_string());
                 continue;
             }
             if *word == "--include" {
-                grep.restatable &= grep.glob.is_none();
-                grep.glob = arguments.next().map(|glob| glob.to_string());
+                match arguments.next() {
+                    Some(glob) => grep.globs.push(glob.to_string()),
+                    None => grep.restatable = false,
+                }
+                continue;
+            }
+            if *word == "--ignore-case" {
+                grep.ignore_case = true;
+                continue;
+            }
+            if *word == "--files-with-matches" {
+                grep.files_only = true;
                 continue;
             }
             if matches!(*word, "--regexp" | "--file") {
@@ -3544,7 +3649,18 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                         if flag == 'F' {
                             grep.fixed = true;
                         }
-                        if !matches!(flag, 'r' | 'R' | 'n' | 'H' | 'h' | 'E' | 'F' | 'e') {
+                        if flag == 'i' {
+                            grep.ignore_case = true;
+                        }
+                        if flag == 'l' {
+                            grep.files_only = true;
+                        }
+                        // `-I` only skips binary files, which the tool does
+                        // anyway, so it does not change the restated call.
+                        if !matches!(
+                            flag,
+                            'r' | 'R' | 'n' | 'H' | 'h' | 'E' | 'F' | 'e' | 'i' | 'l' | 'I'
+                        ) {
                             grep.restatable = false;
                         }
                         if flag == 'r' || flag == 'R' {
@@ -3591,14 +3707,42 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
     Some(grep)
 }
 
+/// The line cap a trailing `| head` puts on a search, so a refused or
+/// converted command keeps the bound it was written with. Anything else
+/// downstream of the grep leaves the limit unset.
+fn head_filter_limit(rest: &[&str]) -> Option<usize> {
+    let [segment] = rest else {
+        return None;
+    };
+    let words = grep_shell_words(segment);
+    let (first, arguments) = words.split_first()?;
+    if shell_word_name(first) != "head" {
+        return None;
+    }
+    match arguments {
+        [] => Some(10),
+        [count] => {
+            let digits = count
+                .strip_prefix("-n")
+                .or_else(|| count.strip_prefix('-'))?;
+            digits.parse().ok()
+        }
+        ["-n", count] => count.parse().ok(),
+        _ => None,
+    }
+}
+
 /// The first recursive grep in `command` that could walk a directory.
 fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
     let directories = segment_directories(command, cwd);
-    shell_segments(command)
-        .into_iter()
+    let segments = shell_segments(command);
+    segments
+        .iter()
+        .copied()
         .enumerate()
         .find_map(|(index, segment)| {
             let mut grep = parse_shell_grep(segment)?;
+            grep.limit = head_filter_limit(&segments[index + 1..]);
             // `restatable` is already set to `grep_index == 0` by parse_shell_grep,
             // so we can infer if this is the first shell command in this segment.
             // A segment whose directory could be followed is judged against it,
@@ -3798,12 +3942,27 @@ fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
         .strip_suffix(" 2>/dev/null")
         .unwrap_or(command)
         .trim();
+    // A trailing `| head -N` only bounds the output, which the tool states as
+    // `limit`, so the converted search keeps the command's own bound instead
+    // of being refused for holding a pipe.
+    let (command, head) = match command.rsplit_once('|') {
+        Some((search, filter)) => match head_filter_limit(&[filter.trim()]) {
+            Some(limit) => (search.trim(), Some(limit)),
+            None => (command, None),
+        },
+        None => (command, None),
+    };
+    let command = command
+        .strip_suffix(" 2>/dev/null")
+        .unwrap_or(command)
+        .trim();
     if command.contains(['|', ';', '&', '\n', '\r', '<', '>', '(', ')', '#'])
         || grep_shell_words(command).first().copied() != Some("grep")
     {
         return None;
     }
     let mut grep = recursive_shell_grep(command, &base)?;
+    grep.limit = grep.limit.or(head);
     if base != cwd {
         grep.base = Some(base.clone());
     }
@@ -6576,6 +6735,75 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A half-written replacement is the most common `edit` argument failure,
+    /// so the result names the missing half and how to write an insertion, and
+    /// the snake_case spellings apply instead of failing.
+    #[tokio::test]
+    async fn edit_argument_failures_name_the_missing_half_and_accept_aliases() {
+        let dir = std::env::temp_dir().join(format!("oxide_edit_halves_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+        std::fs::write(dir.join("f.rs"), "let x = 1;\n").unwrap();
+
+        let missing_old = execute(
+            &call(
+                "edit",
+                json!({"path": "f.rs", "edits": [{"newText": "let y = 2;\n"}]}),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(missing_old.is_error);
+        assert!(
+            missing_old.text.contains("edits[0] is missing `oldText`"),
+            "{}",
+            missing_old.text
+        );
+        assert!(
+            missing_old.text.contains("To insert"),
+            "{}",
+            missing_old.text
+        );
+
+        let missing_new = execute(
+            &call(
+                "edit",
+                json!({"path": "f.rs", "edits": [{"oldText": "let x = 1;"}]}),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(
+            missing_new.text.contains("edits[0] is missing `newText`"),
+            "{}",
+            missing_new.text
+        );
+
+        let aliased = execute(
+            &call(
+                "edit",
+                json!({"path": "f.rs", "edits": [{"old_text": "let x = 1;", "new_text": "let x = 2;"}]}),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!aliased.is_error, "{}", aliased.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.rs")).unwrap(),
+            "let x = 2;\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn edit_failure_names_the_closest_region_and_collects_every_edit() {
         let dir = std::env::temp_dir().join(format!("oxide_edit_hint_{}", std::process::id()));
@@ -8931,7 +9159,6 @@ mod tests {
     #[test]
     fn bounded_grep_does_not_discard_shell_behavior() {
         for command in [
-            "grep -rn needle . | head -5",
             "grep -rn needle .; touch changed",
             "grep -rn needle . && touch changed",
             "grep -rn needle . > result",
@@ -8940,15 +9167,48 @@ mod tests {
             "grep -rn needle . # comment",
             "grep -rn needle .\ntouch changed",
             "LC_ALL=C grep -rn needle .",
-            "grep -rni needle .",
             "grep -rn needle src docs",
             "grep -rn 'a.*b' .",
             "grep -rn needle $HOME",
+            "grep -rn needle . | head -5 | sort",
+            "grep -rn needle . | wc -l",
         ] {
             assert!(
                 bounded_shell_grep(command, Path::new(".")).is_none(),
                 "{command}"
             );
+        }
+    }
+
+    /// The flags and filters a sweep is usually written with have exact tool
+    /// arguments, so the search runs bounded instead of costing the run a
+    /// refusal and a retry.
+    #[test]
+    fn bounded_grep_converts_case_filter_and_head_bounded_sweeps() {
+        for (command, expected) in [
+            (
+                "grep -rni needle .",
+                json!({"output_mode": "content", "pattern": "needle", "path": ".", "ignoreCase": true}),
+            ),
+            (
+                "grep -rn needle . | head -5",
+                json!({"output_mode": "content", "pattern": "needle", "path": ".", "limit": 5}),
+            ),
+            (
+                "grep -rn needle . 2>/dev/null | head -n 20",
+                json!({"output_mode": "content", "pattern": "needle", "path": ".", "limit": 20}),
+            ),
+            (
+                "grep -rl needle . --include=*.rs",
+                json!({"pattern": "needle", "path": ".", "glob": "*.rs"}),
+            ),
+            (
+                "grep -ril needle . --include=*.ts --include=*.tsx",
+                json!({"pattern": "needle", "path": ".", "glob": "*.{ts,tsx}", "ignoreCase": true}),
+            ),
+        ] {
+            let call = bounded_shell_grep(command, Path::new(".")).expect(command);
+            assert_eq!(call, expected, "{command}");
         }
     }
 
@@ -9005,7 +9265,7 @@ mod tests {
         let output = execute(
             &call(
                 "bash",
-                json!({ "command": "grep -rn needle . 2>/dev/null | head -20" }),
+                json!({ "command": "grep -rn needle . 2>/dev/null | sort -u" }),
             ),
             Path::new("."),
             &McpRegistry::default(),
@@ -9053,6 +9313,8 @@ mod tests {
             .text
             .contains("features.md:1:provider counts and providers"));
 
+        // A trailing `| head` only bounds the output, so the sweep runs as the
+        // bounded search with that bound rather than costing a refusal.
         let sweep = execute(
             &call(
                 "bash",
@@ -9063,8 +9325,22 @@ mod tests {
             &Progress::default(),
         )
         .await;
-        assert!(sweep.is_error);
-        assert!(sweep.text.contains("recursive shell grep refused"));
+        assert!(!sweep.is_error, "{}", sweep.text);
+        assert!(sweep.text.contains("bounded `grep`"), "{}", sweep.text);
+        assert!(sweep.text.contains("api.md:1:"), "{}", sweep.text);
+
+        let piped = execute(
+            &call(
+                "bash",
+                json!({ "command": "grep -rn providers . | sort -u" }),
+            ),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(piped.is_error);
+        assert!(piped.text.contains("recursive shell grep refused"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -9686,6 +9962,22 @@ mod tests {
                 r#"grep -rn '"quoted"' src"#,
                 json!({"output_mode": "content", "pattern": "\"quoted\"", "path": "src"}),
             ),
+            (
+                "grep -rni needle src",
+                json!({"output_mode": "content", "pattern": "needle", "path": "src", "ignoreCase": true}),
+            ),
+            (
+                "grep -rln needle src",
+                json!({"pattern": "needle", "path": "src"}),
+            ),
+            (
+                "grep -rn needle src --include='*.rs' --include='*.toml'",
+                json!({"output_mode": "content", "pattern": "needle", "path": "src", "glob": "*.{rs,toml}"}),
+            ),
+            (
+                "grep -rIn needle src | head -3",
+                json!({"output_mode": "content", "pattern": "needle", "path": "src", "limit": 3}),
+            ),
         ] {
             let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
             let call = grep.equivalent_call().expect(command);
@@ -9704,10 +9996,11 @@ mod tests {
             "grep -rn -e first -e second src",
             "grep -rn -e first -f patterns.txt src",
             "grep -rn -f patterns.txt -e second src",
-            "grep -rni needle src",
+            "grep -rnL needle src",
             "grep -rnv needle src",
             "grep -rn needle src --exclude-dir=generated",
-            "grep -rn needle src --include='*.rs' --include='*.ts'",
+            "grep -rn needle src --include='*.rs' --include='src/*'",
+            "grep -rn needle src --include",
             "cd elsewhere && grep -rn needle src",
             r#"grep -rn "$PATTERN" src"#,
             "grep -rn needle '$unterminated",

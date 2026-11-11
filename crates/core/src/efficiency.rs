@@ -300,6 +300,96 @@ impl ReadReuse {
         self.entries
             .retain(|_, (_, id)| available.contains(id.as_str()));
     }
+
+    /// Seeds this memory from reads already in the conversation, so a
+    /// follow-up turn points at a result it can still see instead of sending
+    /// the same file again: this memory lives for one run, while the
+    /// conversation outlives it.
+    ///
+    /// `render` re-runs a recorded call. An entry is kept only when the call
+    /// renders exactly the text the conversation holds, so a file edited since
+    /// that read is never offered for reuse.
+    pub fn seed(
+        &mut self,
+        cwd: &Path,
+        reads: &[RecordedRead],
+        render: impl Fn(&str) -> Option<String>,
+    ) -> usize {
+        let mut seeded = 0;
+        for read in reads {
+            let Some(version) = ReadVersion::capture(cwd, &read.arguments) else {
+                continue;
+            };
+            // `reads` is newest first, so an older read of the same range is
+            // already represented by the one kept here.
+            if self.entries.contains_key(&version.key) {
+                continue;
+            }
+            if render(&read.arguments).as_deref() != Some(read.text.as_str()) {
+                continue;
+            }
+            self.remember(version, &read.id);
+            seeded += 1;
+        }
+        seeded
+    }
+}
+
+/// A `read` result still present in the conversation, with the call that
+/// produced it.
+pub(crate) struct RecordedRead {
+    pub id: String,
+    pub arguments: String,
+    pub text: String,
+}
+
+/// The `read` results in `messages` whose content a later turn could reuse,
+/// newest first and bounded. A compacted, failed or reuse-pointer result is
+/// skipped: its content is not in the conversation, so re-reading the file is
+/// the only way to see it.
+pub(crate) fn recorded_reads(messages: &[Message], limit: usize) -> Vec<RecordedRead> {
+    let mut arguments: BTreeMap<&str, &str> = BTreeMap::new();
+    for message in messages {
+        for call in message.tool_calls.iter().flatten() {
+            if call.function.name == "read" {
+                arguments.insert(&call.id, &call.function.arguments);
+            }
+        }
+    }
+    if arguments.is_empty() {
+        return Vec::new();
+    }
+    let mut reads = Vec::new();
+    for message in messages.iter().rev() {
+        if reads.len() >= limit {
+            break;
+        }
+        if message.role != "tool" {
+            continue;
+        }
+        let Some(id) = message.tool_call_id.as_deref() else {
+            continue;
+        };
+        let Some(call) = arguments.get(id).copied() else {
+            continue;
+        };
+        let Some(text) = message.display() else {
+            continue;
+        };
+        if text.is_empty()
+            || text.starts_with("[tool output compacted;")
+            || text.starts_with("error:")
+            || text.starts_with("Unchanged file and range;")
+        {
+            continue;
+        }
+        reads.push(RecordedRead {
+            id: id.to_string(),
+            arguments: call.to_string(),
+            text,
+        });
+    }
+    reads
 }
 
 /// Only reclaim from the measured prefix; new results already shrink in the growth estimate.
@@ -443,6 +533,18 @@ mod tests {
         dir
     }
 
+    fn tool_call(id: &str, name: &str, arguments: &str) -> crate::llm::ToolCall {
+        crate::llm::ToolCall {
+            id: id.to_string(),
+            kind: "function".to_string(),
+            function: crate::llm::FunctionCall {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+            signature: None,
+        }
+    }
+
     #[test]
     fn settings_merge_per_key_and_reject_invalid_limits() {
         let dir = temp_dir();
@@ -575,6 +677,54 @@ mod tests {
             "[tool output compacted; full: /tmp/output]",
         )]);
         assert!(cache.previous(&first).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A later turn starts with an empty read memory while the conversation
+    /// still holds the earlier results, so the memory is seeded from them —
+    /// but only for a file that still renders exactly what the conversation
+    /// shows.
+    #[test]
+    fn seeding_reuses_reads_from_the_conversation_only_while_they_still_match() {
+        let dir = temp_dir();
+        let path = dir.join("file.txt");
+        std::fs::write(&path, "hello").unwrap();
+        let stale = dir.join("stale.txt");
+        std::fs::write(&stale, "edited since").unwrap();
+        let args = json!({"path":path}).to_string();
+        let stale_args = json!({"path":stale}).to_string();
+        let messages = vec![
+            Message::assistant(
+                "reading",
+                vec![
+                    tool_call("fresh", "read", &args),
+                    tool_call("old", "read", &stale_args),
+                    tool_call("compacted", "read", &args),
+                    tool_call("shell", "bash", &json!({"command":"ls"}).to_string()),
+                ],
+            ),
+            Message::tool("fresh", "1|hello"),
+            Message::tool("old", "1|before the edit"),
+            Message::tool("compacted", "[tool output compacted; full: /tmp/output]"),
+            Message::tool("shell", "file.txt"),
+        ];
+        let reads = recorded_reads(&messages, 64);
+        assert_eq!(reads.len(), 2, "only uncompacted read results");
+        let mut cache = ReadReuse::default();
+        let rendered = |arguments: &str| {
+            let path = serde_json::from_str::<Value>(arguments).ok()?["path"]
+                .as_str()?
+                .to_string();
+            Some(format!("1|{}", std::fs::read_to_string(path).ok()?))
+        };
+        assert_eq!(cache.seed(&dir, &reads, rendered), 1);
+        assert_eq!(
+            cache.previous(&ReadVersion::capture(&dir, &args).unwrap()),
+            Some("fresh")
+        );
+        assert!(cache
+            .previous(&ReadVersion::capture(&dir, &stale_args).unwrap())
+            .is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
