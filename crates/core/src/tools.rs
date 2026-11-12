@@ -756,35 +756,30 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
     }
 }
 
-/// The diagnosis a missing path carries, when there is one, so the retry has
-/// somewhere to go instead of another blind search. A URL is named as one, so
-/// the next call reaches for `webfetch` or the service's own tool rather than
-/// joining the address onto the project root again; otherwise an existing
-/// neighbour is offered when the name missed only by an extension, a
-/// directory, or a letter's case, which is the usual shape of a guessed module
-/// path. Empty when the path itself is the whole story.
-fn missing_path_hint(path: &str, full: &Path) -> String {
+/// The diagnosis a path a tool could not open carries, when there is one, so
+/// the retry has somewhere to go instead of another blind search. A URL is
+/// named as one whatever the platform made of it — Windows rejects the address
+/// as a malformed filename rather than as an absent file — so the next call
+/// reaches for `webfetch` or the service's own tool instead of joining the
+/// address onto the project root again. A path that is merely absent offers an
+/// existing neighbour when the name missed only by an extension, a directory,
+/// or a letter's case, which is the usual shape of a guessed module path. Any
+/// other failure (a permission, a device) is left to speak for itself.
+fn missing_path_suffix(path: &str, full: &Path, err: &std::io::Error) -> String {
     if let Some(scheme) = uri_scheme(path) {
         return format!(
             " — `{path}` is a {scheme} address, not a filesystem path: fetch a public page with \
              `webfetch`, and reach anything behind a sign-in through that service's MCP server or CLI"
         );
     }
+    if err.kind() != std::io::ErrorKind::NotFound {
+        return String::new();
+    }
     let candidates = nearest_existing_paths(full);
     if candidates.is_empty() {
         return String::new();
     }
     format!(" — nearest existing: {}", candidates.join(", "))
-}
-
-/// [`missing_path_hint`] for the paths an I/O error says are absent; any other
-/// failure (a permission, a device) is left to speak for itself.
-fn missing_path_suffix(path: &str, full: &Path, err: &std::io::Error) -> String {
-    if err.kind() == std::io::ErrorKind::NotFound {
-        missing_path_hint(path, full)
-    } else {
-        String::new()
-    }
 }
 
 /// The scheme of a URI passed where a path belongs. Only a scheme followed by

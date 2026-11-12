@@ -173,7 +173,9 @@ A path none of them can find is diagnosed rather than reported as a bare
 `No such file or directory`, so the retry has somewhere to go instead of another
 blind search. A URL (any `scheme://` address) is named as one and steered to
 `webfetch` or to the service's own MCP server or CLI, instead of being joined
-onto the project root. Otherwise the error names the nearest existing paths —
+onto the project root — whatever the platform made of the address, since Windows
+rejects it as a malformed filename rather than as an absent file. Otherwise the
+error names the nearest existing paths —
 the same name as a directory (`crates/core/src/llm.rs` against the `llm/`
 module), the same stem under another extension, or the same name in another
 case — from one bounded listing of the parent directory, and falls back to the
