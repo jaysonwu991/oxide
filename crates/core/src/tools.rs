@@ -418,7 +418,7 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "bash",
-            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. Simple literal recursive `grep` uses bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
+            if project_only { "Run one focused shell command from the project root and return its combined output. The command must stay inside the current project: do not change to another directory or name paths outside the project. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. A recursive `grep` whose pattern, filters and single search path have an exact tool equivalent runs as that bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else if registered_only { "Run one focused shell command from the project root and return its combined output. The command may name another project registered in Oxide, but must not access unregistered paths. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. A recursive `grep` whose pattern, filters and single search path have an exact tool equivalent runs as that bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." } else { "Run one focused shell command from the project root and return its combined output. Use it for programs, not for inspecting files. For content searches, call the `grep` tool directly instead of running `grep` or `rg` here; that tool uses ripgrep when available, bounds results and respects ignore files. Prefer `read`, `find`, and `ls` for other inspection. A recursive `grep` whose pattern, filters and single search path have an exact tool equivalent runs as that bounded search; other directory sweeps are refused. Never chain unrelated commands with `;`/`&&` or sweep the whole filesystem with `find /`." },
             json!({
                 "type": "object",
                 "properties": {
@@ -756,6 +756,106 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
     }
 }
 
+/// The diagnosis a missing path carries, when there is one, so the retry has
+/// somewhere to go instead of another blind search. A URL is named as one, so
+/// the next call reaches for `webfetch` or the service's own tool rather than
+/// joining the address onto the project root again; otherwise an existing
+/// neighbour is offered when the name missed only by an extension, a
+/// directory, or a letter's case, which is the usual shape of a guessed module
+/// path. Empty when the path itself is the whole story.
+fn missing_path_hint(path: &str, full: &Path) -> String {
+    if let Some(scheme) = uri_scheme(path) {
+        return format!(
+            " — `{path}` is a {scheme} address, not a filesystem path: fetch a public page with \
+             `webfetch`, and reach anything behind a sign-in through that service's MCP server or CLI"
+        );
+    }
+    let candidates = nearest_existing_paths(full);
+    if candidates.is_empty() {
+        return String::new();
+    }
+    format!(" — nearest existing: {}", candidates.join(", "))
+}
+
+/// [`missing_path_hint`] for the paths an I/O error says are absent; any other
+/// failure (a permission, a device) is left to speak for itself.
+fn missing_path_suffix(path: &str, full: &Path, err: &std::io::Error) -> String {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        missing_path_hint(path, full)
+    } else {
+        String::new()
+    }
+}
+
+/// The scheme of a URI passed where a path belongs. Only a scheme followed by
+/// `//` counts, so a Windows drive letter (`C:\src`) and a `file.rs:12`
+/// reference stay the paths they are.
+fn uri_scheme(path: &str) -> Option<&str> {
+    let (scheme, rest) = path.split_once(':')?;
+    let valid = scheme.len() > 1
+        && scheme.starts_with(|ch: char| ch.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '-'));
+    (valid && rest.starts_with("//")).then_some(scheme)
+}
+
+/// Existing paths close enough to a missing one to be what the caller meant:
+/// the same name as a directory, the same stem under another extension, or the
+/// same name in another case. Bounded to one directory listing and three
+/// answers, and falling back to the deepest existing ancestor so a path whose
+/// parent is missing too still says where the tree stops.
+fn nearest_existing_paths(full: &Path) -> Vec<String> {
+    let Some(parent) = full.parent() else {
+        return Vec::new();
+    };
+    let Some(name) = full.file_name().and_then(|name| name.to_str()) else {
+        return Vec::new();
+    };
+    let stem = path_stem(name);
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return existing_ancestor(parent).into_iter().collect();
+    };
+    let mut matches: Vec<String> = Vec::new();
+    for entry in entries.flatten().take(4096) {
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+        let close = entry_name.eq_ignore_ascii_case(name)
+            || entry_name == stem
+            || path_stem(&entry_name).eq_ignore_ascii_case(stem);
+        if !close {
+            continue;
+        }
+        let directory = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        let suffix = if directory { "/" } else { "" };
+        matches.push(format!("{}{suffix}", parent.join(&entry_name).display()));
+        if matches.len() >= 8 {
+            break;
+        }
+    }
+    matches.sort();
+    matches.truncate(3);
+    matches
+}
+
+fn path_stem(name: &str) -> &str {
+    Path::new(name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(name)
+}
+
+/// The deepest directory of `path` that exists, as a single hint.
+fn existing_ancestor(path: &Path) -> Option<String> {
+    path.ancestors()
+        .find(|ancestor| ancestor.is_dir())
+        .map(|ancestor| {
+            format!(
+                "{}/ (the deepest directory that exists)",
+                ancestor.display()
+            )
+        })
+}
+
 /// Enforces the front-end's filesystem boundary before a built-in tool is
 /// dispatched. Existing paths are canonicalized so a symlink inside an allowed
 /// root cannot lead outside it; new paths canonicalize their nearest existing
@@ -1064,7 +1164,13 @@ fn read(cwd: &Path, args: &Value) -> Result<ToolOutput> {
     }
     .clamp(1, READ_MAX_LINES);
 
-    let bytes = std::fs::read(&full).map_err(|err| media::read_error(&full, &err))?;
+    let bytes = std::fs::read(&full).map_err(|err| {
+        let error = media::read_error(&full, &err);
+        match missing_path_suffix(path, &full, &err) {
+            hint if hint.is_empty() => error,
+            hint => anyhow::anyhow!("{error}{hint}"),
+        }
+    })?;
     let content = match String::from_utf8(bytes) {
         Ok(content) => content,
         Err(err) => {
@@ -1212,6 +1318,7 @@ struct Replacement {
 fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
     let mut raw: Vec<Replacement> = Vec::new();
     let mut invalid_string: Option<String> = None;
+    let mut truncation_diagnosis = "";
     match args.get("edits") {
         Some(Value::String(text)) => match parse_edits_string(text) {
             Some(parsed) => collect_edits(&parsed, &mut raw)?,
@@ -1235,6 +1342,7 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
                 if text.chars().count() > 80 {
                     snippet.push('…');
                 }
+                truncation_diagnosis = unclosed_json_diagnosis(text);
                 invalid_string = Some(snippet.replace(['\n', '\r', '\t'], " "));
             }
         },
@@ -1254,8 +1362,9 @@ fn parse_edits(args: &Value) -> Result<Vec<Replacement>> {
     if raw.is_empty() {
         if let Some(snippet) = invalid_string {
             anyhow::bail!(
-                "edit received `edits` as a string that is not valid JSON. Pass an array like \
-                 [{{\"oldText\":\"before\",\"newText\":\"after\"}}]. Received: {snippet:?}"
+                "edit received `edits` as a string that is not valid JSON{}. Pass an array like \
+                 [{{\"oldText\":\"before\",\"newText\":\"after\"}}]. Received: {snippet:?}",
+                truncation_diagnosis
             );
         }
         anyhow::bail!(
@@ -1276,6 +1385,11 @@ fn parse_edits_string(text: &str) -> Option<Value> {
     if let Ok(value) = serde_json::from_str::<Value>(&candidate) {
         return Some(value);
     }
+    if let Some(repaired) = repair_json_key_separators(&candidate) {
+        if let Ok(value) = serde_json::from_str::<Value>(&repaired) {
+            return Some(value);
+        }
+    }
     while candidate.ends_with("}}]") {
         candidate.truncate(candidate.len() - 2);
         candidate.push(']');
@@ -1284,6 +1398,86 @@ fn parse_edits_string(text: &str) -> Option<Value> {
         }
     }
     None
+}
+
+/// `{"oldText">"before"}` with the `:` the key was meant to have. Models that
+/// mix the tool's JSON with the tag syntax of other harnesses write the
+/// separator this way; only a `>` outside a quoted string is touched, so a
+/// replacement's own text keeps every character it was given.
+fn repair_json_key_separators(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut repaired = false;
+    let mut closed_string = false;
+    for ch in text.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+                closed_string = true;
+            }
+            out.push(ch);
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                closed_string = false;
+                out.push(ch);
+            }
+            '>' if closed_string => {
+                out.push(':');
+                repaired = true;
+                closed_string = false;
+            }
+            _ => {
+                if !ch.is_whitespace() {
+                    closed_string = false;
+                }
+                out.push(ch);
+            }
+        }
+    }
+    repaired.then_some(out)
+}
+
+/// Why a near-JSON `edits` string cannot be parsed, when the reason is that it
+/// stops early: an unterminated string or an unclosed array means the model's
+/// own output limit cut the arguments off, and resending the same call would
+/// cut them off again. Empty when the text is complete and merely malformed.
+fn unclosed_json_diagnosis(text: &str) -> &'static str {
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut depth = 0i32;
+    for ch in text.trim().chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    if in_string || depth > 0 {
+        " because it stops before the JSON closes, so the arguments were cut off \
+         mid-value: send fewer or smaller replacements in this call, or use `write` for a \
+         whole-file rewrite. The same arguments will be cut off again"
+    } else {
+        ""
+    }
 }
 
 fn strip_trailing_json_commas(text: &str) -> String {
@@ -1778,8 +1972,13 @@ fn edit(cwd: &Path, args: &Value) -> Result<ToolOutput> {
         ),
     };
     let full = resolve(cwd, &path);
-    let raw = std::fs::read_to_string(&full)
-        .with_context(|| format!("reading {} (use write to create new files)", full.display()))?;
+    let raw = std::fs::read_to_string(&full).map_err(|err| {
+        let hint = missing_path_suffix(&path, &full, &err);
+        anyhow::Error::new(err).context(format!(
+            "reading {} (use write to create new files){hint}",
+            full.display()
+        ))
+    })?;
 
     let (bom, content) = split_bom(&raw);
     let mut base = content.to_string();
@@ -2002,8 +2201,10 @@ fn ls(cwd: &Path, args: &Value) -> Result<String> {
     let limit = int_arg(args, "limit").unwrap_or(DEFAULT_LS_ENTRIES).max(1);
     let full = resolve(cwd, path);
 
-    let metadata =
-        std::fs::metadata(&full).with_context(|| format!("listing {}", full.display()))?;
+    let metadata = std::fs::metadata(&full).map_err(|err| {
+        let hint = missing_path_suffix(path, &full, &err);
+        anyhow::Error::new(err).context(format!("listing {}{hint}", full.display()))
+    })?;
     if metadata.is_file() {
         return Ok(format!(
             "{} (file, {} bytes; use `read` to inspect its contents)",
@@ -2035,8 +2236,13 @@ fn find(cwd: &Path, args: &Value) -> Result<String> {
         .max(1);
     let root = resolve(cwd, base);
 
-    let metadata = std::fs::metadata(&root)
-        .with_context(|| format!("find could not access search root {}", root.display()))?;
+    let metadata = std::fs::metadata(&root).map_err(|err| {
+        let hint = missing_path_suffix(base, &root, &err);
+        anyhow::Error::new(err).context(format!(
+            "find could not access search root {}{hint}",
+            root.display()
+        ))
+    })?;
     if !metadata.is_dir() {
         anyhow::bail!("find search root is not a directory: {}", root.display());
     }
@@ -2247,8 +2453,13 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
         .max(1);
     let root = resolve(cwd, base);
 
-    std::fs::metadata(&root)
-        .with_context(|| format!("grep could not access search root {}", root.display()))?;
+    std::fs::metadata(&root).map_err(|err| {
+        let hint = missing_path_suffix(base, &root, &err);
+        anyhow::Error::new(err).context(format!(
+            "grep could not access search root {}{hint}",
+            root.display()
+        ))
+    })?;
 
     // `rg` applies the same search with far less I/O, so prefer it and fall
     // back to the dependency-free walker when it is unavailable.
@@ -3394,6 +3605,11 @@ struct ShellGrep {
     ignore_case: bool,
     /// `-l`, which maps to the tool's default filename output mode.
     files_only: bool,
+    /// `-w`, which the restated pattern spells with `\b` boundaries.
+    word_boundary: bool,
+    /// `-E`: the pattern is an extended regular expression, which needs less
+    /// translation into the tool's dialect than the basic default.
+    extended: bool,
     /// A trailing `| head -N`, which maps to the tool's `limit`.
     limit: Option<usize>,
     recursive: bool,
@@ -3409,17 +3625,40 @@ impl ShellGrep {
     /// Only offer a call when its pattern, scope and matching mode can be
     /// represented without evaluating the shell or dropping search operands.
     fn equivalent_call(&self) -> Option<String> {
-        if !self.restatable || self.operands.len() > 1 {
+        if self.operands.len() > 1 {
             return None;
         }
-        let pattern = literal_grep_word(self.pattern.as_ref()?)?;
+        self.call_for(self.operands.first().map(String::as_str))
+    }
+
+    /// Every call this command is worth: the tool searches one path per call,
+    /// so a grep pointed at several directories is restated as one call each
+    /// rather than left for the reader to split. Empty when any part of the
+    /// command cannot be restated faithfully.
+    fn equivalent_calls(&self) -> Vec<String> {
+        if self.operands.len() < 2 {
+            return self.equivalent_call().into_iter().collect();
+        }
+        self.operands
+            .iter()
+            .map(|operand| self.call_for(Some(operand)))
+            .collect::<Option<Vec<String>>>()
+            .unwrap_or_default()
+    }
+
+    fn call_for(&self, operand: Option<&str>) -> Option<String> {
+        if !self.restatable {
+            return None;
+        }
+        let written = literal_grep_word(self.pattern.as_ref()?)?;
+        let (pattern, literal) = self.restated_pattern(&written)?;
         let mut call = serde_json::Map::new();
         call.insert("pattern".to_string(), json!(pattern));
         // `grep -l` answers with file names, which is the tool's default mode.
         if !self.files_only {
             call.insert("output_mode".to_string(), json!("content"));
         }
-        if let Some(path) = self.operands.first() {
+        if let Some(path) = operand {
             let path = literal_grep_word(path)?;
             // The tool starts in the project root, so an operand written after a
             // `cd` has to be named where the grep really searched.
@@ -3440,15 +3679,34 @@ impl ShellGrep {
         if let Some(limit) = self.limit {
             call.insert("limit".to_string(), json!(limit));
         }
-        if self.fixed {
+        if literal {
             call.insert("literal".to_string(), json!(true));
-        } else if pattern.contains([
-            '\\', '[', ']', '^', '$', '*', '+', '?', '(', ')', '{', '}', '|',
-        ]) {
-            // BRE/ERE and the tool's regex dialect do not always agree.
-            return None;
         }
         Some(Value::Object(call).to_string())
+    }
+
+    /// The tool's `pattern` for this command, and whether it has to be matched
+    /// as literal text. `-F` text is literal, unless `-w` has to add word
+    /// boundaries around it and the text is escaped into a regex instead. Any
+    /// other pattern is translated out of grep's dialect, and a pattern that
+    /// cannot be translated faithfully leaves the command unrestated rather
+    /// than searching for something else.
+    fn restated_pattern(&self, written: &str) -> Option<(String, bool)> {
+        if self.fixed && !self.word_boundary {
+            return Some((written.to_string(), true));
+        }
+        let body = if self.fixed {
+            regex::escape(written)
+        } else {
+            translate_grep_pattern(written, self.extended)?
+        };
+        let pattern = if self.word_boundary {
+            format!("\\b(?:{body})\\b")
+        } else {
+            body
+        };
+        regex::Regex::new(&pattern).ok()?;
+        Some((pattern, false))
     }
 
     /// The single `glob` that stands for every `--include` the command wrote,
@@ -3499,6 +3757,120 @@ fn literal_grep_glob(word: &str) -> Option<String> {
         }
     }
     quote.is_none().then_some(result)
+}
+
+/// A shell grep's pattern in the tool's regex dialect, or `None` when the
+/// translation would not be faithful. A basic regular expression (grep's
+/// default) spells alternation, grouping and the `+`/`?` repetitions with
+/// backslashes and matches the bare forms literally, which is the reverse of
+/// the tool's dialect, so each one is converted; an extended pattern (`-E`)
+/// already agrees apart from its escapes. GNU's `\<`/`\>` word markers become
+/// `\b`. A back-reference, a group flag, a bracket expression holding a
+/// backslash, or an anchor where grep would have matched it literally has no
+/// safe equivalent, and keeps the command refused rather than quietly
+/// searching for something else.
+fn translate_grep_pattern(pattern: &str, extended: bool) -> Option<String> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut index = 0;
+    // Where a basic pattern still reads `*` as a literal and `^` as an anchor.
+    let mut at_start = true;
+    while index < chars.len() {
+        let ch = chars[index];
+        index += 1;
+        let mut starts_branch = false;
+        match ch {
+            '\\' => {
+                let next = *chars.get(index)?;
+                index += 1;
+                match next {
+                    '<' | '>' => out.push_str("\\b"),
+                    '|' | '(' | ')' | '{' | '}' | '+' | '?' if !extended => {
+                        out.push(next);
+                        starts_branch = matches!(next, '(' | '|');
+                    }
+                    'b' | 'B' | 'w' | 'W' | 's' | 'S' | 'd' | 'D' => {
+                        out.push('\\');
+                        out.push(next);
+                    }
+                    _ if next.is_ascii_punctuation() => {
+                        out.push('\\');
+                        out.push(next);
+                    }
+                    _ => return None,
+                }
+            }
+            '[' => {
+                let (class, consumed) = bracket_expression(&chars, index)?;
+                out.push_str(&class);
+                index += consumed;
+            }
+            '|' | ')' | '{' | '}' | '+' | '?' if !extended => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '(' if !extended => out.push_str("\\("),
+            '(' if chars.get(index) == Some(&'?') => return None,
+            '*' if !extended && at_start => return None,
+            '^' if !extended && !at_start => return None,
+            '$' if !extended && !basic_pattern_ends(&chars, index) => return None,
+            _ => {
+                out.push(ch);
+                starts_branch = extended && matches!(ch, '(' | '|');
+            }
+        }
+        at_start = starts_branch || (ch == '^' && at_start);
+    }
+    Some(out)
+}
+
+/// Whether a basic pattern's `$` sits where grep reads it as an anchor: at the
+/// end of the pattern, or before the `\)` / `\|` that ends its branch.
+fn basic_pattern_ends(chars: &[char], index: usize) -> bool {
+    matches!(
+        (chars.get(index), chars.get(index + 1)),
+        (None, _) | (Some('\\'), Some(')' | '|'))
+    )
+}
+
+/// A `[...]` bracket expression translated for the tool, with the number of
+/// source characters it consumed after the opening bracket. POSIX reads a
+/// backslash inside brackets as the character itself while the tool's regex
+/// reads it as an escape, so such a class is refused instead of translated.
+fn bracket_expression(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let mut index = start;
+    let mut out = String::from("[");
+    if chars.get(index) == Some(&'^') {
+        out.push('^');
+        index += 1;
+    }
+    // A `]` first in the expression is the literal character, which the tool's
+    // regex only reads that way once escaped.
+    if chars.get(index) == Some(&']') {
+        out.push_str("\\]");
+        index += 1;
+    }
+    while let Some(&ch) = chars.get(index) {
+        match ch {
+            '\\' => return None,
+            ']' => {
+                out.push(']');
+                return Some((out, index + 1 - start));
+            }
+            '[' if chars.get(index + 1) == Some(&':') => {
+                let close = chars[index..]
+                    .windows(2)
+                    .position(|pair| pair == [':', ']'])?;
+                out.extend(&chars[index..index + close + 2]);
+                index += close + 2;
+            }
+            _ => {
+                out.push(ch);
+                index += 1;
+            }
+        }
+    }
+    None
 }
 
 /// Keep quotes and escapes so decoding a suggestion never evaluates shell code.
@@ -3575,6 +3947,8 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
         globs: Vec::new(),
         ignore_case: false,
         files_only: false,
+        word_boundary: false,
+        extended: false,
         limit: None,
         recursive: false,
         restatable: grep_index == 0,
@@ -3613,6 +3987,18 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
             }
             if *word == "--files-with-matches" {
                 grep.files_only = true;
+                continue;
+            }
+            if *word == "--word-regexp" {
+                grep.word_boundary = true;
+                continue;
+            }
+            if matches!(*word, "--extended-regexp" | "--basic-regexp") {
+                grep.extended = *word == "--extended-regexp";
+                continue;
+            }
+            if *word == "--fixed-strings" {
+                grep.fixed = true;
                 continue;
             }
             if matches!(*word, "--regexp" | "--file") {
@@ -3655,11 +4041,28 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                         if flag == 'l' {
                             grep.files_only = true;
                         }
+                        if flag == 'w' {
+                            grep.word_boundary = true;
+                        }
+                        if matches!(flag, 'E' | 'G') {
+                            grep.extended = flag == 'E';
+                        }
                         // `-I` only skips binary files, which the tool does
                         // anyway, so it does not change the restated call.
                         if !matches!(
                             flag,
-                            'r' | 'R' | 'n' | 'H' | 'h' | 'E' | 'F' | 'e' | 'i' | 'l' | 'I'
+                            'r' | 'R'
+                                | 'n'
+                                | 'H'
+                                | 'h'
+                                | 'E'
+                                | 'G'
+                                | 'F'
+                                | 'e'
+                                | 'i'
+                                | 'l'
+                                | 'w'
+                                | 'I'
                         ) {
                             grep.restatable = false;
                         }
@@ -3912,10 +4315,53 @@ fn recursive_shell_grep_refusal(grep: &ShellGrep) -> String {
          optional `path`, `glob`, and `limit` instead. The tool uses ripgrep when \
          available, skips dependency/generated directories, and respects ignore files",
     );
-    if let Some(call) = grep.equivalent_call() {
-        message.push_str(&format!(". For this command that call is {call}"));
+    let calls = grep.equivalent_calls();
+    match calls.len() {
+        0 => {}
+        1 => message.push_str(&format!(". For this command that call is {}", calls[0])),
+        _ => message.push_str(&format!(
+            ". The tool searches one path per call, so this command is {} calls: {}",
+            calls.len(),
+            calls.join(" then ")
+        )),
     }
     message
+}
+
+/// Whether a command carries a shell operator that the conversion would throw
+/// away. Only an unquoted, unescaped one counts: a pattern may hold the same
+/// characters (`grep -rn "first\|second" .`), and refusing those would cost
+/// the run a round trip for a search the tool can answer directly.
+fn unquoted_shell_operator(command: &str) -> bool {
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in command.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some('\'') if ch == '\'' => quote = None,
+            Some('\'') => {}
+            Some(open) => {
+                if ch == '\\' {
+                    escaped = true;
+                } else if ch == open {
+                    quote = None;
+                }
+            }
+            None => match ch {
+                '\\' => escaped = true,
+                '\'' | '"' => quote = Some(ch),
+                '|' | ';' | '&' | '\n' | '\r' | '<' | '>' | '(' | ')' | '#' | '$' | '`' => {
+                    return true;
+                }
+                _ => {}
+            },
+        }
+    }
+    // An unbalanced quote is not a command this conversion should guess at.
+    quote.is_some()
 }
 
 fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
@@ -3956,7 +4402,7 @@ fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
         .strip_suffix(" 2>/dev/null")
         .unwrap_or(command)
         .trim();
-    if command.contains(['|', ';', '&', '\n', '\r', '<', '>', '(', ')', '#'])
+    if unquoted_shell_operator(command)
         || grep_shell_words(command).first().copied() != Some("grep")
     {
         return None;
@@ -9168,7 +9614,6 @@ mod tests {
             "grep -rn needle .\ntouch changed",
             "LC_ALL=C grep -rn needle .",
             "grep -rn needle src docs",
-            "grep -rn 'a.*b' .",
             "grep -rn needle $HOME",
             "grep -rn needle . | head -5 | sort",
             "grep -rn needle . | wc -l",
@@ -9205,6 +9650,14 @@ mod tests {
             (
                 "grep -ril needle . --include=*.ts --include=*.tsx",
                 json!({"pattern": "needle", "path": ".", "glob": "*.{ts,tsx}", "ignoreCase": true}),
+            ),
+            (
+                "grep -rn 'a.*b' .",
+                json!({"output_mode": "content", "pattern": "a.*b", "path": "."}),
+            ),
+            (
+                r#"grep -rn "first\|second" ."#,
+                json!({"output_mode": "content", "pattern": "first|second", "path": "."}),
             ),
         ] {
             let call = bounded_shell_grep(command, Path::new(".")).expect(command);
@@ -10010,6 +10463,146 @@ mod tests {
             assert!(grep.equivalent_call().is_none(), "{command}");
             assert!(recursive_shell_grep_refusal(&grep).contains("call the `grep` tool directly"));
         }
+    }
+
+    #[test]
+    fn stringified_edits_recover_a_tag_separator_and_name_a_cut_off_batch() {
+        let dir = std::env::temp_dir().join(format!("oxide_edits_string_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), "before\n").unwrap();
+
+        let output = edit(
+            &dir,
+            &json!({
+                "path": "a.rs",
+                "edits": "[{\"oldText\">\"before\",\"newText\">\"after\"}]",
+            }),
+        )
+        .expect("a repaired key separator");
+        assert!(!output.text.contains("not valid JSON"), "{}", output.text);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.rs")).unwrap(),
+            "after\n"
+        );
+
+        let error = edit(
+            &dir,
+            &json!({
+                "path": "a.rs",
+                "edits": "[{\"oldText\":\"after\",\"newText\":\"const value = {",
+            }),
+        )
+        .expect_err("a batch cut off mid-string");
+        let error = format!("{error:#}");
+        assert!(error.contains("cut off mid-value"), "{error}");
+        assert!(error.contains("fewer or smaller replacements"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recursive_grep_restates_grep_dialects_and_word_matching() {
+        for (command, expected) in [
+            (
+                r#"grep -rn "claude-opus-4-8\|claude-sonnet-4-6" . --include="*.rs""#,
+                json!({"output_mode": "content", "pattern": "claude-opus-4-8|claude-sonnet-4-6", "path": ".", "glob": "*.rs"}),
+            ),
+            (
+                "grep -rEn 'first|second' src",
+                json!({"output_mode": "content", "pattern": "first|second", "path": "src"}),
+            ),
+            (
+                r#"grep -rln 'fn \(read\|write\)' src"#,
+                json!({"pattern": "fn (read|write)", "path": "src"}),
+            ),
+            (
+                "grep -rnw needle src",
+                json!({"output_mode": "content", "pattern": r"\b(?:needle)\b", "path": "src"}),
+            ),
+            (
+                "grep -rnwF 'a.b' src",
+                json!({"output_mode": "content", "pattern": r"\b(?:a\.b)\b", "path": "src"}),
+            ),
+            (
+                "grep -rn 'read_to_string(' src",
+                json!({"output_mode": "content", "pattern": r"read_to_string\(", "path": "src"}),
+            ),
+        ] {
+            let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
+            let call = grep.equivalent_call().expect(command);
+            assert_eq!(
+                serde_json::from_str::<Value>(&call).unwrap(),
+                expected,
+                "{command}"
+            );
+        }
+
+        // A pattern whose meaning would change under the tool's dialect keeps
+        // the command refused rather than searching for something else.
+        for command in [
+            r#"grep -rn '\(a\)\1' src"#,
+            r#"grep -rn '[\t]' src"#,
+            "grep -rEn '(?:a)b' src",
+            "grep -rn 'a^b' src",
+            r#"grep -rn '\q' src"#,
+        ] {
+            let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
+            assert!(grep.equivalent_call().is_none(), "{command}");
+        }
+    }
+
+    #[test]
+    fn recursive_grep_refusal_splits_several_search_paths_into_one_call_each() {
+        let grep = recursive_shell_grep("grep -rln needle src tests", Path::new("."))
+            .expect("a recursive sweep");
+        let refusal = recursive_shell_grep_refusal(&grep);
+        assert!(refusal.contains("one path per call"), "{refusal}");
+        assert!(
+            refusal.contains(r#"{"path":"src","pattern":"needle"}"#),
+            "{refusal}"
+        );
+        assert!(
+            refusal.contains(r#"{"path":"tests","pattern":"needle"}"#),
+            "{refusal}"
+        );
+        // The bounded conversion still refuses to run only part of the search.
+        assert!(bounded_shell_grep("grep -rln needle src tests", Path::new(".")).is_none());
+    }
+
+    #[test]
+    fn missing_paths_name_their_nearest_existing_neighbour_or_address() {
+        let dir = std::env::temp_dir().join(format!("oxide_missing_path_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("llm")).unwrap();
+
+        let error = read(&dir, &json!({"path": "llm.rs"})).expect_err("a missing file");
+        let error = format!("{error:#}");
+        assert!(error.contains("nearest existing"), "{error}");
+        assert!(error.contains("llm/"), "{error}");
+
+        let error = grep(&dir, &json!({"pattern": "needle", "path": "llm.rs"}))
+            .expect_err("a missing search root");
+        let error = format!("{error:#}");
+        assert!(error.contains("nearest existing"), "{error}");
+        assert!(error.contains("llm/"), "{error}");
+
+        let error = read(
+            &dir,
+            &json!({"path": "https://github.com/openai/codex/blob/main/README.md"}),
+        )
+        .expect_err("a URL is not a path");
+        let error = format!("{error:#}");
+        assert!(error.contains("not a filesystem path"), "{error}");
+        assert!(error.contains("webfetch"), "{error}");
+
+        // A path whose parent is missing too says where the tree stops.
+        let error = ls(&dir, &json!({"path": "one/two/three"})).expect_err("a missing directory");
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("the deepest directory that exists"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
