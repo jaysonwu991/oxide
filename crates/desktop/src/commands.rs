@@ -389,6 +389,83 @@ pub async fn reasoning_levels(project: String, state: &DesktopState) -> CmdResul
 
 // ---------- mcp servers ----------
 
+/// The oxide-computer-use server names this window can control. The plain
+/// `computer-use` name is deliberately excluded because it may belong to
+/// another client's bundled runtime and does not expose `app_policy`.
+fn computer_use_server_name<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let names: Vec<&str> = names.into_iter().collect();
+    for preferred in ["oxide-computer-use", "oxide-computer-use-local"] {
+        if let Some(name) = names.iter().copied().find(|name| *name == preferred) {
+            return Some(name);
+        }
+    }
+    names
+        .into_iter()
+        .find(|name| name.starts_with("oxide-computer-use-"))
+}
+
+/// Reads or changes the app policy exposed by oxide-computer-use. The settings
+/// dialog calls this rather than editing the server's private file, so the
+/// bundle-identity checks and one-time approval spend stay in one place.
+pub async fn computer_use_policy(
+    project: String,
+    action: String,
+    app: Option<String>,
+    mode: Option<String>,
+    state: &DesktopState,
+) -> CmdResult<Value> {
+    let path = PathBuf::from(&project);
+    let config = {
+        let manager = state.manager.lock().await;
+        manager.config_for(&path).map_err(err)?
+    };
+    let name = computer_use_server_name(
+        config
+            .ecosystem
+            .mcp
+            .iter()
+            .filter(|server| server.enabled)
+            .map(|server| server.name.as_str()),
+    );
+    let Some(name) = name else {
+        return Ok(json!({
+            "configured": false,
+            "server": null,
+            "policy": null,
+            "error": "oxide-computer-use is not configured for this project",
+        }));
+    };
+    let server = config
+        .ecosystem
+        .mcp
+        .iter()
+        .find(|server| server.name == name)
+        .cloned()
+        .ok_or_else(|| format!("MCP server `{name}` disappeared while loading"))?;
+    let registry = oxide_core::mcp::McpRegistry::new(std::slice::from_ref(&server));
+    registry.load(&server.name).await.map_err(err)?;
+    let mut arguments = json!({ "action": action });
+    if let Some(app) = app.filter(|app| !app.trim().is_empty()) {
+        arguments["app"] = json!(app);
+    }
+    if let Some(mode) = mode.filter(|mode| !mode.trim().is_empty()) {
+        arguments["mode"] = json!(mode);
+    }
+    let result = registry
+        .call(&format!("{}__app_policy", server.name), arguments)
+        .await
+        .map_err(err)?;
+    if result.is_error {
+        return Err(result.text);
+    }
+    let policy = serde_json::from_str::<Value>(result.text.trim()).map_err(err)?;
+    Ok(json!({
+        "configured": true,
+        "server": server.name,
+        "policy": policy,
+    }))
+}
+
 /// The MCP servers visible from `project` with their connection state: what
 /// `/mcp` lists. The view is the same one the CLI prints and the VS Code
 /// extension draws, so all three agree on names, transports and statuses.
@@ -1988,6 +2065,16 @@ pub async fn dispatch(
             .await,
         ),
         "mcp_servers" => command_value(mcp_servers(arg(&args, "project")?).await),
+        "computer_use_policy" => command_value(
+            computer_use_policy(
+                arg(&args, "project")?,
+                arg(&args, "action")?,
+                optional_arg(&args, "app")?,
+                optional_arg(&args, "mode")?,
+                &state,
+            )
+            .await,
+        ),
         "set_mcp_server" => command_value(
             set_mcp_server(
                 arg(&args, "project")?,
@@ -2232,6 +2319,23 @@ fn write_prefs(patch: Value) -> CmdResult<Value> {
 mod tests {
     use super::*;
     use oxide_core::llm::{FunctionCall, ToolCall};
+
+    #[test]
+    fn computer_use_policy_prefers_the_oxide_server_name() {
+        assert_eq!(
+            computer_use_server_name([
+                "computer-use",
+                "oxide-computer-use-local",
+                "oxide-computer-use",
+            ]),
+            Some("oxide-computer-use")
+        );
+        assert_eq!(
+            computer_use_server_name(["other", "oxide-computer-use-trial"]),
+            Some("oxide-computer-use-trial")
+        );
+        assert_eq!(computer_use_server_name(["computer-use"]), None);
+    }
 
     #[tokio::test]
     async fn plugin_actions_reject_unknown_operations_before_accessing_the_registry() {

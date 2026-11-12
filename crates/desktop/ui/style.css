@@ -3298,3 +3298,19 @@ body.projects-open :is(.chat-tabs, .thread-title, .topbar-folder, #changes-toggl
 .computer-use-preview .att-open { display: block; width: 100%; padding: 0; }
 .computer-use-preview img { display: block; width: 100%; max-height: 360px; object-fit: contain; }
 #computer-use-toggle.computer-active { color: var(--accent); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--accent); }
+.computer-use-settings { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.computer-use-settings-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.computer-use-settings-head h3 { margin: 0; font-size: 13px; font-weight: 500; }
+.computer-use-default { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.computer-use-default select { min-width: 112px; }
+.computer-use-policy-note { margin: 8px 0 10px; color: var(--faint); font-size: 12px; line-height: 1.45; }
+#computer-use-app-search { width: 100%; margin-bottom: 8px; }
+.computer-use-apps { max-height: 280px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.computer-use-app-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.computer-use-app-row:last-child { border-bottom: 0; }
+.computer-use-app-name { min-width: 0; }
+.computer-use-app-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
+.computer-use-app-name span { color: var(--faint); font-size: 11px; }
+.computer-use-app-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.computer-use-app-actions button { padding: 4px 7px; font-size: 11px; }
+.computer-use-app-empty { padding: 14px; color: var(--faint); font-size: 12px; }

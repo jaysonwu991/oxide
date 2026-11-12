@@ -428,6 +428,19 @@ const pluginsFixture = {
   ] }],
 };
 let mcpsError = null;
+let computerUsePolicy = {
+  default: "allow",
+  allowed: [],
+  denied: [],
+  identities: {},
+  oneTime: null,
+  selfAutomation: "deny",
+  terminals: "deny",
+  apps: [
+    { id: "com.microsoft.edgemac", displayName: "Microsoft Edge", path: "/Applications/Microsoft Edge.app", isRunning: true, policy: "" },
+    { id: "com.apple.Notes", displayName: "Notes", path: "/System/Applications/Notes.app", isRunning: false, policy: "" },
+  ],
+};
 let createError = null;
 
 // What `check_updates` answers with: the desktop app's own release train, the
@@ -805,6 +818,24 @@ const invoke = async (command, args = {}) => {
       if (mcpsError) throw mcpsError;
       if (!String(args.project || "").trim()) throw "select a project first";
       return servers.map((server) => ({ ...server }));
+    case "computer_use_policy": {
+      if (!String(args.project || "").trim()) throw "select a project first";
+      if (args.action === "list") {
+        return { configured: true, server: "oxide-computer-use", policy: structuredClone(computerUsePolicy) };
+      }
+      if (args.action === "set_default") {
+        computerUsePolicy.default = args.mode;
+      } else if (args.app) {
+        const display = computerUsePolicy.apps.find((entry) => entry.id === args.app)?.displayName || args.app;
+        computerUsePolicy.allowed = computerUsePolicy.allowed.filter((name) => name !== display && name !== args.app);
+        computerUsePolicy.denied = computerUsePolicy.denied.filter((name) => name !== display && name !== args.app);
+        if (args.action === "allow") computerUsePolicy.allowed.push(display);
+        if (args.action === "deny") computerUsePolicy.denied.push(display);
+        if (args.action === "grant_once") computerUsePolicy.oneTime = display;
+        if (args.action === "revoke") computerUsePolicy.oneTime = null;
+      }
+      return { configured: true, server: "oxide-computer-use", policy: structuredClone(computerUsePolicy) };
+    }
     case "set_mcp_server": {
       if (mcpsError) throw mcpsError;
       const target = servers.find((server) => server.name === args.name);
@@ -3137,6 +3168,19 @@ check(
 );
 await tick();
 check("closed the list once the reference was done", atBox.hidden === true);
+await typeAt("@Mic");
+await tick();
+check(
+  "offered a running app as an @App Computer Use target",
+  String(atRows.outline()).includes("Microsoft Edge"),
+  `${atBox.hidden} / ${atRows.outline()}`,
+);
+app.acceptAt(0);
+check(
+  "inserted a whitespace-safe @App identifier",
+  composer.value === "@com.microsoft.edgemac ",
+  composer.value,
+);
 
 // A row of the list is clicked like anything else, while the press is refused
 // so the caret stays in the message box it is completing into: that list is the
@@ -4493,8 +4537,35 @@ check("did not describe a snapshot as a live feed",
   app.el("computer-use-status").textContent === "Waiting for next action" &&
   app.el("computer-use-snapshot").textContent.startsWith("Last captured screenshot"));
 app.el("computer-use-toggle").onclick();
+await nextTick();
 check("opened computer-use controls independently of the details dock",
   !app.el("computer-use-modal").hidden && Boolean(app.el("computer-use-dialog-preview").children.length));
+const initialPolicyRows = app.el("computer-use-apps").querySelectorAll(".computer-use-app-row");
+check(
+  "loaded Always-allowed app policy into the computer-use settings",
+  initialPolicyRows.length === 2 &&
+    projectCalls("computer_use_policy")[0]?.[1]?.action === "list" &&
+    app.el("computer-use-default").value === "allow",
+);
+const edgeActions = initialPolicyRows[0].querySelectorAll("button");
+edgeActions[0].onclick();
+await nextTick();
+check(
+  "Always allow writes the selected app through the server policy tool",
+  projectCalls("computer_use_policy").some(
+    ([, args]) => args.action === "allow" && args.app === "com.microsoft.edgemac",
+  ) && String(app.el("computer-use-apps").outline()).includes("Always allowed"),
+  `${JSON.stringify(projectCalls("computer_use_policy"))} / ${app.el("computer-use-apps").outline()}`,
+);
+app.el("computer-use-default").value = "deny";
+app.el("computer-use-default").onchange({ target: app.el("computer-use-default") });
+await nextTick();
+check(
+  "the fallback app decision is saved through the same policy tool",
+  projectCalls("computer_use_policy").some(
+    ([, args]) => args.action === "set_default" && args.mode === "deny",
+  ) && computerUsePolicy.default === "deny",
+);
 const dialogScreenshot = app.el("computer-use-dialog-preview").children[0];
 dialogScreenshot.focus();
 dialogScreenshot.onclick();

@@ -619,6 +619,21 @@
         <p id="computer-use-dialog-action" class="computer-use-action"></p>
         <div id="computer-use-dialog-preview" class="computer-use-preview"></div>
         <p id="computer-use-dialog-snapshot" class="computer-use-caption"></p>
+        <section class="computer-use-settings" aria-labelledby="computer-use-settings-title">
+          <div class="computer-use-settings-head">
+            <h3 id="computer-use-settings-title" data-i18n="computerUse.settings">App access</h3>
+            <label class="computer-use-default">
+              <span data-i18n="computerUse.default">Unlisted apps</span>
+              <select id="computer-use-default">
+                <option value="allow" data-i18n="computerUse.defaultAllow">Allow</option>
+                <option value="deny" data-i18n="computerUse.defaultDeny">Block</option>
+              </select>
+            </label>
+          </div>
+          <p class="computer-use-policy-note" data-i18n="computerUse.policyNote">Always allow, Allow once and Block are enforced by the oxide-computer-use server and pinned to the app bundle.</p>
+          <input id="computer-use-app-search" type="search" data-i18n-placeholder="computerUse.searchApps" placeholder="Search apps…" autocomplete="off">
+          <div id="computer-use-apps" class="computer-use-apps"></div>
+        </section>
         <button id="computer-use-dialog-stop" type="button" class="secondary" data-i18n="computerUse.stop">Stop task</button>
       </div>
     </div>

@@ -2072,7 +2072,7 @@ token.
 
 ## Computer-Use screenshots
 
-Register the local `computer-use` server with `computer-use install --client oxide`.
+Register the local runtime with `oxide-computer-use install --client oxide`.
 Desktop uses the same MCP registry and approval store as the CLI. Discover its
 tools with `tool_search`; use `permissions` on newer server builds to check the
 actual MCP process. A `doctor` run from another terminal can report different
@@ -2103,11 +2103,23 @@ existing conversation cancellation path. Activity and screenshots belong to the
 originating conversation, including live background runs and restored sessions.
 These are snapshots, not a continuous stream or an input-isolated desktop.
 
-An opt-in macOS companion app launches the configured `computer-use` runtime
+An opt-in macOS companion app launches the configured `oxide-computer-use` runtime
 under a separate LaunchServices app instance, with private local MCP transport,
 a native cursor menu, permission diagnostics and a stop control. It is a separate
 development build and is not yet bundled into the Desktop installer. See the
 [helper build/connect guide](../crates/desktop/computer-use/README.md) and
 [Codex parity review](oxide-reins-parity.md). Packaging the runtime does not
-implement background input, and the runtime's per-app approvals have no settings
-pane in the window yet.
+implement background input.
+
+The Computer-Use dialog also carries the runtime's app policy. It loads the
+default decision and launchable apps through the `app_policy` MCP tool, filters
+the app list, and exposes **Always allow**, **Allow once**, **Block** and
+**Revoke**. The same dialog switches the fallback between allowing and blocking
+unlisted apps. These controls call the server rather than editing its policy
+file, so bundle-path identity checks and one-time approval spending remain in
+one place.
+
+In the composer, `@` completion now combines project files with running apps
+reported by the Computer-Use runtime. An app whose display name contains spaces
+is inserted by its stable bundle or executable id, so the mention remains one
+token while the server receives the normal `@App` form.
