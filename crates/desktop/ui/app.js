@@ -4897,6 +4897,142 @@ function isComputerTool(name) {
   return /^computer[-_]use(?:[-_][\w-]+)?__/.test(name);
 }
 
+const computerPolicy = {
+  generation: 0,
+  loading: false,
+  error: "",
+  configured: false,
+  server: "",
+  value: null,
+  search: "",
+  attemptedProject: "",
+  project: "",
+};
+
+function computerPolicyStatus(app) {
+  if (app.policy === "[approved for one call]") return t("computerUse.once", "Allowed once");
+  if (app.policy === "[blocked by app policy]") return t("computerUse.blocked", "Blocked");
+  const policy = computerPolicy.value || {};
+  const explicit = [...(policy.allowed || []), ...(policy.denied || [])]
+    .some((name) => [app.displayName, app.id]
+      .some((value) => String(name).toLowerCase() === String(value || "").toLowerCase()));
+  if (explicit) return t("computerUse.allowed", "Always allowed");
+  return app.isRunning ? t("computerUse.running", "Running") : t("computerUse.notRunning", "Not running");
+}
+
+async function loadComputerUsePolicy() {
+  const project = state.project || "";
+  const generation = ++computerPolicy.generation;
+  if (!project) {
+    computerPolicy.loading = false;
+    computerPolicy.error = t("computerUse.selectProject", "Select a project to configure app access.");
+    computerPolicy.configured = false;
+    computerPolicy.value = null;
+    renderComputerUsePolicy();
+    return;
+  }
+  computerPolicy.loading = true;
+  computerPolicy.error = "";
+  renderComputerUsePolicy();
+  try {
+    const answer = await invoke("computer_use_policy", { project, action: "list" });
+    if (generation !== computerPolicy.generation || project !== state.project) return;
+    computerPolicy.loading = false;
+    computerPolicy.configured = Boolean(answer?.configured);
+    computerPolicy.server = answer?.server || "";
+    computerPolicy.value = answer?.policy || null;
+    computerPolicy.project = project;
+    computerPolicy.error = answer?.configured ? "" : answer?.error || t("computerUse.notConfigured", "oxide-computer-use is not configured.");
+  } catch (error) {
+    if (generation !== computerPolicy.generation || project !== state.project) return;
+    computerPolicy.loading = false;
+    computerPolicy.configured = false;
+    computerPolicy.value = null;
+    computerPolicy.project = project;
+    computerPolicy.error = String(error);
+  }
+  renderComputerUsePolicy();
+}
+
+async function changeComputerUsePolicy(action, app = "", mode = "") {
+  if (!state.project) return;
+  computerPolicy.error = "";
+  renderComputerUsePolicy();
+  try {
+    const answer = await invoke("computer_use_policy", {
+      project: state.project,
+      action,
+      app,
+      mode,
+    });
+    computerPolicy.configured = Boolean(answer?.configured);
+    computerPolicy.server = answer?.server || "";
+    computerPolicy.value = answer?.policy || null;
+    if (!answer?.configured) {
+      computerPolicy.error = answer?.error || t("computerUse.notConfigured", "oxide-computer-use is not configured.");
+    }
+  } catch (error) {
+    computerPolicy.error = String(error);
+  }
+  renderComputerUsePolicy();
+}
+
+function renderComputerUsePolicy() {
+  const box = el("computer-use-apps");
+  const select = el("computer-use-default");
+  if (!box || !select) return;
+  const value = computerPolicy.value;
+  select.disabled = computerPolicy.loading || !computerPolicy.configured;
+  select.value = value?.default === "deny" ? "deny" : "allow";
+  box.innerHTML = "";
+  if (computerPolicy.loading) {
+    box.innerHTML = `<div class="computer-use-app-empty">${escapeHtml(t("ui.loading", "Loading…"))}</div>`;
+    return;
+  }
+  if (computerPolicy.error) {
+    box.innerHTML = `<div class="computer-use-app-empty">${escapeHtml(computerPolicy.error)}</div>`;
+    return;
+  }
+  const needle = computerPolicy.search.trim().toLowerCase();
+  const apps = (value?.apps || [])
+    .filter((app) => !needle || [app.displayName, app.id, app.path]
+      .some((text) => String(text || "").toLowerCase().includes(needle)))
+    .sort((left, right) => Number(Boolean(right.isRunning)) - Number(Boolean(left.isRunning))
+      || String(left.displayName).localeCompare(String(right.displayName)));
+  if (!apps.length) {
+    box.innerHTML = `<div class="computer-use-app-empty">${escapeHtml(t("computerUse.noApps", "No matching apps."))}</div>`;
+    return;
+  }
+  for (const app of apps) {
+    const row = document.createElement("div");
+    row.className = "computer-use-app-row";
+    const name = document.createElement("div");
+    name.className = "computer-use-app-name";
+    const label = document.createElement("strong");
+    label.textContent = app.displayName || app.id;
+    const detail = document.createElement("span");
+    detail.textContent = [computerPolicyStatus(app), app.id].filter(Boolean).join(" · ");
+    name.append(label, detail);
+    const actions = document.createElement("div");
+    actions.className = "computer-use-app-actions";
+    for (const [action, text, className] of [
+      ["allow", t("computerUse.always", "Always allow"), "secondary"],
+      ["grant_once", t("computerUse.onceAction", "Allow once"), "secondary"],
+      ["deny", t("computerUse.block", "Block"), "ghost"],
+      ["revoke", t("computerUse.revoke", "Revoke"), "ghost"],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = className;
+      button.textContent = text;
+      button.onclick = () => void changeComputerUsePolicy(action, app.id);
+      actions.appendChild(button);
+    }
+    row.append(name, actions);
+    box.appendChild(row);
+  }
+}
+
 function updateComputerUse(tool, images = []) {
   if (!isComputerTool(tool.name)) return;
   let args = tool.args;
@@ -4924,12 +5060,20 @@ function paintComputerUse() {
   const activity = record.computerUse;
   const toggle = el("computer-use-toggle");
   const card = el("computer-use-card");
-  toggle.hidden = card.hidden = !activity;
+  toggle.hidden = false;
+  card.hidden = !activity;
   if (!activity) {
-    el("computer-use-modal").hidden = true;
-    for (const id of ["computer-use-preview", "computer-use-dialog-preview"]) {
-      el(id).replaceChildren();
-      el(id).computerImage = null;
+    toggle.innerHTML = ICONS.pointer;
+    toggle.classList.remove("computer-active");
+    toggle.title = t("computerUse.settingsTitle", "Computer use settings");
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.setAttribute("aria-expanded", String(!el("computer-use-modal").hidden));
+    if (!el("computer-use-modal").hidden) {
+      for (const prefix of ["computer-use-dialog"]) {
+        el(`${prefix}-status`).textContent = t("computerUse.noSession", "No active Computer Use session.");
+        el(`${prefix}-action`).textContent = "";
+        el(`${prefix}-stop`).hidden = true;
+      }
     }
     return;
   }
@@ -4971,6 +5115,7 @@ function openComputerUse() {
   closeOverlays("computer-use-modal");
   el("computer-use-modal").hidden = false;
   paintComputerUse();
+  void loadComputerUsePolicy();
   el("computer-use-close").focus();
 }
 
@@ -8188,6 +8333,14 @@ async function requestAt() {
     closeAt();
     return;
   }
+  if ((!computerPolicy.value || computerPolicy.project !== state.project)
+      && !computerPolicy.loading
+      && computerPolicy.attemptedProject !== state.project) {
+    computerPolicy.attemptedProject = state.project;
+    void loadComputerUsePolicy().then(() => {
+      if (prompt.value.includes("@") && state.project) void requestAt();
+    });
+  }
   const seq = ++atSeq;
   let answer = null;
   try {
@@ -8207,13 +8360,40 @@ async function requestAt() {
 }
 
 function applyAt(answer) {
-  const rows = (answer && answer.rows) || [];
+  const prompt = el("prompt");
+  const start = Number(answer?.start);
+  const end = Number(answer?.end);
+  const token = prompt && Number.isFinite(start) && Number.isFinite(end)
+    ? prompt.value.slice(start, end)
+    : "";
+  const query = token.startsWith("@") ? token.slice(1).toLowerCase() : "";
+  const apps = (computerPolicy.project === state.project ? computerPolicy.value?.apps || [] : [])
+    .filter((app) => query && [app.displayName, app.id]
+      .some((text) => String(text || "").toLowerCase().includes(query)))
+    .sort((left, right) => {
+      const rank = (app) => {
+        const name = String(app.displayName || "").toLowerCase();
+        const id = String(app.id || "").toLowerCase();
+        return name.startsWith(query) || id.startsWith(query) ? 1 : 0;
+      };
+      return rank(right) - rank(left) || String(left.displayName).localeCompare(String(right.displayName));
+    })
+    .slice(0, 8)
+    .map((app) => {
+      const mention = String(app.displayName || "").includes(" ") ? app.id : app.displayName || app.id;
+      return {
+        label: `${app.displayName || app.id}${app.isRunning ? "" : ` · ${app.id}`}`,
+        insert: `@${mention} `,
+        kind: "app",
+      };
+    });
+  const rows = [...((answer && answer.rows) || []), ...apps];
   if (!rows.length) {
     closeAt();
     return;
   }
-  atStart = answer.start;
-  atEnd = answer.end;
+  atStart = start;
+  atEnd = end;
   atRows = rows;
   atIndex = 0;
   renderAt();
@@ -8246,9 +8426,11 @@ function renderAt() {
     item.title =
       row.kind === "folder"
         ? t("ui.aFolderInThisProject", "{value0} — a folder in this project", { value0: row.label })
+        : row.kind === "app"
+          ? t("ui.anAppComputerUseCanTarget", "{value0} — an app Computer Use can target", { value0: row.label })
         : t("ui.referencedInThisMessage", "{value0} — referenced in this message", { value0: row.label });
     item.innerHTML =
-      `<span class="at-glyph">${row.kind === "folder" ? "\u25b8" : "\u00b7"}</span>` +
+      `<span class="at-glyph">${row.kind === "folder" ? "\u25b8" : row.kind === "app" ? "\u2318" : "\u00b7"}</span>` +
       `<span class="at-path">${escapeHtml(row.label)}</span>`;
     // The press would take the focus out of the message box and drop the caret
     // the row is completing, so it is swallowed and the click still arrives.
@@ -11801,9 +11983,20 @@ function init() {
     state.detailsOpen = !state.detailsOpen;
     paintDockToggles();
   };
+  el("computer-use-toggle").hidden = false;
+  el("computer-use-toggle").innerHTML = ICONS.pointer;
+  el("computer-use-toggle").title = t("computerUse.settingsTitle", "Computer use settings");
+  el("computer-use-toggle").setAttribute("aria-label", el("computer-use-toggle").title);
   el("computer-use-toggle").onclick = openComputerUse;
   el("computer-use-stop").onclick = stop;
   el("computer-use-dialog-stop").onclick = stop;
+  el("computer-use-app-search").oninput = (event) => {
+    computerPolicy.search = event.target.value || "";
+    renderComputerUsePolicy();
+  };
+  el("computer-use-default").onchange = (event) => {
+    void changeComputerUsePolicy("set_default", "", event.target.value);
+  };
   el("computer-use-close").innerHTML = ICONS.close;
   el("computer-use-close").onclick = () => {
     el("computer-use-modal").hidden = true;
