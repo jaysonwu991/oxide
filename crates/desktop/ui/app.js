@@ -3590,6 +3590,15 @@ function installMarkdownInput(editor, render) {
     savedStart = savedEnd = selectionOffset(false);
     return true;
   }
+  function lineBreakText(start, end) {
+    if (start !== end || source.slice(start).trim() !== "") return "\n";
+    const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = source.indexOf("\n", start);
+    const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+    // A list is a block in Markdown. Leaving its final item in one gesture
+    // therefore takes the blank line that closes the block too.
+    return LIST_ITEM.test(line) ? "\n\n" : "\n";
+  }
   editor.addEventListener("beforeinput", (event) => {
     if (composing || event.isComposing) return;
     if (event.inputType.startsWith("delete")) {
@@ -3638,7 +3647,7 @@ function installMarkdownInput(editor, render) {
     event.preventDefault();
     const start = selectionOffset(false);
     const end = selectionOffset(true);
-    const text = event.inputType === "insertLineBreak" ? "\n" : event.data || "";
+    const text = event.inputType === "insertLineBreak" ? lineBreakText(start, end) : event.data || "";
     source = source.slice(0, start) + text + source.slice(end);
     remember();
     paint(start + text.length);

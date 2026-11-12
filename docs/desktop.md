@@ -1687,6 +1687,12 @@ blank line a block needs around itself, an entity's character, a table's added
 outer pipes. A construct that rewrote itself on every keystroke would move the
 reader's own text under the caret.
 
+Shift+Enter at the end of a list closes the Markdown block with the blank line
+it needs, so the next word is ordinary text rather than a continuation of the
+last item. Inside an item it remains a line within that item. Inline code is
+drawn as Codex's small, rounded, tinted pill: 12% foreground tint, 2px by 4px
+padding and the composer's own type size.
+
 Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks, nesting and an item's own continuation lines),
 blockquotes, rules, pipe tables with their alignment, fenced code (backticks or
