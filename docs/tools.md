@@ -143,7 +143,14 @@ matched. The error names the failures and tells the agent to re-read the correct
 file and resend the corrected batch. CLI, Extension and Desktop share these rules.
 Pass `edits` as an array of objects, rather than a JSON string. For compatibility,
 stringified arrays tolerate trailing commas outside quoted strings; code and
-escapes inside `oldText` and `newText` are preserved. `old_text`/`new_text` and
+escapes inside `oldText` and `newText` are preserved. A `"key">value`
+separator, which models write when they mix this tool's JSON with another
+harness's tag syntax, is repaired to `"key":value` outside quoted strings, so
+replacement text keeps every character it was given. A stringified batch that
+stops before its JSON closes is reported as arguments cut off mid-value, with
+the advice to send fewer or smaller replacements (or to use `write` for a
+whole-file rewrite), since resending the same call would be cut off at the same
+place. `old_text`/`new_text` and
 `oldString`/`new_string` are accepted as spellings of the two fields. A
 replacement that carries only one of them is rejected naming the missing half:
 `oldText` is the exact text to replace (an insertion repeats a unique
@@ -161,6 +168,20 @@ U+FFFD content can be written with `bash`.
 `read`, `ls`, `find`, and `grep` accept absolute paths, so they can inspect files
 outside the project without a shell; `ls` marks directories with a trailing `/`
 and renders symlink targets as `name -> target`.
+
+A path none of them can find is diagnosed rather than reported as a bare
+`No such file or directory`, so the retry has somewhere to go instead of another
+blind search. A URL (any `scheme://` address) is named as one and steered to
+`webfetch` or to the service's own MCP server or CLI, instead of being joined
+onto the project root — whatever the platform made of the address, since Windows
+rejects it as a malformed filename rather than as an absent file. Otherwise the
+error names the nearest existing paths —
+the same name as a directory (`crates/core/src/llm.rs` against the `llm/`
+module), the same stem under another extension, or the same name in another
+case — from one bounded listing of the parent directory, and falls back to the
+deepest directory that does exist when the parent is missing too. `edit` adds
+the same hint to the read it failed, alongside its existing pointer to `write`
+for new files.
 
 By default `grep` follows the last public Codex `grep_files` contract:
 [`openai/codex` at `32c4993`](https://github.com/openai/codex/blob/32c4993c8a17cb0608d747f268e3d543745de962/codex-rs/core/src/tools/handlers/grep_files.rs).
@@ -280,8 +301,17 @@ be represented by the search tool runs through its bounded, ignore-aware search
 without a failed call and model retry. The result names the substitution, and
 the requested path still passes the front-end's project boundary check. A literal
 leading `cd` joined by `&&` or a newline and a trailing `2>/dev/null` are also
-recognized; the search retains that directory. Dots in a basic grep pattern keep
-their regex meaning. Other shell pipelines, redirections, expansions, multiple paths and unsupported options are
+recognized; the search retains that directory. The pattern is translated out of
+grep's own dialect: a basic pattern's `\|`, `\(`, `\)`, `\{`, `\}`, `\+` and
+`\?` become the tool's bare operators while its bare `|`, `(`, `)`, `+` and `?`
+are escaped back to the literals grep matched, an extended (`-E`) pattern is
+already in agreement, GNU's `\<`/`\>` become `\b`, and dots keep their regex
+meaning. A translated pattern must still compile, and a back-reference, a group
+flag, a bracket expression holding a backslash, or an anchor grep would have
+matched literally abandons the restatement rather than searching for something
+else. Shell operators are judged outside quotes, so a pattern that contains
+`|`, `;` or `#` no longer reads as a pipeline.
+Other shell pipelines, redirections, expansions, multiple paths and unsupported options are
 never dropped to make a call fit. The recursive-search guard refuses any other
 recursive `grep` that could
 walk a directory — no operand, a folder, an unresolved path, or an unverified glob —
@@ -290,13 +320,18 @@ and bounds its results; when the command spells out its pattern, path and
 `--include` filter as literal shell arguments, the refusal suggests a `grep` call
 with those values. Quoted spaces and glob filters are decoded, and `-F` maps to
 `literal: true`. `-i` maps to `ignoreCase`, `-l` to the default filename output
-mode, `-I` is a no-op the tool already applies, and several `--include` filters
+mode, `-w` to a pattern wrapped in `\b` boundaries (which turns `-F` text into
+an escaped regex instead), `-E`/`-G` select the pattern's dialect, `-I` is a
+no-op the tool already applies, and several `--include` filters
 that each name an extension become one brace glob (`--include=*.ts
 --include=*.tsx` is `*.{ts,tsx}`). A trailing `| head -N` is the search's
 `limit`, so a bounded sweep written as a pipeline converts instead of being
 refused; any other downstream command still keeps the pipeline as written.
-Multiple paths or patterns, unsupported matching options, shell
-expansions, regex dialect differences and preceding commands keep the generic
+A grep pointed at several paths is not converted — the tool searches one path
+per call and dropping an operand would change the search — but its refusal
+names one call per path instead of leaving the split to the reader. Several
+patterns, unsupported matching options, shell
+expansions, untranslatable patterns and preceding commands keep the generic
 guidance rather than suggesting a search with different meaning. A
 recursive search scoped to files named one by one
 (`grep -rn needle README.md docs/guide.md`) is not a directory sweep and runs
