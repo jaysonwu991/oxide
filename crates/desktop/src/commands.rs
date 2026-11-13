@@ -486,6 +486,21 @@ pub async fn set_mcp_server(
     Ok(oxide_core::mcp_config::server_views(&cwd).await)
 }
 
+/// Opens the server's OAuth page in the machine's browser and waits for the
+/// loopback callback the core owns. The fresh listing is the answer so the
+/// dialog repaints from the same probe every other MCP action uses.
+pub async fn authorize_mcp_server(
+    project: String,
+    name: String,
+    scope: String,
+) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
+    let cwd = project_dir(&project)?;
+    oxide_core::mcp_config::authorize(&cwd, Some(scope), name)
+        .await
+        .map_err(err)?;
+    Ok(oxide_core::mcp_config::server_views(&cwd).await)
+}
+
 // ---------- plugins ----------
 
 pub async fn plugin_catalog() -> CmdResult<serde_json::Value> {
@@ -2080,6 +2095,14 @@ pub async fn dispatch(
                 arg(&args, "project")?,
                 arg(&args, "name")?,
                 arg(&args, "enabled")?,
+            )
+            .await,
+        ),
+        "authorize_mcp_server" => command_value(
+            authorize_mcp_server(
+                arg(&args, "project")?,
+                arg(&args, "name")?,
+                arg(&args, "scope")?,
             )
             .await,
         ),

@@ -436,9 +436,12 @@ pub fn add(cwd: &Path, request: AddRequest) -> Result<()> {
     Ok(())
 }
 
-/// Run the OAuth authorization-code flow for a configured remote server,
-/// storing the resulting token under the Oxide config directory.
-pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()> {
+/// Run the OAuth authorization-code flow for a configured remote server and
+/// return the label of the file that defined it.
+///
+/// Front-ends that own a structured output stream call this directly; the CLI
+/// wraps it in `auth` to write the human-readable confirmation.
+pub async fn authorize(cwd: &Path, scope: Option<String>, name: String) -> Result<String> {
     let scope = explicit_scope(scope.as_deref())?;
     let Some((label, config)) = find_server(&candidates(sources(cwd), scope), &name)? else {
         bail!("no MCP server named `{name}`");
@@ -450,6 +453,13 @@ pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()>
     let oauth = crate::ecosystem::parse_oauth(config.get("oauth")).unwrap_or_default();
     let state = crate::mcp_oauth::OAuthState::new(&name, &oauth, url);
     state.ensure_authorized().await?;
+    Ok(label)
+}
+
+/// Run the OAuth authorization-code flow for a configured remote server,
+/// storing the resulting token under the Oxide config directory.
+pub async fn auth(cwd: &Path, scope: Option<String>, name: String) -> Result<()> {
+    let label = authorize(cwd, scope, name.clone()).await?;
     println!("authorized MCP server `{name}` ({label})");
     Ok(())
 }

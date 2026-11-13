@@ -23,12 +23,16 @@ operation to `oxide_core::plugin_registry`. These actions are available without
 a selected project. Skills and MCP servers instead show a project selection
 action when no folder is open, without probing an empty path.
 
-Settings uses the same rail/sidebar/page structure. Its sections are General,
-Appearance, Notifications, Memories, and Keyboard. Appearance shows theme
-preview cards and a language selector directly, with immediate saving through
-the existing shared commands. The settings sidebar supports arrow keys,
-Home, and End. Back returns to the mounted chat; visiting these pages does not
-move its transcript, draft, queue, or running turn.
+Settings uses the same rail/sidebar/page structure as the rest of the window,
+with the compact and grouped visual hierarchy of Codex Desktop. Its searchable
+navigation groups General, Appearance, and Notifications under Personal; MCP
+servers, Plugins, and Skills under Integrations; and Memories and Keyboard under
+Workspace. The integration rows open the existing Customize pages rather than
+duplicating those controls in Settings. Appearance shows theme preview cards and
+a language selector directly, with immediate saving through the existing shared
+commands. The settings sidebar supports arrow keys, Home, and End, and filters
+to the matching feature as the reader types. Back returns to the mounted chat;
+visiting these pages does not move its transcript, draft, queue, or running turn.
 
 ## Codex Desktop comparison
 
@@ -669,7 +673,7 @@ pnpm run check   # type check the window, writing nothing
 pnpm run dist    # both halves in release, packaged into the platform's installer
 ```
 
-The window pins Electron 45.2.1 in `package.json` and `pnpm-lock.yaml`.
+The window pins Electron 45.3.2 in `package.json` and `pnpm-lock.yaml`.
 The [Electron 45 breaking changes](https://www.electronjs.org/docs/latest/breaking-changes#breaking-api-changes-450)
 require no bridge migration: the preload uses only `electron` and runs with
 `sandbox: false`, popups are denied, and the harness is an external executable
@@ -1639,10 +1643,14 @@ close in the headers — whose tooltips carry the words. **Escape** closes eithe
 The **MCP servers** dialog lists every server the project loads, with the state
 the core probed (`Connected`, `Needs Auth`, `Needs Trust`, `Disabled`, or the
 connection error) and a line naming its transport, its endpoint or command line,
-and the file it was defined in. The power switch beside a row writes `enabled` into
-that file — and Claude Code's `disabled`, kept in step, since either harness may
-be the one reading it — without deleting the configuration, **Recheck** probes
-again, and the listing comes from
+and the file it was defined in. A server in `Needs Auth` carries an **Authorize**
+button beside its power switch: the harness calls the shared OAuth flow, which
+opens the provider's authorization page in the machine's browser and waits for
+the loopback callback before repainting the listing from a fresh probe. The
+power switch beside a row writes `enabled` into that file — and Claude Code's
+`disabled`, kept in step, since either harness may be the one reading it —
+without deleting the configuration, **Recheck** probes again, and the listing
+comes from
 `oxide_core::mcp_config::server_views`, so it matches `oxide mcp list --json`
 and the VS Code panel's listing. A project's own servers report **Needs Trust** rather
 than being started until the project is trusted.

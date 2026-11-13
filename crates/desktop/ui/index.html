@@ -890,47 +890,91 @@
       <div class="settings-sheet">
         <aside class="settings-navigation">
           <div class="settings-head"><h2 id="settings-title" data-i18n="settings.title">Settings</h2></div>
-          <nav class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="Settings sections" data-i18n-aria="settings.sections">
-            <button
-              id="settings-tab-general"
-              class="settings-tab active"
-              role="tab"
-              aria-selected="true"
-              aria-controls="settings-page-general"
-              data-settings-section="general"
-            ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.general">General</span></button>
-            <button
-              id="settings-tab-appearance"
-              class="settings-tab"
-              role="tab"
-              aria-selected="false"
-              aria-controls="settings-page-appearance"
-              data-settings-section="appearance"
-            ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h2a3 3 0 0 0 0-6h-1a2 2 0 0 1 0-4h3a4 4 0 0 0 0-8ZM7 10h.01M9 6h.01M6 15h.01" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.appearance">Appearance</span></button>
-            <button
-              id="settings-tab-notifications"
-              class="settings-tab"
-              role="tab"
-              aria-selected="false"
-              aria-controls="settings-page-notifications"
-              data-settings-section="notifications"
-            ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.notifications">Notifications</span></button>
-            <button
-              id="settings-tab-memories"
-              class="settings-tab"
-              role="tab"
-              aria-selected="false"
-              aria-controls="settings-page-memories"
-              data-settings-section="memories"
-            ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4a3 3 0 0 0-5 3 4 4 0 0 0-1 7 4 4 0 0 0 5 6l4 1V3ZM15 4a3 3 0 0 1 5 3 4 4 0 0 1 1 7 4 4 0 0 1-5 6l-4 1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.memories">Memories</span></button>
-            <button
-              id="settings-tab-keyboard"
-              class="settings-tab"
-              role="tab"
-              aria-selected="false"
-              aria-controls="settings-page-keyboard"
-              data-settings-section="keyboard"
-            ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3ZM6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h.01M18 13h.01M7 16h10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.keyboard">Keyboard</span></button>
+          <label class="settings-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m16 16 5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <input id="settings-search" type="search" placeholder="Search settings" aria-label="Search settings" data-i18n-placeholder="settings.search" data-i18n-aria="settings.search" />
+          </label>
+          <nav class="settings-nav" aria-label="Settings sections" data-i18n-aria="settings.sections">
+            <section id="settings-group-personal" class="settings-nav-group" role="group" aria-labelledby="settings-personal-label" data-settings-group>
+              <h3 id="settings-personal-label" data-i18n="settings.personal">Personal</h3>
+              <div class="settings-tab-list" role="tablist" aria-orientation="vertical" aria-labelledby="settings-personal-label">
+              <button
+                id="settings-tab-general"
+                class="settings-tab active"
+                role="tab"
+                aria-selected="true"
+                aria-controls="settings-page-general"
+                data-settings-section="general"
+                data-settings-keywords="general send enter follow up queue steer"
+              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.general">General</span></button>
+              <button
+                id="settings-tab-appearance"
+                class="settings-tab"
+                role="tab"
+                aria-selected="false"
+                aria-controls="settings-page-appearance"
+                data-settings-section="appearance"
+                data-settings-keywords="appearance theme dark light language font text sidebar"
+              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h2a3 3 0 0 0 0-6h-1a2 2 0 0 1 0-4h3a4 4 0 0 0 0-8ZM7 10h.01M9 6h.01M6 15h.01" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.appearance">Appearance</span></button>
+              <button
+                id="settings-tab-notifications"
+                class="settings-tab"
+                role="tab"
+                aria-selected="false"
+                aria-controls="settings-page-notifications"
+                data-settings-section="notifications"
+                data-settings-keywords="notifications alerts approvals questions awake"
+              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.notifications">Notifications</span></button>
+              </div>
+            </section>
+            <section id="settings-group-integrations" class="settings-nav-group" role="group" aria-labelledby="settings-integrations-label" data-settings-group>
+              <h3 id="settings-integrations-label" data-i18n="settings.integrations">Integrations</h3>
+              <button
+                id="settings-open-mcps"
+                class="settings-tab settings-tab-action"
+                type="button"
+                data-settings-action="mcps"
+                data-settings-keywords="mcp servers oauth authorize tools integrations"
+              ><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 21h8M12 17v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span data-i18n="dialog.mcps.title">MCP servers</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
+              <button
+                id="settings-open-plugins"
+                class="settings-tab settings-tab-action"
+                type="button"
+                data-settings-action="plugins"
+                data-settings-keywords="plugins extensions marketplace integrations"
+              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6a3 3 0 1 1 6 0h4v6a3 3 0 1 0 0 6v4h-6a3 3 0 1 0-6 0H4v-6a3 3 0 1 1 0-6Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span data-i18n="customize.plugins">Plugins</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
+              <button
+                id="settings-open-skills"
+                class="settings-tab settings-tab-action"
+                type="button"
+                data-settings-action="skills"
+                data-settings-keywords="skills capabilities integrations"
+              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6l2 2 2-2h6v16h-6l-2 1-2-1H4ZM12 6v15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span data-i18n="customize.skills">Skills</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
+            </section>
+            <section id="settings-group-workspace" class="settings-nav-group" role="group" aria-labelledby="settings-workspace-label" data-settings-group>
+              <h3 id="settings-workspace-label" data-i18n="settings.workspace">Workspace</h3>
+              <div class="settings-tab-list" role="tablist" aria-orientation="vertical" aria-labelledby="settings-workspace-label">
+              <button
+                id="settings-tab-memories"
+                class="settings-tab"
+                role="tab"
+                aria-selected="false"
+                aria-controls="settings-page-memories"
+                data-settings-section="memories"
+                data-settings-keywords="memories remember context workspace"
+              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4a3 3 0 0 0-5 3 4 4 0 0 0-1 7 4 4 0 0 0 5 6l4 1V3ZM15 4a3 3 0 0 1 5 3 4 4 0 0 1 1 7 4 4 0 0 1-5 6l-4 1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.memories">Memories</span></button>
+              <button
+                id="settings-tab-keyboard"
+                class="settings-tab"
+                role="tab"
+                aria-selected="false"
+                aria-controls="settings-page-keyboard"
+                data-settings-section="keyboard"
+                data-settings-keywords="keyboard shortcuts keybindings workspace"
+              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3ZM6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h.01M18 13h.01M7 16h10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.keyboard">Keyboard</span></button>
+              </div>
+            </section>
+            <p id="settings-search-empty" class="settings-search-empty" role="status" data-i18n="settings.noMatches" hidden>No settings match your search.</p>
           </nav>
           <button id="settings-close" class="settings-back" type="button">← Back to chat</button>
         </aside>

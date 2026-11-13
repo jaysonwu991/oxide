@@ -18,6 +18,7 @@ import {
   LANGUAGE_SELECT,
   languageDialog,
   logoutDialog,
+  MCP_AUTHORIZE,
   MCP_TOGGLE,
   modelDialog,
   NEW_SESSION,
@@ -328,6 +329,28 @@ describe("MCP dialog", () => {
   it("offers Disable for a server that is on", () => {
     const rows = mcpDialog(parseMcpList(listing)).rows;
     assert.equal(rows.find((row) => row.value === "context7")!.button, "Disable context7");
+  });
+
+  it("offers browser authorization beside the switch for a server that needs it", () => {
+    const [server] = parseMcpList(JSON.stringify([{
+      name: "context7",
+      transport: "http",
+      detail: "https://mcp.context7.com/mcp",
+      source: "global",
+      scope: "global",
+      enabled: true,
+      state: "needs-auth",
+      status: "Needs Auth",
+    }]));
+    const dialog = mcpDialog([server]);
+    assert.equal(dialog.rows[0].buttons?.length, 2);
+    assert.deepEqual(
+      dialog.rows[0].buttons?.map((button) => [button.label, button.action, button.icon]),
+      [
+        ["Authorize context7", MCP_AUTHORIZE, ""],
+        ["Disable context7", MCP_TOGGLE, "power"],
+      ],
+    );
   });
 
   it("names a state the core did not spell out, and a switched-off one either way", () => {

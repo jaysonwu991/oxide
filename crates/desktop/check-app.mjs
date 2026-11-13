@@ -845,6 +845,15 @@ const invoke = async (command, args = {}) => {
       target.status = args.enabled ? "Connected" : "Disabled";
       return servers.map((server) => ({ ...server }));
     }
+    case "authorize_mcp_server": {
+      if (mcpsError) throw mcpsError;
+      const target = servers.find((server) => server.name === args.name);
+      if (!target) throw `no MCP server named \`${args.name}\``;
+      if (target.state !== "needs-auth") throw `${target.name} is not waiting for authorization`;
+      target.state = "connected";
+      target.status = "Connected";
+      return servers.map((server) => ({ ...server }));
+    }
     case "create_project":
       if (createError) throw createError;
       return {
@@ -1313,6 +1322,7 @@ vm.runInThisContext(
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
     " bubble, renderMarkdown, markdownToText, readMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog," +
     " openSettings, closeSettings, showSettingsSection, paintSettingsControls, renderShortcuts," +
+    " filterSettingsSections," +
     " openCommandMenu, closeCommandMenu, renderCommandMenu, runCommand, commandMatches, commandActions," +
     " loadPrefs, savePrefs, resizeText, toggleSidebar, announceShortcuts, formatChord, matchShortcut," +
     " openSearch, closeSearch, requestSearch, renderSearchResults, openSearchRow," +
@@ -3624,18 +3634,42 @@ const rowFor = (name) =>
 check("a row exposes its name, status and toggle", Boolean(rowFor("filesystem")));
 check(
   "offered a power switch for a running server and for a stopped one",
-  String(rowFor("filesystem").children[0].children[2].title).startsWith("Disable filesystem") &&
-    String(rowFor("docs").children[0].children[2].title).startsWith("Enable docs"),
+  String(rowFor("filesystem").children[0].children[2].children[0].title).startsWith("Disable filesystem") &&
+    String(rowFor("docs").children[0].children[2].children[0].title).startsWith("Enable docs"),
   elementFor("mcp-list").outline(),
 );
 check(
   "painted each switch as an icon, sized to the row",
-  rowFor("filesystem").children[0].children[2].className === "icon mcp-toggle on" &&
-    rowFor("docs").children[0].children[2].className === "icon mcp-toggle" &&
-    rowFor("filesystem").children[0].children[2].innerHTML.includes("<svg"),
+  rowFor("filesystem").children[0].children[2].children[0].className === "icon mcp-toggle on" &&
+    rowFor("docs").children[0].children[2].children[0].className === "icon mcp-toggle" &&
+    rowFor("filesystem").children[0].children[2].children[0].innerHTML.includes("<svg"),
   elementFor("mcp-list").outline(),
 );
-const toggle = rowFor("filesystem").children[0].children[2];
+check(
+  "offered browser authorization only for a server that needs it",
+  rowFor("context7").children[0].children[2].children.length === 2 &&
+    rowFor("context7").children[0].children[2].children[0].className === "mcp-authorize" &&
+    rowFor("filesystem").children[0].children[2].children.length === 1,
+  elementFor("mcp-list").outline(),
+);
+const authorize = rowFor("context7").children[0].children[2].children[0];
+calls.length = 0;
+await authorize.onclick();
+check(
+  "asked the core to open the browser with the server's scope",
+  JSON.stringify(projectCalls("authorize_mcp_server")[0]?.[1]) ===
+    JSON.stringify({ project: app.state.project, name: "context7", scope: "global" }),
+  JSON.stringify(projectCalls("authorize_mcp_server")),
+);
+check(
+  "redrew the authorized server from the core's answer",
+  rowFor("context7").children[0].children[1].textContent === "Connected" &&
+    rowFor("context7").children[0].children[2].children.length === 1,
+  elementFor("mcp-list").outline(),
+);
+check("reported authorization outside the composer", toastText() === "context7 authorized", toastText());
+
+const toggle = rowFor("filesystem").children[0].children[2].children[0];
 calls.length = 0;
 await toggle.onclick();
 check(
@@ -3648,8 +3682,8 @@ const after = elementFor("mcp-list").outline();
 check(
   "redrew from the core's answer",
   rowFor("filesystem").children[0].children[1].textContent === "Disabled" &&
-    String(rowFor("filesystem").children[0].children[2].title).startsWith("Enable filesystem") &&
-    rowFor("filesystem").children[0].children[2].className === "icon mcp-toggle",
+    String(rowFor("filesystem").children[0].children[2].children[0].title).startsWith("Enable filesystem") &&
+    rowFor("filesystem").children[0].children[2].children[0].className === "icon mcp-toggle",
   after,
 );
 check("reported the toggle outside the composer", toastText() === "filesystem disabled", toastText());
@@ -9893,6 +9927,27 @@ check(
     elementFor("settings").getAttribute("aria-expanded") === "true",
   `${elementFor("settings-modal").hidden} / ${elementFor("settings-page-general").hidden}`,
 );
+elementFor("settings-search").value = "mcp";
+elementFor("settings-search").oninput();
+check(
+  "filtered settings navigation by the feature a reader names",
+  elementFor("settings-group-personal").hidden &&
+    !elementFor("settings-group-integrations").hidden &&
+    !elementFor("settings-open-mcps").hidden &&
+    elementFor("settings-open-plugins").hidden,
+);
+elementFor("settings-search").value = "no-such-setting";
+elementFor("settings-search").oninput();
+check("reported a settings search with no matches",
+  elementFor("settings-search-empty").hidden === false &&
+    elementFor("settings-group-integrations").hidden);
+elementFor("settings-search").value = "";
+elementFor("settings-search").oninput();
+check("restored the grouped settings navigation",
+  !elementFor("settings-group-personal").hidden &&
+    !elementFor("settings-group-integrations").hidden &&
+    !elementFor("settings-group-workspace").hidden &&
+    elementFor("settings-search-empty").hidden);
 elementFor("settings-tab-keyboard").onclick();
 check(
   "showed one section at a time",

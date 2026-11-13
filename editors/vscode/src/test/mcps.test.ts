@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  mcpAuthArgs,
   mcpListArgs,
   mcpStateLabel,
   mcpToggleArgs,
@@ -93,6 +94,24 @@ describe("MCP server listing", () => {
     assert.deepEqual(mcpListArgs(), ["mcp", "list", "--json"]);
   });
 
+  it("pins browser authorization to the scope that defines the server", () => {
+    const [context7, sentry] = parseMcpList(listing);
+    assert.deepEqual(mcpAuthArgs(context7), [
+      "mcp",
+      "auth",
+      "context7",
+      "--scope",
+      "global",
+    ]);
+    assert.deepEqual(mcpAuthArgs(sentry), [
+      "mcp",
+      "auth",
+      "sentry",
+      "--scope",
+      "project",
+    ]);
+  });
+
   it("requires a workspace folder before listing servers", () => {
     const root = path.join(__dirname, "..", "..");
     const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
@@ -105,6 +124,16 @@ describe("MCP server listing", () => {
     assert.ok(showMcps.includes("const cwd = this.cwd();"), "resolves the workspace folder");
     assert.ok(showMcps.includes('showNotice(this.t("ui.openAFolderFirst", "Open a folder first.")'), "says so when there is none");
     assert.ok(!showMcps.includes("process.cwd()"), "uses no fallback directory");
+  });
+
+  it("waits through the browser flow rather than the ordinary CLI command timeout", () => {
+    const root = path.join(__dirname, "..", "..");
+    const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
+    assert.match(
+      chat,
+      /runCapture\(this\.binary\(\), mcpAuthArgs\(server\), cwd, 6 \* 60_000\)/,
+      "authorization waits for the loopback callback",
+    );
   });
 
   // The controller imports `vscode`, so it cannot be loaded here; the decision
