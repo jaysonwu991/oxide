@@ -476,6 +476,23 @@ pre,
   text-align: right;
 }
 
+:is(.assistant .body, .user .body, .markdown-input) ul.tasks {
+  list-style: none;
+  padding-left: 4px;
+}
+
+:is(.assistant .body, .user .body, .markdown-input) li.task {
+  list-style: none;
+}
+
+.markdown-input input[data-editor-task] {
+  width: 13px;
+  height: 13px;
+  margin: 0 5px 0 0;
+  vertical-align: -1px;
+  accent-color: var(--vscode-focusBorder, #4a9eff);
+}
+
 /* syntax tokens, mapped onto the editor's own token colors */
 .tok-keyword {
   color: var(--vscode-charts-purple, #c586c0);

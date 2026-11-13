@@ -1687,11 +1687,22 @@ blank line a block needs around itself, an entity's character, a table's added
 outer pipes. A construct that rewrote itself on every keystroke would move the
 reader's own text under the caret.
 
+The composer follows Codex's input rules rather than parsing every newline as a
+finished Markdown document. ATX headings and list markers become blocks when
+their separating space is typed; Setext underlines do not. In particular, a
+plain line, Shift+Enter, then `-` or `=` stays plain text instead of turning the
+line above it into a heading. The transcript renderer still understands Setext
+headings. `[ ] ` shortens to a task list item and its checkbox toggles the
+source between `[ ]` and `[x]`.
+
 Shift+Enter at the end of a list closes the Markdown block with the blank line
 it needs, so the next word is ordinary text rather than a continuation of the
-last item. Inside an item it remains a line within that item. Inline code is
-drawn as Codex's small, rounded, tinted pill: 12% foreground tint, 2px by 4px
-padding and the composer's own type size.
+last item. Inside an item it remains a line within that item, and inside a
+blockquote it keeps the quote. Tab and Shift+Tab nest and outdent list items;
+Backspace at an item's content start removes its marker, and removes an empty
+heading, quote or fenced block rather than leaving an invisible block behind.
+Inline code is drawn as Codex's small, rounded, tinted pill: 12% foreground
+tint, 2px by 4px padding and the composer's own type size.
 
 Assistant replies render as Markdown: headings, ordered/unordered lists
 (including `- [ ]` tasks, nesting and an item's own continuation lines),

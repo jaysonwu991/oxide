@@ -9434,7 +9434,7 @@ const nodesFromHtml = (html) => {
       for (const [, name, value] of raw.matchAll(/([a-zA-Z-]+)(?:="([^"]*)")?/g)) attributes[name] = decodeText(value || "");
       const node = element(tag, open.at(-1), attributes);
       open.at(-1).childNodes.push(node);
-      if (!["br", "hr"].includes(tag.toLowerCase())) open.push(node);
+      if (!["br", "hr", "input"].includes(tag.toLowerCase())) open.push(node);
       continue;
     }
     if (body) open.at(-1).childNodes.push({ nodeType: 3, nodeValue: decodeText(body), parentNode: open.at(-1), childNodes: [] });

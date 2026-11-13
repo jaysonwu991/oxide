@@ -63,6 +63,7 @@ function referenceRanges(text) {
 // trimming the wrappers a block adds cannot eat one the reader typed.
 const CARET = "\uE000oxide-caret\uE001";
 const TAIL_NEWLINE = "\uE002";
+const QUOTE_TAIL = "\uE003";
 
 // The Markdown a rendered editable surface stands for — the inverse of
 // `renderMarkdown`, which is what the composer is: every keystroke paints the
@@ -75,6 +76,11 @@ function markdownToText(node, point = null, root = node) {
     // cannot eat one the reader wrote.
     const text = node.parentNode?.hasAttribute?.("data-editor-tail") ? raw.replace(/\n/g, TAIL_NEWLINE) : raw;
     return point?.node === node ? text.slice(0, point.offset) + CARET + text.slice(point.offset) : text;
+  }
+  if (node.hasAttribute?.("data-editor-quote-tail")) return QUOTE_TAIL;
+  if (node.tagName === "INPUT" && node.hasAttribute("data-editor-task")) {
+    const task = node.checked || node.hasAttribute("checked") ? "[x] " : "[ ] ";
+    return point?.node === node ? CARET + task : task;
   }
   const children = Array.from(node.childNodes || []);
   const parts = children.map((child, i) =>
@@ -130,8 +136,12 @@ function markdownToText(node, point = null, root = node) {
     return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
   }
   if (tag === "BLOCKQUOTE") {
-    const lines = text.trim() === "" ? [""] : text.trim().split("\n");
-    return `\n\n${lines.map((line) => (line ? `> ${line}` : ">")).join("\n")}\n\n`;
+    const heldTail = text.includes(QUOTE_TAIL);
+    const quote = text.replaceAll(QUOTE_TAIL, "").trim();
+    const lines = quote === "" ? [""] : quote.split("\n");
+    if (heldTail && quote !== "") lines.push("");
+    const prefix = node.getAttribute("data-editor-prefix") || "> ";
+    return `\n\n${lines.map((line) => `${prefix}${line}`).join("\n")}\n\n`;
   }
   if (tag === "LI") {
     const prefix = node.getAttribute("data-editor-prefix") || "- ";
@@ -177,7 +187,7 @@ function readMarkdown(surface, point = null) {
 
 // One rendered, editable surface. The value/selection facade keeps completion,
 // recall and sending on Markdown while the browser edits the rendered nodes.
-function installMarkdownInput(editor, render) {
+function installMarkdownInput(editor, render, handlesTab = () => true) {
   let source = "";
   let painted = "";
   let composing = false;
@@ -197,6 +207,9 @@ function installMarkdownInput(editor, render) {
     const range = selection.getRangeAt(0);
     const node = end ? range.endContainer : range.startContainer;
     const offset = end ? range.endOffset : range.startOffset;
+    if (node.nodeType === 3 && node.parentNode?.hasAttribute?.("data-editor-tail") && offset === node.nodeValue.length) {
+      return source.length;
+    }
     // At the end, retain the caller's exact Markdown (including its spacing).
     const marked = read({ node, offset });
     const at = marked.indexOf(marker);
@@ -247,8 +260,19 @@ function installMarkdownInput(editor, render) {
     editor.style.height = "auto";
     // Markdown ignores trailing blank lines. Keep the editable suffix outside
     // its renderer, with a final caret stop outside any link or code span.
-    const whitespace = source.match(/\s*$/)[0];
-    const body = source.slice(0, source.length - whitespace.length);
+    const trailing = source.match(/\s*$/)[0];
+    let split = source.length - trailing.length;
+    const lineStart = source.lastIndexOf("\n", split - 1) + 1;
+    const line = source.slice(lineStart, split);
+    // A list or heading marker is a block only after its separator is typed.
+    // That separator is whitespace, so it belongs to the rendered block rather
+    // than the editable tail; otherwise "- " briefly paints as plain text.
+    const markerOnly =
+      /^[ \t]*(?:[-*+]|\d+[.)])(?:[ \t]+(?:\[[ xX]\])?[ \t]*)?$/.test(line) ||
+      /^[ \t]*#{1,6}[ \t]*$/.test(line);
+    if (markerOnly) split += /^[ \t]+/.exec(trailing)?.[0].length || 0;
+    const body = source.slice(0, split);
+    const whitespace = source.slice(split);
     editor.innerHTML = body ? render(body) : "";
     if (source && document.createTextNode) {
       const tail = document.createElement("span");
@@ -327,13 +351,91 @@ function installMarkdownInput(editor, render) {
     return true;
   }
   function lineBreakText(start, end) {
-    if (start !== end || source.slice(start).trim() !== "") return "\n";
+    if (start !== end) return "\n";
     const lineStart = source.lastIndexOf("\n", start - 1) + 1;
     const lineEnd = source.indexOf("\n", start);
     const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+    // A quote is a block in Markdown too. A soft break in one stays in the
+    // quote, so the next line carries the same prefix into the renderer.
+    const quote = /^([ \t]*>[ \t]?)/.exec(line);
+    if (quote) return `\n${quote[1]}`;
+    if (source.slice(start).trim() !== "") return "\n";
     // A list is a block in Markdown. Leaving its final item in one gesture
     // therefore takes the blank line that closes the block too.
     return LIST_ITEM.test(line) ? "\n\n" : "\n";
+  }
+  function indentList(direction) {
+    const start = selectionOffset(false);
+    const end = selectionOffset(true);
+    if (start !== end) return false;
+    const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = source.indexOf("\n", start);
+    const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+    const item = listItem(line);
+    if (!item) return false;
+    if (direction > 0) {
+      const previousEnd = lineStart - 1;
+      const previousStart = source.lastIndexOf("\n", previousEnd - 1) + 1;
+      const previous = previousEnd >= 0 ? listItem(source.slice(previousStart, previousEnd)) : null;
+      if (!previous || previous.indent > item.indent) return true;
+      source = source.slice(0, lineStart) + "  " + source.slice(lineStart);
+      remember();
+      paint(start + 2);
+    } else {
+      const indent = /^[ \t]*/.exec(line)[0];
+      const remove = Math.min(2, indent.length);
+      if (!remove) return true;
+      source = source.slice(0, lineStart) + source.slice(lineStart + remove);
+      remember();
+      paint(Math.max(lineStart, start - remove));
+    }
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+  function adjustHeading(direction) {
+    const start = selectionOffset(false);
+    const end = selectionOffset(true);
+    if (start !== end) return false;
+    const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = source.indexOf("\n", start);
+    const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+    const heading = /^(#{1,6})[ \t]+/.exec(line);
+    if (!heading) return false;
+    const level = heading[1].length;
+    const next = direction > 0 ? Math.min(6, level + 1) : level - 1;
+    const prefix = "#".repeat(Math.max(0, next)) + (next > 0 ? " " : "");
+    source = source.slice(0, lineStart) + prefix + source.slice(lineStart + heading[0].length);
+    const delta = prefix.length - heading[0].length;
+    remember();
+    paint(Math.max(lineStart, start + delta));
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+  function taskPrefix(start) {
+    const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = source.indexOf("\n", start);
+    const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+    const match = /^([ \t]*)\[([ xX]?)\]$/.exec(line);
+    if (!match || (lineEnd >= 0 && start !== lineEnd)) return null;
+    return { lineStart, indent: match[1], checked: match[2].toLowerCase() === "x" };
+  }
+  function emptyBlockAt(start) {
+    const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = source.indexOf("\n", start);
+    const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+    const atLineEnd = start === (lineEnd < 0 ? source.length : lineEnd);
+    if (atLineEnd && /^[ \t]*(?:>[ \t]*|#{1,6}[ \t]*)$/.test(line)) {
+      return { start: lineStart, end: lineEnd < 0 ? source.length : lineEnd + 1 };
+    }
+    const before = source.slice(0, start);
+    const openEnd = before.endsWith("\n") ? before.length - 1 : before.length;
+    const openStart = source.lastIndexOf("\n", openEnd - 1) + 1;
+    const fence = /^\s*(`{3,}|~{3,})[ \t]*[\w+.#-]*\s*$/.exec(source.slice(openStart, openEnd));
+    if (!fence || (start !== lineStart && start !== openEnd)) return null;
+    const closeEnd = source.indexOf("\n", start);
+    const next = source.slice(start, closeEnd < 0 ? source.length : closeEnd);
+    const close = isFenceEnd(next, fence[1]) ? (closeEnd < 0 ? source.length : closeEnd + 1) : start;
+    return { start: openStart, end: close };
   }
   editor.addEventListener("beforeinput", (event) => {
     if (composing || event.isComposing) return;
@@ -345,6 +447,29 @@ function installMarkdownInput(editor, render) {
         const first = read({ node: target.startContainer, offset: target.startOffset }).indexOf(marker);
         const last = read({ node: target.endContainer, offset: target.endOffset }).indexOf(marker);
         if (first >= 0 && last >= first) { start = first; end = last; }
+      }
+      if (event.inputType === "deleteContentBackward" && start === end) {
+        const empty = emptyBlockAt(start);
+        if (empty) {
+          event.preventDefault();
+          source = source.slice(0, empty.start) + source.slice(empty.end);
+          remember();
+          paint(empty.start);
+          editor.dispatchEvent(new Event("input", { bubbles: true }));
+          return;
+        }
+        const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+        const lineEnd = source.indexOf("\n", start);
+        const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+        const item = LIST_ITEM.exec(line);
+        if (item && start === lineStart + item[1].length) {
+          event.preventDefault();
+          source = source.slice(0, lineStart) + source.slice(start);
+          remember();
+          paint(lineStart);
+          editor.dispatchEvent(new Event("input", { bubbles: true }));
+          return;
+        }
       }
       if (start === end) {
         if (event.inputType.endsWith("Backward")) {
@@ -378,6 +503,20 @@ function installMarkdownInput(editor, render) {
     }
     if (!["insertText", "insertLineBreak"].includes(event.inputType)) return;
     if (event.inputType === "insertText" && event.data === " ") leaveInlineCode(1);
+    if (event.inputType === "insertText" && event.data === " ") {
+      const start = selectionOffset(false);
+      const task = taskPrefix(start);
+      if (task && start === selectionOffset(true)) {
+        event.preventDefault();
+        const prefix = `${task.indent}- [${task.checked ? "x" : " "}] `;
+        const caret = task.lineStart + prefix.length;
+        source = source.slice(0, task.lineStart) + prefix + source.slice(start);
+        remember();
+        paint(caret);
+        editor.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+      }
+    }
     // Applying text to the Markdown model avoids inheriting a code/bold span
     // when the caret is immediately after its closing delimiter.
     event.preventDefault();
@@ -394,6 +533,13 @@ function installMarkdownInput(editor, render) {
   editor.addEventListener("input", commit);
   editor.addEventListener("keydown", (event) => {
     if (event.isComposing || composing) return;
+    if (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.altKey && handlesTab()) {
+      const direction = event.shiftKey ? -1 : 1;
+      if (indentList(direction) || adjustHeading(direction)) {
+        event.preventDefault();
+        return;
+      }
+    }
     if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey &&
         ["ArrowLeft", "ArrowRight"].includes(event.key) && leaveInlineCode(event.key === "ArrowRight" ? 1 : -1)) {
       event.preventDefault();
@@ -405,6 +551,25 @@ function installMarkdownInput(editor, render) {
     historyIndex = Math.max(0, Math.min(history.length - 1, historyIndex + (redo ? 1 : -1)));
     source = history[historyIndex];
     paint(source.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  editor.addEventListener("click", (event) => {
+    const box = event.target?.closest?.("input[data-editor-task]");
+    if (!box || !editor.contains(box)) return;
+    const marked = read({ node: box, offset: 0 }).indexOf(CARET);
+    let at = -1;
+    for (let distance = 0; marked >= 0 && distance <= 4 && at < 0; distance += 1) {
+      at = [marked - distance, marked + distance].find(
+        (index) => index >= 0 && /^\[[ xX]\]/.test(source.slice(index)),
+      ) ?? -1;
+    }
+    if (at < 0 || source[at] !== "[") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const checked = source[at + 1].toLowerCase() !== "x";
+    source = source.slice(0, at + 1) + (checked ? "x" : " ") + source.slice(at + 2);
+    remember();
+    paint();
     editor.dispatchEvent(new Event("input", { bubbles: true }));
   });
   editor.addEventListener("paste", (event) => {
@@ -439,7 +604,7 @@ function installMarkdownInput(editor, render) {
   const emptyLead = $("empty-lead");
   const suggestions = $("empty-suggestions");
   const input = $("input");
-  installMarkdownInput(input, (text) => renderMarkdown(text, true));
+  installMarkdownInput(input, (text) => renderMarkdown(text, true), () => atBox.hidden);
 
   /// What the home state offers a reader with nothing to say yet, each filling
   /// the composer rather than sending: the desktop app's own four, in its own
@@ -762,6 +927,12 @@ function installMarkdownInput(editor, render) {
   // beside it rather than continuing it.
   const RULE = /^\s*((?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 
+  function ruleIsBlock(lines, index, softBreaks) {
+    if (!RULE.test(lines[index] || "")) return false;
+    if (!softBreaks) return true;
+    return index === 0 || lines[index - 1].trim() === "" || Boolean(listItem(lines[index - 1]));
+  }
+
 
   // ---------- syntax highlighting ----------
 
@@ -1020,7 +1191,12 @@ function installMarkdownInput(editor, render) {
         i += 1;
       }
       if (body.length > 1 && softBreaks) attributes += ` data-editor-pad="${escapeHtml(" ".repeat(pad))}"`;
-      const mark = item.task ? `${item.task[1].toLowerCase() === "x" ? "☑" : "☐"} ` : "";
+      const checked = item.task ? item.task[1].toLowerCase() === "x" : false;
+      const mark = item.task
+        ? softBreaks
+          ? `<input type="checkbox" data-editor-task=""${checked ? " checked" : ""} contenteditable="false" tabindex="-1">`
+          : `${checked ? "☑" : "☐"} `
+        : "";
       const text = softBreaks
         ? body.map((line) => inline(line, true)).join("<br>")
         : inline(body.join("\n"), false, true);
@@ -1070,7 +1246,7 @@ function installMarkdownInput(editor, render) {
       }
 
       const rule = line.match(RULE);
-      if (rule) {
+      if (rule && ruleIsBlock(lines, i, softBreaks)) {
         const marker = rule[1].trim();
         out.push(marker === "---" || !softBreaks ? "<hr />" : `<hr data-editor-marker="${escapeHtml(marker)}" />`);
         i += 1;
@@ -1091,7 +1267,12 @@ function installMarkdownInput(editor, render) {
           quote.push(lines[i].replace(/^\s*>\s?/, ""));
           i += 1;
         }
-        out.push(`<blockquote>${renderMarkdown(quote.join("\n"), softBreaks)}</blockquote>`);
+        const openTail = softBreaks && quote.length > 0 && quote[quote.length - 1].trim() === "";
+        const prefix = softBreaks ? /^\s*>\s?/.exec(line)?.[0] || "> " : "";
+        out.push(
+          `<blockquote${prefix ? ` data-editor-prefix="${escapeHtml(prefix)}"` : ""}>${renderMarkdown(quote.join("\n"), softBreaks)}` +
+            `${openTail ? '<p data-editor-padding=""><br></p><span data-editor-quote-tail=""></span>' : ""}</blockquote>`,
+        );
         continue;
       }
 
@@ -1105,7 +1286,7 @@ function installMarkdownInput(editor, render) {
       // An underlined line is the other way a heading is written; the line that
       // underlines it is carried on the heading so a read gives it back. It comes
       // after the list and quote branches, so their own `-` markers win.
-      const underline = line.trim() && /^ {0,3}(=+|-+)[ \t]*$/.exec(lines[i + 1] || "");
+      const underline = !softBreaks && line.trim() && /^ {0,3}(=+|-+)[ \t]*$/.exec(lines[i + 1] || "");
       if (underline) {
         const level = underline[1][0] === "=" ? 1 : 2;
         const marker = softBreaks ? ` data-editor-marker="${escapeHtml(underline[1])}"` : "";
@@ -1135,7 +1316,7 @@ function installMarkdownInput(editor, render) {
 
       const para = [line];
       i += 1;
-      while (i < lines.length && lines[i].trim() !== "" && !BLOCK_START.test(lines[i]) && !RULE.test(lines[i]) && !startsTable(lines, i)) {
+      while (i < lines.length && lines[i].trim() !== "" && !BLOCK_START.test(lines[i]) && !ruleIsBlock(lines, i, softBreaks) && !startsTable(lines, i)) {
         para.push(lines[i]);
         i += 1;
       }
