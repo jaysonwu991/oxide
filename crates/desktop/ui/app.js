@@ -7969,12 +7969,17 @@ function renderPlugins() {
       description.textContent = plugin.description || "No description provided.";
       const detail = document.createElement("small");
       const local = pluginCatalog.installed.find((entry) => entry.name === plugin.name);
-      detail.textContent = [plugin.version, local ? (local.enabled ? "Enabled" : "Disabled") : "Available"].filter(Boolean).join(" · ");
+      detail.textContent = [
+        plugin.version,
+        local?.managed ? "Built in" : null,
+        local ? (local.enabled ? "Enabled" : "Disabled") : "Available",
+      ].filter(Boolean).join(" · ");
       text.append(name, description, detail);
       const actions = document.createElement("div");
       actions.className = "plugin-actions";
       if (local) {
-        actions.append(pluginButton(local.enabled ? "Disable" : "Enable", local.enabled ? "disable" : "enable", local.name), pluginButton("Uninstall", "uninstall", local.name));
+        actions.append(pluginButton(local.enabled ? "Disable" : "Enable", local.enabled ? "disable" : "enable", local.name));
+        if (!local.managed) actions.append(pluginButton("Uninstall", "uninstall", local.name));
       } else actions.appendChild(pluginButton("Install", "install", plugin.name, marketplace));
       card.append(glyph, text, actions);
       grid.appendChild(card);

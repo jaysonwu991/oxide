@@ -421,7 +421,10 @@ let archivedError = null;
 let selectedTheme = "dark";
 let pluginsError = null;
 const pluginsFixture = {
-  installed: [{ name: "helper", description: "Useful commands", enabled: true, version: "1.0" }],
+  installed: [
+    { name: "helper", description: "Useful commands", enabled: true, version: "1.0" },
+    { name: "oxide-computer-use", description: "Control desktop apps", enabled: true, version: "0.1.0", managed: true },
+  ],
   marketplaces: [{ name: "team", source: "/tmp/team", error: null, plugins: [
     { name: "helper", description: "Useful commands", installed: true, enabled: true },
     { name: "search-tools", description: "Search tools", installed: false, enabled: false },
@@ -3558,6 +3561,13 @@ await app.openCustomize();
 check("opened Customize without a project", !elementFor("customize-page").hidden && !elementFor("customize-sidebar").hidden);
 check("marked the Customize rail active", elementFor("rail-customize").getAttribute("aria-current") === "page");
 check("listed installed plugins in the sidebar", elementFor("customize-installed").outline().includes("helper"));
+check("marked the app-managed plugin as built in", elementFor("plugin-list").outline().includes("Built in"));
+check(
+  "did not offer uninstall for the app-managed plugin",
+  ![...elementFor("plugin-list").querySelectorAll("button")].some(
+    (button) => button.title === "Uninstall oxide-computer-use",
+  ),
+);
 check("showed available marketplace plugins", elementFor("plugin-list").outline().includes("search-tools"));
 app.openSettings("appearance");
 check("gave Settings its own page and selected rail icon", document.body.classList.contains("settings-open") && elementFor("customize-page").hidden && elementFor("settings").getAttribute("aria-current") === "page");

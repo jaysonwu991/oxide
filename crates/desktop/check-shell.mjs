@@ -273,7 +273,9 @@ check(
 // comes.
 check(
   "started the engine and spoke to it one packet per line",
-  /spawn\(binary, \[\], \{ stdio: \["pipe", "pipe", "pipe"\] \}\)/.test(shell) &&
+  /spawn\(binary, \[\], \{[\s\S]*?stdio: \["pipe", "pipe", "pipe"\][\s\S]*?\}\)/.test(
+    shell,
+  ) &&
     /harness\.stdin\.write\(`\$\{line\}\\n`\)/.test(shell) &&
     /readLines\(child\.stdout/.test(shell) &&
     /pending\.split\("\\n"\)/.test(shell),
@@ -292,6 +294,21 @@ check(
     /path\.join\(__dirname, "\.\.", "\.\.", "target", profile, name\)/.test(harnessPath) &&
     /"oxide-desktop\.exe" : "oxide-desktop"/.test(harnessPath),
   harnessPath.replace(/\s+/g, " ").trim(),
+);
+const managedPluginsPath = between(
+  shell,
+  "function managedPluginsPath()",
+  "function startHarness",
+);
+check(
+  "passed the bundled plugin directory to the engine",
+  /app\.isPackaged\) return path\.join\(process\.resourcesPath, "plugins"\)/.test(
+    managedPluginsPath,
+  ) &&
+    /path\.join\(__dirname, "\.\.", "\.\.", "plugins"\)/.test(managedPluginsPath) &&
+    /OXIDE_DESKTOP_PLUGINS: managedPluginsPath\(\)/.test(shell) &&
+    exists("plugins/oxide-computer-use/.oxide/plugin.json") &&
+    exists("plugins/oxide-computer-use/.mcp.json"),
 );
 // The engine's half of the protocol: a request read by its own fields, answered
 // over the two envelopes the page and the window already agreed on.
@@ -885,6 +902,13 @@ check(
       /to: harness\/oxide-desktop(\.exe)?/.test(block(builder, platform)) &&
       /from: target\/release\/oxide-desktop/.test(block(builder, platform)),
   ) && /binaries:\s*\n\s*- Resources\/harness\/oxide-desktop/.test(block(builder, "mac")),
+);
+check(
+  "carried the managed plugins into every bundle the build makes",
+  ["mac", "win", "linux"].every((platform) => {
+    const resources = block(builder, platform);
+    return /from: plugins/.test(resources) && /to: plugins/.test(resources);
+  }),
 );
 // The app and the engine report one version: the bundler writes `package.json`'s
 // into the app, `current_version()` in the engine reads its own manifest's, and

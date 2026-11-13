@@ -21,6 +21,10 @@ fn default_true() -> bool {
     true
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// The directory that holds installed plugins, marketplaces, and the plugin
 /// state file.
 pub fn install_root() -> PathBuf {
@@ -57,6 +61,9 @@ pub struct InstalledPlugin {
     pub version: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Installed and refreshed by the application rather than a marketplace.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub managed: bool,
     pub path: PathBuf,
 }
 
@@ -88,6 +95,64 @@ fn save_state_in(root: &Path, state: &PluginState) -> Result<()> {
 
 pub fn load_state() -> Result<PluginState> {
     load_state_in(&install_root())
+}
+
+/// Installs or refreshes the plugin packages shipped beside the desktop app.
+///
+/// The application owns the package path and contents; the registry owns the
+/// enabled state. Re-running this after an app update refreshes the copied
+/// package without undoing a user's explicit choice to disable it.
+pub fn sync_managed_plugins(source_root: &Path) -> Result<Vec<String>> {
+    sync_managed_plugins_in(&install_root(), source_root)
+}
+
+fn sync_managed_plugins_in(root: &Path, source_root: &Path) -> Result<Vec<String>> {
+    let entries = std::fs::read_dir(source_root)
+        .with_context(|| format!("reading bundled plugins from {}", source_root.display()))?;
+    let mut sources: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && plugin_manifest(path).is_ok())
+        .collect();
+    sources.sort();
+
+    let mut state = load_state_in(root)?;
+    let mut synced = Vec::new();
+    for source in sources {
+        let manifest = plugin_manifest(&source)?;
+        let name = manifest.name;
+        if state
+            .plugins
+            .get(&name)
+            .is_some_and(|installed| !installed.managed)
+        {
+            bail!(
+                "cannot install managed plugin `{name}` because a user-installed plugin has that name"
+            );
+        }
+        let destination = root.join("managed").join(sanitize(&name));
+        copy_dir(&source, &destination)?;
+        let enabled = state
+            .plugins
+            .get(&name)
+            .map(|installed| installed.enabled)
+            .unwrap_or(true);
+        state.plugins.insert(
+            name.clone(),
+            InstalledPlugin {
+                name: name.clone(),
+                marketplace: None,
+                description: manifest.description,
+                version: manifest.version,
+                enabled,
+                managed: true,
+                path: destination,
+            },
+        );
+        synced.push(name);
+    }
+    save_state_in(root, &state)?;
+    Ok(synced)
 }
 
 // ---------------------------------------------------------------------------
@@ -709,6 +774,13 @@ async fn install_in(root: &Path, name: &str, marketplace: Option<&str>) -> Resul
     })?;
 
     let mut state = load_state_in(root)?;
+    if state
+        .plugins
+        .get(name)
+        .is_some_and(|installed| installed.managed)
+    {
+        bail!("plugin `{name}` is managed by Oxide and cannot be replaced from a marketplace");
+    }
     state.plugins.insert(
         name.to_string(),
         InstalledPlugin {
@@ -717,6 +789,7 @@ async fn install_in(root: &Path, name: &str, marketplace: Option<&str>) -> Resul
             description: manifest.description.clone(),
             version: manifest.version.clone(),
             enabled: true,
+            managed: false,
             path: dest,
         },
     );
@@ -761,6 +834,9 @@ fn uninstall_in(root: &Path, reference: &str) -> Result<String> {
     else {
         bail!("no installed plugin named `{reference}`");
     };
+    if installed.managed {
+        bail!("plugin `{name}` is managed by Oxide; disable it instead");
+    }
     state.plugins.remove(&name);
     save_state_in(root, &state)?;
     if installed.path.starts_with(root) {
@@ -996,6 +1072,7 @@ mod tests {
                     description: description.map(|text| text.to_string()),
                     version: None,
                     enabled,
+                    managed: false,
                     path,
                 },
             )
@@ -1278,6 +1355,54 @@ mod tests {
             std::fs::read_to_string(dir.join("dst/sub/b.txt")).unwrap(),
             "b"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn syncs_managed_plugins_without_resetting_their_choice() {
+        let dir = temp_dir("managed");
+        let source_root = dir.join("bundled");
+        let source = source_root.join("computer-use");
+        write_plugin(&source, "oxide-computer-use", serde_json::json!({}));
+
+        assert_eq!(
+            sync_managed_plugins_in(&dir, &source_root).unwrap(),
+            vec!["oxide-computer-use"]
+        );
+        let installed = load_state_in(&dir)
+            .unwrap()
+            .plugins
+            .remove("oxide-computer-use")
+            .unwrap();
+        assert!(installed.managed);
+        assert!(installed.enabled);
+        assert_eq!(installed.path, dir.join("managed/oxide-computer-use"));
+        assert!(
+            std::fs::read_to_string(installed.path.join(".claude-plugin/plugin.json"))
+                .unwrap()
+                .contains("\"version\": \"1.2.3\"")
+        );
+
+        set_enabled_in(&dir, "oxide-computer-use", false).unwrap();
+        std::fs::write(
+            source.join(".claude-plugin/plugin.json"),
+            r#"{"name":"oxide-computer-use","version":"2.0.0","description":"updated"}"#,
+        )
+        .unwrap();
+        sync_managed_plugins_in(&dir, &source_root).unwrap();
+        let installed = load_state_in(&dir)
+            .unwrap()
+            .plugins
+            .remove("oxide-computer-use")
+            .unwrap();
+        assert!(!installed.enabled);
+        assert_eq!(installed.version.as_deref(), Some("2.0.0"));
+        assert_eq!(installed.description.as_deref(), Some("updated"));
+        assert!(uninstall_in(&dir, "oxide-computer-use")
+            .unwrap_err()
+            .to_string()
+            .contains("managed by Oxide"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

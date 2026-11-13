@@ -23,6 +23,7 @@ use commands::{dispatch, DesktopState};
 use oxide_desktop::manager::DesktopManager;
 use serde_json::Value;
 use std::io::BufRead;
+use std::path::Path;
 use std::sync::Arc;
 
 fn main() {
@@ -33,6 +34,8 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    sync_managed_plugins();
+
     // A turn streams on its own task and an approval or a question is answered
     // later still, so every request is spawned onto this runtime. It stays
     // alive for the life of the process.
@@ -80,6 +83,18 @@ fn run() -> Result<(), String> {
         });
     }
     Ok(())
+}
+
+/// Refreshes the plugin packages carried beside the desktop app. The window
+/// supplies this directory because only it knows whether the app is running
+/// from a checkout or an installed bundle.
+fn sync_managed_plugins() {
+    let Some(root) = std::env::var_os("OXIDE_DESKTOP_PLUGINS") else {
+        return;
+    };
+    if let Err(error) = oxide_core::plugin_registry::sync_managed_plugins(Path::new(&root)) {
+        eprintln!("[oxide] could not sync bundled plugins: {error:#}");
+    }
 }
 
 /// One line of the page's own packet, as the command it asks for: the request's

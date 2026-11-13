@@ -157,6 +157,13 @@ function harnessPath(): string {
   return path.join(__dirname, "..", "..", "target", profile, name);
 }
 
+/// The plugin packages this build manages. They sit beside the harness in a
+/// packaged app and in this crate's source tree during development.
+function managedPluginsPath(): string {
+  if (app.isPackaged) return path.join(process.resourcesPath, "plugins");
+  return path.join(__dirname, "..", "..", "plugins");
+}
+
 /// Starts the harness and wires the channel to it in both directions.
 function startHarness(window: BrowserWindow): void {
   const binary = harnessPath();
@@ -169,7 +176,10 @@ function startHarness(window: BrowserWindow): void {
     return;
   }
 
-  const child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(binary, [], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, OXIDE_DESKTOP_PLUGINS: managedPluginsPath() },
+  });
   harness = child;
   for (const line of queuedToHarness) child.stdin.write(`${line}\n`);
   queuedToHarness = [];

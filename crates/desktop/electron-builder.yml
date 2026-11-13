@@ -53,6 +53,8 @@ mac:
   extraResources:
     - from: target/release/oxide-desktop
       to: harness/oxide-desktop
+    - from: plugins
+      to: plugins
 
 win:
   target:
@@ -64,6 +66,8 @@ win:
   extraResources:
     - from: target/release/oxide-desktop.exe
       to: harness/oxide-desktop.exe
+    - from: plugins
+      to: plugins
 
 nsis:
   # One click, for the user who ran it: the installer takes the default
@@ -99,3 +103,5 @@ linux:
   extraResources:
     - from: target/release/oxide-desktop
       to: harness/oxide-desktop
+    - from: plugins
+      to: plugins

@@ -98,3 +98,9 @@ startup before project resources, so project entries still override plugins with
 the same name. Use `/marketplaces` to browse marketplaces and install, enable, or
 remove their plugins interactively. See
 [Plugins and hooks](cli.md#plugins-and-hooks).
+
+The desktop app also ships managed plugin packages under
+`crates/desktop/plugins/`. Desktop refreshes these packages from its installed
+resources and records them as built-in plugins. A managed plugin can be enabled
+or disabled like any other plugin, but it cannot be uninstalled from the plugin
+manager because the next app launch restores it.
