@@ -1142,22 +1142,23 @@ mod tests {
 
         // The first drag writes the order the sidebar listed, whatever the rules
         // would have said, and dragging to the same place again is not a write.
-        assert!(manager.reorder(&[b.id.clone(), a.id.clone()]).unwrap());
         assert_eq!(listed(&manager), vec![b.id.clone(), a.id.clone()]);
-        assert!(!manager.reorder(&[b.id.clone(), a.id.clone()]).unwrap());
+        assert!(manager.reorder(&[a.id.clone(), b.id.clone()]).unwrap());
+        assert_eq!(listed(&manager), vec![a.id.clone(), b.id.clone()]);
+        assert!(!manager.reorder(&[a.id.clone(), b.id.clone()]).unwrap());
 
         // A folder just added is placed first, ahead of the arrangement.
         let c = manager.add_project(&third).unwrap();
         assert_eq!(
             listed(&manager),
-            vec![c.id.clone(), b.id.clone(), a.id.clone()]
+            vec![c.id.clone(), a.id.clone(), b.id.clone()]
         );
 
         // The arrangement is the file's rather than the process's.
         let reloaded = DesktopManager::load_from(store.clone()).unwrap();
         assert_eq!(
             listed(&reloaded),
-            vec![c.id.clone(), b.id.clone(), a.id.clone()]
+            vec![c.id.clone(), a.id.clone(), b.id.clone()]
         );
 
         // A discovered folder has a place to keep even though it is not in the
