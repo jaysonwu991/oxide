@@ -2623,6 +2623,37 @@ describe("webview dialogs", () => {
     });
   });
 
+  it("posts authorization and power as separate actions on a server that needs auth", () => {
+    const { byId, posted, send } = loadRenderer();
+    send({
+      k: "dialog",
+      dialog: {
+        ...mcp.dialog,
+        rows: [{
+          ...mcp.dialog.rows[0],
+          status: "Needs auth",
+          tone: "warn",
+          buttons: [
+            { label: "Authorize context7", action: "mcpAuthorize", icon: "" },
+            { label: "Disable context7", action: "mcpToggle", icon: "power" },
+          ],
+        }],
+      },
+    });
+    const row = byId.get("dialog-list")!.children[0];
+    const authorize = row.children[2];
+    const power = row.children[3];
+    assert.equal(authorize.textContent, "Authorize context7");
+    assert.equal(authorize.dataset.action, "mcpAuthorize");
+    assert.equal(power.className, "dialog-button icon-power tone-warn");
+    byId.get("dialog")!.fire("click", { target: authorize });
+    assert.deepEqual(last(posted), {
+      k: "dialogAction",
+      action: "mcpAuthorize",
+      value: "context7",
+    });
+  });
+
   it("posts the action of the row a click lands in", () => {
     const { byId, posted, send } = loadRenderer();
     send(sessions);

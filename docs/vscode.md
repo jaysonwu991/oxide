@@ -250,14 +250,17 @@ session listing opens on, with its own scrollbar once a project has more
 servers than fit.
 Every server is a row carrying the state the core reported (`Connected`, `Needs
 auth`, `Needs trust`, `Disabled`, `Error`) and a line naming its transport, the
-file that defined it and its state, plus an icon-only power switch that turns it
-off, or back on, in the file that defines it — `oxide mcp disable|enable <name>
---scope project|global` — after which the listing is repainted from the CLI's
-fresh answer, so a toggle is answered in the same place it was asked. Its tooltip
-names the server it would change (**Disable context7**), since the switch itself
-is one glyph. A **Recheck** icon and a **Close** icon sit in the listing's
-header, and <kbd>Esc</kbd> dismisses it too. **Oxide: MCP Servers…** opens the
-same listing from the palette.
+file that defined it and its state. A server in `Needs auth` carries an
+**Authorize [server]** button which runs `oxide mcp auth` in the project with the
+server's own scope, opening its OAuth page in the browser and waiting through the
+loopback callback; the row then repaints from a fresh CLI listing. The icon-only
+power switch turns it off, or back on, in the file that defines it —
+`oxide mcp disable|enable <name> --scope project|global` — after which the
+listing is repainted from the CLI's fresh answer, so both actions are answered
+in the same place they were asked. Its tooltip names the server it would change
+(**Disable context7**), since the switch itself is one glyph. A **Recheck** icon
+and a **Close** icon sit in the listing's header, and <kbd>Esc</kbd> dismisses
+it too. **Oxide: MCP Servers…** opens the same listing from the palette.
 Every server has to be started or reached to learn its state, so the wait is
 announced in the status bar and the listing says **Checking servers…** rather
 than looking like nothing happened; a CLI that does not answer within the

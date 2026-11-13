@@ -123,6 +123,7 @@ export interface DialogState {
 /// The actions a row posts back. The controller routes them (`dialogAction`),
 /// so a rename here is a compile error there rather than a dead button.
 export const MCP_TOGGLE = "mcpToggle";
+export const MCP_AUTHORIZE = "mcpAuthorize";
 export const MCP_REFRESH = "mcpRefresh";
 export const OPEN_SESSION = "openSession";
 /// A checkout picked in the worktree listing: the folder the next chat runs in.
@@ -666,8 +667,21 @@ export function mcpDialog(servers: readonly McpServerView[], note = "", info: La
     count: servers.length,
     search: false,
     query: "",
-    rows: servers.map((server) =>
-      row(server.name, server.name, {
+    rows: servers.map((server) => {
+      const disable = server.enabled
+        ? t("ui.disable", "Disable {value0}", { value0: server.name })
+        : t("ui.enable", "Enable {value0}", { value0: server.name });
+      const buttons = server.enabled && server.state === "needs-auth"
+        ? [
+            {
+              label: t("ui.authorizeServer", "Authorize {value0}", { value0: server.name }),
+              action: MCP_AUTHORIZE,
+              icon: "" as const,
+            },
+            { label: disable, action: MCP_TOGGLE, icon: "power" as const },
+          ]
+        : undefined;
+      return row(server.name, server.name, {
         detail: [server.transport, server.detail, t("ui.source", "source: {value0}", { value0: server.source })]
           .filter(Boolean)
           .join(" · "),
@@ -675,11 +689,12 @@ export function mcpDialog(servers: readonly McpServerView[], note = "", info: La
         // probe could not reach.
         status: mcpStatusLabel(server, info),
         tone: MCP_TONES[server.enabled ? server.state : "disabled"] ?? "",
-        button: server.enabled ? t("ui.disable", "Disable {value0}", { value0: server.name }) : t("ui.enable", "Enable {value0}", { value0: server.name }),
+        button: disable,
         buttonAction: MCP_TOGGLE,
         icon: "power",
-      }),
-    ),
+        buttons,
+      });
+    }),
     refreshLabel: t("ui.recheck", "Recheck"),
     refreshAction: MCP_REFRESH,
   };

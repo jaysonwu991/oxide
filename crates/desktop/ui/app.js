@@ -8092,6 +8092,22 @@ function renderMcps() {
     const status = document.createElement("span");
     status.className = `mcp-status state-${server.state}`;
     status.textContent = mcpStatusText(server);
+    const actions = document.createElement("div");
+    actions.className = "mcp-actions";
+    if (server.enabled && server.state === "needs-auth") {
+      const authorize = document.createElement("button");
+      authorize.type = "button";
+      authorize.className = "mcp-authorize";
+      authorize.textContent = t("ui.authorize", "Authorize");
+      authorize.title = t("ui.authorizeHint", "Open {value0} in the browser to authorize it", {
+        value0: server.name,
+      });
+      authorize.setAttribute("aria-label", t("ui.authorizeServer", "Authorize {value0}", {
+        value0: server.name,
+      }));
+      authorize.onclick = () => authorizeMcp(server, authorize);
+      actions.appendChild(authorize);
+    }
     const toggle = document.createElement("button");
     toggle.type = "button";
     // Icon-only: the listing is a row per server, so the switch is sized to the
@@ -8103,7 +8119,8 @@ function renderMcps() {
       : t("ui.enableTurnItBackOn", "Enable {value0}: turn it back on", { value0: server.name });
     toggle.setAttribute("aria-label", toggle.title);
     toggle.onclick = () => toggleMcp(server, toggle);
-    head.append(name, status, toggle);
+    actions.appendChild(toggle);
+    head.append(name, status, actions);
 
     const detail = document.createElement("div");
     detail.className = "mcp-detail";
@@ -8114,6 +8131,41 @@ function renderMcps() {
 
     row.append(head, detail, source);
     box.appendChild(row);
+  }
+}
+
+async function authorizeMcp(server, button) {
+  if (!state.project) {
+    setStatus(t("composer.selectProject", "Select a project first."));
+    return;
+  }
+  button.disabled = true;
+  button.textContent = t("ui.authorizing", "Authorizing…");
+  const project = state.project;
+  const generation = ++mcpGeneration;
+  const dismissProgress = showToast(t("ui.openingAuthorizationPage", "Opening the authorization page for {value0}…", {
+    value0: server.name,
+  }));
+  try {
+    const servers = await invoke("authorize_mcp_server", {
+      project,
+      name: server.name,
+      scope: server.scope,
+    });
+    if (generation !== mcpGeneration || project !== state.project) return;
+    state.mcps = servers;
+    state.mcpError = "";
+    renderMcps();
+    showToast(t("ui.mcpAuthorized", "{value0} authorized", { value0: server.name }));
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = t("ui.authorize", "Authorize");
+    showToast(t("ui.couldNotAuthorize", "Could not authorize {value0}: {value1}", {
+      value0: server.name,
+      value1: error,
+    }), "error");
+  } finally {
+    dismissProgress();
   }
 }
 
@@ -9311,6 +9363,8 @@ function renderSettingsLanguage() {
 function openSettings(section = "general") {
   closeCustomize();
   closeOverlays();
+  el("settings-search").value = "";
+  filterSettingsSections("");
   document.body.classList.add("settings-open");
   el("rail-home").removeAttribute("aria-current");
   el("settings").setAttribute("aria-current", "page");
@@ -9345,6 +9399,23 @@ const SETTINGS_SECTIONS = {
   keyboard: { tab: "settings-tab-keyboard", page: "settings-page-keyboard" },
 };
 
+const SETTINGS_NAV = [
+  ["settings-group-personal", ["settings-tab-general", "settings-tab-appearance", "settings-tab-notifications"]],
+  ["settings-group-integrations", ["settings-open-mcps", "settings-open-plugins", "settings-open-skills"]],
+  ["settings-group-workspace", ["settings-tab-memories", "settings-tab-keyboard"]],
+];
+
+const SETTINGS_SEARCH_TERMS = {
+  "settings-tab-general": "general send enter follow up queue steer",
+  "settings-tab-appearance": "appearance theme dark light language font text sidebar",
+  "settings-tab-notifications": "notifications alerts approvals questions awake",
+  "settings-open-mcps": "mcp servers oauth authorize tools integrations",
+  "settings-open-plugins": "plugins extensions marketplace integrations",
+  "settings-open-skills": "skills capabilities integrations",
+  "settings-tab-memories": "memories remember context workspace",
+  "settings-tab-keyboard": "keyboard shortcuts keybindings workspace",
+};
+
 function showSettingsSection(section) {
   const chosen = SETTINGS_SECTIONS[section] ? section : "general";
   for (const [name, parts] of Object.entries(SETTINGS_SECTIONS)) {
@@ -9362,6 +9433,34 @@ function showSettingsSection(section) {
   }
   if (chosen === "keyboard") renderShortcuts();
   if (chosen === "memories") void renderMemories();
+}
+
+function visibleSettingsSections() {
+  return Object.entries(SETTINGS_SECTIONS)
+    .filter(([, parts]) => !el(parts.tab).hidden)
+    .map(([name]) => name);
+}
+
+function filterSettingsSections(query) {
+  const wanted = String(query || "").trim().toLocaleLowerCase();
+  let anyVisible = false;
+  for (const [group, tabs] of SETTINGS_NAV) {
+    let groupVisible = false;
+    for (const id of tabs) {
+      const tab = el(id);
+      const text = `${tab.textContent || ""} ${tab.dataset.settingsKeywords || ""} ${SETTINGS_SEARCH_TERMS[id] || ""}`.toLocaleLowerCase();
+      tab.hidden = Boolean(wanted) && !text.includes(wanted);
+      groupVisible ||= !tab.hidden;
+    }
+    el(group).hidden = !groupVisible;
+    anyVisible ||= groupVisible;
+  }
+  el("settings-search-empty").hidden = anyVisible;
+  const shown = visibleSettingsSections();
+  if (shown.length && !shown.some((name) => el(SETTINGS_SECTIONS[name].tab).classList.contains("active"))) {
+    showSettingsSection(shown[0]);
+    el(SETTINGS_SECTIONS[shown[0]].tab).tabIndex = 0;
+  }
 }
 
 /// The controls the sheet shows, read from the preferences in force rather than
@@ -11930,11 +12029,13 @@ function init() {
   el("connect").onclick = openConnect;
   el("settings").onclick = () => (el("settings-modal").hidden ? openSettings() : closeSettings());
   el("settings-close").onclick = closeSettings;
+  el("settings-search").oninput = () => filterSettingsSections(el("settings-search").value);
   for (const [section, parts] of Object.entries(SETTINGS_SECTIONS)) {
     el(parts.tab).onclick = () => showSettingsSection(section);
     el(parts.tab).addEventListener("keydown", (event) => {
-      const names = Object.keys(SETTINGS_SECTIONS);
+      const names = visibleSettingsSections();
       const index = names.indexOf(section);
+      if (index < 0) return;
       const next = event.key === "Home" ? 0 : event.key === "End" ? names.length - 1
         : event.key === "ArrowDown" ? (index + 1) % names.length
         : event.key === "ArrowUp" ? (index + names.length - 1) % names.length : null;
@@ -11943,6 +12044,9 @@ function init() {
       showSettingsSection(names[next]);
       el(SETTINGS_SECTIONS[names[next]].tab).focus();
     });
+  }
+  for (const [id, view] of [["settings-open-mcps", "mcps"], ["settings-open-plugins", "plugins"], ["settings-open-skills", "skills"]]) {
+    el(id).onclick = () => void openCustomize(view);
   }
   el("settings-send-enter").onclick = () => savePrefs({ send_key: "enter" });
   el("settings-send-mod-enter").onclick = () => savePrefs({ send_key: "mod-enter" });

@@ -111,6 +111,13 @@ export function mcpToggleArgs(server: McpServerView, enabled: boolean): string[]
   return ["mcp", enabled ? "enable" : "disable", server.name, "--scope", server.scope];
 }
 
+/// The arguments that open a server's OAuth page in the browser and wait for
+/// its loopback callback. The scope pins the lookup to the server the dialog
+/// listed when the same name exists in both scopes.
+export function mcpAuthArgs(server: McpServerView): string[] {
+  return ["mcp", "auth", server.name, "--scope", server.scope];
+}
+
 /// The arguments that list the servers as JSON, for the project the command
 /// runs in.
 export function mcpListArgs(): string[] {

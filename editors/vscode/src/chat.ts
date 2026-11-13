@@ -49,6 +49,7 @@ import {
   LANGUAGE_SELECT,
   languageDialog,
   logoutDialog,
+  MCP_AUTHORIZE,
   MCP_REFRESH,
   MCP_TOGGLE,
   NEW_SESSION,
@@ -83,7 +84,7 @@ import {
 } from "./core/dialogs";
 import { clipboardArgs, parseClipboardMedia } from "./core/clipboard";
 import { approvalsArgs, approvalsClearArgs, parseApprovals } from "./core/permissions";
-import { mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
+import { mcpAuthArgs, mcpListArgs, mcpToggleArgs, parseMcpList, type McpServerView } from "./core/mcps";
 import {
   parseWorktree,
   parseWorktrees,
@@ -3365,6 +3366,8 @@ export class ChatController {
         return this.handoffSession();
       case MCP_REFRESH:
         return this.showMcps();
+      case MCP_AUTHORIZE:
+        return this.authorizeMcp(value);
       case MCP_TOGGLE:
         return this.toggleMcp(value);
       case UPDATE_INSTALL:
@@ -3497,6 +3500,27 @@ export class ChatController {
     this.showNotice(
       `${server.name} ${enabling ? "enabled" : "disabled"} in its ${server.source} config.`,
     );
+    await this.showMcps();
+  }
+
+  /// Opens the authorization page in the machine's browser through the same
+  /// CLI flow the terminal runs, then reads the server list again when the
+  /// loopback callback has stored the token.
+  private async authorizeMcp(name: string): Promise<void> {
+    const cwd = this.cwd();
+    const server = this.servers.find((entry) => entry.name === name);
+    if (!cwd || !server) return;
+    this.showDialog(mcpDialog(this.servers, "Waiting for authorization in the browser…", this.languageInfo));
+    void vscode.window.setStatusBarMessage("Oxide: waiting for MCP authorization…", 5 * 60_000);
+    const result = await runCapture(this.binary(), mcpAuthArgs(server), cwd, 6 * 60_000);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not authorize ${server.name}: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(mcpDialog(this.servers, failed, this.languageInfo));
+      return;
+    }
+    this.showNotice(`${server.name} authorized in the browser.`);
     await this.showMcps();
   }
 

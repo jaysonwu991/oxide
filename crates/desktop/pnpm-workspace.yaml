@@ -22,3 +22,7 @@ blockExoticSubdeps: false
 allowBuilds:
   electron: true
   electron-winstaller: false
+
+# This is the Electron patch release the desktop app deliberately pins.
+minimumReleaseAgeExclude:
+  - electron@45.3.2
