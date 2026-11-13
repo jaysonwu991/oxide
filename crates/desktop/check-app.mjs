@@ -2246,6 +2246,13 @@ check(
   String(sheet.indexOf(".composer .markdown-input")),
 );
 check(
+  "gave inline code Codex's highlighted pill",
+  /:is\(\.msg \.body, \.markdown-input\) code \{[^}]*background: color-mix\(in srgb, var\(--text\) 12%, transparent\);[^}]*padding: 2px 4px;[^}]*border-radius: 4px;[^}]*font-size: inherit;/.test(
+    sheet,
+  ),
+  String(sheet.indexOf(":is(.msg .body, .markdown-input) code")),
+);
+check(
   "left the row's own readouts without handlers",
   facts.includes('<span id="git"') &&
     !/id="(git|context-ring)"[^>]*onclick/.test(facts) &&

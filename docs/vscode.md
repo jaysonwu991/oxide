@@ -1301,6 +1301,12 @@ block needs around itself, an entity's character, a table's added outer pipes.
 A construct that rewrote itself on every keystroke would move the reader's own
 text under the caret.
 
+Shift+Enter at the end of a list closes the Markdown block with the blank line
+it needs, so the next word is ordinary text rather than a continuation of the
+last item. Inside an item it remains a line within that item. Inline code uses
+VS Code's preformat colours at Codex's 2px by 4px padding, 4px radius and the
+composer's own type size.
+
 Bare website addresses such as `github.com`, `www.example.org` and
 `docs.example.dev/setup` are linked in the composer with HTTPS destinations.
 The message keeps the text that was typed rather than gaining Markdown link

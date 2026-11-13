@@ -52,6 +52,9 @@ function exerciseEditor() {
     const event = new InputEvent("beforeinput", { inputType: "insertText", data: text, bubbles: true, cancelable: true });
     if (editor.dispatchEvent(event)) document.execCommand("insertText", false, text);
   };
+  const lineBreak = () => {
+    editor.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertLineBreak", bubbles: true, cancelable: true }));
+  };
   try {
     const emptyHeight = editor.getBoundingClientRect().height;
     const computed = getComputedStyle(editor);
@@ -70,6 +73,21 @@ function exerciseEditor() {
     editor.value = "Test `Markdown`";
     end();
     check("single rendered surface", editor.textContent === "Test Markdown" && editor.querySelector("code"));
+    const codeStyle = getComputedStyle(editor.querySelector("code"));
+    check(
+      "inline code uses Codex's highlighted pill",
+      codeStyle.backgroundColor !== "rgba(0, 0, 0, 0)" &&
+        parseFloat(codeStyle.paddingTop) === 2 &&
+        parseFloat(codeStyle.paddingLeft) === 4 &&
+        parseFloat(codeStyle.borderTopLeftRadius) === 4 &&
+        codeStyle.fontSize === getComputedStyle(editor).fontSize,
+      JSON.stringify({
+        background: codeStyle.backgroundColor,
+        padding: codeStyle.padding,
+        radius: codeStyle.borderTopLeftRadius,
+        size: codeStyle.fontSize,
+      }),
+    );
     type("!");
     check("typing after code", editor.value === "Test `Markdown`!");
     const codeCaret = (offset) => {
@@ -149,6 +167,18 @@ function exerciseEditor() {
     editor.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertLineBreak", bubbles: true, cancelable: true }));
     document.execCommand("delete");
     check("deleting a trailing newline preserves spaces", editor.value === "hello  ");
+    for (const list of ["- one", "* star", "1. ordered", "- [ ] task", "- outer\n  - inner"]) {
+      editor.value = list;
+      end();
+      lineBreak();
+      check(`one newline leaves ${JSON.stringify(list)}`, editor.value === `${list}\n\n`);
+      type("plain");
+      check(`typing after ${JSON.stringify(list)} is outside the list`, editor.value === `${list}\n\nplain` && editor.lastElementChild?.tagName === "P");
+    }
+    editor.value = "- one";
+    editor.setSelectionRange(3, 3);
+    lineBreak();
+    check("a newline inside list text stays in the item", editor.value === "- o\nne");
     editor.value = "```js\nconst x = 1;\n```";
     end();
     check("caret after a code fence", editor.querySelector("pre code")?.textContent === "const x = 1;");

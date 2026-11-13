@@ -965,6 +965,16 @@ describe("webview composer", () => {
     assert.ok(!shell.includes("<textarea"));
   });
 
+  it("draws inline code as Codex's highlighted pill", () => {
+    const rule = style.match(
+      /:is\(\.assistant \.body, \.user \.body, \.markdown-input\) code \{([^}]*)\}/,
+    )?.[1];
+    assert.match(rule ?? "", /var\(--vscode-textPreformat-background/);
+    assert.match(rule ?? "", /padding: 2px 4px;/);
+    assert.match(rule ?? "", /border-radius: 4px;/);
+    assert.match(rule ?? "", /font-size: inherit;/);
+  });
+
   it("renders the header and composer actions as icon buttons", () => {
     for (const id of ["new-session", "resume-session", "approvals", "attach", "send", "stop"]) {
       assert.match(shell, new RegExp(`id="${id}" class="icon`), id);

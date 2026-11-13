@@ -434,9 +434,11 @@ pre,
 }
 
 :is(.assistant .body, .user .body, .markdown-input) code {
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
-  padding: 0 3px;
-  border-radius: 3px;
+  background: var(--vscode-textPreformat-background, color-mix(in srgb, var(--vscode-foreground, #808080) 12%, transparent));
+  color: var(--vscode-textPreformat-foreground, inherit);
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: inherit;
 }
 
 :is(.assistant .body, .user .body, .markdown-input) pre {
