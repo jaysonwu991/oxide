@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "oxide-computer-use": {
+      "command": "oxide-computer-use",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

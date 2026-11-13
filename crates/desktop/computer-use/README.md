@@ -31,13 +31,15 @@ Move the app to its intended stable location before granting OS permissions.
 Register its **proxy**, rather than launching its runtime directly:
 
 ```sh
-oxide mcp add computer-use "/absolute/path/Oxide Computer Use.app/Contents/MacOS/oxide-computer-use" --mcp
+oxide mcp add oxide-computer-use "/absolute/path/Oxide Computer Use.app/Contents/MacOS/oxide-computer-use" --mcp
 ```
 
-Review the existing MCP configuration before replacing a server with that name;
-use another `computer-use-*` server name for a side-by-side trial. Reconnect the
-server or restart Oxide after changing configuration. Existing permission and
-approval choices are not migrated or reset by the build.
+Desktop's app-managed plugin already contributes an `oxide-computer-use` server
+that runs the executable from `PATH`. This explicit global entry overrides that
+plugin server with the helper proxy. Review the existing MCP configuration before
+replacing it; use another `oxide-computer-use-*` server name for a side-by-side
+trial. Reconnect the server or restart Oxide after changing configuration.
+Existing permission and approval choices are not migrated or reset by the build.
 
 Open the helper normally to use its permission menu. Only the user can grant
 Accessibility and Screen Recording. Query `permissions` through the actual MCP

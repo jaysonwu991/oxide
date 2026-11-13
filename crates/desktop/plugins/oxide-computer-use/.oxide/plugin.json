@@ -1,0 +1,15 @@
+{
+  "name": "oxide-computer-use",
+  "version": "0.1.0",
+  "description": "Control desktop apps through Oxide Computer Use.",
+  "author": {
+    "name": "Oxide"
+  },
+  "license": "MIT",
+  "keywords": [
+    "computer-use",
+    "desktop",
+    "accessibility",
+    "automation"
+  ]
+}

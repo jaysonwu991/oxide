@@ -2097,12 +2097,20 @@ token.
 
 ## Computer-Use screenshots
 
-Register the local runtime with `oxide-computer-use install --client oxide`.
-Desktop uses the same MCP registry and approval store as the CLI. Discover its
-tools with `tool_search`; use `permissions` on newer server builds to check the
-actual MCP process. A `doctor` run from another terminal can report different
-macOS permissions. Grant Accessibility and Screen Recording to the hosting app
-(Oxide.app for Desktop); only the user can approve those grants.
+Desktop carries an app-managed `oxide-computer-use` plugin in
+`crates/desktop/plugins/oxide-computer-use`. At launch the harness refreshes the
+package under the shared plugin registry and enables it on first use; a later
+disable choice is preserved across app updates. The plugin contributes the
+`oxide-computer-use` MCP server, so Desktop users do not need to register that
+server separately. The runtime executable itself must still be installed and
+available on the user command path. CLI and VS Code users can register the same
+runtime with `oxide-computer-use install --client oxide`.
+
+Desktop uses the shared MCP registry and approval store for the plugin's tools.
+Discover them with `tool_search`; use `permissions` on newer server builds to
+check the actual MCP process. A `doctor` run from another terminal can report
+different macOS permissions. Grant Accessibility and Screen Recording to the
+hosting app (Oxide.app for Desktop); only the user can approve those grants.
 
 MCP image content travels as media through `McpToolResult`, `ToolOutput` and
 `AgentEvent::ToolResult`. The JSON event's `attachments` carry data URLs, and
