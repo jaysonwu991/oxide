@@ -55,6 +55,12 @@ function exerciseEditor() {
   const lineBreak = () => {
     editor.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertLineBreak", bubbles: true, cancelable: true }));
   };
+  const erase = (type, start, finish = start) => {
+    editor.setSelectionRange(start, finish);
+    const event = new InputEvent("beforeinput", { inputType: type, bubbles: true, cancelable: true });
+    editor.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
   try {
     const emptyHeight = editor.getBoundingClientRect().height;
     const computed = getComputedStyle(editor);
@@ -153,6 +159,92 @@ function exerciseEditor() {
     check("caret stays on the new line", selection.focusNode.nodeType === Node.TEXT_NODE && selection.focusNode.nodeValue === "\n" && selection.focusOffset === 1);
     type("world");
     check("newlines", editor.value === "hello\nworld");
+    editor.value = "hello";
+    end();
+    lineBreak();
+    type("-");
+    check(
+      "a lone hyphen on the next line does not turn the previous line into a heading",
+      editor.value === "hello\n-" && !editor.querySelector("h1, h2") && editor.querySelector("p")?.innerHTML.startsWith("hello<br>-"),
+    );
+    type(" ");
+    check(
+      "a hyphen and space start a list without restyling the line before it",
+      editor.value === "hello\n- " && !editor.querySelector("h1, h2") && editor.querySelector("ul li")?.textContent === "",
+    );
+    editor.value = "hello";
+    end();
+    lineBreak();
+    type("=");
+    check(
+      "a lone equals sign on the next line stays ordinary text",
+      editor.value === "hello\n=" && !editor.querySelector("h1, h2") && editor.querySelector("p")?.innerHTML.startsWith("hello<br>="),
+    );
+    editor.value = "Title\n---";
+    check("a rule-like line stays text until a blank line starts a new block", !editor.querySelector("h1, h2, hr") && editor.value === "Title\n---");
+    for (const [marker, selector] of [
+      ["# ", "h1"],
+      ["1. ", "ol"],
+      ["- [ ] ", "ul.tasks li.task"],
+    ]) {
+      editor.value = marker;
+      check(`${JSON.stringify(marker)} renders its block as soon as it is typed`, Boolean(editor.querySelector(selector)));
+      editInPage("item");
+      check(`${JSON.stringify(marker)} keeps the text in that block`, editor.value === `${marker}item`);
+    }
+    editor.value = "[ ]";
+    end();
+    type(" ");
+    check("a bare task marker becomes a checkbox", editor.value === "- [ ] " && editor.querySelector("input[data-editor-task]")?.checked === false);
+    editor.querySelector("input[data-editor-task]").click();
+    check("clicking a task checkbox checks it", editor.value === "- [x] " && editor.querySelector("input[data-editor-task]")?.checked === true);
+    editor.querySelector("input[data-editor-task]").click();
+    check("clicking a checked box unchecks it", editor.value === "- [ ] " && editor.querySelector("input[data-editor-task]")?.checked === false);
+    editor.value = "```\n- [ ] code\n```\n- [ ] real";
+    editor.querySelector("input[data-editor-task]").click();
+    check("a task source is toggled by its rendered position, not a matching line in code", editor.value === "```\n- [ ] code\n```\n- [x] real");
+    editor.value = "# ";
+    end();
+    check("Backspace removes an empty heading block", erase("deleteContentBackward", 2) && editor.value === "");
+    editor.value = "## Title";
+    end();
+    const deeperHeading = new KeyboardEvent("keydown", { key: "Tab", cancelable: true });
+    editor.dispatchEvent(deeperHeading);
+    const shallowerHeading = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, cancelable: true });
+    editor.dispatchEvent(shallowerHeading);
+    const plainHeading = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, cancelable: true });
+    editor.dispatchEvent(plainHeading);
+    check(
+      "Tab changes a heading's level and Shift+Tab returns it to a paragraph",
+      deeperHeading.defaultPrevented && shallowerHeading.defaultPrevented && plainHeading.defaultPrevented && editor.value === "# Title",
+    );
+    const removeHeading = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, cancelable: true });
+    editor.dispatchEvent(removeHeading);
+    check("Shift+Tab removes the first heading level", removeHeading.defaultPrevented && editor.value === "Title");
+    editor.value = "hello\n> ";
+    end();
+    check("Backspace removes an empty blockquote line", erase("deleteContentBackward", editor.value.length) && editor.value === "hello\n");
+    editor.value = "```";
+    end();
+    check("Backspace removes an empty code block", erase("deleteContentBackward", 3) && editor.value === "");
+    editor.value = "```\n```";
+    const closedCode = editor.querySelector("pre code");
+    const closedCaret = document.createRange();
+    closedCaret.setStart(closedCode, 0);
+    closedCaret.collapse(true);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(closedCaret);
+    const closedDelete = new InputEvent("beforeinput", { inputType: "deleteContentBackward", bubbles: true, cancelable: true });
+    editor.dispatchEvent(closedDelete);
+    check("Backspace removes an empty fenced block at its start", closedDelete.defaultPrevented && editor.value === "");
+    editor.value = "> first";
+    end();
+    lineBreak();
+    type("second");
+    check(
+      "Shift+Enter stays inside a blockquote",
+      editor.value === "> first\n> second" && editor.querySelectorAll("blockquote").length === 1 && editor.querySelector("blockquote")?.textContent === "firstsecond",
+    );
     editor.value = "";
     end();
     for (let i = 0; i < 2; i++) editor.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertLineBreak", bubbles: true, cancelable: true }));
@@ -179,6 +271,26 @@ function exerciseEditor() {
     editor.setSelectionRange(3, 3);
     lineBreak();
     check("a newline inside list text stays in the item", editor.value === "- o\nne");
+    editor.value = "- outer\n  - inner";
+    editor.setSelectionRange(9, 9);
+    const tab = new KeyboardEvent("keydown", { key: "Tab", cancelable: true });
+    editor.dispatchEvent(tab);
+    check("Tab nests a list item", tab.defaultPrevented && editor.value === "- outer\n    - inner");
+    const untab = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, cancelable: true });
+    editor.dispatchEvent(untab);
+    check("Shift+Tab outdents a list item", untab.defaultPrevented && editor.value === "- outer\n  - inner");
+    editor.value = "- one";
+    end();
+    const rootTab = new KeyboardEvent("keydown", { key: "Tab", cancelable: true });
+    editor.dispatchEvent(rootTab);
+    const rootUntab = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, cancelable: true });
+    editor.dispatchEvent(rootUntab);
+    check("Tab navigation in a root list stays out of the window's shortcuts", rootTab.defaultPrevented && rootUntab.defaultPrevented && editor.value === "- one");
+    editor.value = "- one";
+    editor.setSelectionRange(2, 2);
+    const unlist = new InputEvent("beforeinput", { inputType: "deleteContentBackward", bubbles: true, cancelable: true });
+    editor.dispatchEvent(unlist);
+    check("Backspace at the start of a list item removes its marker", unlist.defaultPrevented && editor.value === "one");
     editor.value = "```js\nconst x = 1;\n```";
     end();
     check("caret after a code fence", editor.querySelector("pre code")?.textContent === "const x = 1;");
@@ -226,12 +338,6 @@ function exerciseEditor() {
     check("editing a bare domain preserves its source and link", editor.value === "github.com/openai" && editor.querySelector("a").getAttribute("href") === "https://github.com/openai");
     editor.value = "mail@example.com src/main.rs config.json @github.com `github.com`";
     check("emails files references and inline code are not bare links", editor.querySelectorAll("a").length === 0 && editor.querySelector(".file-reference")?.textContent === "@github.com");
-    const erase = (type, start, finish = start) => {
-      editor.setSelectionRange(start, finish);
-      const event = new InputEvent("beforeinput", { inputType: type, bubbles: true, cancelable: true });
-      editor.dispatchEvent(event);
-      return event.defaultPrevented;
-    };
     for (const reference of ["@src/main.rs", '@"source files/main.rs"#12-14', "@folder/"]) {
       const original = `Use ${reference} please`;
       editor.value = original;

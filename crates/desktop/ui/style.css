@@ -514,6 +514,13 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 :is(.msg .body, .markdown-input) th { background: var(--panel); }
 :is(.msg .body, .markdown-input) ul.tasks { list-style: none; padding-left: 4px; }
 :is(.msg .body, .markdown-input) li.task { list-style: none; }
+.markdown-input input[data-editor-task] {
+  width: 13px;
+  height: 13px;
+  margin: 0 5px 0 0;
+  vertical-align: -1px;
+  accent-color: var(--accent);
+}
 
 .tok-keyword { color: var(--accent); }
 .tok-string { color: var(--success); }
