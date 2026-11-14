@@ -115,9 +115,6 @@ impl Theme {
     pub fn accent(&self) -> Hsla {
         self.color("accent")
     }
-    pub fn assistant(&self) -> Hsla {
-        self.color("assistant")
-    }
     pub fn success(&self) -> Hsla {
         self.color("success")
     }

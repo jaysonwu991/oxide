@@ -8,6 +8,7 @@
 use crate::app::{Button, ConfirmAction, Overlay, Root, SettingsTab};
 use crate::icons::{self, Icon};
 use crate::theme::Theme;
+use crate::views::{icon_button, pill};
 use gpui::prelude::*;
 use gpui::{div, hsla, px, Context, Div, FontWeight, SharedString, Stateful, Window};
 use serde_json::{json, Value};
@@ -20,20 +21,20 @@ pub fn layer(
     cx: &mut Context<Root>,
 ) -> impl IntoElement {
     let overlay = root.overlay.clone();
+    let Some(overlay) = overlay else {
+        return div();
+    };
+
     let mut scrim = div()
         .absolute()
         .size_full()
         .flex()
         .items_center()
         .justify_center()
-        .bg(hsla(0.0, 0.0, 0.0, 0.45));
-
-    let Some(overlay) = overlay else {
-        return scrim;
-    };
+        .bg(hsla(0.0, 0.0, 0.0, 0.55));
 
     let panel = match overlay.clone() {
-        Overlay::Settings => settings(root, theme, cx),
+        Overlay::Settings => settings_page(root, theme, cx),
         Overlay::Models => models(root, theme, cx),
         Overlay::Themes => themes(root, theme, cx),
         Overlay::Language => language(root, theme, cx),
@@ -48,9 +49,12 @@ pub fn layer(
         } => confirm(theme, title, body, action, cx),
         Overlay::Connect { provider } => connect(theme, provider, cx),
         Overlay::NewProject => new_project(theme, cx),
-        Overlay::SessionActions { id, title, pinned } => {
-            session_actions(theme, id, title, pinned, cx)
-        }
+        Overlay::SessionActions {
+            id,
+            title,
+            project,
+            pinned,
+        } => session_actions(theme, id, title, project, pinned, cx),
         Overlay::ProjectActions {
             id,
             path,
@@ -59,6 +63,15 @@ pub fn layer(
         } => project_actions(theme, id, path, name, pinned, cx),
         Overlay::Approvals => approvals(root, theme, cx),
         Overlay::Archived => archived(root, theme, cx),
+        Overlay::Worktrees => worktrees(root, theme, cx),
+        Overlay::WorktreeBranch { project, name } => {
+            worktree_branch(root, theme, project, name, cx)
+        }
+        Overlay::ComposerTools => composer_tools(theme, cx),
+        Overlay::Projects => projects(root, theme, cx),
+        Overlay::RenameSession { project, id, title } => {
+            rename_session(root, theme, project, id, title, cx)
+        }
     };
 
     scrim = scrim.child(panel);
@@ -72,17 +85,18 @@ fn dialog(theme: &Theme, title: &str, width: f32) -> gpui::Div {
         .flex_col()
         .gap_3()
         .w(px(width))
-        .max_h(px(620.0))
-        .p_4()
+        .max_h(px(680.0))
+        .p(px(20.0))
         .bg(theme.panel())
         .border_1()
         .border_color(theme.border())
-        .rounded(px(14.0))
+        .rounded(px(12.0))
+        .shadow_xl()
         .child(
             div().flex().flex_row().items_center().child(
                 div()
                     .flex_1()
-                    .text_size(px(15.0))
+                    .text_size(px(16.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text())
                     .child(title.to_string()),
@@ -134,10 +148,16 @@ fn selectable(
         .flex_row()
         .items_center()
         .gap_2()
+        .min_h(px(34.0))
         .px_2()
-        .py_1()
+        .py(px(6.0))
         .rounded(px(7.0))
         .cursor_pointer()
+        .bg(if selected {
+            theme.panel_2()
+        } else {
+            gpui::transparent_black()
+        })
         .hover(move |style| style.bg(theme.panel_2()))
         .child(
             div().flex_1().min_w(px(0.0)).flex().flex_col().child(
@@ -172,7 +192,7 @@ fn selectable(
 /// the active section's fields in a card on the right. Everything it writes goes
 /// through `save_prefs`, so the terminal and the stable window see the same
 /// values.
-fn settings(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let version = env!("CARGO_PKG_VERSION");
     let tab = root.settings_tab;
 
@@ -182,10 +202,10 @@ fn settings(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
         .flex_none()
         .w(px(232.0))
         .h_full()
-        .px(px(16.0))
+        .px(px(14.0))
         .pt(px(24.0))
         .pb(px(16.0))
-        .gap(px(3.0))
+        .gap(px(4.0))
         .bg(theme.sidebar())
         .border_r_1()
         .border_color(theme.border())
@@ -195,17 +215,16 @@ fn settings(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .px(px(6.0))
-                .pb(px(18.0))
+                .px(px(12.0))
+                .pb(px(24.0))
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(19.0))
+                        .text_size(px(17.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text())
                         .child("Settings"),
-                )
-                .child(close_button(theme, cx)),
+                ),
         );
 
     navigation = navigation.child(nav_group(
@@ -265,6 +284,48 @@ fn settings(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
                 |root, _, cx| root.open_overlay(Overlay::Models, cx),
             ),
             nav_tab(
+                "settings-tab-plugins",
+                Icon::Customize,
+                "Plugins",
+                false,
+                theme,
+                cx,
+                |root, _, cx| {
+                    root.rail = crate::app::Rail::Customize;
+                    root.customize_tab = crate::app::CustomizeTab::Plugins;
+                    root.overlay = None;
+                    cx.notify();
+                },
+            ),
+            nav_tab(
+                "settings-tab-skills",
+                Icon::Chat,
+                "Skills",
+                false,
+                theme,
+                cx,
+                |root, _, cx| {
+                    root.rail = crate::app::Rail::Customize;
+                    root.customize_tab = crate::app::CustomizeTab::Skills;
+                    root.overlay = None;
+                    cx.notify();
+                },
+            ),
+            nav_tab(
+                "settings-tab-mcp",
+                Icon::Globe,
+                "MCP servers",
+                false,
+                theme,
+                cx,
+                |root, _, cx| {
+                    root.rail = crate::app::Rail::Customize;
+                    root.customize_tab = crate::app::CustomizeTab::McpServers;
+                    root.overlay = None;
+                    cx.notify();
+                },
+            ),
+            nav_tab(
                 "settings-tab-shortcuts",
                 Icon::Keyboard,
                 "Shortcuts",
@@ -276,13 +337,37 @@ fn settings(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
         ],
     ));
 
-    navigation = navigation.child(div().flex_1()).child(
-        div()
-            .px(px(10.0))
-            .text_size(px(11.0))
-            .text_color(theme.faint())
-            .child(format!("Oxide Beta {version}")),
-    );
+    navigation = navigation
+        .child(div().flex_1())
+        .child(
+            div()
+                .id("settings-back")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(40.0))
+                .px(px(12.0))
+                .rounded(px(8.0))
+                .cursor_pointer()
+                .text_size(px(13.0))
+                .text_color(theme.dim())
+                .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+                .child(icons::icon(Icon::Back, 17.0, theme.faint()))
+                .child("Back to chat")
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.overlay = None;
+                    cx.notify();
+                })),
+        )
+        .child(
+            div()
+                .px(px(12.0))
+                .pt_2()
+                .text_size(px(11.0))
+                .text_color(theme.faint())
+                .child(format!("Oxide Beta {version}")),
+        );
 
     let (title, hint) = match tab {
         SettingsTab::General => (
@@ -305,6 +390,35 @@ fn settings(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
         SettingsTab::Notifications => notification_fields(root, theme, cx),
     };
 
+    let page = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .max_w(px(820.0))
+        .mx_auto()
+        .gap(px(24.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(7.0))
+                .child(
+                    div()
+                        .text_size(px(26.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text())
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .line_height(px(21.0))
+                        .text_color(theme.dim())
+                        .child(hint),
+                ),
+        )
+        .child(fields(theme, rows));
+
     let content = div()
         .id("settings-content")
         .flex()
@@ -314,44 +428,20 @@ fn settings(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
         .min_h(px(0.0))
         .h_full()
         .overflow_y_scroll()
-        .px(px(40.0))
-        .pt(px(36.0))
-        .pb(px(28.0))
-        .gap(px(24.0))
+        .px(px(48.0))
+        .pt(px(48.0))
+        .pb(px(64.0))
         .bg(theme.background())
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .text_size(px(22.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text())
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.5))
-                        .line_height(px(20.0))
-                        .text_color(theme.dim())
-                        .child(hint),
-                ),
-        )
-        .child(fields(theme, rows));
+        .child(page);
 
     div()
         .flex()
         .flex_row()
-        .w(px(880.0))
-        .h(px(600.0))
-        .max_w_full()
-        .max_h_full()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .h_full()
         .bg(theme.background())
-        .border_1()
-        .border_color(theme.border())
-        .rounded(px(16.0))
         .overflow_hidden()
         .child(navigation)
         .child(content)
@@ -1055,6 +1145,7 @@ fn shortcuts(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
         ("Settings", "⌘,"),
         ("Changes pane", "⌘⏎"),
         ("Model picker", "⌘⇧M"),
+        ("Git worktrees", "⌘⇧G"),
         ("Back / forward", "⌘[ / ⌘]"),
         ("Send", "Enter"),
         ("New line", "⇧⏎"),
@@ -1342,6 +1433,7 @@ fn session_actions(
     theme: &Theme,
     id: String,
     title: String,
+    project: String,
     pinned: bool,
     cx: &mut Context<Root>,
 ) -> gpui::Div {
@@ -1359,7 +1451,24 @@ fn session_actions(
     let pin_id = id.clone();
     let archive_id = id.clone();
     let archive_title = name.clone();
+    let rename_id = id.clone();
+    let rename_title = name.clone();
     panel = panel
+        .child(Button::new("Rename").render(
+            SharedString::from(format!("session-rename-{id}")),
+            theme,
+            cx,
+            move |root, _, cx| {
+                root.session_name
+                    .update(cx, |editor, cx| editor.set_text(rename_title.clone(), cx));
+                root.overlay = Some(Overlay::RenameSession {
+                    project: project.clone(),
+                    id: rename_id.clone(),
+                    title: rename_title.clone(),
+                });
+                cx.notify();
+            },
+        ))
         .child(
             Button::new(if pinned {
                 "Unpin from the sidebar"
@@ -1449,6 +1558,36 @@ fn project_actions(
     panel
 }
 
+fn rename_session(
+    root: &mut Root,
+    theme: &Theme,
+    project: String,
+    id: String,
+    _title: String,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    let project_for_save = project.clone();
+    let id_for_save = id.clone();
+    dialog(theme, "Rename chat", 440.0)
+        .child(editor_field(root.session_name.clone(), theme))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(close_button(theme, cx))
+                .child(Button::new("Save").primary().render(
+                    "rename-session-save",
+                    theme,
+                    cx,
+                    move |root, _, cx| {
+                        root.rename_session(project_for_save.clone(), id_for_save.clone(), cx)
+                    },
+                )),
+        )
+}
+
 fn archived(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let archived = root.archived.clone();
     let mut panel = dialog(theme, "Archived chats", 520.0);
@@ -1503,6 +1642,519 @@ fn archived(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
             .child(close_button(theme, cx)),
     );
     panel
+}
+
+// ---------- worktrees ----------
+
+fn worktrees(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let worktrees = root.worktrees.clone();
+    let current = root.current_project();
+    let owner = root.current_project_owner();
+    let error = root.worktrees_error.clone();
+    let has_session = root
+        .chats
+        .get(root.active)
+        .is_some_and(|chat| chat.session.is_some());
+    let on_worktree = root.current_worktree().is_some();
+    let mut panel = dialog(theme, "Git worktrees", 620.0).child(
+        div()
+            .text_size(px(12.5))
+            .line_height(px(19.0))
+            .text_color(theme.dim())
+            .child(
+                "Run a chat in an isolated checkout. The project's local folder stays in place.",
+            ),
+    );
+
+    if let Some(error) = error {
+        panel = panel.child(
+            div()
+                .px_3()
+                .py_2()
+                .rounded(px(8.0))
+                .bg(theme.color("tool_error_bg"))
+                .text_size(px(12.0))
+                .text_color(theme.error())
+                .child(format!("Could not read worktrees: {error}")),
+        );
+    }
+
+    let mut rows = div()
+        .id("worktree-list")
+        .flex()
+        .flex_col()
+        .gap_1()
+        .max_h(px(250.0))
+        .overflow_y_scroll();
+    rows = rows.child(worktree_row(
+        "Local checkout",
+        owner.as_deref().unwrap_or("This project's own folder"),
+        !on_worktree,
+        theme,
+        cx,
+        |root, window, cx| root.select_worktree(window, None, cx),
+    ));
+    for worktree in &worktrees {
+        let path = worktree.path.clone();
+        let project = worktree.project.clone();
+        let branch_project = project.clone();
+        let remove_project = project.clone();
+        let name = worktree.name.clone();
+        let branch_name = worktree.name.clone();
+        let selected = current.as_deref() == Some(path.as_str());
+        let mut row = worktree_row(
+            &format!("{} · {}", worktree.name, worktree.branch),
+            &worktree.path,
+            selected,
+            theme,
+            cx,
+            move |root, window, cx| root.select_worktree(window, Some(path.clone()), cx),
+        );
+        row = row
+            .child(
+                icon_button(
+                    SharedString::from(format!("worktree-branch-{name}")),
+                    Icon::Branch,
+                    24.0,
+                    theme,
+                    false,
+                )
+                .tooltip(crate::views::tip("Create a branch here", theme))
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    cx.stop_propagation();
+                    root.worktree_branch.update(cx, |editor, cx| editor.clear(cx));
+                    root.overlay = Some(Overlay::WorktreeBranch {
+                        project: branch_project.clone(),
+                        name: branch_name.clone(),
+                    });
+                    cx.notify();
+                })),
+            )
+            .child(
+                icon_button(
+                    SharedString::from(format!("worktree-remove-{name}")),
+                    Icon::Close,
+                    24.0,
+                    theme,
+                    false,
+                )
+                .tooltip(crate::views::tip("Remove this worktree", theme))
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    cx.stop_propagation();
+                    root.overlay = Some(Overlay::Confirm {
+                        title: "Remove worktree".to_string(),
+                        body: format!(
+                            "Remove the worktree {name}? Its commits stay on a branch in the repository."
+                        ),
+                        action: ConfirmAction::RemoveWorktree {
+                            project: remove_project.clone(),
+                            name: name.clone(),
+                        },
+                    });
+                    cx.notify();
+                })),
+            );
+        rows = rows.child(row);
+    }
+    panel = panel.child(rows);
+
+    if has_session {
+        panel = panel.child(
+            Button::new(if on_worktree {
+                "Hand off chat to Local"
+            } else {
+                "Hand off chat to Worktree"
+            })
+            .render("worktree-handoff", theme, cx, |root, _, cx| {
+                root.handoff_current_session(cx)
+            }),
+        );
+    }
+
+    panel = panel
+        .child(div().h(px(1.0)).w_full().bg(theme.border()))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Create worktree"),
+        )
+        .child(editor_field(root.worktree_name.clone(), theme))
+        .child(editor_field(root.worktree_base.clone(), theme))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme.dim())
+                        .child("Start detached"),
+                )
+                .child(switch(
+                    "worktree-detached",
+                    root.worktree_detached,
+                    theme,
+                    cx,
+                    |root, _, cx| {
+                        root.worktree_detached = !root.worktree_detached;
+                        cx.notify();
+                    },
+                )),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme.dim())
+                        .child("Include uncommitted changes"),
+                )
+                .child(switch(
+                    "worktree-copy-changes",
+                    root.worktree_copy_changes,
+                    theme,
+                    cx,
+                    |root, _, cx| {
+                        root.worktree_copy_changes = !root.worktree_copy_changes;
+                        cx.notify();
+                    },
+                )),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(Button::new("Create").primary().render(
+                    "worktree-create",
+                    theme,
+                    cx,
+                    |root, _, cx| root.create_worktree(cx),
+                ))
+                .child(Button::new("Refresh").render(
+                    "worktree-refresh",
+                    theme,
+                    cx,
+                    |root, _, cx| root.load_worktrees(cx),
+                ))
+                .child(div().flex_1())
+                .child(close_button(theme, cx)),
+        );
+    panel
+}
+
+fn worktree_row(
+    label: &str,
+    detail: &str,
+    selected: bool,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    select: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from(format!("worktree-{label}")))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .min_h(px(42.0))
+        .px_2()
+        .rounded(px(8.0))
+        .cursor_pointer()
+        .bg(if selected {
+            theme.panel_2()
+        } else {
+            theme.panel()
+        })
+        .hover(move |style| style.bg(theme.panel_2()))
+        .child(icons::icon(
+            if label == "Local checkout" {
+                Icon::Folder
+            } else {
+                Icon::Worktree
+            },
+            16.0,
+            if selected {
+                theme.accent()
+            } else {
+                theme.dim()
+            },
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text())
+                        .child(label.to_string()),
+                )
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .font_family("Menlo")
+                        .text_size(px(10.5))
+                        .text_color(theme.faint())
+                        .child(detail.to_string()),
+                ),
+        )
+        .children(selected.then(|| pill("Active", theme, true)))
+        .on_click(cx.listener(move |root, _, window, cx| select(root, window, cx)))
+}
+
+fn editor_field(editor: gpui::Entity<crate::editor::Editor>, theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .h(px(36.0))
+        .px_2()
+        .rounded(px(8.0))
+        .bg(theme.background())
+        .border_1()
+        .border_color(theme.border())
+        .child(div().flex_1().min_w(px(0.0)).child(editor))
+}
+
+fn worktree_branch(
+    root: &mut Root,
+    theme: &Theme,
+    project: String,
+    name: String,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    let label = format!("Create a branch in {name}");
+    let project_for_create = project.clone();
+    let name_for_create = name.clone();
+    dialog(theme, &label, 460.0)
+        .child(
+            div()
+                .text_size(px(12.5))
+                .text_color(theme.dim())
+                .child("The worktree switches to this branch."),
+        )
+        .child(editor_field(root.worktree_branch.clone(), theme))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(close_button(theme, cx))
+                .child(Button::new("Create branch").primary().render(
+                    "worktree-branch-create",
+                    theme,
+                    cx,
+                    move |root, _, cx| {
+                        root.create_worktree_branch(
+                            project_for_create.clone(),
+                            name_for_create.clone(),
+                            cx,
+                        )
+                    },
+                )),
+        )
+}
+
+fn composer_tools(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    dialog(theme, "Composer tools", 440.0)
+        .child(tool_row(
+            "composer-tool-attach",
+            Icon::Paperclip,
+            "Attach files",
+            theme,
+            cx,
+            |root, _, cx| {
+                root.overlay = None;
+                root.attach_files(cx);
+            },
+        ))
+        .child(tool_row(
+            "composer-tool-worktree",
+            Icon::Worktree,
+            "Git worktree",
+            theme,
+            cx,
+            |root, _, cx| root.open_worktrees(cx),
+        ))
+        .child(tool_row(
+            "composer-tool-approvals",
+            Icon::Lock,
+            "Tool approvals",
+            theme,
+            cx,
+            |root, _, cx| root.open_overlay(Overlay::Approvals, cx),
+        ))
+        .child(tool_row(
+            "composer-tool-models",
+            Icon::Globe,
+            "Models",
+            theme,
+            cx,
+            |root, _, cx| root.open_overlay(Overlay::Models, cx),
+        ))
+        .child(tool_row(
+            "composer-tool-customize",
+            Icon::Customize,
+            "Customize",
+            theme,
+            cx,
+            |root, _, cx| {
+                root.rail = crate::app::Rail::Customize;
+                root.customize_tab = crate::app::CustomizeTab::Plugins;
+                root.overlay = None;
+                cx.notify();
+            },
+        ))
+        .child(tool_row(
+            "composer-tool-settings",
+            Icon::Settings,
+            "Settings",
+            theme,
+            cx,
+            |root, _, cx| root.open_overlay(Overlay::Settings, cx),
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .child(close_button(theme, cx)),
+        )
+}
+
+fn projects(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let projects = root.projects.clone();
+    let current = root.current_project_owner();
+    let mut panel = dialog(theme, "Projects", 480.0).child(
+        div()
+            .text_size(px(12.5))
+            .text_color(theme.dim())
+            .child("Choose the folder the next chat runs in."),
+    );
+    let mut list = div()
+        .id("composer-project-list")
+        .flex()
+        .flex_col()
+        .gap_1()
+        .max_h(px(360.0))
+        .overflow_y_scroll();
+    for project in projects {
+        let path = project.path.clone();
+        let name = if project.name.is_empty() {
+            project.display_path.clone()
+        } else {
+            project.name.clone()
+        };
+        let selected = current.as_deref() == Some(path.as_str());
+        list = list.child(
+            div()
+                .id(SharedString::from(format!("composer-project-{path}")))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(40.0))
+                .px_2()
+                .rounded(px(8.0))
+                .cursor_pointer()
+                .bg(if selected {
+                    theme.panel_2()
+                } else {
+                    gpui::transparent_black()
+                })
+                .hover(move |style| style.bg(theme.panel_2()))
+                .child(icons::icon(Icon::Folder, 16.0, theme.dim()))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(theme.text())
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .font_family("Menlo")
+                                .text_size(px(10.5))
+                                .text_color(theme.faint())
+                                .child(project.display_path),
+                        ),
+                )
+                .children(selected.then(|| pill("Current", theme, true)))
+                .on_click(cx.listener(move |root, _, window, cx| {
+                    root.select_project(window, path.clone(), cx)
+                })),
+        );
+    }
+    panel = panel.child(list);
+    panel = panel.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(Button::new("Add project").render(
+                "composer-projects-add",
+                theme,
+                cx,
+                |root, _, cx| root.add_project(cx),
+            ))
+            .child(div().flex_1())
+            .child(close_button(theme, cx)),
+    );
+    panel
+}
+
+fn tool_row(
+    id: &'static str,
+    mark: Icon,
+    label: &'static str,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .h(px(40.0))
+        .px(px(10.0))
+        .rounded(px(8.0))
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.panel_2()))
+        .child(icons::icon(mark, 17.0, theme.dim()))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(theme.text())
+                .child(label),
+        )
+        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
 // ---------- approvals ----------
@@ -1611,6 +2263,9 @@ fn confirm(
                 move |root, _, cx| match action_for_ok.clone() {
                     ConfirmAction::RemoveProject(id) => root.remove_project(id, cx),
                     ConfirmAction::ArchiveSession(id) => root.archive_session(id, cx),
+                    ConfirmAction::RemoveWorktree { project, name } => {
+                        root.remove_worktree(project, name, cx)
+                    }
                     ConfirmAction::CloseChat(index) => {
                         root.overlay = None;
                         root.close_chat(index, cx);

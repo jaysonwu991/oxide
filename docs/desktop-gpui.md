@@ -109,11 +109,14 @@ Ubuntu, macOS and Windows.
 The layout mirrors the stable window: a 46px topbar that the window drags by,
 with the platform's traffic lights inside it, navigation, the open chats' tabs
 (or the thread's own folder and title while one is open) and a changes toggle; a
-56px rail; the 300px sidebar (draggable) with its brand row — where the search
-field takes the name's place when opened — New Chat, the project tree and the
-threads touched most recently; the reading column with its transcript, the
+56px rail; the 268px sidebar (draggable) with its brand row — where the search
+field takes the name's place when opened — New Chat and the always-expanded
+project tree, followed by compact Recents; the reading column with its transcript, the
 welcome page before a thread is in it, and the composer; and a changes pane
-docked to the right.
+docked to the right. The project details panel is open by default. Chat,
+Projects, Customize and Settings are destinations in
+one shell: each keeps the rail and topbar, while Projects uses a directory page
+and Customize and Settings use the stable window's two-column navigation.
 
 Every glyph is the SVG the stable window strokes, drawn from `src/icons.rs`: GPUI
 rasterises one drawing into an alpha mask and tints it with the element's color,
@@ -134,17 +137,20 @@ that composer instead of being sent.
   `agent-event` packets paint the same cards the stable window paints: the user's
   message, the answer with its markdown, thinking blocks with their duration,
   tool cards with their call, output and diff, errors, compaction notices, and
-  the usage/context line under the composer. Its top row names the project and
+  a context ring beside the composer controls. Its top row names the project and
   the branch `git_info` reports (and leaves the branch out when the folder is not
   a repository); its footer carries the attach and tools controls, the approvals
   dialog, the model and thinking chips and the round send/stop button. `Stop`
   cancels the run through
   `cancel_run`. A message typed while a turn is running is steered into it
   through `steer_run` (queued for the turn's end unless `follow_up` is `steer`,
-  the same preference the stable window reads). Attachments are picked from disk
+  the same preference the stable window reads), and the queued or steering rows
+  stay above the editor until the turn consumes them. Attachments are picked from disk
   with the native file prompt and sent as the data URLs the core's own
   attachment rules accept — the same images, PDFs and text the terminal and the
-  stable window attach, under the same size limit.
+  stable window attach, under the same size limit. The composer lists
+  `list_commands` rows after `/` and calls `at_suggestions` for an `@path` under
+  the caret; choosing either completes the token in place.
 - **Approvals and questions** — `approval-request` and `question-request` are
   answered in a dialog and inline on the card they belong to, through
   `resolve_approval` / `resolve_question` and the shared brokers, so the terminal
@@ -164,12 +170,16 @@ that composer instead of being sent.
   through `set_project_pinned` or removes it, and the sidebar's **Archived**
   listing reads `archived_sessions` and restores one through
   `unarchive_session`.
+- **Git worktrees** — `worktrees`, `create_worktree`,
+  `create_worktree_branch`, `remove_worktree` and `handoff_session` back the
+  rail and composer entries. A chat can start in Local or a worktree, carry
+  uncommitted changes into a new checkout, create its branch later, and hand its
+  session between the two.
 - **Changes** — `repository_changes` lists a thread's uncommitted files with
   counts and their diff previews in the docked pane, and `Undo` in its header
   restores the turn through `undo_turn` and the shared snapshot repository (the
-  same restore the terminal's `changes undo` and the VS Code panel run). The work
-  tree's totals stand above the composer as a chip (`N files changed +A −D`) that
-  opens the pane, and every turn that changed files leaves an **Edited N files**
+  same restore the terminal's `changes undo` and the VS Code panel run). Every
+  turn that changed files leaves an **Edited N files**
   card in the transcript — the count, the totals, the files it touched, `Undo`
   for the newest turn and `View changes`.
 - **Project details** — the topbar's details toggle opens the right-hand column
@@ -179,7 +189,8 @@ that composer instead of being sent.
   (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
 - **Menus and keys** — the macOS menu bar carries the app's own menu, File,
   View and Window menus over the same actions as the shortcuts (⌘N, ⌘W, ⌘B,
-  ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘[ / ⌘], Esc to close a dialog, ⌘Q).
+  ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git worktrees, ⌘[ / ⌘],
+  Esc to close a dialog, ⌘Q).
 - **Appearance and language** — `theme_colors`/`set_theme` read the same theme
   files the CLI does. `language`/`set_language` read and write the shared
   language setting, and the catalog it answers with supplies the composer's
@@ -189,10 +200,11 @@ that composer instead of being sent.
 - **Preferences** — `read_prefs`/`write_prefs` for the send key, follow-up
   behaviour, sidebar visibility, predictions, notifications, what they announce,
   keep-awake and text scale; the sidebar's own visibility and width follow them.
-  The settings sheet is the stable window's two columns — Personal (General,
-  Appearance, Notifications) over Integrations (Models, Shortcuts) — and each
-  field is a row of labelled controls: segments for a choice, a switch for a
-  flag, a link into the theme, language or shortcut picker, and a scale stepper.
+  Settings is a full-window destination with a 232px navigation column —
+  Personal (General, Appearance, Notifications) over Integrations (Models,
+  Plugins, Skills, MCP servers, Shortcuts) — and each field is a row of labelled
+  controls: segments for a choice, a switch for a flag, a link into the theme,
+  language or shortcut picker, and a scale stepper.
 
 ### Accessibility
 
@@ -202,7 +214,7 @@ or values to announce. That is a limit of the framework, not something this
 front-end can paper over.
 
 What the window does offer: the keyboard shortcuts in the next section — Esc
-closes whatever dialog is open, ⌘, opens settings, and ⌘N, ⌘W, ⌘B, ⌘⏎, ⌘⇧M,
+closes whatever dialog is open, ⌘, opens settings, and ⌘N, ⌘W, ⌘B, ⌘⏎, ⌘⇧M, ⌘⇧G,
 ⌘[ and ⌘] do the work their tooltips name — a composer that is a real text
 editor with a caret, selection and the usual editing keys, and mouse affordances
 that say what they do: every icon-only control carries a hover label from
@@ -235,10 +247,7 @@ and planned, and the beta does not pretend otherwise:
   staging), which needs the staging actions wired;
 - the provider Connect dialog (the model picker says how to connect, and the
   stored credential is read on refresh);
-- `@path` completion and the `/` command palette in the composer, and the
-  composer's inline predictions;
-- the queue listing beside the composer (steered and queued messages are sent,
-  but their queued rows are not drawn);
+- the composer's inline predictions;
 - updating in place: the beta does not self-install updates, because
   `oxide_core::updates::Component::Desktop` resolves the stable app's artifact
   names and an install would put the Electron app in the beta's place. Update

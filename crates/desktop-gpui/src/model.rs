@@ -249,6 +249,13 @@ pub struct Attachment {
     pub data_url: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct QueuedMessage {
+    pub text: String,
+    pub attachments: Vec<String>,
+    pub follow_up: bool,
+}
+
 pub struct Chat {
     pub id: u64,
     pub project: String,
@@ -262,6 +269,7 @@ pub struct Chat {
     pub awaiting_run: bool,
     pub reasoning: Option<String>,
     pub attachments: Vec<Attachment>,
+    pub queued: Vec<QueuedMessage>,
     pub usage: Option<Usage>,
     pub changes: Option<Value>,
     pub baseline: Option<String>,
@@ -287,6 +295,7 @@ impl Chat {
             awaiting_run: false,
             reasoning: None,
             attachments: Vec::new(),
+            queued: Vec::new(),
             usage: None,
             changes: None,
             baseline: None,

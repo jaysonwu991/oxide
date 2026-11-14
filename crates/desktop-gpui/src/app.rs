@@ -10,17 +10,20 @@
 
 use crate::editor::{self, Editor};
 use crate::engine::Engine;
-use crate::model::{Attachment, Chat, Entry, ProjectRow, SessionRow};
+use crate::model::{Attachment, Chat, Entry, ProjectRow, QueuedMessage, SessionRow};
 use crate::overlays;
 use crate::theme::Theme;
 use crate::views;
 use gpui::prelude::*;
 use gpui::{
-    actions, div, px, size, App, Context, Entity, Focusable, KeyBinding, MouseDownEvent,
-    MouseMoveEvent, Render, SharedString, Subscription, Window, WindowBounds, WindowOptions,
+    actions, div, px, size, App, Context, Entity, Focusable, KeyBinding, MouseButton,
+    MouseDownEvent, MouseMoveEvent, Render, SharedString, Subscription, Window, WindowBounds,
+    WindowOptions,
 };
+use oxide_core::worktree::{Worktree, Worktrees};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 actions!(
@@ -32,6 +35,7 @@ actions!(
         OpenSettings,
         ToggleChanges,
         OpenModels,
+        OpenWorktrees,
         Back,
         Forward,
         DismissOverlay,
@@ -44,7 +48,17 @@ actions!(
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Rail {
     Chats,
+    Projects,
     Customize,
+}
+
+/// The section the Customize destination is showing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CustomizeTab {
+    Plugins,
+    Skills,
+    McpServers,
+    Approvals,
 }
 
 /// Which section the settings sheet is showing.
@@ -82,6 +96,7 @@ pub enum Overlay {
     SessionActions {
         id: String,
         title: String,
+        project: String,
         pinned: bool,
     },
     ProjectActions {
@@ -92,6 +107,18 @@ pub enum Overlay {
     },
     Archived,
     Approvals,
+    Worktrees,
+    WorktreeBranch {
+        project: String,
+        name: String,
+    },
+    ComposerTools,
+    Projects,
+    RenameSession {
+        project: String,
+        id: String,
+        title: String,
+    },
     Connect {
         provider: String,
     },
@@ -103,6 +130,7 @@ pub enum ConfirmAction {
     RemoveProject(String),
     ArchiveSession(String),
     CloseChat(usize),
+    RemoveWorktree { project: String, name: String },
 }
 
 pub struct Toast {
@@ -149,12 +177,17 @@ pub struct Root {
     pub next_chat: u64,
     pub editors: HashMap<u64, Entity<Editor>>,
     pub search: Entity<Editor>,
+    pub worktree_name: Entity<Editor>,
+    pub worktree_base: Entity<Editor>,
+    pub worktree_branch: Entity<Editor>,
+    pub session_name: Entity<Editor>,
     pub query: String,
     /// Whether the sidebar is showing the search field in place of its brand row,
     /// the page's own swap between the name and the box.
     pub searching: bool,
     pub results: Vec<SessionRow>,
     pub rail: Rail,
+    pub customize_tab: CustomizeTab,
     pub settings_tab: SettingsTab,
     pub overlay: Option<Overlay>,
     pub toast: Option<Toast>,
@@ -162,11 +195,19 @@ pub struct Root {
     pub info: Value,
     pub models: Value,
     pub approvals: Vec<String>,
+    pub commands: Vec<Value>,
+    pub at_answer: Value,
+    pub at_chat: Option<u64>,
+    pub at_generation: u64,
     /// The branch the open thread's folder is on, when it is a repository. The
     /// composer's top row names it, and leaves the fact out when there is none.
     pub branch: Option<String>,
     /// The MCP servers this project loads, as the details pane lists them.
     pub sources: Vec<Value>,
+    pub worktrees: Vec<Worktree>,
+    pub worktrees_error: Option<String>,
+    pub worktree_detached: bool,
+    pub worktree_copy_changes: bool,
     pub show_details: bool,
     pub theme_names: Vec<String>,
     pub current_theme: String,
@@ -177,7 +218,6 @@ pub struct Root {
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
     pub resizing: Option<f32>,
-    pub collapsed: HashSet<String>,
     pub show_changes: bool,
     pub subscriptions: Vec<Subscription>,
 }
@@ -193,6 +233,50 @@ impl Root {
             let theme = Theme::default();
             Editor::new(
                 "Search chats",
+                theme.text(),
+                theme.faint(),
+                theme.accent(),
+                theme.wash("accent", 0.25),
+                cx,
+            )
+        });
+        let worktree_name = cx.new(|cx| {
+            let theme = Theme::default();
+            Editor::new(
+                "Worktree name",
+                theme.text(),
+                theme.faint(),
+                theme.accent(),
+                theme.wash("accent", 0.25),
+                cx,
+            )
+        });
+        let worktree_base = cx.new(|cx| {
+            let theme = Theme::default();
+            Editor::new(
+                "HEAD (current checkout)",
+                theme.text(),
+                theme.faint(),
+                theme.accent(),
+                theme.wash("accent", 0.25),
+                cx,
+            )
+        });
+        let worktree_branch = cx.new(|cx| {
+            let theme = Theme::default();
+            Editor::new(
+                "Branch name",
+                theme.text(),
+                theme.faint(),
+                theme.accent(),
+                theme.wash("accent", 0.25),
+                cx,
+            )
+        });
+        let session_name = cx.new(|cx| {
+            let theme = Theme::default();
+            Editor::new(
+                "Chat title",
                 theme.text(),
                 theme.faint(),
                 theme.accent(),
@@ -224,10 +308,15 @@ impl Root {
             next_chat: 1,
             editors: HashMap::new(),
             search,
+            worktree_name,
+            worktree_base,
+            worktree_branch,
+            session_name,
             query: String::new(),
             searching: false,
             results: Vec::new(),
             rail: Rail::Chats,
+            customize_tab: CustomizeTab::Plugins,
             settings_tab: SettingsTab::General,
             overlay: None,
             toast: None,
@@ -235,9 +324,17 @@ impl Root {
             info: Value::Null,
             models: Value::Null,
             approvals: Vec::new(),
+            commands: Vec::new(),
+            at_answer: Value::Null,
+            at_chat: None,
+            at_generation: 0,
             branch: None,
             sources: Vec::new(),
-            show_details: false,
+            worktrees: Vec::new(),
+            worktrees_error: None,
+            worktree_detached: true,
+            worktree_copy_changes: false,
+            show_details: true,
             theme_names: Vec::new(),
             current_theme: "dark".to_string(),
             languages: Vec::new(),
@@ -245,9 +342,8 @@ impl Root {
             archived: Vec::new(),
             changes: None,
             sidebar_visible: true,
-            sidebar_width: 300.0,
+            sidebar_width: 268.0,
             resizing: None,
-            collapsed: HashSet::new(),
             show_changes: false,
             subscriptions,
         };
@@ -283,6 +379,7 @@ impl Root {
         bindings.push(KeyBinding::new("cmd-,", OpenSettings, Some("Root")));
         bindings.push(KeyBinding::new("cmd-enter", ToggleChanges, Some("Root")));
         bindings.push(KeyBinding::new("cmd-shift-m", OpenModels, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-shift-g", OpenWorktrees, Some("Root")));
         bindings.push(KeyBinding::new("cmd-[", Back, Some("Root")));
         bindings.push(KeyBinding::new("cmd-]", Forward, Some("Root")));
         bindings.push(KeyBinding::new("escape", DismissOverlay, Some("Root")));
@@ -322,6 +419,7 @@ impl Root {
                     MenuItem::action("Show or Hide the Sidebar", ToggleSidebar),
                     MenuItem::action("Changes", ToggleChanges),
                     MenuItem::action("Model Picker", OpenModels),
+                    MenuItem::action("Git Worktrees", OpenWorktrees),
                 ],
             },
             Menu {
@@ -670,12 +768,309 @@ impl Root {
         );
     }
 
+    pub fn current_project_owner(&self) -> Option<String> {
+        let current = self.current_project()?;
+        if let Some(worktree) = self
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.path == current)
+        {
+            return Some(worktree.project.clone());
+        }
+        Some(
+            Worktrees::open()
+                .project_of(Path::new(&current))
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or(current),
+        )
+    }
+
+    pub fn current_worktree(&self) -> Option<&Worktree> {
+        let current = self.current_project()?;
+        self.worktrees
+            .iter()
+            .find(|worktree| worktree.path == current)
+    }
+
+    pub fn load_worktrees(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project_owner() else {
+            self.worktrees.clear();
+            self.worktrees_error = None;
+            return;
+        };
+        self.call(
+            "worktrees",
+            json!({ "project": project }),
+            cx,
+            |root, result, _cx| match result {
+                Ok(value) => {
+                    root.worktrees = value
+                        .as_array()
+                        .map(|entries| {
+                            entries
+                                .iter()
+                                .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    root.worktrees_error = None;
+                }
+                Err(error) => {
+                    root.worktrees.clear();
+                    root.worktrees_error = Some(error);
+                }
+            },
+        );
+    }
+
+    pub fn load_commands(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            self.commands.clear();
+            return;
+        };
+        self.call(
+            "list_commands",
+            json!({ "project": project }),
+            cx,
+            |root, result, _cx| {
+                if let Ok(value) = result {
+                    root.commands = value.as_array().cloned().unwrap_or_default();
+                }
+            },
+        );
+    }
+
+    fn refresh_at_suggestions(
+        &mut self,
+        chat_id: u64,
+        text: String,
+        caret: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.current_project() else {
+            self.at_answer = Value::Null;
+            self.at_chat = None;
+            return;
+        };
+        if !text.contains('@') {
+            self.at_answer = Value::Null;
+            self.at_chat = None;
+            return;
+        }
+        self.at_generation = self.at_generation.wrapping_add(1);
+        let generation = self.at_generation;
+        self.call(
+            "at_suggestions",
+            json!({ "project": project, "text": text, "caret": caret }),
+            cx,
+            move |root, result, _cx| {
+                if root.at_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(answer) => {
+                        let has_rows = answer["rows"]
+                            .as_array()
+                            .is_some_and(|rows| !rows.is_empty());
+                        root.at_answer = if has_rows { answer } else { Value::Null };
+                        root.at_chat = has_rows.then_some(chat_id);
+                    }
+                    Err(_) => {
+                        root.at_answer = Value::Null;
+                        root.at_chat = None;
+                    }
+                }
+            },
+        );
+    }
+
+    pub fn open_worktrees(&mut self, cx: &mut Context<Self>) {
+        self.load_worktrees(cx);
+        self.overlay = Some(Overlay::Worktrees);
+        cx.notify();
+    }
+
+    pub fn select_worktree(
+        &mut self,
+        window: &mut Window,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.current_project_owner() else {
+            self.overlay = Some(Overlay::NewProject);
+            cx.notify();
+            return;
+        };
+        let Some(folder) = path else {
+            self.overlay = None;
+            self.push_chat(window, project, None, "New chat".to_string(), cx);
+            return;
+        };
+        let name = self
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.path == folder)
+            .map(|worktree| worktree.name.clone())
+            .unwrap_or_else(|| "New chat".to_string());
+        self.overlay = None;
+        self.push_chat(window, folder, None, name, cx);
+    }
+
+    pub fn select_project(&mut self, window: &mut Window, project: String, cx: &mut Context<Self>) {
+        self.overlay = None;
+        let title = self.project_name(&project);
+        self.push_chat(window, project, None, title, cx);
+    }
+
+    pub fn create_worktree(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project_owner() else {
+            return;
+        };
+        let name = self.worktree_name.read(cx).text().trim().to_string();
+        let base = self.worktree_base.read(cx).text().trim().to_string();
+        let detached = self.worktree_detached;
+        let copy_changes = self.worktree_copy_changes;
+        self.call(
+            "create_worktree",
+            json!({
+                "project": project,
+                "name": if name.is_empty() { Value::Null } else { json!(name) },
+                "base": if base.is_empty() { Value::Null } else { json!(base) },
+                "detached": detached,
+                "copyChanges": copy_changes,
+                "source": Value::Null,
+            }),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => {
+                    if let Ok(worktree) = serde_json::from_value::<Worktree>(value) {
+                        root.toast(
+                            format!("Created worktree {} on {}.", worktree.name, worktree.branch),
+                            false,
+                            cx,
+                        );
+                    }
+                    root.worktree_name.update(cx, |editor, cx| editor.clear(cx));
+                    root.worktree_base.update(cx, |editor, cx| editor.clear(cx));
+                    root.load_worktrees(cx);
+                }
+                Err(error) => root.toast(format!("Could not create worktree: {error}"), true, cx),
+            },
+        );
+    }
+
+    pub fn create_worktree_branch(
+        &mut self,
+        project: String,
+        name: String,
+        cx: &mut Context<Self>,
+    ) {
+        let branch = self.worktree_branch.read(cx).text().trim().to_string();
+        if branch.is_empty() {
+            return;
+        }
+        self.call(
+            "create_worktree_branch",
+            json!({ "project": project, "name": name, "branch": branch }),
+            cx,
+            |root, result, cx| match result {
+                Ok(_) => {
+                    root.overlay = Some(Overlay::Worktrees);
+                    root.worktree_branch
+                        .update(cx, |editor, cx| editor.clear(cx));
+                    root.load_worktrees(cx);
+                }
+                Err(error) => root.toast(format!("Could not create branch: {error}"), true, cx),
+            },
+        );
+    }
+
+    pub fn remove_worktree(&mut self, project: String, name: String, cx: &mut Context<Self>) {
+        let removed_path = self
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.name == name)
+            .map(|worktree| worktree.path.clone());
+        let local_path = project.clone();
+        self.call(
+            "remove_worktree",
+            json!({ "project": project, "name": name }),
+            cx,
+            move |root, result, cx| match result {
+                Ok(_) => {
+                    if let Some(removed_path) = &removed_path {
+                        for chat in &mut root.chats {
+                            if &chat.project == removed_path {
+                                chat.project = local_path.clone();
+                            }
+                        }
+                    }
+                    root.overlay = Some(Overlay::Worktrees);
+                    root.load_worktrees(cx);
+                    let index = root.active;
+                    root.refresh_repository(index, cx);
+                }
+                Err(error) => root.toast(format!("Could not remove worktree: {error}"), true, cx),
+            },
+        );
+    }
+
+    pub fn handoff_current_session(&mut self, cx: &mut Context<Self>) {
+        let index = self.active;
+        let Some(chat) = self.chats.get(index) else {
+            return;
+        };
+        let Some(id) = chat.session.clone() else {
+            return;
+        };
+        let source = chat.project.clone();
+        let Some(project) = self.current_project_owner() else {
+            return;
+        };
+        let to_worktree = source == project;
+        self.call(
+            "handoff_session",
+            json!({
+                "project": project,
+                "source": source,
+                "id": id,
+                "toWorktree": to_worktree,
+            }),
+            cx,
+            move |root, result, cx| match result {
+                Ok(value) => {
+                    if let Some(cwd) = value["cwd"].as_str() {
+                        if let Some(chat) = root.chats.get_mut(index) {
+                            chat.project = cwd.to_string();
+                        }
+                    }
+                    root.overlay = None;
+                    root.load_project_commands(cx);
+                    root.refresh_repository(index, cx);
+                    root.refresh_sessions(cx);
+                    root.toast(
+                        if to_worktree {
+                            "Chat moved to its worktree."
+                        } else {
+                            "Chat moved to Local."
+                        },
+                        false,
+                        cx,
+                    );
+                }
+                Err(error) => root.toast(format!("Could not hand off chat: {error}"), true, cx),
+            },
+        );
+    }
+
     pub fn load_project_commands(&mut self, cx: &mut Context<Self>) {
         self.load_project_info(cx);
         self.load_models(cx);
         self.load_approvals(cx);
         self.load_git(cx);
         self.load_sources(cx);
+        self.load_worktrees(cx);
+        self.load_commands(cx);
     }
 
     pub fn toggle_details(&mut self, cx: &mut Context<Self>) {
@@ -751,8 +1146,12 @@ impl Root {
             )
         });
         self.subscriptions
-            .push(cx.subscribe(&editor, |_root, editor, _event, cx| {
-                let _ = editor.read(cx).height();
+            .push(cx.subscribe(&editor, move |root, editor, _event, cx| {
+                let (text, caret) = {
+                    let editor = editor.read(cx);
+                    (editor.text().to_string(), editor.cursor_utf16())
+                };
+                root.refresh_at_suggestions(id, text, caret, cx);
                 cx.notify();
             }));
 
@@ -914,9 +1313,14 @@ impl Root {
         if let Some(run) = chat.run {
             let follow_up = self.prefs["follow_up"].as_str() != Some("steer");
             let queue = chat.attachments.clone();
-            chat.entries.push(Entry::User {
+            let names = queue
+                .iter()
+                .map(|item| item.name.clone())
+                .collect::<Vec<_>>();
+            chat.queued.push(QueuedMessage {
                 text: prompt.clone(),
-                attachments: queue.iter().map(|item| item.name.clone()).collect(),
+                attachments: names,
+                follow_up,
             });
             chat.attachments.clear();
             chat.scroll_to_end = true;
@@ -926,6 +1330,7 @@ impl Root {
                     |attachment| json!({ "dataUrl": attachment.data_url, "name": attachment.name }),
                 )
                 .collect();
+            let prompt_for_error = prompt.clone();
             self.call(
                 "steer_run",
                 json!({
@@ -939,8 +1344,12 @@ impl Root {
                     },
                 }),
                 cx,
-                |root, result, cx| {
+                move |root, result, cx| {
                     if let Err(error) = result {
+                        if let Some(chat) = root.chats.get_mut(index) {
+                            chat.queued
+                                .retain(|message| message.text != prompt_for_error);
+                        }
                         root.toast(error, true, cx);
                     }
                 },
@@ -1019,6 +1428,7 @@ impl Root {
             move |root, _, cx| {
                 if let Some(chat) = root.chats.get_mut(index) {
                     chat.run = None;
+                    chat.queued.clear();
                 }
                 cx.notify();
             },
@@ -1184,6 +1594,32 @@ impl Root {
                     cx.notify();
                 }
                 Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    pub fn rename_session(&mut self, project: String, id: String, cx: &mut Context<Self>) {
+        let name = self.session_name.read(cx).text().trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let updated_name = name.clone();
+        self.call(
+            "rename_session",
+            json!({ "project": project, "id": id, "name": name }),
+            cx,
+            move |root, result, cx| match result {
+                Ok(_) => {
+                    root.overlay = None;
+                    for session in &mut root.sessions {
+                        if session.id == id {
+                            session.title = updated_name.clone();
+                        }
+                    }
+                    root.refresh_sessions(cx);
+                    cx.notify();
+                }
+                Err(error) => root.toast(format!("Could not rename chat: {error}"), true, cx),
             },
         );
     }
@@ -1375,6 +1811,12 @@ impl Root {
                     chat.changes = payload.get("changes").cloned();
                     chat.baseline = payload["baseline"].as_str().map(str::to_string);
                     chat.after = payload["after"].as_str().map(str::to_string);
+                    for queued in std::mem::take(&mut chat.queued) {
+                        chat.entries.push(Entry::User {
+                            text: queued.text,
+                            attachments: queued.attachments,
+                        });
+                    }
                     chat.record_turn(&payload);
                     for entry in chat.entries.iter_mut() {
                         if let Entry::Approval(card) = entry {
@@ -1517,7 +1959,12 @@ impl Root {
         let mut sessions: Vec<&SessionRow> = self
             .sessions
             .iter()
-            .filter(|session| session.project == project)
+            .filter(|session| {
+                session.project == project
+                    || Worktrees::open()
+                        .project_of(Path::new(&session.project))
+                        .is_some_and(|owner| owner == Path::new(project))
+            })
             .collect();
         sessions.sort_by(|left, right| {
             right
@@ -1553,7 +2000,7 @@ impl Root {
     }
 
     pub fn selected_project(&self) -> Option<&ProjectRow> {
-        let project = self.current_project()?;
+        let project = self.current_project_owner()?;
         self.projects.iter().find(|row| row.path == project)
     }
 }
@@ -1619,7 +2066,21 @@ impl Render for Root {
             .text_color(theme.text())
             .text_size(px(13.5 * scale))
             .font_family(".SystemUIFont")
+            .cursor(if self.resizing.is_some() {
+                gpui::CursorStyle::ResizeLeftRight
+            } else {
+                gpui::CursorStyle::Arrow
+            })
             .key_context("Root")
+            .on_mouse_move(cx.listener(|this, event, _, cx| {
+                if this.resizing.is_some() {
+                    this.handle_sidebar_drag(event, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.end_sidebar_drag(cx)),
+            )
             .on_action(cx.listener(|this, _: &NewChat, window, cx| this.new_chat(window, cx)))
             .on_action(cx.listener(|this, _: &CloseChat, _window, cx| {
                 let index = this.active;
@@ -1645,6 +2106,7 @@ impl Render for Root {
             .on_action(cx.listener(|this, _: &OpenModels, _window, cx| {
                 this.open_overlay(Overlay::Models, cx)
             }))
+            .on_action(cx.listener(|this, _: &OpenWorktrees, _window, cx| this.open_worktrees(cx)))
             .on_action(cx.listener(|this, _: &Back, _window, cx| {
                 if let Some(previous) = this.history.pop() {
                     this.forward.push(this.active);
@@ -1674,13 +2136,41 @@ impl Render for Root {
 
         let mut body = div().flex().flex_row().flex_1().min_h(px(0.0));
         body = body.child(views::rail(self, &theme, cx));
-        if self.sidebar_visible {
-            body = body.child(views::sidebar(self, &theme, scale, window, cx));
+
+        if matches!(self.overlay, Some(Overlay::Settings)) {
+            body = body.child(overlays::settings_page(self, &theme, cx));
+        } else if self.rail == Rail::Customize {
+            body = body.child(views::customize_sidebar(self, &theme, cx));
             body = body.child(views::sidebar_resizer(self, &theme, cx));
+            body = body.child(views::customize_page(self, &theme, window, cx));
+        } else if self.rail == Rail::Projects {
+            body = body.child(views::projects_page(self, &theme, cx));
+        } else {
+            if self.sidebar_visible {
+                body = body.child(views::sidebar(self, &theme, scale, window, cx));
+                body = body.child(views::sidebar_resizer(self, &theme, cx));
+            }
+            body = body.child(views::main(self, &theme, scale, window, cx));
         }
-        body = body.child(views::main(self, &theme, scale, window, cx));
         shell = shell.child(body);
-        shell = shell.child(overlays::layer(self, &theme, scale, window, cx));
+        if !matches!(self.overlay, Some(Overlay::Settings)) {
+            shell = shell.child(overlays::layer(self, &theme, scale, window, cx));
+        }
+        if self.resizing.is_some() {
+            shell = shell.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .on_mouse_move(
+                        cx.listener(|this, event, _, cx| this.handle_sidebar_drag(event, cx)),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.end_sidebar_drag(cx)),
+                    ),
+            );
+        }
         if let Some(toast) = &self.toast {
             let color = if toast.error {
                 theme.error()
@@ -1724,7 +2214,7 @@ impl Render for Root {
 pub fn open(engine: Engine, packets: tokio::sync::mpsc::UnboundedReceiver<Value>, cx: &mut App) {
     let bounds = gpui::Bounds::centered(None, size(px(1280.0), px(840.0)), cx);
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(WindowBounds::Maximized(bounds)),
         // The window draws its own topbar, so the platform's is hidden and the
         // traffic lights are placed inside it, the 76 points the topbar leaves
         // for them.
@@ -1743,7 +2233,7 @@ pub fn open(engine: Engine, packets: tokio::sync::mpsc::UnboundedReceiver<Value>
 impl Root {
     pub fn handle_sidebar_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         if let Some(origin) = self.resizing {
-            let width = (event.position.x - px(origin)).max(px(180.0));
+            let width = (event.position.x - px(origin)).max(px(160.0));
             self.sidebar_width = f32::from(width);
             cx.notify();
         }
@@ -1761,16 +2251,6 @@ impl Root {
 }
 
 actions!(composer, [Send, Stop]);
-
-/// The four sides of a card, kept in one place so every panel in the window
-/// draws the same border and radius.
-pub fn card(theme: &Theme) -> gpui::Div {
-    div()
-        .bg(theme.panel())
-        .border_1()
-        .border_color(theme.border())
-        .rounded(px(10.0))
-}
 
 /// A one-pixel rule.
 pub fn rule(theme: &Theme) -> gpui::Div {
@@ -1813,7 +2293,7 @@ impl Button {
         on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
     ) -> gpui::Stateful<gpui::Div> {
         let background = if self.primary {
-            theme.accent()
+            theme.text()
         } else {
             theme.panel_2()
         };
@@ -1825,7 +2305,7 @@ impl Button {
             theme.text()
         };
         let hover = if self.primary {
-            theme.accent()
+            theme.wash("text", 0.88)
         } else {
             theme.panel_3()
         };
@@ -1835,11 +2315,12 @@ impl Button {
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .h(px(30.0))
+            .h(px(32.0))
             .px_3()
             .rounded(px(8.0))
             .bg(background)
             .text_color(color)
+            .text_size(px(12.5))
             .hover(move |style| style.bg(hover))
             .child(self.label);
         if let Some(width) = self.width {
