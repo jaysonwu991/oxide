@@ -551,6 +551,51 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
             }),
         ));
     }
+    // The resource tools reach a server that advertises resources, so they cost
+    // three schemas only once one has answered that it has any.
+    let resource_servers = if mcp.has_resources() {
+        Some(mcp.resource_servers())
+    } else {
+        None
+    };
+    if let Some(resource_servers) = resource_servers {
+        let listing = resource_servers.join(", ");
+        let page = json!({
+            "type": "object",
+            "properties": {
+                "server": { "type": "string", "enum": resource_servers, "description": "Server to list; omit for every server with resources" },
+                "cursor": { "type": "string", "description": "The `nextCursor` from the previous page of the same server" }
+            }
+        });
+        specs.push(spec(
+            "list_mcp_resources",
+            &format!(
+                "List the resources (documents, schemas, files) the connected MCP servers offer. Without `server`, lists every page of every server with resources; with one, lists a single page and returns `nextCursor` to continue it. Servers with resources: {listing}"
+            ),
+            page.clone(),
+        ));
+        specs.push(spec(
+            "list_mcp_resource_templates",
+            &format!(
+                "List the URI templates of the parameterized resources these MCP servers offer — the ones a literal listing cannot name. Fill a template's variables into a URI and read it with `read_mcp_resource`. Servers with resources: {listing}"
+            ),
+            page,
+        ));
+        specs.push(spec(
+            "read_mcp_resource",
+            &format!(
+                "Read one MCP resource by URI. Text and images come back as content; other binary data is saved to a temporary file whose path is returned. Servers with resources: {listing}"
+            ),
+            json!({
+                "type": "object",
+                "properties": {
+                    "server": { "type": "string", "enum": resource_servers, "description": "Server that offers the resource" },
+                    "uri": { "type": "string", "description": "URI of the resource, as listed or filled from a template" }
+                },
+                "required": ["server", "uri"]
+            }),
+        ));
+    }
     specs
 }
 
@@ -618,21 +663,36 @@ pub async fn execute_with_scope(
         return ToolOutput::error(format!("{error:#}"));
     }
     let result = if mcp.is_tool(name) {
-        mcp.call(name, args).await.map(|result| {
-            let mut output = if result.is_error {
-                ToolOutput::error(result.text)
-            } else {
-                ToolOutput::text(result.text)
-            };
-            output.media = result.media;
-            output
-        })
+        mcp.call(name, args).await.map(mcp_output)
     } else {
         match canonical {
             "mcp_load" => match args.get("server").and_then(Value::as_str) {
                 Some(server) => mcp.load(server).await.map(ToolOutput::text),
                 None => Err(anyhow::anyhow!(
                     "mcp_load requires a `server` string, for example {{\"server\":\"github\"}}"
+                )),
+            },
+            "list_mcp_resources" | "list_mcp_resource_templates" => {
+                let server = args.get("server").and_then(Value::as_str);
+                let cursor = args.get("cursor").and_then(Value::as_str);
+                let listing = if canonical == "list_mcp_resources" {
+                    mcp.list_resources(server, cursor).await
+                } else {
+                    mcp.list_resource_templates(server, cursor).await
+                };
+                listing.and_then(|listing| {
+                    serde_json::to_string_pretty(&listing)
+                        .map(ToolOutput::text)
+                        .map_err(anyhow::Error::from)
+                })
+            }
+            "read_mcp_resource" => match (
+                args.get("server").and_then(Value::as_str),
+                args.get("uri").and_then(Value::as_str),
+            ) {
+                (Some(server), Some(uri)) => mcp.read_resource(server, uri).await.map(mcp_output),
+                _ => Err(anyhow::anyhow!(
+                    "read_mcp_resource requires `server` and `uri` strings, for example {{\"server\":\"docs\",\"uri\":\"docs://guide\"}}"
                 )),
             },
             "bash" => bash_with_network_retry(cwd, &args, progress).await,
@@ -735,6 +795,9 @@ fn expected_arguments(name: &str) -> &'static str {
         "bash" => " with a shell command string in `command`",
         "webfetch" => " with a URL string in `url`",
         "mcp_load" => " with an MCP server name string in `server`",
+        "list_mcp_resources" => " with an optional `server` and `cursor`",
+        "list_mcp_resource_templates" => " with an optional `server` and `cursor`",
+        "read_mcp_resource" => " with string `server` and `uri` fields",
         _ => "",
     }
 }
@@ -6265,6 +6328,22 @@ fn keep_end(name: &str) -> Keep {
 
 fn is_mcp_tool(name: &str) -> bool {
     name.contains("__")
+        || matches!(
+            name,
+            "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
+        )
+}
+
+/// A server's call or read result as a tool result: its text, its images, and
+/// `isError` deciding the tone.
+fn mcp_output(result: crate::mcp::McpToolResult) -> ToolOutput {
+    let mut output = if result.is_error {
+        ToolOutput::error(result.text)
+    } else {
+        ToolOutput::text(result.text)
+    };
+    output.media = result.media;
+    output
 }
 
 fn output_limits(name: &str) -> (usize, usize) {

@@ -53,6 +53,7 @@ import {
   MCP_EXPOSURE_SET,
   MCP_REFRESH,
   MCP_TOGGLE,
+  MCP_TOGGLE_LOCAL,
   NEW_SESSION,
   mcpDialog,
   modelDialog,
@@ -90,6 +91,7 @@ import {
   mcpExposureArgs,
   mcpExposureLabel,
   mcpListArgs,
+  mcpLocalToggleArgs,
   mcpToggleArgs,
   nextMcpExposure,
   parseMcpList,
@@ -3380,6 +3382,8 @@ export class ChatController {
         return this.authorizeMcp(value);
       case MCP_TOGGLE:
         return this.toggleMcp(value);
+      case MCP_TOGGLE_LOCAL:
+        return this.toggleMcpLocal(value);
       case MCP_EXPOSURE_SET:
         return this.cycleMcpExposure(value);
       case UPDATE_INSTALL:
@@ -3531,6 +3535,26 @@ export class ChatController {
       return;
     }
     this.showNotice(`${server.name} is now ${mcpExposureLabel(exposure, this.languageInfo)}.`);
+    await this.showMcps();
+  }
+
+  /// Turns one server over for this project alone, through an override in the
+  /// project's own config, then paints the list again. The shared entry and
+  /// every other project keep their configuration.
+  private async toggleMcpLocal(name: string): Promise<void> {
+    const cwd = this.cwd();
+    const server = this.servers.find((entry) => entry.name === name);
+    if (!cwd || !server) return;
+    const enabling = !server.enabled;
+    const result = await runCapture(this.binary(), mcpLocalToggleArgs(server, enabling), cwd);
+    if (result.error || result.code !== 0) {
+      const detail = result.error || firstLine(result.stderr) || `exit ${result.code}`;
+      const failed = `Could not change ${server.name} for this project: ${detail}`;
+      this.showNotice(failed, "error");
+      this.showDialog(mcpDialog(this.servers, failed, this.languageInfo));
+      return;
+    }
+    this.showNotice(`${server.name} ${enabling ? "enabled" : "disabled"} in this project.`);
     await this.showMcps();
   }
 

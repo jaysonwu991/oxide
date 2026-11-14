@@ -38,8 +38,10 @@ Pi Coding Agent is the one Oxide was modelled on: the JSONL session trees,
 tool names, context-window rules, compaction format and thinking levels all
 follow it, and MCP management is read the same way — `exposure` and
 `toolExposure` decide whether a server's tools are declared directly, found with
-`tool_search`, or hidden, and a project entry with no transport turns a
-user-level server off for one project. Oxide's default exposure is `deferred`
+`tool_search`, or hidden, a project entry with no transport turns a
+user-level server off for one project (`oxide mcp disable --local` writes one),
+and servers that offer resources are reached with `list_mcp_resources`,
+`list_mcp_resource_templates` and `read_mcp_resource`. Oxide's default exposure is `deferred`
 rather than Pi's `codemode`, because Oxide has no codemode tool; `codemode` and
 `codemode-deferred` entries are read as `deferred`. The table above is where the
 two stop agreeing — Oxide adds

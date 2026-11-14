@@ -1649,6 +1649,10 @@ power switch says how its tools reach the model — **deferred** (found with
 `tool_search`), **direct** (declared on every request), or **hidden** (never
 offered) — and a click writes the next mode into the file that defines the
 server through `oxide mcp exposure`, then repaints from the fresh probe. A server
+the project does not define itself carries an **Off only in this project**
+(or, when it is off, **On only in this project**) button: it writes an override
+in the project's own config through `oxide mcp disable|enable --local`, leaving
+the shared entry and every other project untouched. A server
 in `Needs Auth` carries an **Authorize**
 button beside its power switch: the harness calls the shared OAuth flow, which
 opens the provider's authorization page in the machine's browser and waits for

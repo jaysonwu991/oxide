@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -17,6 +18,11 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_SESSION_ID: &str = "mcp-session-id";
+/// Page cap for a multi-page resource listing, so a server that repeats its
+/// cursor cannot spin forever.
+const MAX_RESOURCE_PAGES: usize = 100;
+/// Distinguishes the temp files binary resources are saved to.
+static RESOURCE_FILE_ID: AtomicU64 = AtomicU64::new(0);
 /// Shortest word that may name a service; fragments like `nr` are ignored.
 const MIN_SERVICE_WORD: usize = 3;
 /// Words too generic to identify a service on their own.
@@ -182,6 +188,11 @@ struct McpServerHandle {
     name: String,
     source: String,
     description: Option<String>,
+    /// The server's own exposure, so its resources follow the same choice as
+    /// its tools: a hidden server is not reached through the resource tools.
+    exposure: McpExposure,
+    /// Whether the server advertised the `resources` capability.
+    resources: bool,
     instructions: Option<String>,
     connection: Mutex<McpConnection>,
     tools: Vec<McpTool>,
@@ -340,6 +351,8 @@ impl McpRegistry {
                 name: server.name.clone(),
                 source: server_source(server),
                 description: server.description.clone(),
+                exposure: server.exposure,
+                resources: connection.resources,
                 instructions: instructions.clone(),
                 connection: Mutex::new(connection),
                 tools,
@@ -632,6 +645,157 @@ impl McpRegistry {
             .any(|server| server.tools.iter().any(|tool| tool.exposed == name))
     }
 
+    /// Loaded servers whose resources the resource tools reach: they advertised
+    /// the capability, and their exposure is not `hidden` — the same choice that
+    /// hides their tools hides the data they offer.
+    fn resource_handles(&self) -> Vec<Arc<McpServerHandle>> {
+        self.servers
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|server| server.resources && server.exposure != McpExposure::Hidden)
+            .cloned()
+            .collect()
+    }
+
+    /// Whether any connected server offers resources, so the resource tools are
+    /// worth a schema. A server that advertised the capability before it is
+    /// loaded cannot be listed yet, so this becomes true after discovery.
+    pub fn has_resources(&self) -> bool {
+        !self.resource_handles().is_empty()
+    }
+
+    /// The names of the servers the resource tools reach, in name order.
+    pub fn resource_servers(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .resource_handles()
+            .iter()
+            .map(|server| server.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn resource_handle(&self, server: &str) -> Result<Arc<McpServerHandle>> {
+        let handles = self.resource_handles();
+        if let Some(handle) = handles.iter().find(|handle| handle.name == server) {
+            return Ok(Arc::clone(handle));
+        }
+        let known = self.resource_servers();
+        if known.is_empty() {
+            bail!("no connected MCP server offers resources")
+        }
+        bail!(
+            "MCP server `{server}` does not offer resources; servers that do: {}",
+            known.join(", ")
+        )
+    }
+
+    /// Lists the resources every reachable server offers, or one page of one
+    /// server's when `server` is named. Per-server failures are reported beside
+    /// the results rather than failing every other server's listing.
+    pub async fn list_resources(
+        &self,
+        server: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
+        self.list_resource_kind(server, cursor, "resources/list", "resources")
+            .await
+    }
+
+    pub async fn list_resource_templates(
+        &self,
+        server: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
+        self.list_resource_kind(
+            server,
+            cursor,
+            "resources/templates/list",
+            "resourceTemplates",
+        )
+        .await
+    }
+
+    async fn list_resource_kind(
+        &self,
+        server: Option<&str>,
+        cursor: Option<&str>,
+        method: &str,
+        key: &str,
+    ) -> Result<Value> {
+        if let Some(server) = server {
+            let handle = self.resource_handle(server)?;
+            let mut connection = handle.connection.lock().await;
+            let (items, next) = connection
+                .resource_page(method, key, cursor)
+                .await
+                .with_context(|| format!("listing `{key}` of MCP server `{server}`"))?;
+            let mut value =
+                json!({ "server": handle.name, key: tag_resources(items, &handle.name) });
+            if let Some(next) = next {
+                value["nextCursor"] = json!(next);
+            }
+            return Ok(value);
+        }
+        if cursor.is_some() {
+            bail!("a cursor needs a `server`: page through one server's listing at a time");
+        }
+        let handles = self.resource_handles();
+        if handles.is_empty() {
+            bail!("no connected MCP server offers resources");
+        }
+        let mut items = Vec::new();
+        let mut errors = Vec::new();
+        for handle in handles {
+            let mut connection = handle.connection.lock().await;
+            let mut seen = BTreeSet::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                match connection
+                    .resource_page(method, key, cursor.as_deref())
+                    .await
+                {
+                    Ok((page, next)) => {
+                        items.extend(tag_resources(page, &handle.name));
+                        match next {
+                            Some(next)
+                                if seen.insert(next.clone()) && seen.len() < MAX_RESOURCE_PAGES =>
+                            {
+                                cursor = Some(next)
+                            }
+                            _ => break,
+                        }
+                    }
+                    Err(error) => {
+                        errors
+                            .push(json!({ "server": handle.name, "error": format!("{error:#}") }));
+                        break;
+                    }
+                }
+            }
+        }
+        let mut value = json!({ key: items });
+        if !errors.is_empty() {
+            value["errors"] = json!(errors);
+        }
+        Ok(value)
+    }
+
+    /// Reads one resource by URI. Text and images reach the model as content;
+    /// other binary data is saved to a temp file whose path is reported.
+    pub async fn read_resource(&self, server: &str, uri: &str) -> Result<McpToolResult> {
+        let handle = self.resource_handle(server)?;
+        let result = {
+            let mut connection = handle.connection.lock().await;
+            connection
+                .read_resource(uri)
+                .await
+                .with_context(|| format!("reading `{uri}` from MCP server `{server}`"))?
+        };
+        Ok(resource_result(uri, &result))
+    }
+
     pub fn server_count(&self) -> usize {
         self.servers
             .read()
@@ -914,6 +1078,8 @@ struct McpConnection {
     transport: Transport,
     next_id: u64,
     instructions: Option<String>,
+    /// The `resources` capability from the initialize handshake.
+    resources: bool,
     authorization_blocked: bool,
     session_expired: bool,
     /// Budget for one request. The server's `timeout` when it sets one.
@@ -1027,6 +1193,7 @@ impl McpConnection {
             session_expired: false,
             next_id: 1,
             instructions: None,
+            resources: false,
             timeout: server.timeout.unwrap_or(REQUEST_TIMEOUT),
         };
         connection.initialize().await?;
@@ -1041,6 +1208,10 @@ impl McpConnection {
         });
         let initialize = self.request_once("initialize", params).await?;
         self.instructions = instructions_from(&initialize);
+        self.resources = initialize
+            .get("capabilities")
+            .and_then(|capabilities| capabilities.get("resources"))
+            .is_some_and(|resources| !resources.is_null());
         self.notify("notifications/initialized", json!({})).await?;
         self.session_expired = false;
         Ok(())
@@ -1095,6 +1266,36 @@ impl McpConnection {
             )
             .await?;
         Ok(mcp_tool_result(&result))
+    }
+
+    /// One page of `resources/list` or `resources/templates/list`, with the
+    /// cursor that continues it.
+    async fn resource_page(
+        &mut self,
+        method: &str,
+        key: &str,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<Value>, Option<String>)> {
+        let params = match cursor {
+            Some(cursor) => json!({ "cursor": cursor }),
+            None => json!({}),
+        };
+        let result = self.request(method, params).await?;
+        let items = result
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let next = result
+            .get("nextCursor")
+            .and_then(Value::as_str)
+            .filter(|cursor| !cursor.is_empty())
+            .map(str::to_string);
+        Ok((items, next))
+    }
+
+    async fn read_resource(&mut self, uri: &str) -> Result<Value> {
+        self.request("resources/read", json!({ "uri": uri })).await
     }
 
     async fn notify(&mut self, method: &str, params: Value) -> Result<()> {
@@ -1417,6 +1618,166 @@ fn mcp_image(item: &Value) -> Option<ContentPart> {
             detail: None,
         },
     })
+}
+
+/// Drops what a model cannot use (icons, `_meta`, resources that are MCP Apps' UI
+/// pages) and names the server each item came from, so a merged listing stays
+/// readable when two servers offer resources.
+fn tag_resources(items: Vec<Value>, server: &str) -> Vec<Value> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let mut object = item.as_object()?.clone();
+            object.remove("icons");
+            object.remove("_meta");
+            let uri = object
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let template = object
+                .get("uriTemplate")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mime = object
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if uri.starts_with("ui://") || template.starts_with("ui://") {
+                return None;
+            }
+            if mime.contains("profile=mcp-app") {
+                return None;
+            }
+            object.insert("server".to_string(), json!(server));
+            Some(Value::Object(object))
+        })
+        .collect()
+}
+
+enum ResourceBlob {
+    Image(ContentPart),
+    File {
+        path: std::path::PathBuf,
+        bytes: usize,
+    },
+    Unavailable(String),
+}
+
+/// A `resources/read` result as the model sees it: text is text, an image is an
+/// image, and anything else is a temp file the model can open with `read`.
+fn resource_result(uri: &str, result: &Value) -> McpToolResult {
+    let contents = result
+        .get("contents")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if contents.is_empty() {
+        return McpToolResult {
+            text: format!("Resource {uri} is empty."),
+            media: Vec::new(),
+            is_error: false,
+        };
+    }
+    let multiple = contents.len() > 1;
+    let mut text = String::new();
+    let mut media = Vec::new();
+    for item in contents {
+        let item_uri = item.get("uri").and_then(Value::as_str).unwrap_or(uri);
+        if multiple {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(item_uri);
+            text.push_str(":\n");
+        }
+        let mime = item
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .unwrap_or("application/octet-stream");
+        if let Some(body) = item.get("text").and_then(Value::as_str) {
+            text.push_str(body);
+            continue;
+        }
+        let Some(blob) = item.get("blob").and_then(Value::as_str) else {
+            text.push_str("[resource has no text or binary data]");
+            continue;
+        };
+        match resource_blob(item_uri, mime, blob) {
+            ResourceBlob::Image(part) => media.push(part),
+            ResourceBlob::File { path, bytes } => text.push_str(&format!(
+                "[saved to {} ({mime}, {bytes} bytes)]",
+                path.display()
+            )),
+            ResourceBlob::Unavailable(reason) => {
+                text.push_str(&format!("[binary resource unavailable: {reason}]"))
+            }
+        }
+    }
+    if text.is_empty() && !media.is_empty() {
+        text = format!("Resource {uri} is an image.");
+    }
+    McpToolResult {
+        text,
+        media,
+        is_error: false,
+    }
+}
+
+fn resource_blob(uri: &str, mime: &str, data: &str) -> ResourceBlob {
+    if data.len() > crate::media::MAX_ATTACHMENT_BYTES.div_ceil(3) * 4 {
+        return ResourceBlob::Unavailable("exceeds the attachment size limit".to_string());
+    }
+    let Some(bytes) = crate::media::base64_decode(data) else {
+        return ResourceBlob::Unavailable("invalid base64".to_string());
+    };
+    if bytes.len() > crate::media::MAX_ATTACHMENT_BYTES {
+        return ResourceBlob::Unavailable("exceeds the attachment size limit".to_string());
+    }
+    // The bytes decide whether this is an image: a server's declared MIME type
+    // is not evidence the model can view it.
+    if let Some(image) = crate::media::sniff_image_mime(&bytes)
+        .filter(|sniffed| crate::media::is_supported_image_mime(sniffed))
+    {
+        return ResourceBlob::Image(ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: format!(
+                    "data:{image};base64,{}",
+                    crate::media::base64_encode(&bytes)
+                ),
+                detail: None,
+            },
+        });
+    }
+    match save_resource_file(uri, &bytes) {
+        Some(path) => ResourceBlob::File {
+            path,
+            bytes: bytes.len(),
+        },
+        None => ResourceBlob::Unavailable(format!(
+            "could not save {mime} data ({} bytes) to a temp file",
+            bytes.len()
+        )),
+    }
+}
+
+fn save_resource_file(uri: &str, bytes: &[u8]) -> Option<std::path::PathBuf> {
+    let stem: String = uri
+        .rsplit('/')
+        .next()
+        .unwrap_or("resource")
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        .take(40)
+        .collect();
+    let stem = if stem.trim_matches('.').is_empty() {
+        "resource".to_string()
+    } else {
+        stem
+    };
+    let id = RESOURCE_FILE_ID.fetch_add(1, Ordering::Relaxed);
+    let path =
+        std::env::temp_dir().join(format!("oxide-resource-{}-{id}-{stem}", std::process::id()));
+    std::fs::write(&path, bytes).ok().map(|_| path)
 }
 
 /// The guidance a server ships in its `initialize` result, trimmed and capped.
@@ -2184,6 +2545,8 @@ done
                 name: "guard-test".into(),
                 source: "test".into(),
                 description: None,
+                exposure: McpExposure::Deferred,
+                resources: false,
                 instructions: None,
                 tools: ["first", "second"]
                     .into_iter()
@@ -2199,6 +2562,7 @@ done
                     name: "guard-test".into(),
                     next_id: 1,
                     instructions: None,
+                    resources: false,
                     authorization_blocked: false,
                     session_expired: false,
                     timeout: REQUEST_TIMEOUT,
@@ -2434,6 +2798,14 @@ done
     /// A registry that already holds a connected server, for the code that
     /// decides which tools a request offers.
     fn registry_with(server: &McpServer, tools: &[(&str, &str)]) -> McpRegistry {
+        registry_with_resources(server, tools, false)
+    }
+
+    fn registry_with_resources(
+        server: &McpServer,
+        tools: &[(&str, &str)],
+        resources: bool,
+    ) -> McpRegistry {
         let registry = McpRegistry::new(std::slice::from_ref(server));
         registry
             .servers
@@ -2443,6 +2815,8 @@ done
                 name: server.name.clone(),
                 source: "project".into(),
                 description: server.description.clone(),
+                exposure: server.exposure,
+                resources,
                 instructions: Some("Read a ticket before writing one.".into()),
                 tools: tools
                     .iter()
@@ -2465,6 +2839,7 @@ done
                     },
                     next_id: 1,
                     instructions: None,
+                    resources,
                     authorization_blocked: false,
                     session_expired: false,
                     timeout: REQUEST_TIMEOUT,
@@ -2566,6 +2941,39 @@ done
     }
 
     #[test]
+    fn the_resource_tools_are_offered_only_for_a_server_with_resources() {
+        let server = test_server("docs");
+        let names = |registry: &McpRegistry| {
+            crate::tools::specs(registry)
+                .into_iter()
+                .map(|spec| spec.function.name)
+                .collect::<Vec<_>>()
+        };
+        let without = registry_with(&server, &[("read", "Read a doc")]);
+        assert!(!names(&without).contains(&"read_mcp_resource".to_string()));
+
+        let with = registry_with_resources(&server, &[("read", "Read a doc")], true);
+        let offered = names(&with);
+        for tool in [
+            "list_mcp_resources",
+            "list_mcp_resource_templates",
+            "read_mcp_resource",
+        ] {
+            assert!(offered.contains(&tool.to_string()), "{tool} in {offered:?}");
+        }
+        let read = crate::tools::specs(&with)
+            .into_iter()
+            .find(|spec| spec.function.name == "read_mcp_resource")
+            .unwrap();
+        assert!(read.function.description.contains("docs"));
+        assert!(read.function.parameters["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "uri"));
+    }
+
+    #[test]
     fn a_server_declaring_direct_tools_is_waited_for_before_the_first_request() {
         let mut direct = test_server("direct");
         direct.exposure = McpExposure::Direct;
@@ -2607,6 +3015,265 @@ done
         assert_eq!(declared, vec!["ops__deploy_service".to_string()]);
         let section = registry.servers_section().unwrap();
         assert!(section.contains("- ops (direct, 1 hidden)"), "{section}");
+    }
+
+    #[test]
+    fn a_resource_listing_names_its_server_and_drops_what_the_model_cannot_use() {
+        let tagged = tag_resources(
+            vec![
+                json!({
+                    "uri": "docs://guide",
+                    "name": "Guide",
+                    "mimeType": "text/markdown",
+                    "icons": [{ "src": "icon.png" }],
+                    "_meta": { "ui": {} }
+                }),
+                json!({ "uri": "ui://app", "name": "App" }),
+                json!({
+                    "uri": "docs://app",
+                    "name": "App",
+                    "mimeType": "text/html;profile=mcp-app"
+                }),
+            ],
+            "docs",
+        );
+        assert_eq!(
+            tagged.len(),
+            1,
+            "an MCP App page is a host's UI, not data: {tagged:?}"
+        );
+        assert_eq!(tagged[0]["server"], "docs");
+        assert!(tagged[0].get("icons").is_none());
+        assert!(tagged[0].get("_meta").is_none());
+
+        let templates = tag_resources(
+            vec![
+                json!({ "uriTemplate": "docs://{name}", "name": "Doc" }),
+                json!({ "uriTemplate": "ui://{page}", "name": "Page" }),
+            ],
+            "docs",
+        );
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0]["uriTemplate"], "docs://{name}");
+        assert_eq!(templates[0]["server"], "docs");
+    }
+
+    #[test]
+    fn a_resource_read_returns_text_images_and_a_path_for_other_bytes() {
+        let text = resource_result(
+            "docs://guide",
+            &json!({ "contents": [
+                { "uri": "docs://a", "mimeType": "text/plain", "text": "first" },
+                { "uri": "docs://b", "mimeType": "text/plain", "text": "second" }
+            ]}),
+        );
+        assert!(text.text.contains("docs://a:\nfirst"), "{}", text.text);
+        assert!(text.text.contains("docs://b:\nsecond"), "{}", text.text);
+        assert!(text.media.is_empty());
+        assert!(!text.is_error);
+
+        assert_eq!(
+            resource_result("docs://empty", &json!({ "contents": [] })).text,
+            "Resource docs://empty is empty."
+        );
+
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+        let image = resource_result(
+            "docs://logo",
+            &json!({ "contents": [
+                { "uri": "docs://logo", "mimeType": "image/png", "blob": png }
+            ]}),
+        );
+        assert_eq!(image.media.len(), 1);
+        assert!(image.text.contains("is an image"), "{}", image.text);
+
+        let bytes = crate::media::base64_encode(b"%PDF-1.4 doc");
+        let file = resource_result(
+            "docs://spec.pdf",
+            &json!({ "contents": [
+                { "uri": "docs://spec.pdf", "mimeType": "application/pdf", "blob": bytes }
+            ]}),
+        );
+        let path = file
+            .text
+            .split("saved to ")
+            .nth(1)
+            .and_then(|rest| rest.split(" (").next())
+            .expect("the path is named");
+        assert_eq!(std::fs::read(path).unwrap(), b"%PDF-1.4 doc");
+        std::fs::remove_file(path).ok();
+
+        let invalid = resource_result(
+            "docs://bad",
+            &json!({ "contents": [
+                { "uri": "docs://bad", "mimeType": "application/pdf", "blob": "!!!" }
+            ]}),
+        );
+        assert!(invalid.text.contains("invalid base64"), "{}", invalid.text);
+    }
+
+    #[test]
+    fn a_hidden_servers_resources_are_out_of_reach() {
+        let registry = McpRegistry::default();
+        registry
+            .servers
+            .write()
+            .unwrap()
+            .push(Arc::new(McpServerHandle {
+                name: "private".into(),
+                source: "test".into(),
+                description: None,
+                exposure: McpExposure::Hidden,
+                resources: true,
+                instructions: None,
+                tools: Vec::new(),
+                connection: Mutex::new(McpConnection {
+                    name: "private".into(),
+                    next_id: 1,
+                    instructions: None,
+                    resources: true,
+                    authorization_blocked: false,
+                    session_expired: false,
+                    timeout: REQUEST_TIMEOUT,
+                    transport: Transport::Remote {
+                        client: reqwest::Client::new(),
+                        url: "http://127.0.0.1:9/mcp".into(),
+                        headers: HeaderMap::new(),
+                        oauth: None,
+                        session_id: None,
+                    },
+                }),
+            }));
+        assert!(!registry.has_resources());
+        assert!(registry.resource_servers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_remote_server_lists_and_reads_its_resources() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+        let server_task = tokio::spawn(async move {
+            for expected_method in [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "resources/list",
+                "resources/templates/list",
+                "resources/read",
+                "resources/read",
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (_, body) = read_http_request(&mut socket).await;
+                assert_eq!(body["method"], expected_method);
+                let response = match expected_method {
+                    "initialize" => json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": {
+                            "protocolVersion": PROTOCOL_VERSION,
+                            "capabilities": { "resources": { "subscribe": false } },
+                            "serverInfo": { "name": "resource-mock", "version": "0" }
+                        }
+                    })
+                    .to_string(),
+                    "notifications/initialized" => String::new(),
+                    "tools/list" => json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": { "tools": [] }
+                    })
+                    .to_string(),
+                    "resources/list" => json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": {
+                            "resources": [
+                                { "uri": "docs://guide", "name": "Guide", "mimeType": "text/markdown" },
+                                { "uri": "ui://app", "name": "App" }
+                            ]
+                        }
+                    })
+                    .to_string(),
+                    "resources/templates/list" => json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": {
+                            "resourceTemplates": [
+                                { "uriTemplate": "docs://{name}", "name": "Doc" }
+                            ]
+                        }
+                    })
+                    .to_string(),
+                    "resources/read" => {
+                        let uri = body["params"]["uri"].as_str().unwrap();
+                        let contents = if uri == "docs://logo" {
+                            json!([{ "uri": uri, "mimeType": "image/png", "blob": png }])
+                        } else {
+                            json!([{ "uri": uri, "mimeType": "text/markdown", "text": "# Guide" }])
+                        };
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": { "contents": contents }
+                        })
+                        .to_string()
+                    }
+                    _ => unreachable!(),
+                };
+                let status = if expected_method == "notifications/initialized" {
+                    "202 Accepted"
+                } else {
+                    "200 OK"
+                };
+                send_http_response(&mut socket, status, &response, None).await;
+            }
+        });
+
+        let server = McpServer {
+            name: "docs".to_string(),
+            enabled: true,
+            kind: McpKind::Remote {
+                url: format!("http://{address}/mcp"),
+                headers: Default::default(),
+                oauth: None,
+            },
+            domains: vec![],
+            description: None,
+            exposure: McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
+        };
+        let registry = McpRegistry::new(&[server]);
+        registry.load("docs").await.unwrap();
+        assert!(registry.has_resources());
+        assert_eq!(registry.resource_servers(), vec!["docs".to_string()]);
+
+        let listing = registry.list_resources(None, None).await.unwrap();
+        let resources = listing["resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 1, "{listing}");
+        assert_eq!(resources[0]["server"], "docs");
+        assert_eq!(resources[0]["uri"], "docs://guide");
+
+        let templates = registry.list_resource_templates(None, None).await.unwrap();
+        assert_eq!(
+            templates["resourceTemplates"][0]["uriTemplate"],
+            "docs://{name}"
+        );
+        assert_eq!(templates["resourceTemplates"][0]["server"], "docs");
+
+        let text = registry
+            .read_resource("docs", "docs://guide")
+            .await
+            .unwrap();
+        assert_eq!(text.text, "# Guide");
+        assert!(text.media.is_empty());
+
+        let image = registry.read_resource("docs", "docs://logo").await.unwrap();
+        assert_eq!(image.media.len(), 1);
+        assert!(image.text.contains("is an image"));
+
+        server_task.await.unwrap();
     }
 
     #[tokio::test]

@@ -2213,6 +2213,15 @@ button.create-project-add { display: flex; align-items: center; justify-content:
 .mcp-exposure:hover:not(:disabled) { color: var(--fg); }
 .mcp-exposure.exposure-direct { color: var(--success); }
 .mcp-exposure.exposure-hidden { color: var(--faint); }
+.mcp-local {
+  min-height: 28px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.mcp-local:hover:not(:disabled) { color: var(--fg); }
 .mcp-empty,
 .dialog-empty { color: var(--faint); font-size: 12.5px; padding: 6px 2px; }
 

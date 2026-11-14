@@ -256,7 +256,10 @@ carries an **Exposure: deferred|direct|hidden** button: the word says how the
 server's tools reach the model, and a click asks for the next of the three
 through `oxide mcp exposure <name> <mode> --scope <scope>` — deferred tools are
 found with `tool_search`, direct ones are declared on every request, and hidden
-ones are never offered. A server in `Needs auth` carries an
+ones are never offered. A server the project does not define itself carries an
+**Off only in this project** (or **On only in this project**) button, which
+writes an override in the project's own config through
+`oxide mcp disable|enable --local` and leaves the shared entry alone. A server in `Needs auth` carries an
 **Authorize [server]** button which runs `oxide mcp auth` in the project with the
 server's own scope, opening its OAuth page in the browser and waiting through the
 loopback callback; the row then repaints from a fresh CLI listing. The icon-only

@@ -770,6 +770,101 @@ fn holds_name(root: &Value, name: &str) -> bool {
         .is_some_and(|servers| servers.contains_key(name))
 }
 
+/// Turns a server off (or back on) for this project only, by writing an
+/// override into the project's native `mcp.json`. The user-level entry keeps
+/// its command, URL, headers and OAuth, and every other project sees it
+/// unchanged — the same change a project hand-writes as `{"enabled": false}`.
+pub fn set_enabled_local(cwd: &Path, name: String, enabled: bool) -> Result<()> {
+    let path = project_path(cwd);
+    set_enabled_local_in(&sources(cwd), &path, &name, enabled)?;
+    if !project_trusted(cwd) {
+        println!("note: this project is not trusted yet, so the override applies once it is");
+    }
+    Ok(())
+}
+
+fn set_enabled_local_in(sources: &[Source], path: &Path, name: &str, enabled: bool) -> Result<()> {
+    let mut root = read_file(path)?;
+    if !root.is_object() {
+        bail!("{} does not hold a JSON object", path.display());
+    }
+    let base = effective_enabled(sources, path, name);
+    let verb = if enabled { "enabled" } else { "disabled" };
+    match servers_mut(&mut root).get(name).cloned() {
+        Some(Value::Object(mut config)) => {
+            config.insert("enabled".to_string(), json!(enabled));
+            if enabled {
+                config.remove("disabled");
+            } else {
+                config.insert("disabled".to_string(), json!(true));
+            }
+            // An override that only says "on" says nothing the user-level entry
+            // does not: drop it so the base applies again. An override that
+            // re-enables a server the user-level entry turns off keeps its word.
+            let removable = enabled
+                && crate::ecosystem::is_mcp_override(&Value::Object(config.clone()))
+                && config
+                    .keys()
+                    .all(|key| key == "enabled" || key == "disabled")
+                && base != Some(false);
+            if removable {
+                servers_mut(&mut root).remove(name);
+            } else {
+                servers_mut(&mut root).insert(name.to_string(), Value::Object(config));
+            }
+        }
+        Some(_) => bail!(
+            "`{name}` in {} is not a server object; fix the file, then toggle it",
+            path.display()
+        ),
+        None => match base {
+            None => bail!(
+                "no MCP server named `{name}`; add it with `oxide mcp add`, then change it for this project"
+            ),
+            Some(true) if enabled => {
+                println!("MCP server `{name}` is already on in this project");
+                return Ok(());
+            }
+            Some(false) if !enabled => {
+                println!("MCP server `{name}` is already off in this project");
+                return Ok(());
+            }
+            Some(_) if enabled => {
+                servers_mut(&mut root).insert(name.to_string(), json!({ "enabled": true }));
+            }
+            Some(_) => {
+                servers_mut(&mut root)
+                    .insert(name.to_string(), json!({ "enabled": false, "disabled": true }));
+            }
+        },
+    }
+    write_file(path, &root)?;
+    println!(
+        "{verb} MCP server `{name}` for this project in {} (project)",
+        path.display()
+    );
+    Ok(())
+}
+
+/// Whether the files that are not the project's own would turn `name` on, the
+/// last definition winning as it does for the runtime.
+fn effective_enabled(sources: &[Source], skip: &Path, name: &str) -> Option<bool> {
+    let mut enabled = None;
+    for source in sources.iter().filter(|source| source.path != skip) {
+        let Ok(root) = read_file(&source.path) else {
+            continue;
+        };
+        if let Some(config) = root
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .and_then(|servers| servers.get(name))
+        {
+            enabled = Some(crate::ecosystem::mcp_enabled(config));
+        }
+    }
+    enabled
+}
+
 fn try_set_enabled(path: &Path, root: &Value, name: &str, enabled: bool) -> Result<bool> {
     let mut root = root.clone();
     let Some(config) = root
@@ -1476,6 +1571,81 @@ mod tests {
         assert_eq!(untrusted[0].source, "global");
         assert_eq!(untrusted[0].scope, "global");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_local_toggle_writes_a_project_override_and_keeps_the_defining_file() {
+        let dir = temp_dir("local_toggle");
+        let home = dir.join("home");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(home.join(".oxide")).unwrap();
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        let global = home.join(".oxide").join("mcp.json");
+        let global_config = r#"{"mcpServers":{"docs":{"command":"npx","args":["-y","docs"],"env":{"TOKEN":"secret"}}}}"#;
+        std::fs::write(&global, global_config).unwrap();
+        let sources = sources_for(Some(&home), None, &root);
+        let path = root.join(".oxide").join("mcp.json");
+
+        set_enabled_local_in(&sources, &path, "docs", false).unwrap();
+        let project: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            project["mcpServers"]["docs"],
+            json!({ "enabled": false, "disabled": true })
+        );
+        assert_eq!(
+            std::fs::read_to_string(&global).unwrap(),
+            global_config,
+            "the file that defines the server is untouched"
+        );
+
+        // What the runtime loads: the user-level transport, off for this project.
+        let merged = crate::ecosystem::merge_mcp_override(
+            &json!({ "command": "npx" }),
+            &project["mcpServers"]["docs"],
+        );
+        assert!(!crate::ecosystem::mcp_enabled(&merged));
+
+        set_enabled_local_in(&sources, &path, "docs", true).unwrap();
+        let project: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            project["mcpServers"].get("docs").is_none(),
+            "an override that only says on is dropped: {project}"
+        );
+
+        assert!(set_enabled_local_in(&sources, &path, "absent", false).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_local_toggle_re_enables_a_server_the_user_level_entry_turns_off() {
+        let dir = temp_dir("local_enable");
+        let home = dir.join("home");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(home.join(".oxide")).unwrap();
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        std::fs::write(
+            home.join(".oxide").join("mcp.json"),
+            r#"{"mcpServers":{"docs":{"command":"npx","enabled":false}}}"#,
+        )
+        .unwrap();
+        let sources = sources_for(Some(&home), None, &root);
+        let path = root.join(".oxide").join("mcp.json");
+
+        set_enabled_local_in(&sources, &path, "docs", true).unwrap();
+        let project: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(project["mcpServers"]["docs"], json!({ "enabled": true }));
+
+        set_enabled_local_in(&sources, &path, "docs", false).unwrap();
+        let project: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            project["mcpServers"]["docs"],
+            json!({ "enabled": false, "disabled": true })
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

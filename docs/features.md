@@ -72,7 +72,9 @@ page is the detail behind it, and the task-by-task guides live in
   transport turns a user-level server off or narrows it for that project only; a
   server's description and tool count are listed in the system prompt; and
   `timeout` plus replay of transient HTTP statuses keeps a long call from
-  failing on a blip.
+  failing on a blip. Servers that offer resources are read with
+  `list_mcp_resources`, `list_mcp_resource_templates` and `read_mcp_resource`:
+  text and images come back as content, other binary data as a temp file path.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
   typing while the agent works can queue or steer it between steps. Enter steers

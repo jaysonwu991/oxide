@@ -3681,9 +3681,16 @@ check(
 );
 check(
   "offered browser authorization only for a server that needs it",
-  rowFor("context7").children[0].children[2].children.length === 3 &&
+  rowFor("context7").children[0].children[2].children.length === 4 &&
     rowFor("context7").children[0].children[2].children[1].className === "mcp-authorize" &&
-    rowFor("filesystem").children[0].children[2].children.length === 2,
+    rowFor("filesystem").children[0].children[2].children.length === 3,
+  elementFor("mcp-list").outline(),
+);
+check(
+  "offered a project-only switch only for a server defined outside the project",
+  rowFor("filesystem").children[0].children[2].children[2].className === "mcp-local" &&
+    rowFor("filesystem").children[0].children[2].children[2].textContent === "Off only in this project" &&
+    !rowFor("docs").children[0].children[2].children.some((child) => child.className === "mcp-local"),
   elementFor("mcp-list").outline(),
 );
 const authorize = rowFor("context7").children[0].children[2].children[1];
@@ -3698,7 +3705,7 @@ check(
 check(
   "redrew the authorized server from the core's answer",
   rowFor("context7").children[0].children[1].textContent === "Connected" &&
-    rowFor("context7").children[0].children[2].children.length === 2,
+    rowFor("context7").children[0].children[2].children.length === 3,
   elementFor("mcp-list").outline(),
 );
 check("reported authorization outside the composer", toastText() === "context7 authorized", toastText());
@@ -3745,6 +3752,29 @@ check(
   after,
 );
 check("reported the toggle outside the composer", toastText() === "filesystem disabled", toastText());
+
+// The project-only switch writes an override for this project, not the global
+// entry, and the row then offers to turn it back on here.
+const local = rowFor("filesystem").children[0].children[2].children[2];
+check(
+  "relabelled the project-only switch once the server was off",
+  local.textContent === "On only in this project",
+  elementFor("mcp-list").outline(),
+);
+calls.length = 0;
+await local.onclick();
+check(
+  "asked the core to turn it back on for this project alone",
+  JSON.stringify(projectCalls("set_mcp_server")[0]?.[1]) ===
+    JSON.stringify({ project: app.state.project, name: "filesystem", enabled: true, scope: "project", local: true }),
+  JSON.stringify(projectCalls("set_mcp_server")),
+);
+check(
+  "reported the project-only change from the core's answer",
+  rowFor("filesystem").children[0].children[1].textContent === "Connected" &&
+    toastText() === "filesystem enabled in this project",
+  elementFor("mcp-list").outline() + " / " + toastText(),
+);
 
 // A failing core call is shown, not swallowed into an empty dialog.
 mcpsError = "connection refused";

@@ -123,6 +123,7 @@ export interface DialogState {
 /// The actions a row posts back. The controller routes them (`dialogAction`),
 /// so a rename here is a compile error there rather than a dead button.
 export const MCP_TOGGLE = "mcpToggle";
+export const MCP_TOGGLE_LOCAL = "mcpToggleLocal";
 export const MCP_AUTHORIZE = "mcpAuthorize";
 export const MCP_EXPOSURE_SET = "mcpExposure";
 export const MCP_REFRESH = "mcpRefresh";
@@ -695,6 +696,17 @@ export function mcpDialog(servers: readonly McpServerView[], note = "", info: La
             ]
           : []),
         { label: disable, action: MCP_TOGGLE, icon: "power" as const },
+        ...(server.scope === "project"
+          ? []
+          : [
+              {
+                label: server.enabled
+                  ? t("ui.offInThisProject", "Off only in this project")
+                  : t("ui.onInThisProject", "On only in this project"),
+                action: MCP_TOGGLE_LOCAL,
+                icon: "" as const,
+              },
+            ]),
       ];
       return row(server.name, server.name, {
         detail: [

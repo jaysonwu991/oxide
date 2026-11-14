@@ -707,6 +707,9 @@ enum McpAction {
         /// Limit the change to project or global (default: the source that defines it)
         #[arg(short, long)]
         scope: Option<String>,
+        /// Turn it off for this project only, as an override in the project's own file
+        #[arg(long)]
+        local: bool,
     },
     /// Turn a disabled server back on
     Enable {
@@ -715,6 +718,9 @@ enum McpAction {
         /// Limit the change to project or global (default: the source that defines it)
         #[arg(short, long)]
         scope: Option<String>,
+        /// Turn it back on for this project only, as an override in the project's own file
+        #[arg(long)]
+        local: bool,
     },
     /// Set how a server's tools reach the model
     Exposure {
@@ -741,6 +747,17 @@ fn main() -> Result<()> {
         .spawn(run)
         .context("starting oxide")?;
     program.join().unwrap_or_else(|_| std::process::exit(101))
+}
+
+/// `--local` writes an override in the project's own file, so a global scope
+/// contradicts it.
+fn reject_global_scope(scope: Option<&str>) -> Result<()> {
+    if scope.is_some_and(|scope| scope.eq_ignore_ascii_case("global")) {
+        anyhow::bail!(
+            "--local writes a project override; it cannot be combined with --scope global"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -811,11 +828,21 @@ async fn run() -> Result<()> {
                     McpAction::Auth { name, scope } => {
                         mcp_config::auth(&current_dir, scope, name).await
                     }
-                    McpAction::Enable { name, scope } => {
-                        mcp_config::set_enabled(&current_dir, scope, name, true)
+                    McpAction::Enable { name, scope, local } => {
+                        if local {
+                            reject_global_scope(scope.as_deref())?;
+                            mcp_config::set_enabled_local(&current_dir, name, true)
+                        } else {
+                            mcp_config::set_enabled(&current_dir, scope, name, true)
+                        }
                     }
-                    McpAction::Disable { name, scope } => {
-                        mcp_config::set_enabled(&current_dir, scope, name, false)
+                    McpAction::Disable { name, scope, local } => {
+                        if local {
+                            reject_global_scope(scope.as_deref())?;
+                            mcp_config::set_enabled_local(&current_dir, name, false)
+                        } else {
+                            mcp_config::set_enabled(&current_dir, scope, name, false)
+                        }
                     }
                     McpAction::Exposure {
                         name,

@@ -119,6 +119,8 @@ oxide mcp list --json      # the same listing for a front-end: name, transport,
                            # detail, source, scope, enabled, exposure,
                            # description, tools, state, status
 oxide mcp disable filesystem --scope project   # keep the config, stop loading it
+oxide mcp disable internal-tools --local       # off for this project only, as an override
+oxide mcp enable internal-tools --local        # back on here; `--local` writes the project file
 oxide mcp enable filesystem                    # back on, in whichever file defines it
 oxide mcp exposure filesystem direct           # how its tools reach the model
 ```
@@ -207,6 +209,14 @@ server off — or narrow what it exposes — without copying its credentials:
 {"mcpServers": {"internal-tools": {"enabled": false, "exposure": "hidden"}}}
 ```
 
+`oxide mcp disable <name> --local` (and `enable --local`) writes that entry for
+you in the project's native `mcp.json`, creating it when missing; enabling again
+removes an override that only said "on", while an override that re-enables a
+server the user level turns off is kept. The desktop app's **On/Off only in this
+project** button and the VS Code panel's project-only action run the same
+command. `--local` is the project scope by definition and cannot be combined
+with `--scope global`.
+
 Such an entry may set `enabled` (or `disabled`), `exposure` and `toolExposure`;
 everything else, including the command, the URL, headers and OAuth, comes from
 the user-level entry. The listing reports the user-level transport with the
@@ -245,6 +255,18 @@ A selected or directly declared server's own instructions reach the model in an
 untrusted reference section. They cannot change the user's instructions, grant
 permissions or redirect the task. A search loads capabilities; invoking a
 discovered tool still passes through the usual tool permissions.
+
+### MCP resources
+
+A server can offer resources — documents, schemas, files — beside its tools.
+When a connected server advertises the `resources` capability and is not
+`hidden`, Oxide declares `list_mcp_resources`,
+`list_mcp_resource_templates` and `read_mcp_resource`; a session whose servers
+offer none pays no schemas for them. The listings are JSON (paged with
+`cursor`; per-server failures are reported beside the results), items name the
+server they came from, and MCP App pages are left out because they are a host's
+UI rather than data. A read returns text as text and an image as an image; any
+other binary content is saved to a temporary file whose path is reported.
 
 The optional `domains` array remains a compatibility hint for `webfetch`: when
 one of its URLs matches a configured server, Oxide directs the model to that

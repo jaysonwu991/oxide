@@ -12,6 +12,7 @@ import {
   mcpExposureArgs,
   mcpExposureLabel,
   mcpListArgs,
+  mcpLocalToggleArgs,
   mcpStateLabel,
   mcpToggleArgs,
   nextMcpExposure,
@@ -172,6 +173,29 @@ describe("MCP server listing", () => {
       /runCapture\(this\.binary\(\), mcpAuthArgs\(server\), cwd, 6 \* 60_000\)/,
       "authorization waits for the loopback callback",
     );
+  });
+
+  it("writes a project-only toggle as a local override", () => {
+    const [context7, sentry] = parseMcpList(listing);
+    assert.deepEqual(mcpLocalToggleArgs(context7, false), [
+      "mcp",
+      "disable",
+      "context7",
+      "--local",
+    ]);
+    assert.deepEqual(mcpLocalToggleArgs(sentry, true), [
+      "mcp",
+      "enable",
+      "sentry",
+      "--local",
+    ]);
+    const root = path.join(__dirname, "..", "..");
+    const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
+    const start = chat.indexOf("private async toggleMcpLocal(");
+    assert.ok(start > -1, "the dialog's project-only action has a handler");
+    const handler = chat.slice(start, chat.indexOf("\n  /// ", start + 1));
+    assert.ok(handler.includes("mcpLocalToggleArgs(server, enabling)"));
+    assert.ok(handler.includes("await this.showMcps();"));
   });
 
   it("writes an exposure change through the same CLI and re-lists afterwards", () => {

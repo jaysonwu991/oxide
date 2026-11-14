@@ -8148,6 +8148,31 @@ function renderMcps() {
     toggle.setAttribute("aria-label", toggle.title);
     toggle.onclick = () => toggleMcp(server, toggle);
     actions.appendChild(toggle);
+    // A server defined outside this project can be turned over here alone: the
+    // button writes an override in the project's own config and leaves the
+    // shared entry, and every other project, untouched.
+    if (server.scope !== "project") {
+      const local = document.createElement("button");
+      local.type = "button";
+      local.className = "mcp-local";
+      local.textContent = server.enabled
+        ? t("ui.offInThisProject", "Off only in this project")
+        : t("ui.onInThisProject", "On only in this project");
+      local.title = server.enabled
+        ? t(
+            "ui.offInThisProjectHint",
+            "Turn {value0} off in this project only; the shared configuration is unchanged",
+            { value0: server.name },
+          )
+        : t(
+            "ui.onInThisProjectHint",
+            "Turn {value0} on in this project only; the shared configuration is unchanged",
+            { value0: server.name },
+          );
+      local.setAttribute("aria-label", local.title);
+      local.onclick = () => toggleMcpLocal(server, local);
+      actions.appendChild(local);
+    }
     head.append(name, status, actions);
 
     const detail = document.createElement("div");
@@ -8169,6 +8194,39 @@ function renderMcps() {
     }
     row.appendChild(source);
     box.appendChild(row);
+  }
+}
+
+/// Turns a server over for this project alone, through an override in the
+/// project's own config, and redraws from the core's answer.
+async function toggleMcpLocal(server, button) {
+  if (!state.project) {
+    setStatus(t("composer.selectProject", "Select a project first."));
+    return;
+  }
+  button.disabled = true;
+  const enabled = !server.enabled;
+  const project = state.project;
+  const generation = ++mcpGeneration;
+  const dismissProgress = showToast(`${enabled ? "Turning on" : "Turning off"} ${server.name} in this project…`);
+  try {
+    const servers = await invoke("set_mcp_server", {
+      project,
+      name: server.name,
+      enabled,
+      scope: "project",
+      local: true,
+    });
+    if (generation !== mcpGeneration || project !== state.project) return;
+    state.mcps = servers;
+    state.mcpError = "";
+    renderMcps();
+    showToast(`${server.name} ${enabled ? "enabled" : "disabled"} in this project`);
+  } catch (error) {
+    button.disabled = false;
+    showToast(t("ui.couldNotChange", "Could not change {value0}: {value1}", { value0: server.name, value1: error }), "error");
+  } finally {
+    dismissProgress();
   }
 }
 
