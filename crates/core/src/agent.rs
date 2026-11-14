@@ -2447,12 +2447,11 @@ const DONE_RULES: &[DoneRule] = &[
             "glab ci status",
             "pulls",
         ],
-        reminder: "You opened or updated a pull request but have not read it back. Report the \
-                   link the forge printed — `[#123](url)`, the URL from `gh pr view <url> --json \
-                   url` — and do not poll or wait for its checks unless the user requested the CI \
-                   outcome (for example, \"ensure CI runs well\"). If requested, watch the checks \
-                   to completion once and address failures; otherwise say plainly that they \
-                   were still running if you mention them.",
+        reminder: "You opened or updated a pull request, but its command did not yield a \
+                   usable URL. Recover it once from the saved command output or a single \
+                   `gh pr view --json url` call, then finish with the clickable link. Do not \
+                   run another Git or PR check merely to reconfirm the handoff, and do not poll \
+                   CI unless the user requested its outcome.",
     },
     DoneRule {
         key: "comment",
@@ -8333,7 +8332,7 @@ for line in sys.stdin:
 
     #[test]
     fn side_effects_are_confirmed_before_done() {
-        // A pull request is unconfirmed until its link is read back.
+        // A pull request command with no readable URL needs one recovery lookup.
         let mut state = VerificationState::default();
         state.record(
             "bash",
@@ -8342,13 +8341,11 @@ for line in sys.stdin:
         );
         assert!(state.pending.contains("pull request"));
         let reminder = state.reminder().unwrap();
-        assert!(reminder.contains("gh pr view <url> --json"), "{reminder}");
-        // The reminder is the fallback for a run that missed the prompt's own
-        // rule, so it asks for the link in its own words.
-        assert!(reminder.contains("[#123](url)"), "{reminder}");
+        assert!(reminder.contains("gh pr view --json url"), "{reminder}");
+        assert!(reminder.contains("clickable link"), "{reminder}");
+        assert!(reminder.contains("another Git or PR check"), "{reminder}");
         assert!(!reminder.contains("gh pr checks"), "{reminder}");
         assert!(reminder.contains("unless the user requested"), "{reminder}");
-        assert!(reminder.contains("ensure CI runs well"), "{reminder}");
         assert!(state.reminder().is_none());
 
         // The link `gh pr create` printed is the confirmation, so raising a PR
@@ -8360,6 +8357,28 @@ for line in sys.stdin:
             "https://github.com/owner/repo/pull/42\n[exit: 0]",
         );
         assert!(state.pending.is_empty());
+        assert!(state.reminder().is_none());
+
+        // All delivery work happens before the link is handed over. Once the
+        // branch is pushed and `gh pr create` prints the URL, nothing remains
+        // for a hidden post-summary verification pass to do.
+        let mut state = VerificationState::default();
+        state.record("edit", &json!({"path": "src/lib.rs"}), "ok");
+        state.record("bash", &json!({"command": "cargo test"}), "passed");
+        state.record("bash", &json!({"command": "git add src/lib.rs"}), "");
+        state.record(
+            "bash",
+            &json!({"command": "git commit -m 'fix: change'"}),
+            "[main 1234567] fix: change",
+        );
+        state.record("bash", &json!({"command": "git push"}), "");
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "https://github.com/owner/repo/pull/42",
+        );
+        assert!(state.pending.is_empty());
+        assert!(!state.edited_since_push);
         assert!(state.reminder().is_none());
 
         let mut state = VerificationState::default();

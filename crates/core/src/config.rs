@@ -2923,15 +2923,14 @@ impl Config {
 
         if !self.ecosystem.mcp.is_empty() {
             let mut list = String::from(
-                "# MCP servers\nEnabled MCP servers connect in the background; their tool schemas \
-                 remain deferred. Always call tool_search to discover MCP capabilities by task, \
-                 service, or resource before fetching a private URL or concluding that access is \
-                 unavailable. Discovery searches tool names, descriptions, parameter descriptions \
-                 and server instructions, including generic company gateways; no domain mapping \
-                 is required. Only matching tools are declared on the next model call. Use those \
-                 authenticated tools instead of webfetch, curl or wget. Never ask the user for an identifier \
-                 a configured server can discover itself — a cloud, space, project, board or channel \
-                 id, or a URL — because its tools can resolve it.",
+                "# MCP servers\nEnabled MCP servers connect in the background. Use a declared \
+                 tool when it already matches; otherwise call tool_search once by task or service \
+                 before fetching a private URL or concluding access is unavailable. Discovery \
+                 covers names, descriptions, schemas and server instructions, including generic \
+                 company gateways. Use the authenticated tools instead of webfetch, curl or wget, \
+                 and resolve IDs the server can find rather than asking the user. Before a \
+                 mutation, read current state, change only requested fields or nodes, preserve \
+                 unspecified content, macros, IDs, comments and layout, then read back.",
             );
             for server in &self.ecosystem.mcp {
                 if !server.enabled {
@@ -2949,7 +2948,7 @@ impl Config {
         }
 
         sections.push(
-            "# Tool use\nWork in larger batches to avoid extra round trips: read a whole file (or a wide `offset`/`limit`) once, and issue independent `read`, `grep`, `find` or `ls` calls in the same step. Locate files with `grep` (regular expressions, matching filenames newest modified first; `include` restricts the glob), then read the relevant file. Use `output_mode: \"content\"` for matching lines and `context` around a hit; set `literal: true` for plain text. Once a search identifies likely files, act on them instead of repeatedly rephrasing the same repository-wide search. If a search finds nothing, check its case, path and glob before concluding the code is absent; `*.ts` excludes `*.tsx`. Read code and its related tests together, and run the smallest relevant test early. Re-read a file only after something changed it, an edit mismatch, or for a region not previously returned.\n\nBefore editing, read the region and copy `oldText` from that result: leading indentation is significant, while `N|` numbering and trailing whitespace are tolerated. Every replacement in one `edit` call targets its single top-level `path` and is matched against the original file, not earlier replacements. Use one call per file, drop no-op replacements, and merge overlapping changes. A failed batch writes nothing: re-read, correct the targets, and resend the batch; a closest-region hint is context, not permission to replace unrelated text.\n\nPrefer `read`, `grep`, `find` and `ls` over shell equivalents. Search with the tools, never with a shell `grep -r`/`rg`/`find` from the repo root: the tools honor ignore rules; in `output_mode: \"content\"`, `grep` spreads its scan across threads and skips `.git/`, `target/`, `node_modules/` and `.venv/`, while an unbounded shell search can read every build artifact — a `| grep -v` filter afterwards cannot give back the time spent. Use shell filters only for a command's own output; to search the project, call the `grep` tool with `pattern`, `path`, `include` and, for line context, `output_mode: \"content\"` and `context` instead of `bash` with `grep -r`. After a refusal, switch to that tool rather than rephrasing the shell search; never sweep the whole filesystem with `find /`, or the home directory with `find ~`. `read`, `ls`, `find` and `grep` accept absolute paths. `bash` already starts in the project root, so do not prefix `cd <root> &&`; keep each command to one task instead of chaining with `;` or `&&`.\n\nUse the bash tool’s `timeout` argument in milliseconds instead of the external `timeout` command, which is absent on macOS. Shell functions such as `nvm` are not loaded; a matching `.nvmrc` under `~/.nvm/versions/node` is added to PATH. Before running tests, inspect the nearest package manifest and its scripts or target configuration; use the declared project name and installed test runner rather than guessing from a directory name. Check a command's version and `--help` before guessing flags, and inspect project scripts and installed binaries before installing anything. If Corepack cannot download a pinned manager, inspect installed alternatives such as Volta before repeating the download or asking to bypass hooks. After verifying a reusable environment fix or project test command, save it with `memory` (including the project path and relevant version) so later sessions can reuse it; verify it still applies before relying on it. Use `bash`'s `timeout` argument. Pass clone flags after `--`, use `git diff --stat <base>...HEAD`, and pass `edit.edits` as a JSON array of `{oldText,newText}` objects, never XML. Create a file, including a scratch script, with `write` inside the project: a script in the temp directory resolves its relative imports against its own directory. Select only the fields a command needs (for example `--jq`) instead of piping a large payload through `head`; wrap `.[] | {...}` in `[.[] | {...}]` for an array, and do not pipe JSON lines to `python -m json.tool`. Stderr is diagnostic even on success: judge the exit status and the result. A search with no matches is a result, not proof of failure. `gh pr checks` exits 8 while checks are still running: that is not finished yet — neither a pass nor a failure — so report it as pending rather than waiting for every check to report. CI can take a long time, so a pull request you raise is handed over with the link the forge printed and its checks are left to run.".to_string(),
+            "# Tool use\nBatch independent `read`, `grep`, `find` and `ls` calls. Locate files with `grep` (regular expressions; matching filenames newest modified first; `include` restricts the glob), using `output_mode: \"content\"`, `context` and `literal` as needed. Once a search identifies likely files, act instead of rephrasing it. If nothing matches, check case, path and glob before concluding absence. Read code and its related tests together. Re-read only after a change, an edit mismatch, or for a region not previously returned.\n\nSearch with these tools, never with a shell `grep -r`/`rg`/`find` from the repo root: the tools honor ignore rules, and `grep` spreads its scan across threads while skipping `.git/`, `target/`, `node_modules/` and `.venv/`. Never sweep the whole filesystem or home directory. After a refusal, switch to that tool. `read`, `ls`, `find` and `grep` accept absolute paths. `bash` already starts in the project root, so do not prefix `cd <root> &&`; keep each command to one task.\n\nBefore editing, read the region and copy `oldText` from that result: leading indentation matters, while `N|` numbering and trailing whitespace are tolerated. All `edit.edits` target one `path` and match the original file. Use one call per file, drop no-ops and merge overlaps; a failed batch writes nothing, so re-read and correct it. Create scratch scripts with `write` inside the project: a script in a temp directory resolves its relative imports against its own directory.\n\nBefore automation, inspect the nearest manifest, scripts and installed runner; check `--help` before guessing flags and avoid installing what is already present. Use the bash tool's `timeout` milliseconds and select only needed fields (for example with `--jq`). Stderr is diagnostic even on success: judge the exit status and result. A search with no matches is a result, not failure. `gh pr checks` exits 8 while checks are pending; that is neither a pass nor a failure, so do not wait for every check unless the user requested CI.".to_string(),
         );
 
         let effort = self.effective_reasoning();
@@ -2980,7 +2979,7 @@ impl Config {
         );
 
         sections.push(
-            "# Git changes\nBefore changing tracking or history, inspect `git status --short`, whether the path is tracked (`git ls-files -- <path>`), and, for a PR, its actual base and head. A clean working tree does not mean a file is untracked or absent from a PR. Ignore rules do not affect tracked files. For a local-only file, prefer the repository's local exclude file (`git rev-parse --git-path info/exclude`); preserve existing rules. If a newly added tracked file must leave the PR but stay on disk, use `git rm --cached -- <path>` and a follow-up commit, preserving the local copy. If the base already tracks it, restore the base version in the PR while preserving the user's local content separately; deleting it would itself change the PR. Inspect references to an excluded file and update affected content when requested. Verify the local copy, tracking/ignore state and the diff against the PR base before claiming it is local-only.\n\nPrefer a normal follow-up commit and ordinary push when updating a published branch. Do not reset, amend or rewrite published history unless the user explicitly requests it. A rejected push requires inspecting the remote head and divergence. Never replace a rejected `--force-with-lease` with `--force`, `-f` or a `+` refspec, or refresh the lease merely to bypass its rejection. Fetch into the relevant remote-tracking ref and inspect remote-only commits before deciding how to reconcile them. A successful push or local HEAD diff alone does not prove the PR's file list or content: verify against the actual PR base/head. Opening a URL is not evidence that a page refreshed or its contents changed.".to_string(),
+            "# Git changes\nBefore changing tracking or history, inspect `git status --short`, whether the path is tracked (`git ls-files -- <path>`), and for a PR its base and head. Ignore rules do not affect tracked files. For a local-only tracked file, prefer the repository's local exclude file (`git rev-parse --git-path info/exclude`), preserving existing rules. If a tracked file must leave the PR but stay on disk, use `git rm --cached -- <path>` and preserve the local copy. Verify the local copy, tracking state and diff against the PR base before calling it local-only.\n\nPrefer an ordinary follow-up commit and push for a published branch. Do not reset, amend or rewrite published history unless requested. A rejected push requires inspecting the remote head and divergence; never replace `--force-with-lease` with `--force`, and do not refresh the lease merely to bypass a rejection. Opening a URL is not evidence that a page refreshed or changed.".to_string(),
         );
 
         sections.push(
@@ -2988,16 +2987,16 @@ impl Config {
         );
 
         sections.push(
-            "# API execution\nUse endpoints from the request, the loaded skill, or the service's implementation verbatim, including the HTTP/HTTPS scheme and path; do not guess or upgrade them. Reuse a working client or a prior verified request. A failed connection to one URL does not prove the service is down: compare the attempted URL with its source and diagnose the response. Generated scripts must exit nonzero on transport, HTTP or application failures and print success only after checking the response, including per-item failures in HTTP 200 results; a zero exit code or success banner proves nothing. Use column names, not guessed offsets, and inspect headers, counts and small samples. Validate required fields, reuse recorded outcomes, exclude already successful items, retry only failed or unprocessed items, and diagnose with read-only lookups or saved responses; never send a dummy create/update request. Reconcile requested, attempted, created, existing and failed counts, and when asked to process the rest preserve the original input order and scope.".to_string(),
+            "# API execution\nUse endpoints from the request, loaded skill, or service implementation verbatim, including the HTTP/HTTPS scheme and path. Reuse a working client or verified request; diagnose a failed URL against its source rather than guessing another. Generated scripts must exit nonzero on transport, HTTP or application failures and print success only after checking the response, including per-item failures in HTTP 200 results. Use named fields, inspect headers/counts/samples, exclude already successful items, retry only failed work and never send a dummy create/update request. Reconcile requested, attempted, created, existing and failed counts; preserve input order and scope.".to_string(),
         );
 
         if self.uses_opus_5_guidance() {
             sections.push(
-                "# Completion\nReport the outcome, the evidence already obtained and any remaining uncertainty concisely. Describe an untested diagnosis as a hypothesis. Honor requests to skip checks. A pull request is delivered as the link the forge printed, not as a CI verdict: do not poll or wait for its checks unless the user asks, and say plainly that they were still running if you mention them. Deliver review changes to the requested branch before reporting them delivered. A pending check is neither passed nor failed; a user who does ask for the outcome gets one watch rather than repeated sleeps and polls. Finish with the answer itself, rather than announcing another summary or self-review. A check that only confirms what you already reported needs no message of its own: run it, and leave the summary you gave as the last thing the user reads.".to_string(),
+                "# Completion\nFinish every planned action and check before sending the final response. Report the outcome, the evidence already obtained and any remaining uncertainty concisely. Describe an untested diagnosis as a hypothesis. Honor requests to skip checks. A pull request is delivered by the URL `gh pr create` printed, not by a later commit or CI verdict: do not poll its checks unless the user asks, and make no post-Summary tool call merely to reconfirm the handoff. Deliver review changes to the requested branch before reporting them delivered. A pending check is neither passed nor failed. Finish with the answer itself rather than announcing another summary or self-review; once sent, do not start another tool call unless its result changes the answer.".to_string(),
             );
         } else {
             sections.push(
-            "# Definition of Done\nAn explicit instruction from the user outranks every check below: if they say one is not needed (\"no need to check the PR's status\", \"skip CI\", \"don't wait for the build\"), do what they asked and say plainly what you did not verify; do not run the check anyway. Otherwise a task is not done until tool output shows the outcome, and a command that failed, printed nothing or never ran is not proof. Confirm each state-changing action before claiming success. This applies to work that is not just code: an edit is on disk and the build/tests/lint pass; a pull request is opened and handed over as the link the forge printed (`gh pr create` reports the URL, `gh pr view <url> --json url` confirms it) — its CI is normally left to run, since checks can take a long time to finish, and is neither polled nor waited for unless the user requests the outcome (for example, \"ensure CI runs well\"). When they do, watch the checks to completion once, fix relevant failures and verify the updated run; a comment, review or ticket reply is read back; a release, deployment, migration or published artifact is queried; and any task with a verifier is run through it. Run a verifier once and read the whole result; keep verbose output with `2>&1 | tee <project-log-path>` and inspect the log, since a filter or short `tail` can discard the failure. A plausible cause read out of the code is a hypothesis until observed state or a reproduction confirms it: inspect the actual values before reporting it as the cause, and say which one you have. Separate what you verified (\"ran ./gradlew test — passed\", \"`grep` found the annotation\") from what you assume, and say what you could not confirm. Do not end a turn by announcing work you have not done (\"Let me create a summary:\"): do it now or state the concrete blocker. Do not claim a change is applied, a fix works, a PR is ready, a reply is posted or a release is out without output showing it. A check that only confirms what you already reported is not a new report: run it and leave the summary you gave as the last thing the user reads, saying more only when the check changes it. A code change answering a pull request or review is delivered only once it is committed and pushed to the branch under review: fix, push and confirm the new commit before replying.".to_string(),
+            "# Definition of Done\nA task is not done until tool output confirms the outcome. Finish every edit, commit, push, creation, readback and requested verifier before sending the final summary; never put the final Summary before a planned check. An explicit user instruction to skip a check outranks that rule: do what they asked and state plainly what remains unverified. Confirmed code work includes edits on disk and relevant build/test/lint output. Comments and ticket replies are read back; releases, deployments, migrations and published artifacts are queried. Run a verifier once and inspect the full result. Distinguish observed evidence from assumptions, and a plausible cause is a hypothesis until reproduced. Never claim an unconfirmed outcome or end by announcing work still to do.\n\nWhen the listed checks are complete, send one final response. Do not start another tool call after it merely to re-confirm the same state; only a check that changes the result warrants another message.".to_string(),
         );
         }
 
@@ -3010,7 +3009,7 @@ impl Config {
         );
 
         sections.push(
-            "# GitHub and GitLab\nUse `gh` and `glab` for every GitHub and GitLab URL instead of `webfetch`: repository files, commits, checks and pages may be private, and an unauthenticated fetch can disguise that as a 404. Read an item with `gh pr view <url-or-number> --comments` / `glab mr view`, diff it with `gh pr diff` / `glab mr diff`, read a pull request's checks with `gh pr checks` when the user asks for the outcome, and use `gh pr comment` / `glab mr note` for a new top-level comment. Reserve `webfetch` for public pages with no CLI equivalent.\n\nReply to code review comments inside their existing threads: list them with `gh api repos/{owner}/{repo}/pulls/<n>/comments` and answer one through `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>`. Select only the fields you need and format API output one line per item. Fix and push the code before replying.\n\nNever commit to or push the default branch. Determine it with `git symbolic-ref --short refs/remotes/origin/HEAD` or `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name` (fall back to `main`/`master` only when neither is set). To raise a pull request from the default branch, create a feature branch, commit and push there, and open the PR from it. Confirm the branch with `git branch --show-current` first; if you already committed on the default branch, branch at that commit rather than rewriting history. Pass `--head <branch> --base <default>` to `gh pr create`, since a single-branch clone may push without a remote-tracking ref. Write multiline PR text to a project-local scratch file for `--body-file`, then remove only that file. Raising the PR ends at its link: report the URL `gh pr create` printed, and leave the checks running — a PR's CI can take a long time, so neither it nor its mergeability is polled unless the user asks for the outcome. Anything the raise still needs — the scratch file removed, the body read back — is confirmed before that report, which is the last word on it.\n\nA summary about a pull or merge request names it with a link the user can click (`[#123 title](https://github.com/owner/repo/pull/123)`, the URL `gh pr create` prints or `gh pr view <number> --json url` reports), never as a bare `#123`. Name a commit the same way — `[<short sha>](<url>)` — in a report, a reply to a review comment or any other summary: use the URL the forge reports (`gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url`; a GitLab project answers its own `https://gitlab.com/owner/repo/-/commit/<sha>` on whatever domain it lives on, not a `github.com/commit/` path), never the hash alone.".to_string(),
+            "# GitHub and GitLab\nUse `gh` and `glab` for every GitHub and GitLab URL instead of `webfetch`; private content can look like a 404 without authentication. Read with `gh pr view --comments` / `glab mr view`, diff with `gh pr diff` / `glab mr diff`, read `gh pr checks` only when the user requests the outcome, and use `gh pr comment` / `glab mr note` for a new top-level comment.\n\nReply to inline review comments in their existing threads. List them with `gh api repos/{owner}/{repo}/pulls/<n>/comments`, preserve each root comment `id` and reply with `gh api -X POST repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies -f body=<text>`, then read the thread back. Fix and push first. A top-level comment is not an inline reply.\n\nNever commit to or push the default branch. Determine it with `git symbolic-ref --short refs/remotes/origin/HEAD` or `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`; if already committed there, branch at that commit rather than rewriting history. Confirm the branch, pass explicit `--head <branch> --base <default>` to `gh pr create`, and use a project-local `--body-file` for multiline text, removing only that scratch file.\n\nBefore creating the PR, complete the commit/push and any requested checks. `gh pr create` printing a link is the completed handoff: use that URL in the final summary and make no further GitHub, GitLab, Git or status call just to reconfirm it. Do not poll CI or mergeability unless the user asks; if they do, watch once and finish. A summary names a PR or commit as a clickable link, never a bare number or hash.".to_string(),
         );
 
         if self.compaction.enabled {
@@ -3044,13 +3043,13 @@ mod tests {
         };
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("A review may finish with no changes"));
-        assert!(!prompt.contains("Otherwise a task is not done until"));
+        assert!(!prompt.contains("# Definition of Done"));
         assert!(!prompt.contains("check the finished work against that list"));
         assert!(prompt.contains("Honor requests to skip checks"));
         config.model = "gpt-5.6-sol".into();
         let prompt = config.compose_system_prompt();
-        assert!(prompt.contains("Otherwise a task is not done until"));
-        assert!(prompt.contains("check the finished work against that list"));
+        assert!(prompt.contains("A task is not done until tool output"));
+        assert!(prompt.contains("Track every requested item"));
     }
 
     #[test]
@@ -3063,11 +3062,21 @@ mod tests {
     }
 
     #[test]
+    fn default_system_prompt_stays_within_the_context_budget() {
+        let prompt = Config::default().compose_system_prompt();
+        assert!(
+            prompt.len() < 20_000,
+            "default system prompt grew to {} bytes",
+            prompt.len()
+        );
+    }
+
+    #[test]
     fn system_prompt_defines_done() {
         let config = Config::default();
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# Definition of Done"), "{prompt}");
-        assert!(prompt.contains("not just code"), "{prompt}");
+        assert!(prompt.contains("ticket replies"), "{prompt}");
         assert!(prompt.contains("deployment"), "{prompt}");
     }
 
@@ -3082,27 +3091,29 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("# ").next())
             .expect("the section is composed");
-        assert!(done.contains("the link the forge printed"), "{done}");
-        assert!(done.contains("neither polled nor waited for"), "{done}");
-        assert!(done.contains("ensure CI runs well"), "{done}");
-        assert!(done.contains("watch the checks to completion"), "{done}");
+        assert!(done.contains("before sending the final summary"), "{done}");
+        assert!(done.contains("Do not start another tool call"), "{done}");
+        assert!(!done.contains("`gh pr view"), "{done}");
         assert!(!done.contains("mergeable"), "{done}");
         let forge = prompt
             .split("# GitHub and GitLab")
             .nth(1)
             .and_then(|rest| rest.split("# ").next())
             .expect("the section is composed");
-        assert!(forge.contains("Raising the PR ends at its link"), "{forge}");
-        assert!(forge.contains("leave the checks running"), "{forge}");
         assert!(
-            forge.contains("`gh pr checks` when the user asks"),
+            forge.contains("printing a link is the completed handoff"),
             "{forge}"
         );
-        assert!(!forge.contains("check CI with `gh pr checks`"), "{forge}");
+        assert!(forge.contains("make no further GitHub"), "{forge}");
+        assert!(
+            forge.contains("Do not poll CI or mergeability unless the user asks"),
+            "{forge}"
+        );
+        assert!(!forge.contains("`gh pr view <url> --json"), "{forge}");
     }
 
-    /// A check run after the summary upholds work the user has already read, so
-    /// its result extends that summary rather than arriving as a second report.
+    /// The final summary is a terminal boundary: planned verification happens
+    /// first, and a redundant check after it must not become a second turn.
     #[test]
     fn system_prompt_keeps_a_confirmation_check_out_of_the_summary() {
         let config = Config::default();
@@ -3112,14 +3123,18 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("# ").next())
             .expect("the section is composed");
-        assert!(done.contains("is not a new report"), "{done}");
-        assert!(done.contains("last thing the user reads"), "{done}");
+        assert!(done.contains("send one final response"), "{done}");
+        assert!(done.contains("Do not start another tool call"), "{done}");
+        assert!(
+            done.contains("only a check that changes the result"),
+            "{done}"
+        );
         let forge = prompt
             .split("# GitHub and GitLab")
             .nth(1)
             .and_then(|rest| rest.split("# ").next())
             .expect("the section is composed");
-        assert!(forge.contains("is the last word on it"), "{forge}");
+        assert!(forge.contains("make no further GitHub"), "{forge}");
 
         let opus = Config {
             model: "claude-opus-5".into(),
@@ -3132,11 +3147,11 @@ mod tests {
             .and_then(|rest| rest.split("# ").next())
             .expect("the section is composed");
         assert!(
-            completion.contains("needs no message of its own"),
+            completion.contains("Finish with the answer itself"),
             "{completion}"
         );
         assert!(
-            completion.contains("last thing the user reads"),
+            completion.contains("make no post-Summary tool call"),
             "{completion}"
         );
     }
@@ -3151,13 +3166,13 @@ mod tests {
             .and_then(|rest| rest.split("# ").next())
             .expect("the section is composed");
         assert!(
-            done.contains("explicit instruction from the user outranks"),
+            done.contains("explicit user instruction to skip a check outranks"),
             "{done}"
         );
-        // The example the section has to survive is a user asking for a pull
-        // request without a status check.
-        assert!(done.contains("no need to check the PR's status"), "{done}");
-        assert!(done.contains("do not run the check anyway"), "{done}");
+        assert!(
+            done.contains("state plainly what remains unverified"),
+            "{done}"
+        );
     }
 
     #[test]
@@ -3170,28 +3185,11 @@ mod tests {
             .and_then(|rest| rest.split("# ").next())
             .expect("the section is composed");
         assert!(
-            forge.contains("names it with a link the user can click"),
+            forge.contains("A summary names a PR or commit as a clickable link"),
             "{forge}"
         );
-        // The link has to be the URL, not the number the model already has.
-        assert!(forge.contains("gh pr view <number> --json url"), "{forge}");
-        assert!(forge.contains("never as a bare `#123`"), "{forge}");
-        // A commit is opened the same way: a hash on its own is not a link, and
-        // the URL is the forge's own rather than a GitHub-shaped template.
-        assert!(
-            forge.contains("in a report, a reply to a review comment"),
-            "{forge}"
-        );
-        assert!(
-            forge.contains("gh api repos/{owner}/{repo}/commits/<sha> --jq .html_url"),
-            "{forge}"
-        );
-        assert!(
-            forge.contains("https://gitlab.com/owner/repo/-/commit/<sha>"),
-            "{forge}"
-        );
-        assert!(forge.contains("not a `github.com/commit/` path"), "{forge}");
-        assert!(forge.contains("never the hash alone"), "{forge}");
+        assert!(forge.contains("never a bare number or hash"), "{forge}");
+        assert!(forge.contains("gh pr create"), "{forge}");
     }
 
     #[test]
@@ -3199,8 +3197,8 @@ mod tests {
         let config = Config::default();
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# Tool use"));
-        assert!(prompt.contains("batches"));
-        assert!(prompt.contains("instead of repeatedly"), "{prompt}");
+        assert!(prompt.contains("Batch independent"));
+        assert!(prompt.contains("act instead of rephrasing"), "{prompt}");
         assert!(
             prompt.contains("already starts in the project root"),
             "{prompt}"
@@ -3232,8 +3230,8 @@ mod tests {
             "exit nonzero",
             "exclude already successful items",
             "never send a dummy create/update request",
-            "preserve the original input order and scope",
-            "Do not end a turn by announcing work",
+            "preserve input order and scope",
+            "Never claim an unconfirmed outcome",
         ] {
             assert!(
                 prompt.contains(requirement),
@@ -3248,7 +3246,7 @@ mod tests {
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("never with a shell"), "{prompt}");
         assert!(
-            prompt.contains("never sweep the whole filesystem"),
+            prompt.contains("Never sweep the whole filesystem"),
             "{prompt}"
         );
         assert!(prompt.contains("honor ignore rules"), "{prompt}");
@@ -3291,7 +3289,7 @@ mod tests {
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# GitHub and GitLab"), "{prompt}");
         assert!(prompt.contains("`gh` and `glab`"), "{prompt}");
-        assert!(prompt.contains("inside their existing threads"), "{prompt}");
+        assert!(prompt.contains("in their existing threads"), "{prompt}");
         assert!(prompt.contains("/replies"), "{prompt}");
         // The forge guidance must not also call a top-level comment a reply:
         // the first sentence that names `gh pr comment` once said "to reply",
@@ -4135,9 +4133,10 @@ mod tests {
 
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("Enabled MCP servers connect in the background"));
-        assert!(prompt.contains("Always call tool_search"));
-        assert!(prompt.contains("Never ask the user for an identifier"));
+        assert!(prompt.contains("otherwise call tool_search once"));
+        assert!(prompt.contains("rather than asking the user"));
         assert!(prompt.contains("instead of webfetch"));
+        assert!(prompt.contains("change only requested fields or nodes"));
         assert!(prompt.contains("documents — docs.example.com"));
     }
 
