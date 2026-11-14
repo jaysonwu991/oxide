@@ -1643,7 +1643,17 @@ close in the headers — whose tooltips carry the words. **Escape** closes eithe
 The **MCP servers** dialog lists every server the project loads, with the state
 the core probed (`Connected`, `Needs Auth`, `Needs Trust`, `Disabled`, or the
 connection error) and a line naming its transport, its endpoint or command line,
-and the file it was defined in. A server in `Needs Auth` carries an **Authorize**
+the tool count it reported when it answered, and the file it was defined in, with the server's own
+one-line description under it when it has one. An **exposure chip** beside the
+power switch says how its tools reach the model — **deferred** (found with
+`tool_search`), **direct** (declared on every request), or **hidden** (never
+offered) — and a click writes the next mode into the file that defines the
+server through `oxide mcp exposure`, then repaints from the fresh probe. A server
+the project does not define itself carries an **Off only in this project**
+(or, when it is off, **On only in this project**) button: it writes an override
+in the project's own config through `oxide mcp disable|enable --local`, leaving
+the shared entry and every other project untouched. A server
+in `Needs Auth` carries an **Authorize**
 button beside its power switch: the harness calls the shared OAuth flow, which
 opens the provider's authorization page in the machine's browser and waits for
 the loopback callback before repainting the listing from a fresh probe. The

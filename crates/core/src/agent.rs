@@ -1,6 +1,6 @@
 use crate::ask::{self, Asker, Question, Reply};
 use crate::config::Config;
-use crate::ecosystem::AgentMode;
+use crate::ecosystem::{AgentMode, McpExposure};
 use crate::llm::{
     ContentPart, FunctionSpec, LlmClient, Message, MessageContent, Retry, StreamHooks, ToolCall,
     ToolSpec,
@@ -786,12 +786,12 @@ async fn run_loop(
         );
     }
     runtime.mcp.start_discovery();
-    if !runtime
+    let selected = !runtime
         .selected_mcp_tools
         .lock()
         .expect("tool selection poisoned")
-        .is_empty()
-    {
+        .is_empty();
+    if selected || runtime.mcp.declares_direct_tools() {
         runtime
             .cancel
             .until(tokio::time::timeout(
@@ -1081,6 +1081,13 @@ async fn run_loop(
                 "`session_title` once alongside your complete user-facing response and any ",
                 "other tools; never call it alone."
             ));
+        }
+        // A configured server is named here before its tools are declared, so
+        // the model knows a server exists and what it is for; a deferred tool it
+        // never heard of is one it does not search for.
+        if let Some(servers) = runtime.mcp.servers_section() {
+            system.push_str("\n\n");
+            system.push_str(&servers);
         }
         // A loaded server's own instructions only reach the model here: one the
         // model loads itself says what it needs in its tool result, while an
@@ -2308,6 +2315,10 @@ pub(crate) fn warmer_inputs(
 ) -> (Vec<Message>, Vec<ToolSpec>) {
     let mut system = config.compose_system_prompt();
     system.push_str(&project_context(cwd, messages));
+    if let Some(servers) = runtime.mcp.servers_section() {
+        system.push_str("\n\n");
+        system.push_str(&servers);
+    }
     if let Some(notes) = runtime.mcp.selected_instructions(
         &runtime
             .selected_mcp_tools
@@ -3891,6 +3902,11 @@ async fn dispatch(
             .expect("tool selection poisoned")
             .contains(&call.function.name)
     {
+        if runtime.mcp.exposure_of(&call.function.name) == Some(McpExposure::Hidden) {
+            return tools::ToolOutput::error(
+                "This MCP tool is hidden by its server's `exposure` setting, so it is not offered in this session.",
+            );
+        }
         return tools::ToolOutput::error("This MCP tool is deferred. Use tool_search to discover and declare it before calling it.");
     }
     runtime
@@ -7014,6 +7030,10 @@ for line in sys.stdin:
                 cwd: None,
             },
             domains: vec![],
+            description: None,
+            exposure: McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
         }];
         let mut unavailable = config.ecosystem.mcp[0].clone();
         unavailable.name = "unavailable-gateway".into();

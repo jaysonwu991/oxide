@@ -134,6 +134,7 @@ test("uses the real Chinese catalog for dialogs while preserving action IDs and 
 test("localizes real MCP display statuses without discarding diagnostics or unknown states", () => {
   const server = (state: string, status: string, enabled = true): McpServerView => ({
     name: state, state, status, enabled, transport: "stdio", detail: "mcp-server", scope: "project", source: "project",
+    exposure: "deferred", description: "", tools: 0,
   });
   const servers = [server("connected", "Connected"), server("needs-auth", "Needs Auth"),
     server("needs-trust", "Needs Trust"), server("disabled", "Disabled", false),

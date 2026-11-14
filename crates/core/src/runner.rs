@@ -348,6 +348,10 @@ mod tests {
                 oauth: None,
             },
             domains: Vec::new(),
+            description: None,
+            exposure: crate::ecosystem::McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
         });
         let with_server = environment_key(&config, &base);
         assert_ne!(first, with_server, "a new server needs a new registry");

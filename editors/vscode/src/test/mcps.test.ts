@@ -9,9 +9,13 @@ import { describe, it } from "node:test";
 
 import {
   mcpAuthArgs,
+  mcpExposureArgs,
+  mcpExposureLabel,
   mcpListArgs,
+  mcpLocalToggleArgs,
   mcpStateLabel,
   mcpToggleArgs,
+  nextMcpExposure,
   parseMcpList,
 } from "../core/mcps";
 
@@ -33,6 +37,9 @@ const listing = JSON.stringify([
     source: "claude (global)",
     scope: "global",
     enabled: true,
+    exposure: "direct",
+    description: "Up-to-date library documentation",
+    tools: 2,
     state: "connected",
     status: "Connected",
   },
@@ -47,8 +54,13 @@ describe("MCP server listing", () => {
     );
     assert.equal(servers[0].transport, "http");
     assert.equal(servers[0].scope, "global");
+    assert.equal(servers[0].exposure, "direct");
+    assert.equal(servers[0].description, "Up-to-date library documentation");
+    assert.equal(servers[0].tools, 2);
     assert.equal(servers[1].enabled, false);
     assert.equal(servers[1].state, "disabled");
+    assert.equal(servers[1].exposure, "deferred", "a listing without one reads as deferred");
+    assert.equal(servers[1].tools, 0);
   });
 
   it("ignores output that is not the JSON listing", () => {
@@ -94,6 +106,33 @@ describe("MCP server listing", () => {
     assert.deepEqual(mcpListArgs(), ["mcp", "list", "--json"]);
   });
 
+  it("cycles the three exposures and names them the way the terminal does", () => {
+    const [context7, sentry] = parseMcpList(listing);
+    assert.equal(nextMcpExposure("deferred"), "direct");
+    assert.equal(nextMcpExposure("direct"), "hidden");
+    assert.equal(nextMcpExposure("hidden"), "deferred");
+    assert.equal(nextMcpExposure("something-new"), "direct", "an unknown mode starts the cycle");
+    assert.equal(mcpExposureLabel("deferred"), "deferred");
+    assert.equal(mcpExposureLabel("direct"), "direct");
+    assert.equal(mcpExposureLabel("hidden"), "hidden");
+    assert.deepEqual(mcpExposureArgs(context7, "hidden"), [
+      "mcp",
+      "exposure",
+      "context7",
+      "hidden",
+      "--scope",
+      "global",
+    ]);
+    assert.deepEqual(mcpExposureArgs(sentry, "direct"), [
+      "mcp",
+      "exposure",
+      "sentry",
+      "direct",
+      "--scope",
+      "project",
+    ]);
+  });
+
   it("pins browser authorization to the scope that defines the server", () => {
     const [context7, sentry] = parseMcpList(listing);
     assert.deepEqual(mcpAuthArgs(context7), [
@@ -134,6 +173,43 @@ describe("MCP server listing", () => {
       /runCapture\(this\.binary\(\), mcpAuthArgs\(server\), cwd, 6 \* 60_000\)/,
       "authorization waits for the loopback callback",
     );
+  });
+
+  it("writes a project-only toggle as a local override", () => {
+    const [context7, sentry] = parseMcpList(listing);
+    assert.deepEqual(mcpLocalToggleArgs(context7, false), [
+      "mcp",
+      "disable",
+      "context7",
+      "--local",
+    ]);
+    assert.deepEqual(mcpLocalToggleArgs(sentry, true), [
+      "mcp",
+      "enable",
+      "sentry",
+      "--local",
+    ]);
+    const root = path.join(__dirname, "..", "..");
+    const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
+    const start = chat.indexOf("private async toggleMcpLocal(");
+    assert.ok(start > -1, "the dialog's project-only action has a handler");
+    const handler = chat.slice(start, chat.indexOf("\n  /// ", start + 1));
+    assert.ok(handler.includes("mcpLocalToggleArgs(server, enabling)"));
+    assert.ok(handler.includes("await this.showMcps();"));
+  });
+
+  it("writes an exposure change through the same CLI and re-lists afterwards", () => {
+    const root = path.join(__dirname, "..", "..");
+    const chat = fs.readFileSync(path.join(root, "src", "chat.ts"), "utf8");
+    const start = chat.indexOf("private async cycleMcpExposure(");
+    assert.ok(start > -1, "the dialog's exposure action has a handler");
+    const handler = chat.slice(start, chat.indexOf("\n  /// ", start + 1));
+    assert.ok(handler.includes("nextMcpExposure(server.exposure)"), "asks for the next mode");
+    assert.ok(
+      handler.includes("mcpExposureArgs(server, exposure)"),
+      "pins the change to the server's own scope",
+    );
+    assert.ok(handler.includes("await this.showMcps();"), "repaints from the CLI's answer");
   });
 
   // The controller imports `vscode`, so it cannot be loaded here; the decision

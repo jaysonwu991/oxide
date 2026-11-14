@@ -475,14 +475,36 @@ pub async fn mcp_servers(project: String) -> CmdResult<Vec<oxide_core::mcp_confi
 }
 
 /// Turns an MCP server off (or back on) in the file that defines it, then
-/// returns the re-probed list so the modal can redraw from one round trip.
+/// returns the re-probed list so the modal can redraw from one round trip. A
+/// `local` change writes an override in the project's own file instead, leaving
+/// the user-level entry — and every other project — alone.
 pub async fn set_mcp_server(
     project: String,
     name: String,
     enabled: bool,
+    scope: Option<String>,
+    local: bool,
 ) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
     let cwd = project_dir(&project)?;
-    oxide_core::mcp_config::set_enabled(&cwd, None, name, enabled).map_err(err)?;
+    if local {
+        oxide_core::mcp_config::set_enabled_local(&cwd, name, enabled).map_err(err)?;
+    } else {
+        oxide_core::mcp_config::set_enabled(&cwd, scope, name, enabled).map_err(err)?;
+    }
+    Ok(oxide_core::mcp_config::server_views(&cwd).await)
+}
+
+/// Changes how a server's tools reach the model — `deferred`, `direct`, or
+/// `hidden` — in the file that defines it. The fresh listing is the answer so
+/// the modal repaints from the same probe every other MCP action uses.
+pub async fn set_mcp_exposure(
+    project: String,
+    name: String,
+    exposure: String,
+    scope: Option<String>,
+) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
+    let cwd = project_dir(&project)?;
+    oxide_core::mcp_config::set_exposure(&cwd, scope, name, exposure).map_err(err)?;
     Ok(oxide_core::mcp_config::server_views(&cwd).await)
 }
 
@@ -2095,6 +2117,17 @@ pub async fn dispatch(
                 arg(&args, "project")?,
                 arg(&args, "name")?,
                 arg(&args, "enabled")?,
+                optional_arg(&args, "scope")?,
+                optional_arg(&args, "local")?.unwrap_or(false),
+            )
+            .await,
+        ),
+        "set_mcp_exposure" => command_value(
+            set_mcp_exposure(
+                arg(&args, "project")?,
+                arg(&args, "name")?,
+                arg(&args, "exposure")?,
+                optional_arg(&args, "scope")?,
             )
             .await,
         ),

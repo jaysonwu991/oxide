@@ -8,12 +8,18 @@ Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`, `code
 `memory`, `diagnostics`, `ask`, and `tool_search`. Enabled MCP servers connect
 in the background; `tool_search` discovers capabilities and declares only the
 matching `<server>__<tool>` schemas on the next model call. `mcp_load` connects or
-retries a particular server while keeping its catalog deferred.
+retries a particular server while keeping its catalog deferred. `tool_search` is
+declared only while an enabled server has a deferred tool to find. A server's
+`exposure` (or a tool's `toolExposure` entry) can declare tools directly instead,
+or hide them from the model entirely — see
+[MCP servers](cli.md#tool-exposure).
 
 A remote MCP request rejected with HTTP 404 while carrying a session ID clears
 that ID, initializes a new session, and retries the request once. A second
-rejection is reported. An ordinary 404 without a session ID, a timeout, or a
-server error is not replayed: the outcome of a writing tool may be unknown.
+rejection is reported. A transient status (408, 429, 5xx) is replayed twice, or
+once for `tools/call`, whose side effects may already have happened; a timeout
+is not replayed, because it cannot say whether the server acted. A server's
+`timeout` (seconds, default 60) bounds one request.
 
 | Tool | Parameters |
 | --- | --- |
@@ -28,6 +34,24 @@ server error is not replayed: the outcome of a writing tool may be unknown.
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
 | `tool_search` | `query`, `limit?` (default 8, maximum 64) |
 | `mcp_load` | `server` |
+| `list_mcp_resources` | `server?`, `cursor?` |
+| `list_mcp_resource_templates` | `server?`, `cursor?` |
+| `read_mcp_resource` | `server`, `uri` |
+
+## MCP resources
+
+The three resource tools reach every connected server that advertised the
+`resources` capability and is not `hidden`; they are declared only while such a
+server is connected, so a session whose servers offer none pays no schemas for
+them. `list_mcp_resources` and `list_mcp_resource_templates` return JSON: with a
+`server`, one page plus `nextCursor`; without, every page of every server, with
+per-server failures in `errors` rather than failing the whole listing. Items are
+tagged with the `server` they came from; icons, `_meta` and MCP App pages
+(`ui://` URIs, `profile=mcp-app`) are left out because they are a host's UI, not
+data. `read_mcp_resource` returns text as text and images as images; other binary
+contents are written to a temp file and the path is reported, so `read` can open
+them. Resources follow their server's `exposure`: a `hidden` server is not
+reached.
 
 ## Behavior
 

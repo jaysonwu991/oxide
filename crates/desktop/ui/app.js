@@ -8072,6 +8072,15 @@ function mcpStatusText(server) {
   return t(keys[server.state], server.status || server.state || "");
 }
 
+/// How a server's tools reach the model, in the language on screen. The order is
+/// the one the exposure chip cycles through.
+const MCP_EXPOSURES = ["deferred", "direct", "hidden"];
+function mcpExposureLabel(exposure) {
+  const keys = { deferred: ["ui.exposureDeferred", "deferred"], direct: ["ui.exposureDirect", "direct"], hidden: ["ui.exposureHidden", "hidden"] };
+  const [key, fallback] = keys[exposure] || ["", exposure || ""];
+  return key ? t(key, fallback) : fallback;
+}
+
 function renderMcps() {
   const box = el("mcp-list");
   box.innerHTML = "";
@@ -8099,6 +8108,20 @@ function renderMcps() {
     status.textContent = mcpStatusText(server);
     const actions = document.createElement("div");
     actions.className = "mcp-actions";
+    // The exposure chip says how the server's tools reach the model and cycles
+    // the three modes; the toggle beside it only turns the server on or off.
+    const exposure = document.createElement("button");
+    exposure.type = "button";
+    exposure.className = `mcp-exposure exposure-${server.exposure || "deferred"}`;
+    exposure.textContent = mcpExposureLabel(server.exposure);
+    exposure.title = t(
+      "ui.mcpExposureHint",
+      "Exposure of {value0}: {value1}. Click to change: deferred, direct, hidden.",
+      { value0: server.name, value1: mcpExposureLabel(server.exposure) },
+    );
+    exposure.setAttribute("aria-label", exposure.title);
+    exposure.onclick = () => cycleMcpExposure(server, exposure);
+    actions.appendChild(exposure);
     if (server.enabled && server.state === "needs-auth") {
       const authorize = document.createElement("button");
       authorize.type = "button";
@@ -8125,17 +8148,124 @@ function renderMcps() {
     toggle.setAttribute("aria-label", toggle.title);
     toggle.onclick = () => toggleMcp(server, toggle);
     actions.appendChild(toggle);
+    // A server defined outside this project can be turned over here alone: the
+    // button writes an override in the project's own config and leaves the
+    // shared entry, and every other project, untouched.
+    if (server.scope !== "project") {
+      const local = document.createElement("button");
+      local.type = "button";
+      local.className = "mcp-local";
+      local.textContent = server.enabled
+        ? t("ui.offInThisProject", "Off only in this project")
+        : t("ui.onInThisProject", "On only in this project");
+      local.title = server.enabled
+        ? t(
+            "ui.offInThisProjectHint",
+            "Turn {value0} off in this project only; the shared configuration is unchanged",
+            { value0: server.name },
+          )
+        : t(
+            "ui.onInThisProjectHint",
+            "Turn {value0} on in this project only; the shared configuration is unchanged",
+            { value0: server.name },
+          );
+      local.setAttribute("aria-label", local.title);
+      local.onclick = () => toggleMcpLocal(server, local);
+      actions.appendChild(local);
+    }
     head.append(name, status, actions);
 
     const detail = document.createElement("div");
     detail.className = "mcp-detail";
-    detail.textContent = [server.transport, server.detail].filter(Boolean).join(" · ");
+    detail.textContent = [server.transport, server.detail]
+      .filter(Boolean)
+      .join(" · ") +
+      (server.tools > 0 ? ` · ${t("ui.mcpTools", "{count} tools", { count: server.tools })}` : "");
     const source = document.createElement("div");
     source.className = "mcp-source";
     source.textContent = t("ui.source", "source: {value0}", { value0: server.source });
 
-    row.append(head, detail, source);
+    row.append(head, detail);
+    if (server.description) {
+      const description = document.createElement("div");
+      description.className = "mcp-description";
+      description.textContent = server.description;
+      row.appendChild(description);
+    }
+    row.appendChild(source);
     box.appendChild(row);
+  }
+}
+
+/// Turns a server over for this project alone, through an override in the
+/// project's own config, and redraws from the core's answer.
+async function toggleMcpLocal(server, button) {
+  if (!state.project) {
+    setStatus(t("composer.selectProject", "Select a project first."));
+    return;
+  }
+  button.disabled = true;
+  const enabled = !server.enabled;
+  const project = state.project;
+  const generation = ++mcpGeneration;
+  const dismissProgress = showToast(`${enabled ? "Turning on" : "Turning off"} ${server.name} in this project…`);
+  try {
+    const servers = await invoke("set_mcp_server", {
+      project,
+      name: server.name,
+      enabled,
+      scope: "project",
+      local: true,
+    });
+    if (generation !== mcpGeneration || project !== state.project) return;
+    state.mcps = servers;
+    state.mcpError = "";
+    renderMcps();
+    showToast(`${server.name} ${enabled ? "enabled" : "disabled"} in this project`);
+  } catch (error) {
+    button.disabled = false;
+    showToast(t("ui.couldNotChange", "Could not change {value0}: {value1}", { value0: server.name, value1: error }), "error");
+  } finally {
+    dismissProgress();
+  }
+}
+
+/// Writes the next exposure into the file that defines the server and redraws
+/// from the core's answer, like the power switch beside it.
+async function cycleMcpExposure(server, button) {
+  if (!state.project) {
+    setStatus(t("composer.selectProject", "Select a project first."));
+    return;
+  }
+  const current = MCP_EXPOSURES.indexOf(server.exposure);
+  const exposure = MCP_EXPOSURES[(current + 1) % MCP_EXPOSURES.length];
+  button.disabled = true;
+  const project = state.project;
+  const generation = ++mcpGeneration;
+  const dismissProgress = showToast(t("ui.changingMcpExposure", "Changing {value0} to {value1}…", {
+    value0: server.name,
+    value1: mcpExposureLabel(exposure),
+  }));
+  try {
+    const servers = await invoke("set_mcp_exposure", {
+      project,
+      name: server.name,
+      exposure,
+      scope: server.scope,
+    });
+    if (generation !== mcpGeneration || project !== state.project) return;
+    state.mcps = servers;
+    state.mcpError = "";
+    renderMcps();
+    showToast(t("ui.mcpExposureChanged", "{value0} is now {value1}", {
+      value0: server.name,
+      value1: mcpExposureLabel(exposure),
+    }));
+  } catch (error) {
+    button.disabled = false;
+    showToast(t("ui.couldNotChange", "Could not change {value0}: {value1}", { value0: server.name, value1: error }), "error");
+  } finally {
+    dismissProgress();
   }
 }
 
@@ -8189,6 +8319,7 @@ async function toggleMcp(server, button) {
       project,
       name: server.name,
       enabled,
+      scope: server.scope,
     });
     if (generation !== mcpGeneration || project !== state.project) return;
     state.mcps = servers;

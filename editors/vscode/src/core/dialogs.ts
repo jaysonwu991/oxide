@@ -12,7 +12,7 @@
 // Oxide's own UI: a native picker takes over the window, hides the transcript
 // the listing is about, and cannot be answered while a turn streams.
 
-import { mcpStatusLabel, type McpServerView } from "./mcps";
+import { mcpExposureLabel, mcpStatusLabel, type McpServerView } from "./mcps";
 import {
   DEFAULT_LANGUAGE,
   FALLBACK_LANGUAGES,
@@ -123,7 +123,9 @@ export interface DialogState {
 /// The actions a row posts back. The controller routes them (`dialogAction`),
 /// so a rename here is a compile error there rather than a dead button.
 export const MCP_TOGGLE = "mcpToggle";
+export const MCP_TOGGLE_LOCAL = "mcpToggleLocal";
 export const MCP_AUTHORIZE = "mcpAuthorize";
+export const MCP_EXPOSURE_SET = "mcpExposure";
 export const MCP_REFRESH = "mcpRefresh";
 export const OPEN_SESSION = "openSession";
 /// A checkout picked in the worktree listing: the folder the next chat runs in.
@@ -671,18 +673,48 @@ export function mcpDialog(servers: readonly McpServerView[], note = "", info: La
       const disable = server.enabled
         ? t("ui.disable", "Disable {value0}", { value0: server.name })
         : t("ui.enable", "Enable {value0}", { value0: server.name });
-      const buttons = server.enabled && server.state === "needs-auth"
-        ? [
-            {
-              label: t("ui.authorizeServer", "Authorize {value0}", { value0: server.name }),
-              action: MCP_AUTHORIZE,
-              icon: "" as const,
-            },
-            { label: disable, action: MCP_TOGGLE, icon: "power" as const },
-          ]
-        : undefined;
+      const tools = server.tools > 0
+        ? t("ui.mcpTools", "{count} tools", { count: server.tools })
+        : "";
+      const exposureLabel = mcpExposureLabel(server.exposure, info);
+      // The exposure button says how the server's tools reach the model, and
+      // asks for the next of the three modes; the power button beside it turns
+      // the server on or off.
+      const buttons = [
+        {
+          label: t("ui.mcpExposureButton", "Exposure: {value0}", { value0: exposureLabel }),
+          action: MCP_EXPOSURE_SET,
+          icon: "" as const,
+        },
+        ...(server.enabled && server.state === "needs-auth"
+          ? [
+              {
+                label: t("ui.authorizeServer", "Authorize {value0}", { value0: server.name }),
+                action: MCP_AUTHORIZE,
+                icon: "" as const,
+              },
+            ]
+          : []),
+        { label: disable, action: MCP_TOGGLE, icon: "power" as const },
+        ...(server.scope === "project"
+          ? []
+          : [
+              {
+                label: server.enabled
+                  ? t("ui.offInThisProject", "Off only in this project")
+                  : t("ui.onInThisProject", "On only in this project"),
+                action: MCP_TOGGLE_LOCAL,
+                icon: "" as const,
+              },
+            ]),
+      ];
       return row(server.name, server.name, {
-        detail: [server.transport, server.detail, t("ui.source", "source: {value0}", { value0: server.source })]
+        detail: [
+          server.transport,
+          server.detail,
+          t("ui.source", "source: {value0}", { value0: server.source }),
+          tools,
+        ]
           .filter(Boolean)
           .join(" · "),
         // A server that is switched off reports that rather than the state a

@@ -476,15 +476,19 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
     specs.push(code_search::spec(read_scope));
     let configured = mcp.configured_servers();
     if !configured.is_empty() {
-        specs.push(spec(
-            "tool_search",
-            "Search deferred MCP tool metadata with BM25 and declare matching tools for your next call. Always use tool_search for MCP tool discovery, including private links and services behind generic company gateways. Search by capability, service, or task; no domain mapping is needed. The active schema set is bounded; search again for a deferred tool, or use replace to switch capabilities.",
-            json!({"type":"object","properties":{
-                "query":{"type":"string","description":"Required capabilities, service, or task"},
-                "limit":{"type":"integer","minimum":1,"maximum":64,"description":"Maximum matches; default 8, bounded by maxDeclaredMcpTools"},
-                "replace":{"type":"boolean","description":"Replace the current schema set with these matches; default false"}
-            },"required":["query"]}),
-        ));
+        // A search with nothing deferred to find is a tool that only costs a
+        // schema: every tool is already declared or hidden.
+        if mcp.has_deferred_tools() {
+            specs.push(spec(
+                "tool_search",
+                "Search deferred MCP tool metadata with BM25 and declare matching tools for your next call. Always use tool_search for MCP tool discovery, including private links and services behind generic company gateways. Search by capability, service, or task; no domain mapping is needed. The active schema set is bounded; search again for a deferred tool, or use replace to switch capabilities.",
+                json!({"type":"object","properties":{
+                    "query":{"type":"string","description":"Required capabilities, service, or task"},
+                    "limit":{"type":"integer","minimum":1,"maximum":64,"description":"Maximum matches; default 8, bounded by maxDeclaredMcpTools"},
+                    "replace":{"type":"boolean","description":"Replace the current schema set with these matches; default false"}
+                },"required":["query"]}),
+            ));
+        }
         // A server may be asked for by a service it answers to as well as by its
         // own name, so the schema lists both and `mcp_load` resolves either.
         let mut names: Vec<String> = configured.iter().map(|(name, _)| name.clone()).collect();
@@ -524,10 +528,15 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let deferred_hint = if mcp.has_deferred_tools() {
+            " Tools remain deferred: use tool_search to discover and declare the capabilities you need."
+        } else {
+            ""
+        };
         specs.push(spec(
             "mcp_load",
             &format!(
-                "Connect or retry one configured MCP server. Tools remain deferred: use tool_search to discover and declare the capabilities you need. A server may be named by a service it answers to as well as by its own name. Configured servers: {sources}"
+                "Connect or retry one configured MCP server.{deferred_hint} A server may be named by a service it answers to as well as by its own name. Configured servers: {sources}"
             ),
             json!({
                 "type": "object",
@@ -539,6 +548,51 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
                     }
                 },
                 "required": ["server"]
+            }),
+        ));
+    }
+    // The resource tools reach a server that advertises resources, so they cost
+    // three schemas only once one has answered that it has any.
+    let resource_servers = if mcp.has_resources() {
+        Some(mcp.resource_servers())
+    } else {
+        None
+    };
+    if let Some(resource_servers) = resource_servers {
+        let listing = resource_servers.join(", ");
+        let page = json!({
+            "type": "object",
+            "properties": {
+                "server": { "type": "string", "enum": resource_servers, "description": "Server to list; omit for every server with resources" },
+                "cursor": { "type": "string", "description": "The `nextCursor` from the previous page of the same server" }
+            }
+        });
+        specs.push(spec(
+            "list_mcp_resources",
+            &format!(
+                "List the resources (documents, schemas, files) the connected MCP servers offer. Without `server`, lists every page of every server with resources; with one, lists a single page and returns `nextCursor` to continue it. Servers with resources: {listing}"
+            ),
+            page.clone(),
+        ));
+        specs.push(spec(
+            "list_mcp_resource_templates",
+            &format!(
+                "List the URI templates of the parameterized resources these MCP servers offer — the ones a literal listing cannot name. Fill a template's variables into a URI and read it with `read_mcp_resource`. Servers with resources: {listing}"
+            ),
+            page,
+        ));
+        specs.push(spec(
+            "read_mcp_resource",
+            &format!(
+                "Read one MCP resource by URI. Text and images come back as content; other binary data is saved to a temporary file whose path is returned. Servers with resources: {listing}"
+            ),
+            json!({
+                "type": "object",
+                "properties": {
+                    "server": { "type": "string", "enum": resource_servers, "description": "Server that offers the resource" },
+                    "uri": { "type": "string", "description": "URI of the resource, as listed or filled from a template" }
+                },
+                "required": ["server", "uri"]
             }),
         ));
     }
@@ -609,21 +663,36 @@ pub async fn execute_with_scope(
         return ToolOutput::error(format!("{error:#}"));
     }
     let result = if mcp.is_tool(name) {
-        mcp.call(name, args).await.map(|result| {
-            let mut output = if result.is_error {
-                ToolOutput::error(result.text)
-            } else {
-                ToolOutput::text(result.text)
-            };
-            output.media = result.media;
-            output
-        })
+        mcp.call(name, args).await.map(mcp_output)
     } else {
         match canonical {
             "mcp_load" => match args.get("server").and_then(Value::as_str) {
                 Some(server) => mcp.load(server).await.map(ToolOutput::text),
                 None => Err(anyhow::anyhow!(
                     "mcp_load requires a `server` string, for example {{\"server\":\"github\"}}"
+                )),
+            },
+            "list_mcp_resources" | "list_mcp_resource_templates" => {
+                let server = args.get("server").and_then(Value::as_str);
+                let cursor = args.get("cursor").and_then(Value::as_str);
+                let listing = if canonical == "list_mcp_resources" {
+                    mcp.list_resources(server, cursor).await
+                } else {
+                    mcp.list_resource_templates(server, cursor).await
+                };
+                listing.and_then(|listing| {
+                    serde_json::to_string_pretty(&listing)
+                        .map(ToolOutput::text)
+                        .map_err(anyhow::Error::from)
+                })
+            }
+            "read_mcp_resource" => match (
+                args.get("server").and_then(Value::as_str),
+                args.get("uri").and_then(Value::as_str),
+            ) {
+                (Some(server), Some(uri)) => mcp.read_resource(server, uri).await.map(mcp_output),
+                _ => Err(anyhow::anyhow!(
+                    "read_mcp_resource requires `server` and `uri` strings, for example {{\"server\":\"docs\",\"uri\":\"docs://guide\"}}"
                 )),
             },
             "bash" => bash_with_network_retry(cwd, &args, progress).await,
@@ -656,11 +725,21 @@ pub async fn execute_with_scope(
                     ))),
                 }
             }
-            other => Err(anyhow::anyhow!(
-                "unknown tool `{other}`. For an MCP tool, use `tool_search` to discover its \
-                 capabilities, or `mcp_load` to retry a connection. Then use the exact tool name \
-                 and schema declared on the next step. Do not guess tool names or resource IDs"
-            )),
+            other => {
+                // The hint names only what this session declares: a search that
+                // is not in the tool list would be another call to fail on.
+                let hint = if mcp.has_deferred_tools() {
+                    "For an MCP tool, use `tool_search` to discover its capabilities, or `mcp_load` to retry a connection."
+                } else if !mcp.configured_servers().is_empty() {
+                    "Every MCP tool this session offers is declared directly or hidden by its server's `exposure`; `mcp_load` can retry a connection."
+                } else {
+                    "No MCP server is configured in this session."
+                };
+                Err(anyhow::anyhow!(
+                    "unknown tool `{other}`. {hint} Then use the exact tool name and schema \
+                     declared on the next step. Do not guess tool names or resource IDs"
+                ))
+            }
         }
     };
 
@@ -716,6 +795,9 @@ fn expected_arguments(name: &str) -> &'static str {
         "bash" => " with a shell command string in `command`",
         "webfetch" => " with a URL string in `url`",
         "mcp_load" => " with an MCP server name string in `server`",
+        "list_mcp_resources" => " with an optional `server` and `cursor`",
+        "list_mcp_resource_templates" => " with an optional `server` and `cursor`",
+        "read_mcp_resource" => " with string `server` and `uri` fields",
         _ => "",
     }
 }
@@ -6246,6 +6328,22 @@ fn keep_end(name: &str) -> Keep {
 
 fn is_mcp_tool(name: &str) -> bool {
     name.contains("__")
+        || matches!(
+            name,
+            "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
+        )
+}
+
+/// A server's call or read result as a tool result: its text, its images, and
+/// `isError` deciding the tone.
+fn mcp_output(result: crate::mcp::McpToolResult) -> ToolOutput {
+    let mut output = if result.is_error {
+        ToolOutput::error(result.text)
+    } else {
+        ToolOutput::text(result.text)
+    };
+    output.media = result.media;
+    output
 }
 
 fn output_limits(name: &str) -> (usize, usize) {
@@ -6337,6 +6435,7 @@ fn cleanup_truncated(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecosystem::McpExposure;
     use crate::llm::FunctionCall;
 
     #[test]
@@ -6754,6 +6853,10 @@ mod tests {
                 oauth: None,
             },
             domains: vec![],
+            description: None,
+            exposure: McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
         };
         let mcp = McpRegistry::new(&[server]);
         let loader = specs(&mcp)
@@ -6783,6 +6886,101 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["atlassian", "confluence", "jira"]);
         assert_eq!(mcp.server_count(), 0);
+    }
+
+    #[test]
+    fn a_search_tool_is_offered_only_while_a_deferred_tool_exists() {
+        let server = |name: &str, exposure: McpExposure| crate::ecosystem::McpServer {
+            name: name.to_string(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Remote {
+                url: format!("https://mcp.example.com/{name}"),
+                headers: Default::default(),
+                oauth: None,
+            },
+            domains: vec![],
+            description: None,
+            exposure,
+            tool_exposure: Default::default(),
+            timeout: None,
+        };
+        let names = |servers: &[crate::ecosystem::McpServer]| {
+            specs(&McpRegistry::new(servers))
+                .into_iter()
+                .map(|spec| spec.function.name)
+                .collect::<Vec<_>>()
+        };
+
+        let deferred = names(&[server("deferred", McpExposure::Deferred)]);
+        assert!(deferred.contains(&"tool_search".to_string()));
+        assert!(deferred.contains(&"mcp_load".to_string()));
+
+        // Every tool is either already in the request or hidden from it, so the
+        // search has nothing to find and its schema is not worth its cost.
+        let direct = names(&[
+            server("direct", McpExposure::Direct),
+            server("hidden", McpExposure::Hidden),
+        ]);
+        assert!(!direct.contains(&"tool_search".to_string()));
+        assert!(direct.contains(&"mcp_load".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_tool_names_only_the_discovery_this_session_declares() {
+        let call = call("acme__read_thread", json!({}));
+        let registry = McpRegistry::default();
+        let out = execute(
+            &call,
+            &std::env::temp_dir(),
+            &registry,
+            &Progress::default(),
+        )
+        .await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("No MCP server is configured"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("tool_search"), "{}", out.text);
+
+        let mut server = crate::ecosystem::McpServer {
+            name: "acme".to_string(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Remote {
+                url: "https://mcp.example.com/acme".to_string(),
+                headers: Default::default(),
+                oauth: None,
+            },
+            domains: vec![],
+            description: None,
+            exposure: McpExposure::Direct,
+            tool_exposure: Default::default(),
+            timeout: None,
+        };
+        let out = execute(
+            &call,
+            &std::env::temp_dir(),
+            &McpRegistry::new(std::slice::from_ref(&server)),
+            &Progress::default(),
+        )
+        .await;
+        assert!(
+            out.text.contains("declared directly or hidden"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("tool_search"), "{}", out.text);
+
+        server.exposure = McpExposure::Deferred;
+        let out = execute(
+            &call,
+            &std::env::temp_dir(),
+            &McpRegistry::new(std::slice::from_ref(&server)),
+            &Progress::default(),
+        )
+        .await;
+        assert!(out.text.contains("tool_search"), "{}", out.text);
     }
 
     #[cfg(unix)]
@@ -10173,15 +10371,30 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_mcp_tool_explains_how_to_load_the_catalog() {
+        let server = crate::ecosystem::McpServer {
+            name: "atlassian".to_string(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Remote {
+                url: "https://mcp.atlassian.com/v1/mcp".to_string(),
+                headers: Default::default(),
+                oauth: None,
+            },
+            domains: vec![],
+            description: None,
+            exposure: McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
+        };
         let output = execute(
             &call("atlassian__createConfluencePage", json!({})),
             Path::new("."),
-            &McpRegistry::default(),
+            &McpRegistry::new(std::slice::from_ref(&server)),
             &Progress::default(),
         )
         .await;
         assert!(output.is_error);
-        assert!(output.text.contains("mcp_load"));
+        assert!(output.text.contains("tool_search"), "{}", output.text);
+        assert!(output.text.contains("mcp_load"), "{}", output.text);
         assert!(output.text.contains("exact tool name and schema"));
     }
 
@@ -11123,6 +11336,10 @@ mod tests {
                 cwd: None,
             },
             domains: vec![],
+            description: None,
+            exposure: McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
         };
         let registry = crate::mcp::McpRegistry::new(&[server]);
         registry.load("big").await.unwrap();

@@ -19,7 +19,9 @@ import {
   languageDialog,
   logoutDialog,
   MCP_AUTHORIZE,
+  MCP_EXPOSURE_SET,
   MCP_TOGGLE,
+  MCP_TOGGLE_LOCAL,
   modelDialog,
   NEW_SESSION,
   permissionsDialog,
@@ -326,6 +328,18 @@ describe("MCP dialog", () => {
     assert.equal(sentry.action, "");
   });
 
+  it("sets the exposure beside the switch, cycling the three modes", () => {
+    const rows = mcpDialog(parseMcpList(listing)).rows;
+    const sentry = rows.find((row) => row.value === "sentry")!;
+    assert.deepEqual(
+      sentry.buttons?.map((button) => [button.label, button.action, button.icon]),
+      [
+        ["Exposure: deferred", MCP_EXPOSURE_SET, ""],
+        ["Enable sentry", MCP_TOGGLE, "power"],
+      ],
+    );
+  });
+
   it("offers Disable for a server that is on", () => {
     const rows = mcpDialog(parseMcpList(listing)).rows;
     assert.equal(rows.find((row) => row.value === "context7")!.button, "Disable context7");
@@ -343,13 +357,33 @@ describe("MCP dialog", () => {
       status: "Needs Auth",
     }]));
     const dialog = mcpDialog([server]);
-    assert.equal(dialog.rows[0].buttons?.length, 2);
+    assert.equal(dialog.rows[0].buttons?.length, 4);
     assert.deepEqual(
       dialog.rows[0].buttons?.map((button) => [button.label, button.action, button.icon]),
       [
+        ["Exposure: deferred", MCP_EXPOSURE_SET, ""],
         ["Authorize context7", MCP_AUTHORIZE, ""],
         ["Disable context7", MCP_TOGGLE, "power"],
+        ["Off only in this project", MCP_TOGGLE_LOCAL, ""],
       ],
+    );
+  });
+
+  it("offers a project-only switch for a server defined outside the project", () => {
+    const rows = mcpDialog(parseMcpList(listing)).rows;
+    const context7 = rows.find((row) => row.value === "context7")!;
+    assert.deepEqual(
+      context7.buttons?.map((button) => [button.label, button.action]),
+      [
+        ["Exposure: deferred", MCP_EXPOSURE_SET],
+        ["Disable context7", MCP_TOGGLE],
+        ["Off only in this project", MCP_TOGGLE_LOCAL],
+      ],
+    );
+    const sentry = rows.find((row) => row.value === "sentry")!;
+    assert.ok(
+      !sentry.buttons?.some((button) => button.action === MCP_TOGGLE_LOCAL),
+      "a server the project defines itself needs no override",
     );
   });
 
