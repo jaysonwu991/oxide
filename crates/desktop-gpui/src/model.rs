@@ -8,6 +8,26 @@
 use crate::markdown::{self, Block};
 use serde_json::Value;
 
+/// A number the engine wrote, under the name the Rust struct serialises it with.
+/// The snapshots the page's own bridge answers with used camelCase for a few of
+/// these, so the older spelling stays as a fallback rather than being dropped.
+fn number(value: &Value, snake: &str, camel: &str) -> u64 {
+    value
+        .get(snake)
+        .or_else(|| value.get(camel))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+/// The projects `list_projects` answers with: a bare array, not an object.
+pub fn projects(value: &Value) -> Vec<ProjectRow> {
+    value
+        .as_array()
+        .or_else(|| value["projects"].as_array())
+        .map(|projects| projects.iter().filter_map(ProjectRow::from_value).collect())
+        .unwrap_or_default()
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ProjectRow {
     pub id: String,
@@ -34,8 +54,8 @@ impl ProjectRow {
                 .to_string(),
             registered: value["registered"].as_bool().unwrap_or(false),
             exists: value["exists"].as_bool().unwrap_or(true),
-            session_count: value["sessionCount"].as_u64().unwrap_or(0) as usize,
-            last_session_at: value["lastSessionAt"].as_u64().unwrap_or(0),
+            session_count: number(value, "session_count", "sessionCount") as usize,
+            last_session_at: number(value, "last_session_at", "lastSessionAt"),
             pinned: value["pinned"].as_bool().unwrap_or(false),
         })
     }
@@ -72,7 +92,7 @@ impl SessionRow {
             project: value["cwd"].as_str().unwrap_or_default().to_string(),
             title,
             preview,
-            modified_at: value["modifiedAt"].as_u64().unwrap_or(0),
+            modified_at: number(value, "modified_at", "modifiedAt"),
             pinned: value["pinned"].as_bool().unwrap_or(false),
             worktree: value["worktree"].as_str().map(str::to_string),
         })
@@ -112,6 +132,51 @@ pub struct QuestionCard {
     pub questions: Value,
     pub answered: bool,
     pub answers: Value,
+}
+
+/// One file a turn changed, as the transcript's card lists it.
+#[derive(Clone, Debug, Default)]
+pub struct EditedFile {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    pub status: String,
+}
+
+/// What a turn changed, kept in the transcript next to the answer that changed
+/// it: the page's own card, with the totals and the undo the baseline allows.
+#[derive(Clone, Debug)]
+pub struct EditedCard {
+    pub files: Vec<EditedFile>,
+    pub added: usize,
+    pub removed: usize,
+    /// Only the newest turn can be put back: a later one may sit on top of it.
+    pub latest: bool,
+    pub undone: bool,
+}
+
+impl EditedCard {
+    pub fn from_value(changes: &Value) -> Option<Self> {
+        let files = changes["files"].as_array()?;
+        if files.is_empty() {
+            return None;
+        }
+        Some(Self {
+            files: files
+                .iter()
+                .map(|file| EditedFile {
+                    path: file["path"].as_str().unwrap_or_default().to_string(),
+                    added: file["added"].as_u64().unwrap_or(0) as usize,
+                    removed: file["removed"].as_u64().unwrap_or(0) as usize,
+                    status: file["status"].as_str().unwrap_or_default().to_string(),
+                })
+                .collect(),
+            added: changes["added"].as_u64().unwrap_or(0) as usize,
+            removed: changes["removed"].as_u64().unwrap_or(0) as usize,
+            latest: true,
+            undone: false,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -156,6 +221,7 @@ pub enum Entry {
         done: bool,
     },
     Tool(ToolCard),
+    Edited(EditedCard),
     Error(String),
     Info(String),
     Compaction {
@@ -283,6 +349,31 @@ impl Chat {
     }
 
     /// One `agent-event`.
+    /// The card a turn's change listing becomes: the page appends one to the
+    /// transcript when a run ends, and only its newest one can be undone.
+    pub fn record_turn(&mut self, payload: &Value) {
+        let Some(card) = EditedCard::from_value(&payload["changes"]) else {
+            return;
+        };
+        for entry in self.entries.iter_mut() {
+            if let Entry::Edited(existing) = entry {
+                existing.latest = false;
+            }
+        }
+        self.entries.push(Entry::Edited(card));
+        self.scroll_to_end = true;
+    }
+
+    pub fn mark_undone(&mut self) {
+        for entry in self.entries.iter_mut().rev() {
+            if let Entry::Edited(card) = entry {
+                card.undone = true;
+                card.latest = false;
+                return;
+            }
+        }
+    }
+
     pub fn apply(&mut self, payload: &Value) {
         let kind = payload["type"].as_str().unwrap_or_default();
         match kind {
@@ -508,4 +599,103 @@ pub fn describe_call(_name: &str, args: &Value) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_turn_change_listing_becomes_a_card() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.record_turn(&json!({
+            "changes": {
+                "files": [
+                    { "path": "src/main.rs", "status": "modified", "added": 12, "removed": 3 },
+                    { "path": "src/new.rs", "status": "added", "added": 40, "removed": 0 }
+                ],
+                "added": 52,
+                "removed": 3
+            }
+        }));
+        match &chat.entries[0] {
+            Entry::Edited(card) => {
+                assert_eq!(card.files.len(), 2);
+                assert_eq!(card.added, 52);
+                assert_eq!(card.removed, 3);
+                assert!(card.latest);
+            }
+            other => panic!("expected an edited card, got {other:?}"),
+        }
+
+        chat.record_turn(&json!({ "changes": {
+            "files": [{ "path": "src/lib.rs", "status": "modified", "added": 1, "removed": 1 }],
+            "added": 1,
+            "removed": 1
+        }}));
+        let latest: Vec<bool> = chat
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Edited(card) => Some(card.latest),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(latest, vec![false, true]);
+
+        chat.record_turn(&json!({ "changes": { "files": [], "added": 0, "removed": 0 } }));
+        assert_eq!(chat.entries.len(), 2);
+    }
+
+    #[test]
+    fn a_project_row_reads_the_engines_own_names() {
+        let projects = projects(&json!([{
+            "display_path": "~/Projects/oxide",
+            "exists": true,
+            "id": "/Users/jayson/Projects/oxide",
+            "last_opened_at": 1794656871u64,
+            "last_session_at": 1794657536u64,
+            "name": "oxide",
+            "path": "/Users/jayson/Projects/oxide",
+            "pinned": false,
+            "registered": true,
+            "session_count": 4
+        }]));
+        assert_eq!(projects.len(), 1);
+        let project = &projects[0];
+        assert_eq!(project.name, "oxide");
+        assert_eq!(project.display_path, "~/Projects/oxide");
+        assert_eq!(project.session_count, 4);
+        assert_eq!(project.last_session_at, 1_794_657_536);
+    }
+
+    #[test]
+    fn a_session_row_reads_the_engines_own_names() {
+        let session = SessionRow::from_value(&json!({
+            "created_at": 1794656133u64,
+            "cwd": "/Users/jayson/Projects/oxide",
+            "id": "ce4b20dcbe82236f",
+            "message_count": 469,
+            "modified_at": 1794657550u64,
+            "name": "Align GPUI beta window with Electron desktop",
+            "path": "sessions/1a99b86e8b6de1c6/1794656133745_ce4b20dcbe82236f.jsonl",
+            "pinned": false,
+            "preview": "The gap is so large between GPUI desktop and Electron desktop"
+        }))
+        .expect("a session row");
+        assert_eq!(
+            session.title,
+            "Align GPUI beta window with Electron desktop"
+        );
+        assert_eq!(session.project, "/Users/jayson/Projects/oxide");
+        assert_eq!(session.modified_at, 1_794_657_550);
+    }
+
+    #[test]
+    fn a_project_list_reads_the_bare_array_and_the_wrapped_one() {
+        assert!(projects(&json!([])).is_empty());
+        assert!(projects(&json!({ "projects": [], "added": "id" })).is_empty());
+        assert!(projects(&json!(null)).is_empty());
+    }
 }

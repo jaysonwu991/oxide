@@ -10,6 +10,7 @@
 mod app;
 mod editor;
 mod engine;
+mod icons;
 mod markdown;
 mod model;
 mod overlays;
@@ -49,12 +50,14 @@ fn main() {
         }
     };
 
-    gpui::Application::new().run(move |cx| {
-        app::Root::bind_keys(cx);
-        app::Root::install_menus(cx);
-        app::open(engine, packets, cx);
-        cx.activate(true);
-    });
+    gpui::Application::new()
+        .with_assets(icons::Assets)
+        .run(move |cx| {
+            app::Root::bind_keys(cx);
+            app::Root::install_menus(cx);
+            app::open(engine, packets, cx);
+            cx.activate(true);
+        });
 }
 
 /// Answers a handful of the engine's commands without opening a window, so a
@@ -90,7 +93,21 @@ fn check() -> i32 {
                         theme = current.to_string();
                     }
                 }
-                println!("ok   {command}");
+                // The counts are the window's own parsers reading the engine's
+                // answer: a listing that arrives in a shape the model cannot
+                // read would leave a sidebar of nothing while every command
+                // still reported success.
+                match command {
+                    "list_projects" => println!(
+                        "ok   {command} ({} projects)",
+                        crate::model::projects(&value).len()
+                    ),
+                    "all_sessions" => println!(
+                        "ok   {command} ({} sessions)",
+                        value.as_array().map(Vec::len).unwrap_or(0)
+                    ),
+                    _ => println!("ok   {command}"),
+                }
             }
             Err(error) => {
                 failed = true;
