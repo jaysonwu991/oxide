@@ -665,11 +665,21 @@ pub async fn execute_with_scope(
                     ))),
                 }
             }
-            other => Err(anyhow::anyhow!(
-                "unknown tool `{other}`. For an MCP tool, use `tool_search` to discover its \
-                 capabilities, or `mcp_load` to retry a connection. Then use the exact tool name \
-                 and schema declared on the next step. Do not guess tool names or resource IDs"
-            )),
+            other => {
+                // The hint names only what this session declares: a search that
+                // is not in the tool list would be another call to fail on.
+                let hint = if mcp.has_deferred_tools() {
+                    "For an MCP tool, use `tool_search` to discover its capabilities, or `mcp_load` to retry a connection."
+                } else if !mcp.configured_servers().is_empty() {
+                    "Every MCP tool this session offers is declared directly or hidden by its server's `exposure`; `mcp_load` can retry a connection."
+                } else {
+                    "No MCP server is configured in this session."
+                };
+                Err(anyhow::anyhow!(
+                    "unknown tool `{other}`. {hint} Then use the exact tool name and schema \
+                     declared on the next step. Do not guess tool names or resource IDs"
+                ))
+            }
         }
     };
 
@@ -6836,6 +6846,64 @@ mod tests {
         assert!(direct.contains(&"mcp_load".to_string()));
     }
 
+    #[tokio::test]
+    async fn an_unknown_tool_names_only_the_discovery_this_session_declares() {
+        let call = call("acme__read_thread", json!({}));
+        let registry = McpRegistry::default();
+        let out = execute(
+            &call,
+            &std::env::temp_dir(),
+            &registry,
+            &Progress::default(),
+        )
+        .await;
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("No MCP server is configured"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("tool_search"), "{}", out.text);
+
+        let mut server = crate::ecosystem::McpServer {
+            name: "acme".to_string(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Remote {
+                url: "https://mcp.example.com/acme".to_string(),
+                headers: Default::default(),
+                oauth: None,
+            },
+            domains: vec![],
+            description: None,
+            exposure: McpExposure::Direct,
+            tool_exposure: Default::default(),
+            timeout: None,
+        };
+        let out = execute(
+            &call,
+            &std::env::temp_dir(),
+            &McpRegistry::new(std::slice::from_ref(&server)),
+            &Progress::default(),
+        )
+        .await;
+        assert!(
+            out.text.contains("declared directly or hidden"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("tool_search"), "{}", out.text);
+
+        server.exposure = McpExposure::Deferred;
+        let out = execute(
+            &call,
+            &std::env::temp_dir(),
+            &McpRegistry::new(std::slice::from_ref(&server)),
+            &Progress::default(),
+        )
+        .await;
+        assert!(out.text.contains("tool_search"), "{}", out.text);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_refused_read_names_the_grant_to_give_back() {
@@ -10224,15 +10292,30 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_mcp_tool_explains_how_to_load_the_catalog() {
+        let server = crate::ecosystem::McpServer {
+            name: "atlassian".to_string(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Remote {
+                url: "https://mcp.atlassian.com/v1/mcp".to_string(),
+                headers: Default::default(),
+                oauth: None,
+            },
+            domains: vec![],
+            description: None,
+            exposure: McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
+        };
         let output = execute(
             &call("atlassian__createConfluencePage", json!({})),
             Path::new("."),
-            &McpRegistry::default(),
+            &McpRegistry::new(std::slice::from_ref(&server)),
             &Progress::default(),
         )
         .await;
         assert!(output.is_error);
-        assert!(output.text.contains("mcp_load"));
+        assert!(output.text.contains("tool_search"), "{}", output.text);
+        assert!(output.text.contains("mcp_load"), "{}", output.text);
         assert!(output.text.contains("exact tool name and schema"));
     }
 
