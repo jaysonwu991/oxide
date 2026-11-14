@@ -331,7 +331,7 @@ Atlassian's remote MCP server exposes Jira, Confluence, and Compass tools over
 Streamable HTTP. Adding the server by URL is enough:
 
 ```sh
-oxide mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp
+oxide mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp
 ```
 
 Then authorize it once with `oxide mcp auth atlassian`, which follows the OAuth
@@ -347,13 +347,17 @@ The equivalent `.mcp.json` / `.oxide/mcp.json` entry is:
   "mcpServers": {
     "atlassian": {
       "type": "http",
-      "url": "https://mcp.atlassian.com/v1/mcp"
+      "url": "https://mcp.atlassian.com/v2/mcp"
     }
   }
 }
 ```
 
-Once authorized, the tools appear as `atlassian__<tool>`.
+Once authorized, the tools appear as `atlassian__<tool>`. MCP v2 exposes a
+small primary set directly and makes the remaining catalog discoverable, which
+keeps the model's tool context smaller than the legacy v1 endpoint. The
+repository's `atlassian` skill covers field-safe Jira edits, incremental
+Confluence updates, full-width pages, and Mermaid-to-draw.io diagrams.
 
 #### Connect to the Context7 MCP server
 

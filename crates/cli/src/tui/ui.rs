@@ -4873,7 +4873,7 @@ mod tests {
         let rows = vec![
             ListRow::new("atlassian")
                 .status("Connected", Tone::Success)
-                .detail("remote: https://mcp.atlassian.com/v1/mcp"),
+                .detail("remote: https://mcp.atlassian.com/v2/mcp"),
             ListRow::new("a-very-long-server-name")
                 .status("Needs Auth", Tone::Warning)
                 .detail("remote: https://mcp.example.com/mcp"),

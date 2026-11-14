@@ -136,7 +136,7 @@ Manage MCP servers and plugins:
 
 ```sh
 oxide mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .
-oxide mcp add --transport http atlassian https://mcp.atlassian.com/v1/mcp
+oxide mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp
 oxide plugin marketplace add <url|path|owner/repo>
 oxide plugin install <name>[@marketplace]
 ```

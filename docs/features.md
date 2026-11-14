@@ -24,7 +24,10 @@ page is the detail behind it, and the task-by-task guides live in
   `/language` (see [Language](configuration.md#language)).
 - Mermaid diagrams: a fenced `mermaid` block in a reply renders as a diagram in
   the desktop app and the VS Code panel, following the theme, with its source one
-  click away. The terminal keeps the fence as readable code.
+  click away. The terminal keeps the fence as readable code. The repository's
+  `atlassian` skill routes Confluence diagrams through native Mermaid or the
+  deferred draw.io MCP server, where Mermaid can open as an editable draw.io
+  diagram.
 
 ## Models and providers
 
@@ -92,10 +95,12 @@ page is the detail behind it, and the task-by-task guides live in
 The system prompt's Definition of Done requires the model to confirm the outcome
 of any state-changing action before claiming success — edits on disk and
 builds/tests, a raised pull request's own link, posted comments and reviews,
-releases, and deployments. A pull request is finished by handing over the URL the
-forge printed when it created it, not by a CI verdict: its checks can take a long
-time to finish, so neither they nor its mergeability are polled or waited for
-unless the user asks for the outcome. A code change made in response to a pull
+releases, and deployments. Every planned action and check is completed before the
+final Summary. A pull request is finished by handing over the URL the forge
+printed when it created it, not by a later commit or CI check: its checks can
+take a long time to finish, so neither they nor its mergeability are polled or
+waited for unless the user asks for the outcome, and no tool call follows that
+handoff merely to reconfirm it. A code change made in response to a pull
 request or review is not delivered until it is committed and pushed to the branch under
 review, so a review reply is held until the fix is pushed and an uncommitted fix
 is never reported as an addressed review. A reply goes into the review comment's
@@ -131,6 +136,9 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
 - Project + global ecosystem discovery: instructions, commands, prompt
   templates, agents, skills, MCP servers, and plugins from `.oxide/` (plus the
   Claude Code layout).
+- Repository skills include `atlassian` for field-safe Jira edits, incremental
+  Confluence updates, full-width pages, and Mermaid-to-draw.io diagrams. Its
+  Confluence and Jira references load only for the matching task.
 - Plugin hooks (`tool.execute.before` / `tool.execute.after`, plus `status` for
   a footer status row) run under bun/node, and an `after` hook can end the turn
   by setting `output.terminate = true`.
