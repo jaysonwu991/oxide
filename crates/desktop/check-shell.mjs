@@ -311,7 +311,10 @@ check(
     exists("plugins/oxide-computer-use/.mcp.json"),
 );
 // The engine's half of the protocol: a request read by its own fields, answered
-// over the two envelopes the page and the window already agreed on.
+// over the two envelopes the page and the window already agreed on. The command
+// layer and the pipe are library modules (`crates/desktop/src/lib.rs`), so the
+// binary reaches them through the package's own name — the GPUI front-end in
+// `crates/desktop-gpui` links the same ones.
 check(
   "reads the packet the page writes",
   /packet\["type"\] != "request"/.test(engine) &&
@@ -327,7 +330,7 @@ check(
 );
 check(
   "handed the request to the command layer",
-  /use commands::\{dispatch, DesktopState\}/.test(engine) &&
+  /use oxide_desktop::commands::\{dispatch, DesktopState\}/.test(engine) &&
     /dispatch\(Arc::clone\(&state\), &host, &command, args\)\.await/.test(engine) &&
     /host\.respond\(id, answer\)/.test(engine) &&
     /DesktopManager::load_lossy/.test(engine) &&
