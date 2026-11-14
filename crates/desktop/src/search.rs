@@ -157,7 +157,7 @@ mod tests {
     fn thread(dir: &Path, said: &[&str]) -> std::path::PathBuf {
         let cwd = dir.join("project");
         std::fs::create_dir_all(&cwd).unwrap();
-        let log = SessionLog::create(&cwd).unwrap();
+        let log = SessionLog::create_in(&dir.join("sessions"), &cwd).unwrap();
         for text in said {
             let message = Message {
                 role: "user".into(),
@@ -168,7 +168,13 @@ mod tests {
             };
             log.append(&message).unwrap();
         }
-        log.summary().unwrap().path
+        let path = log.summary().unwrap().path;
+        assert!(
+            path.starts_with(dir),
+            "the test holds its own store: {}",
+            path.display()
+        );
+        path
     }
 
     fn temp(name: &str) -> std::path::PathBuf {

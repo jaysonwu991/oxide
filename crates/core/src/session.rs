@@ -275,7 +275,9 @@ impl SessionLog {
         Self::create_in(&project_dir(cwd), cwd)
     }
 
-    pub(crate) fn create_in(dir: &Path, cwd: &Path) -> Result<Self> {
+    /// Creates a log in an explicit directory rather than the shared session
+    /// root, so a caller holding its own store — a test — writes there.
+    pub fn create_in(dir: &Path, cwd: &Path) -> Result<Self> {
         let id = new_id();
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating session directory {}", dir.display()))?;
