@@ -2777,7 +2777,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxide_search_cmd_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let log = SessionLog::create(&dir).unwrap();
+        let log = SessionLog::create_in(&dir.join("sessions"), &dir).unwrap();
         log.append(&Message {
             role: "user".into(),
             content: Some(MessageContent::Text("the login redirect loops".into())),
@@ -2787,6 +2787,11 @@ mod tests {
         })
         .unwrap();
         let summary = log.summary().unwrap();
+        assert!(
+            summary.path.starts_with(&dir),
+            "the test holds its own store: {}",
+            summary.path.display()
+        );
         let views = vec![SessionView {
             summary,
             pinned: false,
