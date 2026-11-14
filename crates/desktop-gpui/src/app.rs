@@ -22,7 +22,7 @@ use gpui::{
 };
 use oxide_core::worktree::{Worktree, Worktrees};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -41,6 +41,15 @@ actions!(
         DismissOverlay,
         QuitApp,
         ShowShortcuts,
+        SwitchToSession1,
+        SwitchToSession2,
+        SwitchToSession3,
+        SwitchToSession4,
+        SwitchToSession5,
+        SwitchToSession6,
+        SwitchToSession7,
+        SwitchToSession8,
+        SwitchToSession9,
     ]
 );
 
@@ -74,8 +83,6 @@ pub enum SettingsTab {
 pub enum Overlay {
     Settings,
     Models,
-    Themes,
-    Language,
     Shortcuts,
     Trust {
         project: String,
@@ -105,7 +112,6 @@ pub enum Overlay {
         name: String,
         pinned: bool,
     },
-    Archived,
     Approvals,
     Worktrees,
     WorktreeBranch {
@@ -128,7 +134,6 @@ pub enum Overlay {
 #[derive(Clone)]
 pub enum ConfirmAction {
     RemoveProject(String),
-    ArchiveSession(String),
     CloseChat(usize),
     RemoveWorktree { project: String, name: String },
 }
@@ -213,11 +218,12 @@ pub struct Root {
     pub current_theme: String,
     pub languages: Vec<Value>,
     pub language: String,
-    pub archived: Vec<SessionRow>,
     pub changes: Option<Value>,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
-    pub resizing: Option<f32>,
+    pub expanded_projects: HashSet<String>,
+    /// The pointer position and sidebar width when a resize drag began.
+    pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
     pub subscriptions: Vec<Subscription>,
 }
@@ -339,10 +345,10 @@ impl Root {
             current_theme: "dark".to_string(),
             languages: Vec::new(),
             language: String::new(),
-            archived: Vec::new(),
             changes: None,
             sidebar_visible: true,
-            sidebar_width: 268.0,
+            sidebar_width: 300.0,
+            expanded_projects: HashSet::new(),
             resizing: None,
             show_changes: false,
             subscriptions,
@@ -384,6 +390,15 @@ impl Root {
         bindings.push(KeyBinding::new("cmd-]", Forward, Some("Root")));
         bindings.push(KeyBinding::new("escape", DismissOverlay, Some("Root")));
         bindings.push(KeyBinding::new("cmd-q", QuitApp, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-1", SwitchToSession1, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-2", SwitchToSession2, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-3", SwitchToSession3, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-4", SwitchToSession4, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-5", SwitchToSession5, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-6", SwitchToSession6, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-7", SwitchToSession7, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-8", SwitchToSession8, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-9", SwitchToSession9, Some("Root")));
         bindings.push(KeyBinding::new("enter", crate::app::Send, Some("Composer")));
         bindings.push(KeyBinding::new(
             "cmd-enter",
@@ -521,11 +536,6 @@ impl Root {
         );
     }
 
-    /// The language tag the window is drawn in.
-    pub fn strings_language(&self) -> String {
-        self.language.clone()
-    }
-
     pub fn load_themes(&mut self, cx: &mut Context<Self>) {
         let project = self.current_project().unwrap_or_default();
         self.call(
@@ -578,7 +588,24 @@ impl Root {
                 Ok(value) => {
                     root.theme = Theme::from_value(&value);
                     root.current_theme = root.theme.name.clone();
-                    root.overlay = None;
+                    cx.notify();
+                }
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    pub fn set_language(&mut self, tag: String, cx: &mut Context<Self>) {
+        let project = self.current_project().unwrap_or_default();
+        self.call(
+            "set_language",
+            json!({ "project": project, "tag": tag }),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => {
+                    root.strings = Strings::load(&value);
+                    root.languages = value["languages"].as_array().cloned().unwrap_or_default();
+                    root.language = value["language"].as_str().unwrap_or_default().to_string();
                     cx.notify();
                 }
                 Err(error) => root.toast(error, true, cx),
@@ -1209,6 +1236,14 @@ impl Root {
         if self.searching {
             self.close_search(cx);
         }
+        if let Some(project) = self.projects.iter().find(|project| {
+            self.sessions_of(&project.path)
+                .iter()
+                .position(|row| row.id == session.id)
+                .is_some_and(|position| position >= 5)
+        }) {
+            self.expanded_projects.insert(project.path.clone());
+        }
         if let Some(index) = self
             .chats
             .iter()
@@ -1275,6 +1310,61 @@ impl Root {
                 window.focus(&editor.read(cx).focus_handle(cx));
             }
         }
+    }
+
+    pub fn open_sidebar_session(
+        &mut self,
+        shortcut: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self
+            .sidebar_sessions()
+            .get(shortcut.saturating_sub(1))
+            .cloned()
+        else {
+            return;
+        };
+        self.open_session(window, session, cx);
+    }
+
+    pub fn can_navigate_back(&self) -> bool {
+        matches!(self.overlay, Some(Overlay::Settings))
+            || self.rail != Rail::Chats
+            || !self.history.is_empty()
+    }
+
+    pub fn can_navigate_forward(&self) -> bool {
+        !matches!(self.overlay, Some(Overlay::Settings))
+            && self.rail == Rail::Chats
+            && !self.forward.is_empty()
+    }
+
+    pub fn navigate_back(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.overlay, Some(Overlay::Settings)) || self.rail != Rail::Chats {
+            self.overlay = None;
+            self.rail = Rail::Chats;
+            cx.notify();
+            return;
+        }
+        let Some(previous) = self.history.pop() else {
+            return;
+        };
+        self.forward.push(self.active);
+        self.active = previous.min(self.chats.len().saturating_sub(1));
+        cx.notify();
+    }
+
+    pub fn navigate_forward(&mut self, cx: &mut Context<Self>) {
+        if self.rail != Rail::Chats || matches!(self.overlay, Some(Overlay::Settings)) {
+            return;
+        }
+        let Some(next) = self.forward.pop() else {
+            return;
+        };
+        self.history.push(self.active);
+        self.active = next.min(self.chats.len().saturating_sub(1));
+        cx.notify();
     }
 
     pub fn refresh_repository(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -1564,19 +1654,6 @@ impl Root {
         );
     }
 
-    pub fn archive_session(&mut self, id: String, cx: &mut Context<Self>) {
-        self.overlay = None;
-        self.call(
-            "archive_session",
-            json!({ "id": id }),
-            cx,
-            |root, result, cx| match result {
-                Ok(_) => root.refresh_sessions(cx),
-                Err(error) => root.toast(error, true, cx),
-            },
-        );
-    }
-
     pub fn set_session_pinned(&mut self, id: String, pinned: bool, cx: &mut Context<Self>) {
         self.overlay = None;
         self.call(
@@ -1620,38 +1697,6 @@ impl Root {
                     cx.notify();
                 }
                 Err(error) => root.toast(format!("Could not rename chat: {error}"), true, cx),
-            },
-        );
-    }
-
-    pub fn load_archived(&mut self, cx: &mut Context<Self>) {
-        self.call("archived_sessions", json!({}), cx, |root, result, _| {
-            if let Ok(value) = result {
-                root.archived = value
-                    .as_array()
-                    .map(|sessions| sessions.iter().filter_map(SessionRow::from_value).collect())
-                    .unwrap_or_default();
-            }
-        });
-    }
-
-    pub fn unarchive_session(&mut self, id: String, cx: &mut Context<Self>) {
-        self.call(
-            "unarchive_session",
-            json!({ "id": id, "pinned": false }),
-            cx,
-            |root, result, cx| match result {
-                Ok(value) => {
-                    root.sessions = value
-                        .as_array()
-                        .map(|sessions| {
-                            sessions.iter().filter_map(SessionRow::from_value).collect()
-                        })
-                        .unwrap_or_default();
-                    root.load_archived(cx);
-                    cx.notify();
-                }
-                Err(error) => root.toast(error, true, cx),
             },
         );
     }
@@ -1975,11 +2020,34 @@ impl Root {
         sessions
     }
 
+    pub fn sidebar_sessions(&self) -> Vec<SessionRow> {
+        let mut ordered = Vec::new();
+        let mut seen = HashSet::new();
+        for project in &self.projects {
+            for session in self.sessions_of(&project.path) {
+                if seen.insert(session.id.clone()) {
+                    ordered.push(session.clone());
+                    if ordered.len() == 9 {
+                        return ordered;
+                    }
+                }
+            }
+        }
+        ordered
+    }
+
+    pub fn sidebar_shortcuts(&self) -> HashMap<String, usize> {
+        self.sidebar_sessions()
+            .into_iter()
+            .enumerate()
+            .map(|(index, session)| (session.id, index + 1))
+            .collect()
+    }
+
     pub fn open_overlay(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         match &overlay {
             Overlay::Models => self.load_models(cx),
             Overlay::Settings => self.load_project_commands(cx),
-            Overlay::Archived => self.load_archived(cx),
             Overlay::Trust { project } => {
                 let project = project.clone();
                 self.call(
@@ -2072,9 +2140,9 @@ impl Render for Root {
                 gpui::CursorStyle::Arrow
             })
             .key_context("Root")
-            .on_mouse_move(cx.listener(|this, event, _, cx| {
+            .on_mouse_move(cx.listener(|this, event, window, cx| {
                 if this.resizing.is_some() {
-                    this.handle_sidebar_drag(event, cx);
+                    this.handle_sidebar_drag(event, window, cx);
                 }
             }))
             .on_mouse_up(
@@ -2107,22 +2175,37 @@ impl Render for Root {
                 this.open_overlay(Overlay::Models, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenWorktrees, _window, cx| this.open_worktrees(cx)))
-            .on_action(cx.listener(|this, _: &Back, _window, cx| {
-                if let Some(previous) = this.history.pop() {
-                    this.forward.push(this.active);
-                    this.active = previous.min(this.chats.len().saturating_sub(1));
-                    cx.notify();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &Forward, _window, cx| {
-                if let Some(next) = this.forward.pop() {
-                    this.history.push(this.active);
-                    this.active = next.min(this.chats.len().saturating_sub(1));
-                    cx.notify();
-                }
-            }))
+            .on_action(cx.listener(|this, _: &Back, _window, cx| this.navigate_back(cx)))
+            .on_action(cx.listener(|this, _: &Forward, _window, cx| this.navigate_forward(cx)))
             .on_action(cx.listener(|this, _: &ShowShortcuts, _window, cx| {
                 this.open_overlay(Overlay::Shortcuts, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession1, window, cx| {
+                this.open_sidebar_session(1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession2, window, cx| {
+                this.open_sidebar_session(2, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession3, window, cx| {
+                this.open_sidebar_session(3, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession4, window, cx| {
+                this.open_sidebar_session(4, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession5, window, cx| {
+                this.open_sidebar_session(5, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession6, window, cx| {
+                this.open_sidebar_session(6, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession7, window, cx| {
+                this.open_sidebar_session(7, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession8, window, cx| {
+                this.open_sidebar_session(8, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchToSession9, window, cx| {
+                this.open_sidebar_session(9, window, cx)
             }))
             .on_action(cx.listener(|_, _: &QuitApp, _window, cx| cx.quit()))
             .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
@@ -2162,9 +2245,9 @@ impl Render for Root {
                     .absolute()
                     .size_full()
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .on_mouse_move(
-                        cx.listener(|this, event, _, cx| this.handle_sidebar_drag(event, cx)),
-                    )
+                    .on_mouse_move(cx.listener(|this, event, window, cx| {
+                        this.handle_sidebar_drag(event, window, cx)
+                    }))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.end_sidebar_drag(cx)),
@@ -2231,22 +2314,48 @@ pub fn open(engine: Engine, packets: tokio::sync::mpsc::UnboundedReceiver<Value>
 }
 
 impl Root {
-    pub fn handle_sidebar_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        if let Some(origin) = self.resizing {
-            let width = (event.position.x - px(origin)).max(px(160.0));
-            self.sidebar_width = f32::from(width);
+    pub fn handle_sidebar_drag(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((origin, start_width)) = self.resizing {
+            let delta = f32::from(event.position.x) - origin;
+            let viewport = f32::from(window.viewport_size().width);
+            self.sidebar_width = clamp_sidebar_width(viewport, start_width + delta);
             cx.notify();
         }
     }
 
     pub fn begin_sidebar_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
-        self.resizing = Some(f32::from(event.position.x));
+        self.resizing = Some((f32::from(event.position.x), self.sidebar_width));
         cx.notify();
     }
 
     pub fn end_sidebar_drag(&mut self, cx: &mut Context<Self>) {
         self.resizing = None;
         cx.notify();
+    }
+}
+
+fn clamp_sidebar_width(viewport: f32, width: f32) -> f32 {
+    const MIN_SIDEBAR_WIDTH: f32 = 160.0;
+    const MIN_READING_WIDTH: f32 = 475.0;
+    let available = (viewport - MIN_READING_WIDTH).max(MIN_SIDEBAR_WIDTH);
+    width.clamp(MIN_SIDEBAR_WIDTH, available)
+}
+
+#[cfg(test)]
+mod sidebar_resize_tests {
+    use super::clamp_sidebar_width;
+
+    #[test]
+    fn sidebar_resize_preserves_the_reading_column() {
+        assert_eq!(clamp_sidebar_width(1280.0, 320.0), 320.0);
+        assert_eq!(clamp_sidebar_width(1280.0, 120.0), 160.0);
+        assert_eq!(clamp_sidebar_width(1280.0, 900.0), 805.0);
+        assert_eq!(clamp_sidebar_width(320.0, 280.0), 160.0);
     }
 }
 

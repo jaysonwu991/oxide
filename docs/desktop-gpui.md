@@ -109,14 +109,17 @@ Ubuntu, macOS and Windows.
 The layout mirrors the stable window: a 46px topbar that the window drags by,
 with the platform's traffic lights inside it, navigation, the open chats' tabs
 (or the thread's own folder and title while one is open) and a changes toggle; a
-56px rail; the 268px sidebar (draggable) with its brand row — where the search
-field takes the name's place when opened — New Chat and the always-expanded
-project tree, followed by compact Recents; the reading column with its transcript, the
-welcome page before a thread is in it, and the composer; and a changes pane
+56px rail; the 300px sidebar (draggable) with its brand row — where the search
+field takes the name's place when opened — New Chat, notifications and a project
+tree limited to the five newest threads per project, followed by compact
+Recents; the reading column with its transcript, the welcome page before a
+thread is in it, and the composer; and a content-sized project details panel
 docked to the right. The project details panel is open by default. Chat,
 Projects, Customize and Settings are destinations in
 one shell: each keeps the rail and topbar, while Projects uses a directory page
-and Customize and Settings use the stable window's two-column navigation.
+and Customize and Settings use the stable window's two-column navigation. The
+topbar's Back, Forward and sidebar controls stay visible on destinations, with
+Back and Forward painted as disabled when they have no destination.
 
 Every glyph is the SVG the stable window strokes, drawn from `src/icons.rs`: GPUI
 rasterises one drawing into an alpha mask and tints it with the element's color,
@@ -165,11 +168,9 @@ that composer instead of being sent.
 - **Trust** — `project_info.trust` gates a project's own skills, plugins, MCP
   servers and hooks exactly as the terminal does, with the banner and the
   dialog writing through `set_project_trust`.
-- **Pinning and archiving** — a thread's right-click menu pins it through
-  `set_session_pinned` or archives it, a project's `⋯` menu pins the project
-  through `set_project_pinned` or removes it, and the sidebar's **Archived**
-  listing reads `archived_sessions` and restores one through
-  `unarchive_session`.
+- **Pinning** — a thread's right-click menu pins it through
+  `set_session_pinned`, and a project's `⋯` menu pins the project through
+  `set_project_pinned` or removes it.
 - **Git worktrees** — `worktrees`, `create_worktree`,
   `create_worktree_branch`, `remove_worktree` and `handoff_session` back the
   rail and composer entries. A chat can start in Local or a worktree, carry
@@ -189,8 +190,10 @@ that composer instead of being sent.
   (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
 - **Menus and keys** — the macOS menu bar carries the app's own menu, File,
   View and Window menus over the same actions as the shortcuts (⌘N, ⌘W, ⌘B,
-  ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git worktrees, ⌘[ / ⌘],
-  Esc to close a dialog, ⌘Q).
+  ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git worktrees, ⌘1–⌘9 for the
+  sidebar's chats, ⌘[ / ⌘], Esc to close a dialog, ⌘Q).
+  Back leaves Settings, Customize or Projects before it walks the open-chat
+  history.
 - **Appearance and language** — `theme_colors`/`set_theme` read the same theme
   files the CLI does. `language`/`set_language` read and write the shared
   language setting, and the catalog it answers with supplies the composer's
@@ -201,10 +204,10 @@ that composer instead of being sent.
   behaviour, sidebar visibility, predictions, notifications, what they announce,
   keep-awake and text scale; the sidebar's own visibility and width follow them.
   Settings is a full-window destination with a 232px navigation column —
-  Personal (General, Appearance, Notifications) over Integrations (Models,
-  Plugins, Skills, MCP servers, Shortcuts) — and each field is a row of labelled
-  controls: segments for a choice, a switch for a flag, a link into the theme,
-  language or shortcut picker, and a scale stepper.
+  Personal (General, Appearance, Notifications) over Integrations (Plugins,
+  Skills, MCP servers, Shortcuts) — and each field is a row of labelled
+  controls: inline theme and language choices, segments for other choices, a
+  switch for a flag, and a scale stepper.
 
 ### Accessibility
 

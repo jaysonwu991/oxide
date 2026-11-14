@@ -8,7 +8,7 @@
 use crate::app::{Button, ConfirmAction, Overlay, Root, SettingsTab};
 use crate::icons::{self, Icon};
 use crate::theme::Theme;
-use crate::views::{icon_button, pill};
+use crate::views::{icon_button, pill, SETTINGS_NAVIGATION_WIDTH};
 use gpui::prelude::*;
 use gpui::{div, hsla, px, Context, Div, FontWeight, SharedString, Stateful, Window};
 use serde_json::{json, Value};
@@ -36,8 +36,6 @@ pub fn layer(
     let panel = match overlay.clone() {
         Overlay::Settings => settings_page(root, theme, cx),
         Overlay::Models => models(root, theme, cx),
-        Overlay::Themes => themes(root, theme, cx),
-        Overlay::Language => language(root, theme, cx),
         Overlay::Shortcuts => shortcuts(theme, cx),
         Overlay::Trust { project } => trust(root, theme, project, cx),
         Overlay::Approval { chat, id } => approval(root, theme, chat, id, cx),
@@ -62,7 +60,6 @@ pub fn layer(
             pinned,
         } => project_actions(theme, id, path, name, pinned, cx),
         Overlay::Approvals => approvals(root, theme, cx),
-        Overlay::Archived => archived(root, theme, cx),
         Overlay::Worktrees => worktrees(root, theme, cx),
         Overlay::WorktreeBranch { project, name } => {
             worktree_branch(root, theme, project, name, cx)
@@ -193,19 +190,19 @@ fn selectable(
 /// through `save_prefs`, so the terminal and the stable window see the same
 /// values.
 pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    let version = env!("CARGO_PKG_VERSION");
     let tab = root.settings_tab;
 
     let mut navigation = div()
         .flex()
         .flex_col()
         .flex_none()
-        .w(px(232.0))
+        .w(px(SETTINGS_NAVIGATION_WIDTH))
         .h_full()
         .px(px(14.0))
         .pt(px(24.0))
         .pb(px(16.0))
         .gap(px(4.0))
+        .relative()
         .bg(theme.sidebar())
         .border_r_1()
         .border_color(theme.border())
@@ -275,15 +272,6 @@ pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
         theme,
         vec![
             nav_tab(
-                "settings-tab-models",
-                Icon::Globe,
-                "Models",
-                false,
-                theme,
-                cx,
-                |root, _, cx| root.open_overlay(Overlay::Models, cx),
-            ),
-            nav_tab(
                 "settings-tab-plugins",
                 Icon::Customize,
                 "Plugins",
@@ -337,37 +325,32 @@ pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
         ],
     ));
 
-    navigation = navigation
-        .child(div().flex_1())
-        .child(
-            div()
-                .id("settings-back")
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .h(px(40.0))
-                .px(px(12.0))
-                .rounded(px(8.0))
-                .cursor_pointer()
-                .text_size(px(13.0))
-                .text_color(theme.dim())
-                .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
-                .child(icons::icon(Icon::Back, 17.0, theme.faint()))
-                .child("Back to chat")
-                .on_click(cx.listener(|root, _, _, cx| {
-                    root.overlay = None;
-                    cx.notify();
-                })),
-        )
-        .child(
-            div()
-                .px(px(12.0))
-                .pt_2()
-                .text_size(px(11.0))
-                .text_color(theme.faint())
-                .child(format!("Oxide Beta {version}")),
-        );
+    navigation = navigation.child(div().flex_1()).child(
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_2()
+            .px(px(14.0))
+            .child(
+                div()
+                    .id("settings-back")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .h(px(40.0))
+                    .px(px(12.0))
+                    .rounded(px(8.0))
+                    .cursor_pointer()
+                    .text_size(px(13.0))
+                    .text_color(theme.dim())
+                    .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+                    .child(icons::icon(Icon::Back, 17.0, theme.faint()))
+                    .child("Back to chat")
+                    .on_click(cx.listener(|root, _, _, cx| root.navigate_back(cx))),
+            ),
+    );
 
     let (title, hint) = match tab {
         SettingsTab::General => (
@@ -537,13 +520,6 @@ fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<
     let language = root.language.clone();
     let scale = prefs["font_scale"].as_f64().unwrap_or(1.0);
     let sidebar = prefs["sidebar_visible"].as_bool().unwrap_or(true);
-    let language_label = root
-        .languages
-        .iter()
-        .find(|row| row["tag"].as_str() == Some(language.as_str()))
-        .and_then(|row| row["label"].as_str())
-        .unwrap_or("English")
-        .to_string();
 
     let mut sizes = segments(theme);
     for (id, label, value) in [
@@ -562,30 +538,51 @@ fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<
         ));
     }
 
+    let mut themes = segments(theme).flex_wrap().max_w(px(560.0));
+    for name in &root.theme_names {
+        let choice = name.clone();
+        themes = themes.child(segment(
+            SharedString::from(format!("settings-theme-{name}")),
+            &capitalised(name),
+            theme_name == *name,
+            theme,
+            cx,
+            move |root, _, cx| root.set_theme(choice.clone(), cx),
+        ));
+    }
+
+    let mut languages = segments(theme).flex_wrap().max_w(px(560.0));
+    for row in &root.languages {
+        let Some(tag) = row["tag"].as_str() else {
+            continue;
+        };
+        let label = row["nativeLabel"]
+            .as_str()
+            .or_else(|| row["label"].as_str())
+            .unwrap_or(tag);
+        let choice = tag.to_string();
+        languages = languages.child(segment(
+            SharedString::from(format!("settings-language-{tag}")),
+            label,
+            language == tag,
+            theme,
+            cx,
+            move |root, _, cx| root.set_language(choice.clone(), cx),
+        ));
+    }
+
     vec![
-        field(
+        field_tall(
             "Theme",
             "The palette the window, the terminal and the stable app all read.",
             theme,
-            link_button(
-                "settings-open-themes",
-                &theme_name,
-                theme,
-                cx,
-                |root, _, cx| root.open_overlay(Overlay::Themes, cx),
-            ),
+            themes,
         ),
-        field(
+        field_tall(
             "Language",
             "The strings the window draws, from the shared catalog.",
             theme,
-            link_button(
-                "settings-open-language",
-                &language_label,
-                theme,
-                cx,
-                |root, _, cx| root.open_overlay(Overlay::Language, cx),
-            ),
+            languages,
         ),
         field(
             "Text size",
@@ -718,6 +715,44 @@ fn field(label: &str, hint: &str, theme: &Theme, control: impl IntoElement) -> g
                 ),
         )
         .child(div().flex_none().child(control))
+}
+
+fn field_tall(label: &str, hint: &str, theme: &Theme, control: impl IntoElement) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .px(px(24.0))
+        .py(px(20.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(5.0))
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text())
+                        .child(label.to_string()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .line_height(px(20.0))
+                        .text_color(theme.dim())
+                        .child(hint.to_string()),
+                ),
+        )
+        .child(control)
+}
+
+fn capitalised(value: &str) -> String {
+    let mut characters = value.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => String::new(),
+    }
 }
 
 fn nav_group(title: &str, theme: &Theme, rows: Vec<Stateful<Div>>) -> gpui::Div {
@@ -862,34 +897,6 @@ fn switch(
         .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
-fn link_button(
-    id: impl Into<gpui::ElementId>,
-    label: &str,
-    theme: &Theme,
-    cx: &mut Context<Root>,
-    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(6.0))
-        .h(px(30.0))
-        .px(px(10.0))
-        .rounded(px(7.0))
-        .cursor_pointer()
-        .border_1()
-        .border_color(theme.border())
-        .bg(theme.panel_2())
-        .text_size(px(12.0))
-        .text_color(theme.text())
-        .hover(move |style| style.bg(theme.panel_3()))
-        .child(label.to_string())
-        .child(icons::icon(Icon::ChevronRight, 12.0, theme.dim()))
-        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
-}
-
 // ---------- models ----------
 
 fn models(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
@@ -1031,110 +1038,6 @@ fn models(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     panel
 }
 
-// ---------- themes ----------
-
-fn themes(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    let names = root.theme_names.clone();
-    let current = theme.name.clone();
-    let mut panel = dialog(theme, "Themes", 460.0);
-    let mut body = div()
-        .id("themes-body")
-        .flex()
-        .flex_col()
-        .gap_1()
-        .max_h(px(440.0))
-        .overflow_y_scroll();
-    if names.is_empty() {
-        body = body.child(
-            div()
-                .text_size(px(12.0))
-                .text_color(theme.faint())
-                .child("No themes were found beside the configuration."),
-        );
-    }
-    for name in names {
-        let selected = name == current;
-        let choice = name.clone();
-        body = body.child(selectable(
-            SharedString::from(format!("theme-{name}")),
-            name,
-            None,
-            selected,
-            theme,
-            cx,
-            move |root, _, cx| root.set_theme(choice.clone(), cx),
-        ));
-    }
-    panel = panel.child(body);
-    panel = panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(close_button(theme, cx)),
-    );
-    panel
-}
-
-// ---------- language ----------
-
-fn language(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    let languages = root.languages.clone();
-    let mut panel = dialog(theme, "Language", 420.0);
-    let mut body = div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .id("language-body")
-        .max_h(px(400.0))
-        .overflow_y_scroll();
-    for language in languages {
-        let tag = language["tag"].as_str().unwrap_or_default().to_string();
-        let label = language["nativeLabel"]
-            .as_str()
-            .or_else(|| language["label"].as_str())
-            .unwrap_or_default()
-            .to_string();
-        let selected = tag == root.strings_language();
-        let choice = tag.clone();
-        body = body.child(selectable(
-            SharedString::from(format!("language-{tag}")),
-            label,
-            Some(tag),
-            selected,
-            theme,
-            cx,
-            move |root, _, cx| {
-                let project = root.current_project().unwrap_or_default();
-                root.call(
-                    "set_language",
-                    json!({ "project": project, "tag": choice.clone() }),
-                    cx,
-                    |root, result, cx| match result {
-                        Ok(value) => {
-                            root.strings = crate::app::Strings::load(&value);
-                            root.languages =
-                                value["languages"].as_array().cloned().unwrap_or_default();
-                            root.overlay = None;
-                            cx.notify();
-                        }
-                        Err(error) => root.toast(error, true, cx),
-                    },
-                );
-            },
-        ));
-    }
-    panel = panel.child(body);
-    panel = panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(close_button(theme, cx)),
-    );
-    panel
-}
-
 // ---------- shortcuts ----------
 
 fn shortcuts(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
@@ -1146,6 +1049,7 @@ fn shortcuts(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
         ("Changes pane", "⌘⏎"),
         ("Model picker", "⌘⇧M"),
         ("Git worktrees", "⌘⇧G"),
+        ("Open a sidebar chat", "⌘1–⌘9"),
         ("Back / forward", "⌘[ / ⌘]"),
         ("Send", "Enter"),
         ("New line", "⇧⏎"),
@@ -1449,8 +1353,6 @@ fn session_actions(
             .child("What to do with this chat"),
     );
     let pin_id = id.clone();
-    let archive_id = id.clone();
-    let archive_title = name.clone();
     let rename_id = id.clone();
     let rename_title = name.clone();
     panel = panel
@@ -1482,21 +1384,6 @@ fn session_actions(
                 move |root, _, cx| root.set_session_pinned(pin_id.clone(), !pinned, cx),
             ),
         )
-        .child(Button::new("Archive").render(
-            SharedString::from(format!("session-archive-{id}")),
-            theme,
-            cx,
-            move |root, _, cx| {
-                root.overlay = Some(Overlay::Confirm {
-                    title: "Archive this chat?".to_string(),
-                    body: format!(
-                        "Archive {archive_title}? It leaves the sidebar, and Archived puts it back."
-                    ),
-                    action: ConfirmAction::ArchiveSession(archive_id.clone()),
-                });
-                cx.notify();
-            },
-        ))
         .child(
             div()
                 .flex()
@@ -1586,62 +1473,6 @@ fn rename_session(
                     },
                 )),
         )
-}
-
-fn archived(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    let archived = root.archived.clone();
-    let mut panel = dialog(theme, "Archived chats", 520.0);
-    let mut body = div()
-        .id("archived-body")
-        .flex()
-        .flex_col()
-        .gap_1()
-        .max_h(px(420.0))
-        .overflow_y_scroll();
-    if archived.is_empty() {
-        body = body.child(
-            div()
-                .text_size(px(12.0))
-                .text_color(theme.faint())
-                .child("No archived chats"),
-        );
-    }
-    for session in archived {
-        let id = session.id.clone();
-        let title = session.title.clone();
-        body = body.child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .py_1()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(px(12.5))
-                        .child(title),
-                )
-                .child(Button::new("Restore").render(
-                    SharedString::from(format!("restore-{id}")),
-                    theme,
-                    cx,
-                    move |root, _, cx| root.unarchive_session(id.clone(), cx),
-                )),
-        );
-    }
-    panel = panel.child(body);
-    panel = panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(close_button(theme, cx)),
-    );
-    panel
 }
 
 // ---------- worktrees ----------
@@ -2002,14 +1833,6 @@ fn composer_tools(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
             |root, _, cx| root.open_overlay(Overlay::Approvals, cx),
         ))
         .child(tool_row(
-            "composer-tool-models",
-            Icon::Globe,
-            "Models",
-            theme,
-            cx,
-            |root, _, cx| root.open_overlay(Overlay::Models, cx),
-        ))
-        .child(tool_row(
             "composer-tool-customize",
             Icon::Customize,
             "Customize",
@@ -2262,7 +2085,6 @@ fn confirm(
                 cx,
                 move |root, _, cx| match action_for_ok.clone() {
                     ConfirmAction::RemoveProject(id) => root.remove_project(id, cx),
-                    ConfirmAction::ArchiveSession(id) => root.archive_session(id, cx),
                     ConfirmAction::RemoveWorktree { project, name } => {
                         root.remove_worktree(project, name, cx)
                     }
