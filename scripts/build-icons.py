@@ -45,7 +45,9 @@ C = 12.0
 F = 7.5
 RI = 8.625
 S = 0.7
-TILE_RADIUS = 0.1895 * 24
+TILE_SIZE = 20.0
+TILE_INSET = (24.0 - TILE_SIZE) / 2.0
+TILE_RADIUS = 0.1895 * TILE_SIZE
 
 # `icon.iconset` names and the pixels each holds; iconutil refuses a set that
 # does not match its names exactly.
@@ -101,7 +103,11 @@ def mark() -> str:
 
 
 def tile(fill: str = TILE) -> str:
-    return f'<rect width="24" height="24" rx="{TILE_RADIUS:.4f}" fill="{fill}"/>'
+    return (
+        f'<rect x="{TILE_INSET:.4f}" y="{TILE_INSET:.4f}" '
+        f'width="{TILE_SIZE:.4f}" height="{TILE_SIZE:.4f}" '
+        f'rx="{TILE_RADIUS:.4f}" fill="{fill}"/>'
+    )
 
 
 def svg(body: str, size: int | None) -> str:

@@ -40,7 +40,9 @@ const GLYPHS: &[(&str, &str)] = &[
     ),
     (
         "pencil",
-        glyph!(r##"<path d="M11 2.5l2.5 2.5M5 11l-2 .5.5-2L11.5 1.5 14 4ZM7 3H2v11h11V9"/>"##),
+        glyph!(
+            r##"<path d="M16.5 3.75 20.25 7.5M7.5 16.5 4.5 17.25 5.25 14.25 18 1.5 21.75 5.25ZM10.5 4.5H3v16.5h16.5V13.5"/>"##
+        ),
     ),
     (
         "plus",
@@ -92,11 +94,6 @@ const GLYPHS: &[(&str, &str)] = &[
         "pin",
         glyph!(r##"<path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z"/>"##),
     ),
-    (
-        "archive",
-        glyph!(r##"<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6"/>"##),
-    ),
-    ("chevron-right", glyph!(r##"<path d="M9.5 6l6 6-6 6"/>"##)),
     (
         "chevron-down",
         glyph!(r##"<path d="M5.5 8.6 12 14.8l6.5-6.2"/>"##),
@@ -180,8 +177,6 @@ pub enum Icon {
     Customize,
     Chat,
     Pin,
-    Archive,
-    ChevronRight,
     ChevronDown,
     Paperclip,
     Lock,
@@ -216,8 +211,6 @@ impl Icon {
             Icon::Customize => "icons/customize.svg",
             Icon::Chat => "icons/chat.svg",
             Icon::Pin => "icons/pin.svg",
-            Icon::Archive => "icons/archive.svg",
-            Icon::ChevronRight => "icons/chevron-right.svg",
             Icon::ChevronDown => "icons/chevron-down.svg",
             Icon::Paperclip => "icons/paperclip.svg",
             Icon::Lock => "icons/lock.svg",
@@ -365,8 +358,6 @@ mod tests {
             Icon::Customize,
             Icon::Chat,
             Icon::Pin,
-            Icon::Archive,
-            Icon::ChevronRight,
             Icon::ChevronDown,
             Icon::Paperclip,
             Icon::Lock,
