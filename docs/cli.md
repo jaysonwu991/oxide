@@ -68,9 +68,9 @@ increasing precedence:
 name the project already defines in `.mcp.json` writes an override rather than
 editing that file. Every other command acts on the file that defines the server,
 whichever source that is: `list`, `get` and `auth` read it, and `remove`,
-`disable` and `enable` rewrite it in place — so a server configured in a Claude
-Code or platform-config file is edited there rather than duplicated into a
-native one. A pinned `--scope` keeps them inside that scope.
+`disable`, `enable` and `exposure` rewrite it in place — so a server configured
+in a Claude Code or platform-config file is edited there rather than duplicated
+into a native one. A pinned `--scope` keeps them inside that scope.
 
 ### Manage from the CLI
 
@@ -116,9 +116,11 @@ performs the same check.
 
 ```sh
 oxide mcp list --json      # the same listing for a front-end: name, transport,
-                           # detail, source, scope, enabled, state, status
+                           # detail, source, scope, enabled, exposure,
+                           # description, tools, state, status
 oxide mcp disable filesystem --scope project   # keep the config, stop loading it
 oxide mcp enable filesystem                    # back on, in whichever file defines it
+oxide mcp exposure filesystem direct           # how its tools reach the model
 ```
 
 `--json` is what the desktop app's **MCP servers** dialog and the VS Code
@@ -149,6 +151,70 @@ shared by turns in the same project environment. It never opens a login browser;
 a server that needs authorization is reported by the search so it can be signed
 in separately. Disabled servers are not contacted.
 
+### Tool exposure
+
+A server's `exposure` decides how its tools reach the model. `oxide mcp exposure`
+writes it into the file that defines the server; the desktop app's exposure chip
+and the VS Code panel's **Exposure** button write the same key through it.
+
+| `exposure` | What the model sees |
+| --- | --- |
+| `deferred` (default) | Nothing until `tool_search` loads a tool on this branch. |
+| `direct` | Every tool is declared on every request, like a built-in tool. The server is loaded before the first request is composed (up to 10 s), so the tool list is complete when the model first reads it. |
+| `hidden` | The server is connected but its tools are never declared and never found by `tool_search`. |
+
+`toolExposure` narrows that per tool, with the tool names the server itself
+lists and `*` standing for any run of characters:
+
+```json
+{
+  "mcpServers": {
+    "ops": {
+      "url": "https://ops.example.com/mcp",
+      "exposure": "hidden",
+      "toolExposure": { "deploy_service": "direct", "read_*": "deferred" }
+    }
+  }
+}
+```
+
+An exact name wins; then the first matching pattern in name order; then the
+server's own `exposure`. So the entry above offers `deploy_service` on every
+request, the `read_*` tools through `tool_search`, and nothing else. A server
+whose every tool ends up hidden is still connected and listed by `oxide mcp
+list`, but it is left out of the system prompt and offers the model nothing.
+
+Pi's default is `codemode`, which Oxide has no tool for: `codemode` and
+`codemode-deferred` are read as `deferred`, and a server without `exposure` is
+deferred. `tool_search` itself is declared only while some enabled server has a
+deferred tool to find; with every tool direct or hidden, the request carries the
+tools and no search. A server's `description` (one line) is listed in an untrusted
+`# MCP servers` section of the system prompt with how its tools are reached and
+how many it offers, so the model knows a deferred server exists before it
+searches. `tool_search` weighs that description and the server's own instructions
+as well as the tool's name and schema.
+
+`timeout` (seconds, default 60) bounds each request to that server. A timeout is
+never replayed: it cannot say whether the server acted. A transient HTTP status
+(408, 429, 5xx) is replayed twice, or once for `tools/call`, whose side effects
+cannot be assumed absent.
+
+A project entry with no `command`, `url`, or `type` changes the user-level
+server of that name instead of replacing it, so one project can turn a shared
+server off — or narrow what it exposes — without copying its credentials:
+
+```json
+{"mcpServers": {"internal-tools": {"enabled": false, "exposure": "hidden"}}}
+```
+
+Such an entry may set `enabled` (or `disabled`), `exposure` and `toolExposure`;
+everything else, including the command, the URL, headers and OAuth, comes from
+the user-level entry. The listing reports the user-level transport with the
+project's own settings, and its `scope` is the project, so a pinned change from
+any front-end lands in the project file. An entry with its own command or URL
+still replaces the user-level entry completely, and an override with no
+user-level server to change is ignored.
+
 Tools use the deferred discovery workflow supported by
 [Pi Coding Agent](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/mcp.md).
 Their schemas stay out of the model request until the model calls
@@ -159,11 +225,14 @@ Their schemas stay out of the model request until the model calls
 ```
 
 Search uses BM25 over tool names, descriptions, parameter names and descriptions,
-and server instructions. It works for a company gateway with an arbitrary name
+the server's description, and server instructions. It works for a company gateway with an arbitrary name
 and URL; no service-to-server or domain mapping is required. The default limit is
 8, with an optional integer from 1 to 64. Only matching tools are declared on the
 next model call as `<server>__<tool>`. Previously selected tools remain available;
 search looks for tools not already declared and respects the run's tool filters.
+Directly declared tools are already in the request and are not searched; hidden
+ones are not searchable. A call to a hidden tool says so rather than suggesting a
+search that cannot find it.
 
 Tool selection is stored on the session branch and survives resume, compaction,
 and context forks. Background discovery alone exposes no schemas and invokes no
@@ -172,10 +241,10 @@ so an inaccessible server is not mistaken for a service with no matching tools.
 `mcp_load` remains available to connect or retry a particular server without
 exposing its entire catalog.
 
-A selected server's own instructions reach the model in an untrusted reference
-section. They cannot change the user's instructions, grant permissions or
-redirect the task. A search loads capabilities; invoking a discovered tool still
-passes through the usual tool permissions.
+A selected or directly declared server's own instructions reach the model in an
+untrusted reference section. They cannot change the user's instructions, grant
+permissions or redirect the task. A search loads capabilities; invoking a
+discovered tool still passes through the usual tool permissions.
 
 The optional `domains` array remains a compatibility hint for `webfetch`: when
 one of its URLs matches a configured server, Oxide directs the model to that

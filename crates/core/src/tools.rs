@@ -476,15 +476,19 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
     specs.push(code_search::spec(read_scope));
     let configured = mcp.configured_servers();
     if !configured.is_empty() {
-        specs.push(spec(
-            "tool_search",
-            "Search deferred MCP tool metadata with BM25 and declare matching tools for your next call. Always use tool_search for MCP tool discovery, including private links and services behind generic company gateways. Search by capability, service, or task; no domain mapping is needed. The active schema set is bounded; search again for a deferred tool, or use replace to switch capabilities.",
-            json!({"type":"object","properties":{
-                "query":{"type":"string","description":"Required capabilities, service, or task"},
-                "limit":{"type":"integer","minimum":1,"maximum":64,"description":"Maximum matches; default 8, bounded by maxDeclaredMcpTools"},
-                "replace":{"type":"boolean","description":"Replace the current schema set with these matches; default false"}
-            },"required":["query"]}),
-        ));
+        // A search with nothing deferred to find is a tool that only costs a
+        // schema: every tool is already declared or hidden.
+        if mcp.has_deferred_tools() {
+            specs.push(spec(
+                "tool_search",
+                "Search deferred MCP tool metadata with BM25 and declare matching tools for your next call. Always use tool_search for MCP tool discovery, including private links and services behind generic company gateways. Search by capability, service, or task; no domain mapping is needed. The active schema set is bounded; search again for a deferred tool, or use replace to switch capabilities.",
+                json!({"type":"object","properties":{
+                    "query":{"type":"string","description":"Required capabilities, service, or task"},
+                    "limit":{"type":"integer","minimum":1,"maximum":64,"description":"Maximum matches; default 8, bounded by maxDeclaredMcpTools"},
+                    "replace":{"type":"boolean","description":"Replace the current schema set with these matches; default false"}
+                },"required":["query"]}),
+            ));
+        }
         // A server may be asked for by a service it answers to as well as by its
         // own name, so the schema lists both and `mcp_load` resolves either.
         let mut names: Vec<String> = configured.iter().map(|(name, _)| name.clone()).collect();
@@ -524,10 +528,15 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let deferred_hint = if mcp.has_deferred_tools() {
+            " Tools remain deferred: use tool_search to discover and declare the capabilities you need."
+        } else {
+            ""
+        };
         specs.push(spec(
             "mcp_load",
             &format!(
-                "Connect or retry one configured MCP server. Tools remain deferred: use tool_search to discover and declare the capabilities you need. A server may be named by a service it answers to as well as by its own name. Configured servers: {sources}"
+                "Connect or retry one configured MCP server.{deferred_hint} A server may be named by a service it answers to as well as by its own name. Configured servers: {sources}"
             ),
             json!({
                 "type": "object",
@@ -6337,6 +6346,7 @@ fn cleanup_truncated(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecosystem::McpExposure;
     use crate::llm::FunctionCall;
 
     #[test]
@@ -6754,6 +6764,10 @@ mod tests {
                 oauth: None,
             },
             domains: vec![],
+            description: None,
+            exposure: McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
         };
         let mcp = McpRegistry::new(&[server]);
         let loader = specs(&mcp)
@@ -6783,6 +6797,43 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["atlassian", "confluence", "jira"]);
         assert_eq!(mcp.server_count(), 0);
+    }
+
+    #[test]
+    fn a_search_tool_is_offered_only_while_a_deferred_tool_exists() {
+        let server = |name: &str, exposure: McpExposure| crate::ecosystem::McpServer {
+            name: name.to_string(),
+            enabled: true,
+            kind: crate::ecosystem::McpKind::Remote {
+                url: format!("https://mcp.example.com/{name}"),
+                headers: Default::default(),
+                oauth: None,
+            },
+            domains: vec![],
+            description: None,
+            exposure,
+            tool_exposure: Default::default(),
+            timeout: None,
+        };
+        let names = |servers: &[crate::ecosystem::McpServer]| {
+            specs(&McpRegistry::new(servers))
+                .into_iter()
+                .map(|spec| spec.function.name)
+                .collect::<Vec<_>>()
+        };
+
+        let deferred = names(&[server("deferred", McpExposure::Deferred)]);
+        assert!(deferred.contains(&"tool_search".to_string()));
+        assert!(deferred.contains(&"mcp_load".to_string()));
+
+        // Every tool is either already in the request or hidden from it, so the
+        // search has nothing to find and its schema is not worth its cost.
+        let direct = names(&[
+            server("direct", McpExposure::Direct),
+            server("hidden", McpExposure::Hidden),
+        ]);
+        assert!(!direct.contains(&"tool_search".to_string()));
+        assert!(direct.contains(&"mcp_load".to_string()));
     }
 
     #[cfg(unix)]
@@ -11123,6 +11174,10 @@ mod tests {
                 cwd: None,
             },
             domains: vec![],
+            description: None,
+            exposure: McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
         };
         let registry = crate::mcp::McpRegistry::new(&[server]);
         registry.load("big").await.unwrap();

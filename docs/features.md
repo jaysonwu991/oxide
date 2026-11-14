@@ -67,7 +67,12 @@ page is the detail behind it, and the task-by-task guides live in
   front-end that can answer it).
 - MCP servers over stdio or Streamable HTTP, loaded on demand with automatic
   tool selection, OAuth discovery, and session handling, exposed as
-  `<server>__<tool>`.
+  `<server>__<tool>`. `exposure` and `toolExposure` choose between deferred
+  (`tool_search`), directly declared and hidden tools; a project entry with no
+  transport turns a user-level server off or narrows it for that project only; a
+  server's description and tool count are listed in the system prompt; and
+  `timeout` plus replay of transient HTTP statuses keeps a long call from
+  failing on a blip.
 - Agent-harness niceties: read-only tool calls in a batch run in parallel while
   preserving model order, `bash` output streams into the UI as it arrives, and
   typing while the agent works can queue or steer it between steps. Enter steers

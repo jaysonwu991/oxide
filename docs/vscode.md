@@ -250,14 +250,20 @@ session listing opens on, with its own scrollbar once a project has more
 servers than fit.
 Every server is a row carrying the state the core reported (`Connected`, `Needs
 auth`, `Needs trust`, `Disabled`, `Error`) and a line naming its transport, the
-file that defined it and its state. A server in `Needs auth` carries an
+file that defined it, the tool count it reported (when it answered), and its
+state. Every row also
+carries an **Exposure: deferred|direct|hidden** button: the word says how the
+server's tools reach the model, and a click asks for the next of the three
+through `oxide mcp exposure <name> <mode> --scope <scope>` — deferred tools are
+found with `tool_search`, direct ones are declared on every request, and hidden
+ones are never offered. A server in `Needs auth` carries an
 **Authorize [server]** button which runs `oxide mcp auth` in the project with the
 server's own scope, opening its OAuth page in the browser and waiting through the
 loopback callback; the row then repaints from a fresh CLI listing. The icon-only
-power switch turns it off, or back on, in the file that defines it —
-`oxide mcp disable|enable <name> --scope project|global` — after which the
-listing is repainted from the CLI's fresh answer, so both actions are answered
-in the same place they were asked. Its tooltip names the server it would change
+power switch turns it off, or back on, in the file that defines it — `oxide mcp
+disable|enable <name> --scope project|global` — after which the listing is
+repainted from the CLI's fresh answer, so every action is answered in the same
+place it was asked. Its tooltip names the server it would change
 (**Disable context7**), since the switch itself is one glyph. A **Recheck** icon
 and a **Close** icon sit in the listing's header, and <kbd>Esc</kbd> dismisses
 it too. **Oxide: MCP Servers…** opens the same listing from the palette.
@@ -272,10 +278,10 @@ of repainting the list with the state it replaced.
 
 The listing comes from `oxide mcp list --json` (`core/mcps.ts`), so the
 extension never reads `mcp.json` itself and cannot disagree with the CLI about
-which servers a project loads, which scope's definition wins a name, or what
-their state is. A server the project defines is only probed while the project
-is trusted: an untrusted one reports **Needs trust** rather than being
-connected. `/mcp` is one of the composer's own commands — *The `/` palette*
+which servers a project loads, which scope's definition wins a name, how a
+server's tools are exposed, or what their state is. A server the project defines
+is only probed while the project is trusted: an untrusted one reports **Needs
+trust** rather than being connected. `/mcp` is one of the composer's own commands — *The `/` palette*
 below covers the rest, and how a project command, a prompt template or a skill is
 left to the CLI to resolve, while the footer chips and the VS Code command
 palette remain the way to change the model, the agent, the reasoning level and

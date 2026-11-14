@@ -716,6 +716,16 @@ enum McpAction {
         #[arg(short, long)]
         scope: Option<String>,
     },
+    /// Set how a server's tools reach the model
+    Exposure {
+        /// Server name
+        name: String,
+        /// deferred (found with tool_search), direct (declared every request), or hidden
+        exposure: String,
+        /// Limit the change to project or global (default: the source that defines it)
+        #[arg(short, long)]
+        scope: Option<String>,
+    },
 }
 
 /// How much stack the program is given. A debug build's argument parser — the
@@ -807,6 +817,11 @@ async fn run() -> Result<()> {
                     McpAction::Disable { name, scope } => {
                         mcp_config::set_enabled(&current_dir, scope, name, false)
                     }
+                    McpAction::Exposure {
+                        name,
+                        exposure,
+                        scope,
+                    } => mcp_config::set_exposure(&current_dir, scope, name, exposure),
                 }
             }
             Command::Uninstall {

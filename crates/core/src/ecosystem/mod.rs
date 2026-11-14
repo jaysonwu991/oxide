@@ -160,6 +160,39 @@ pub struct Skill {
     pub content: String,
 }
 
+/// How a server's tools reach the model. Pi's `codemode` and its alias
+/// `codemode-deferred` are read as `deferred`: Oxide has no codemode tool, so
+/// discovery through `tool_search` is what those entries mean here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum McpExposure {
+    /// Not declared until `tool_search` loads the tool on this branch.
+    #[default]
+    Deferred,
+    /// Declared on every request, like a built-in tool.
+    Direct,
+    /// Registered but unreachable: never declared and never searched.
+    Hidden,
+}
+
+impl McpExposure {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "deferred" | "codemode" | "codemode-deferred" => Some(Self::Deferred),
+            "direct" => Some(Self::Direct),
+            "hidden" => Some(Self::Hidden),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deferred => "deferred",
+            Self::Direct => "direct",
+            Self::Hidden => "hidden",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct McpServer {
     pub name: String,
@@ -168,9 +201,45 @@ pub struct McpServer {
     /// Hostnames (optionally `*.`-prefixed) this server owns. Used to route
     /// pasted URLs to the right MCP server before falling back to webfetch.
     pub domains: Vec<String>,
+    /// What the server offers, in its author's words: listed in the system
+    /// prompt and weighed when `tool_search` ranks the server's tools.
+    pub description: Option<String>,
+    /// Exposure of every tool without a matching `tool_exposure` entry.
+    pub exposure: McpExposure,
+    /// Per-tool exposure, keyed by the tool name the server offers or a `*`
+    /// pattern. An exact name wins; then the first matching pattern in name
+    /// order.
+    pub tool_exposure: BTreeMap<String, McpExposure>,
+    /// Per-request budget. `None` keeps the client default.
+    pub timeout: Option<std::time::Duration>,
 }
 
 impl McpServer {
+    /// Exposure of one tool, as the server lists it.
+    pub fn tool_exposure(&self, tool: &str) -> McpExposure {
+        if let Some(exposure) = self.tool_exposure.get(tool) {
+            return *exposure;
+        }
+        for (pattern, exposure) in &self.tool_exposure {
+            if pattern.contains('*') && tool_pattern_matches(pattern, tool) {
+                return *exposure;
+            }
+        }
+        self.exposure
+    }
+
+    /// Whether a run has to wait for this server before composing its first
+    /// request: a directly declared tool has to be in the tool list the model
+    /// sees, so the server must be loaded first.
+    pub fn declares_direct_tools(&self) -> bool {
+        self.enabled
+            && (self.exposure == McpExposure::Direct
+                || self
+                    .tool_exposure
+                    .values()
+                    .any(|exposure| *exposure == McpExposure::Direct))
+    }
+
     /// Effective routing domains: the explicit `domains` config when present,
     /// otherwise the well-known service the server's own name or its endpoint
     /// belongs to, so a server registered under a name of its own still owns the
@@ -407,11 +476,11 @@ pub fn load_opts(cwd: &Path, options: LoadOptions) -> Ecosystem {
 
     if let Some(home) = dirs::home_dir() {
         load_claude_dir(&mut ecosystem, &home.join(".claude"));
-        load_mcp(&mut ecosystem, &home.join(".claude.json"));
-        load_oxide_dir(&mut ecosystem, &home.join(".oxide"));
+        load_mcp(&mut ecosystem, &home.join(".claude.json"), false);
+        load_oxide_dir(&mut ecosystem, &home.join(".oxide"), false);
     }
     if let Some(config) = crate::config::config_dir() {
-        load_oxide_dir(&mut ecosystem, &config);
+        load_oxide_dir(&mut ecosystem, &config, false);
     }
 
     load_enabled_plugins(&mut ecosystem);
@@ -419,8 +488,8 @@ pub fn load_opts(cwd: &Path, options: LoadOptions) -> Ecosystem {
     if options.project_resources {
         if let Some(root) = project_root(cwd) {
             load_claude_dir(&mut ecosystem, &root.join(".claude"));
-            load_mcp(&mut ecosystem, &root.join(".mcp.json"));
-            load_oxide_dir(&mut ecosystem, &root.join(".oxide"));
+            load_mcp(&mut ecosystem, &root.join(".mcp.json"), true);
+            load_oxide_dir(&mut ecosystem, &root.join(".oxide"), true);
         }
     }
 
@@ -481,9 +550,9 @@ pub fn project_root(cwd: &Path) -> Option<PathBuf> {
 // Oxide layout
 // ---------------------------------------------------------------------------
 
-fn load_oxide_dir(ecosystem: &mut Ecosystem, dir: &Path) {
+fn load_oxide_dir(ecosystem: &mut Ecosystem, dir: &Path, project: bool) {
     load_layout(ecosystem, dir, "AGENTS.md");
-    load_mcp(ecosystem, &dir.join("mcp.json"));
+    load_mcp(ecosystem, &dir.join("mcp.json"), project);
     if let Some(content) = read(&dir.join("SYSTEM.md")) {
         ecosystem.system_prompt = Some(content);
     }
@@ -616,7 +685,7 @@ fn load_plugin_dir(
     }
     // Claude Code plugins may also ship MCP servers as a `.mcp.json` at the
     // plugin root instead of listing them in the manifest.
-    contribution.mcp += load_mcp(ecosystem, &dir.join(".mcp.json"));
+    contribution.mcp += load_mcp(ecosystem, &dir.join(".mcp.json"), false);
 
     // JS/TS hook files shipped inside the plugin package.
     let hooks = hook_files(&dir.join("plugins"));
@@ -657,7 +726,7 @@ fn load_layout(ecosystem: &mut Ecosystem, dir: &Path, memory_file: &str) {
     ecosystem.hooks.extend(hook_files(&dir.join("plugins")));
 }
 
-fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) -> usize {
+fn load_mcp(ecosystem: &mut Ecosystem, path: &Path, project: bool) -> usize {
     let Some(json) = read_json(path) else {
         return 0;
     };
@@ -668,6 +737,10 @@ fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) -> usize {
     let Some(servers) = servers else { return 0 };
     let mut loaded = 0;
     for (name, config) in servers {
+        if project && is_mcp_override(config) {
+            apply_mcp_override(ecosystem, name, config);
+            continue;
+        }
         if let Some(mut server) = mcp_from_claude(name, config) {
             if path.file_name().is_some_and(|name| name == ".mcp.json") {
                 if let Some(dir) = path.parent() {
@@ -679,6 +752,28 @@ fn load_mcp(ecosystem: &mut Ecosystem, path: &Path) -> usize {
         }
     }
     loaded
+}
+
+/// Applies a project entry that only turns the user-level server of that name
+/// on or off, or changes its exposure. An override with nothing to override is
+/// ignored: it has no transport of its own to connect.
+fn apply_mcp_override(ecosystem: &mut Ecosystem, name: &str, config: &Json) {
+    let Some(server) = ecosystem.mcp.iter_mut().find(|server| server.name == name) else {
+        return;
+    };
+    if config.get("enabled").is_some() || config.get("disabled").is_some() {
+        server.enabled = mcp_enabled(config);
+    }
+    if let Some(exposure) = config
+        .get("exposure")
+        .and_then(Json::as_str)
+        .and_then(McpExposure::parse)
+    {
+        server.exposure = exposure;
+    }
+    if config.get("toolExposure").is_some() || config.get("tool_exposure").is_some() {
+        server.tool_exposure = parse_tool_exposure(config);
+    }
 }
 
 /// A plugin `.mcp.json` may list servers directly at the root
@@ -725,18 +820,27 @@ fn resolve_mcp_cwd(server: &mut McpServer, base: &Path) {
 }
 
 pub(crate) fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
-    let enabled = config
-        .get("enabled")
-        .and_then(Json::as_bool)
-        .unwrap_or_else(|| {
-            !config
-                .get("disabled")
-                .and_then(Json::as_bool)
-                .unwrap_or(false)
-        });
+    let enabled = mcp_enabled(config);
     let domains = json_string_list(config.get("domains"))
         .map(|domains| domains.into_iter().map(|d| normalize_domain(&d)).collect())
         .unwrap_or_default();
+    let description = config
+        .get("description")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(str::to_string);
+    let exposure = config
+        .get("exposure")
+        .and_then(Json::as_str)
+        .and_then(McpExposure::parse)
+        .unwrap_or_default();
+    let tool_exposure = parse_tool_exposure(config);
+    let timeout = config
+        .get("timeout")
+        .and_then(Json::as_u64)
+        .filter(|seconds| *seconds > 0)
+        .map(std::time::Duration::from_secs);
     if let Some(url) = config.get("url").and_then(Json::as_str) {
         return Some(McpServer {
             name: name.to_string(),
@@ -747,6 +851,10 @@ pub(crate) fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
                 oauth: parse_oauth(config.get("oauth")),
             },
             domains,
+            description,
+            exposure,
+            tool_exposure,
+            timeout,
         });
     }
 
@@ -761,7 +869,113 @@ pub(crate) fn mcp_from_claude(name: &str, config: &Json) -> Option<McpServer> {
             cwd: config.get("cwd").and_then(Json::as_str).map(str::to_string),
         },
         domains,
+        description,
+        exposure,
+        tool_exposure,
+        timeout,
     })
+}
+
+/// Whether an entry turns a server on. `enabled` wins over the Claude Code
+/// `disabled` spelling; an entry that names neither is on.
+pub fn mcp_enabled(config: &Json) -> bool {
+    config
+        .get("enabled")
+        .and_then(Json::as_bool)
+        .unwrap_or_else(|| {
+            !config
+                .get("disabled")
+                .and_then(Json::as_bool)
+                .unwrap_or(false)
+        })
+}
+
+/// `toolExposure`, or its snake_case spelling.
+pub fn parse_tool_exposure(config: &Json) -> BTreeMap<String, McpExposure> {
+    config
+        .get("toolExposure")
+        .or_else(|| config.get("tool_exposure"))
+        .and_then(Json::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|(tool, _)| !tool.trim().is_empty())
+                .filter_map(|(tool, exposure)| {
+                    let exposure = exposure.as_str().and_then(McpExposure::parse)?;
+                    Some((tool.clone(), exposure))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A project entry with no transport of its own. Pi reads one as a change to
+/// the user-level server of that name, so a project can turn a shared server
+/// off — or narrow what it exposes — without copying its credentials.
+pub fn is_mcp_override(config: &Json) -> bool {
+    if config.get("command").is_some()
+        || config.get("url").is_some()
+        || config.get("type").is_some()
+    {
+        return false;
+    }
+    [
+        "enabled",
+        "disabled",
+        "exposure",
+        "toolExposure",
+        "tool_exposure",
+    ]
+    .iter()
+    .any(|key| config.get(*key).is_some())
+}
+
+/// The base entry with the override's fields applied. Anything the override
+/// does not name is kept, including the command, URL, headers and OAuth.
+pub fn merge_mcp_override(base: &Json, over: &Json) -> Json {
+    let mut merged = base.as_object().cloned().unwrap_or_default();
+    for key in [
+        "enabled",
+        "disabled",
+        "exposure",
+        "toolExposure",
+        "tool_exposure",
+    ] {
+        if let Some(value) = over.get(key) {
+            merged.insert(key.to_string(), value.clone());
+        }
+    }
+    Json::Object(merged)
+}
+
+/// Whether a tool name matches a `toolExposure` pattern, where `*` stands for
+/// any run of characters and every other character is literal.
+pub fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    let (mut p, mut n) = (0, 0);
+    let mut star = None;
+    let mut mark = 0;
+    while n < name.len() {
+        if p < pattern.len() && pattern[p] != '*' && pattern[p] == name[n] {
+            p += 1;
+            n += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            mark = n;
+            p += 1;
+        } else if let Some(index) = star {
+            p = index + 1;
+            mark += 1;
+            n = mark;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == '*' {
+        p += 1;
+    }
+    p == pattern.len()
 }
 
 /// Lowercases a domain and strips any scheme/path so only the host (or a
@@ -1897,6 +2111,195 @@ mod tests {
             vec![dir.join("extra.js"), dir.join("hook.ts")]
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_entry_reads_its_description_exposure_patterns_and_timeout() {
+        let config = serde_json::json!({
+            "url": "https://example.com/mcp",
+            "description": "  Issues and pull requests  ",
+            "exposure": "direct",
+            "toolExposure": {
+                "delete_*": "hidden",
+                "read_issue": "deferred",
+                "broken": "sometimes"
+            },
+            "timeout": 120
+        });
+        let server = mcp_from_claude("github", &config).unwrap();
+        assert_eq!(
+            server.description.as_deref(),
+            Some("Issues and pull requests")
+        );
+        assert_eq!(server.exposure, McpExposure::Direct);
+        assert_eq!(server.tool_exposure("read_issue"), McpExposure::Deferred);
+        assert_eq!(server.tool_exposure("delete_repo"), McpExposure::Hidden);
+        assert_eq!(server.tool_exposure("create_issue"), McpExposure::Direct);
+        assert_eq!(server.timeout, Some(std::time::Duration::from_secs(120)));
+        assert!(!server.tool_exposure.contains_key("broken"));
+        assert!(server.declares_direct_tools());
+
+        let plain = mcp_from_claude("files", &serde_json::json!({"command": "npx"})).unwrap();
+        assert_eq!(plain.exposure, McpExposure::Deferred);
+        assert_eq!(plain.description, None);
+        assert_eq!(plain.timeout, None);
+        assert!(!plain.declares_direct_tools());
+    }
+
+    #[test]
+    fn codemode_reads_as_deferred_because_oxide_has_no_codemode_tool() {
+        for spelling in ["codemode", "codemode-deferred", " Deferred ", "deferred"] {
+            assert_eq!(
+                McpExposure::parse(spelling),
+                Some(McpExposure::Deferred),
+                "{spelling}"
+            );
+        }
+        assert_eq!(McpExposure::parse("direct"), Some(McpExposure::Direct));
+        assert_eq!(McpExposure::parse("hidden"), Some(McpExposure::Hidden));
+        assert_eq!(McpExposure::parse("later"), None);
+    }
+
+    #[test]
+    fn tool_patterns_match_any_run_of_characters_literally() {
+        assert!(tool_pattern_matches("read_*", "read_issue"));
+        assert!(tool_pattern_matches("*_issue", "read_issue"));
+        assert!(tool_pattern_matches("*", "anything"));
+        assert!(tool_pattern_matches("read_*_body", "read_issue_body"));
+        assert!(tool_pattern_matches("read_issue", "read_issue"));
+        assert!(!tool_pattern_matches("read_*", "write_issue"));
+        assert!(!tool_pattern_matches("read.issue", "read_issue"));
+        assert!(!tool_pattern_matches("*_body", "read_body_extra"));
+    }
+
+    #[test]
+    fn a_project_entry_without_a_transport_changes_the_user_level_server() {
+        let dir = temp_dir("mcp_override");
+        std::fs::create_dir_all(&dir).unwrap();
+        let global = dir.join("global-mcp.json");
+        std::fs::write(
+            &global,
+            r#"{"mcpServers":{"shared":{"command":"npx","args":["server"],"env":{"TOKEN":"secret"}}}}"#,
+        )
+        .unwrap();
+        let project = dir.join("project-mcp.json");
+        std::fs::write(
+            &project,
+            r#"{"mcpServers":{"shared":{"enabled":false,"exposure":"hidden"}}}"#,
+        )
+        .unwrap();
+
+        let mut ecosystem = Ecosystem::default();
+        assert_eq!(load_mcp(&mut ecosystem, &global, false), 1);
+        assert_eq!(load_mcp(&mut ecosystem, &project, true), 0);
+        let server = ecosystem
+            .mcp
+            .iter()
+            .find(|server| server.name == "shared")
+            .unwrap();
+        assert!(!server.enabled);
+        assert_eq!(server.exposure, McpExposure::Hidden);
+        match &server.kind {
+            McpKind::Local {
+                command,
+                environment,
+                ..
+            } => {
+                assert_eq!(command, &["npx".to_string(), "server".to_string()]);
+                assert_eq!(environment.get("TOKEN").map(String::as_str), Some("secret"));
+            }
+            other => panic!("the user-level transport is kept: {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_project_entry_with_its_own_transport_still_replaces_the_user_level_server() {
+        let dir = temp_dir("mcp_replace");
+        std::fs::create_dir_all(&dir).unwrap();
+        let global = dir.join("global-mcp.json");
+        std::fs::write(
+            &global,
+            r#"{"mcpServers":{"shared":{"command":"npx","args":["old"],"env":{"TOKEN":"secret"}}}}"#,
+        )
+        .unwrap();
+        let project = dir.join("project-mcp.json");
+        std::fs::write(
+            &project,
+            r#"{"mcpServers":{"shared":{"command":"uvx","exposure":"direct"}}}"#,
+        )
+        .unwrap();
+
+        let mut ecosystem = Ecosystem::default();
+        load_mcp(&mut ecosystem, &global, false);
+        assert_eq!(load_mcp(&mut ecosystem, &project, true), 1);
+        let server = ecosystem
+            .mcp
+            .iter()
+            .find(|server| server.name == "shared")
+            .unwrap();
+        assert!(server.enabled);
+        assert_eq!(server.exposure, McpExposure::Direct);
+        match &server.kind {
+            McpKind::Local {
+                command,
+                environment,
+                ..
+            } => {
+                assert_eq!(command, &["uvx".to_string()]);
+                assert!(environment.is_empty(), "the old entry is replaced");
+            }
+            other => panic!("the project transport wins: {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_override_changes_only_the_fields_it_names() {
+        let dir = temp_dir("mcp_override_fields");
+        std::fs::create_dir_all(&dir).unwrap();
+        let global = dir.join("global-mcp.json");
+        std::fs::write(
+            &global,
+            r#"{"mcpServers":{"shared":{"command":"npx","enabled":false}}}"#,
+        )
+        .unwrap();
+        let project = dir.join("project-mcp.json");
+        std::fs::write(
+            &project,
+            r#"{"mcpServers":{"shared":{"exposure":"direct"}}}"#,
+        )
+        .unwrap();
+
+        let mut ecosystem = Ecosystem::default();
+        load_mcp(&mut ecosystem, &global, false);
+        load_mcp(&mut ecosystem, &project, true);
+        let server = ecosystem
+            .mcp
+            .iter()
+            .find(|server| server.name == "shared")
+            .unwrap();
+        assert!(!server.enabled, "the user-level switch is kept");
+        assert_eq!(server.exposure, McpExposure::Direct);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_override_with_nothing_to_override_is_ignored() {
+        let dir = temp_dir("mcp_override_orphan");
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("project-mcp.json");
+        std::fs::write(&project, r#"{"mcpServers":{"ghost":{"enabled":false}}}"#).unwrap();
+
+        let mut ecosystem = Ecosystem::default();
+        assert_eq!(load_mcp(&mut ecosystem, &project, true), 0);
+        assert!(ecosystem.mcp.is_empty());
+
+        // A global file has no base above it, so the same entry is not read as
+        // an override there either.
+        load_mcp(&mut ecosystem, &project, false);
+        assert!(ecosystem.mcp.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -342,6 +342,9 @@ const servers = [
     source: "global",
     scope: "global",
     enabled: true,
+    exposure: "deferred",
+    description: "Read and write files under a directory",
+    tools: 11,
     state: "connected",
     status: "Connected",
   },
@@ -352,6 +355,9 @@ const servers = [
     source: "global",
     scope: "global",
     enabled: true,
+    exposure: "direct",
+    description: "Up-to-date library documentation",
+    tools: 2,
     state: "needs-auth",
     status: "Needs Auth",
   },
@@ -362,6 +368,9 @@ const servers = [
     source: "project",
     scope: "project",
     enabled: false,
+    exposure: "hidden",
+    description: null,
+    tools: 0,
     state: "disabled",
     status: "Disabled",
   },
@@ -846,6 +855,13 @@ const invoke = async (command, args = {}) => {
       target.enabled = args.enabled;
       target.state = args.enabled ? "connected" : "disabled";
       target.status = args.enabled ? "Connected" : "Disabled";
+      return servers.map((server) => ({ ...server }));
+    }
+    case "set_mcp_exposure": {
+      if (mcpsError) throw mcpsError;
+      const target = servers.find((server) => server.name === args.name);
+      if (!target) throw `no MCP server named \`${args.name}\``;
+      target.exposure = args.exposure;
       return servers.map((server) => ({ ...server }));
     }
     case "authorize_mcp_server": {
@@ -3643,26 +3659,34 @@ const rowFor = (name) =>
   );
 check("a row exposes its name, status and toggle", Boolean(rowFor("filesystem")));
 check(
+  "showed the exposure, tool count and description of a server",
+  opened.includes("mcp-exposure exposure-deferred: deferred") &&
+    opened.includes("mcp-detail: stdio · npx -y @modelcontextprotocol/server-filesystem /tmp · 11 tools") &&
+    opened.includes("mcp-description: Read and write files under a directory") &&
+    opened.includes("mcp-exposure exposure-hidden: hidden"),
+  opened,
+);
+check(
   "offered a power switch for a running server and for a stopped one",
-  String(rowFor("filesystem").children[0].children[2].children[0].title).startsWith("Disable filesystem") &&
-    String(rowFor("docs").children[0].children[2].children[0].title).startsWith("Enable docs"),
+  String(rowFor("filesystem").children[0].children[2].children[1].title).startsWith("Disable filesystem") &&
+    String(rowFor("docs").children[0].children[2].children[1].title).startsWith("Enable docs"),
   elementFor("mcp-list").outline(),
 );
 check(
   "painted each switch as an icon, sized to the row",
-  rowFor("filesystem").children[0].children[2].children[0].className === "icon mcp-toggle on" &&
-    rowFor("docs").children[0].children[2].children[0].className === "icon mcp-toggle" &&
-    rowFor("filesystem").children[0].children[2].children[0].innerHTML.includes("<svg"),
+  rowFor("filesystem").children[0].children[2].children[1].className === "icon mcp-toggle on" &&
+    rowFor("docs").children[0].children[2].children[1].className === "icon mcp-toggle" &&
+    rowFor("filesystem").children[0].children[2].children[1].innerHTML.includes("<svg"),
   elementFor("mcp-list").outline(),
 );
 check(
   "offered browser authorization only for a server that needs it",
-  rowFor("context7").children[0].children[2].children.length === 2 &&
-    rowFor("context7").children[0].children[2].children[0].className === "mcp-authorize" &&
-    rowFor("filesystem").children[0].children[2].children.length === 1,
+  rowFor("context7").children[0].children[2].children.length === 3 &&
+    rowFor("context7").children[0].children[2].children[1].className === "mcp-authorize" &&
+    rowFor("filesystem").children[0].children[2].children.length === 2,
   elementFor("mcp-list").outline(),
 );
-const authorize = rowFor("context7").children[0].children[2].children[0];
+const authorize = rowFor("context7").children[0].children[2].children[1];
 calls.length = 0;
 await authorize.onclick();
 check(
@@ -3674,26 +3698,50 @@ check(
 check(
   "redrew the authorized server from the core's answer",
   rowFor("context7").children[0].children[1].textContent === "Connected" &&
-    rowFor("context7").children[0].children[2].children.length === 1,
+    rowFor("context7").children[0].children[2].children.length === 2,
   elementFor("mcp-list").outline(),
 );
 check("reported authorization outside the composer", toastText() === "context7 authorized", toastText());
 
-const toggle = rowFor("filesystem").children[0].children[2].children[0];
+// The exposure chip cycles deferred → direct → hidden in the file that defines
+// the server, and the dialog redraws from the core's answer.
+const exposure = rowFor("filesystem").children[0].children[2].children[0];
+check(
+  "labelled the chip with how the server's tools reach the model",
+  exposure.textContent === "deferred" && exposure.title.includes("Exposure of filesystem: deferred"),
+  exposure.title,
+);
+calls.length = 0;
+await exposure.onclick();
+check(
+  "asked the core for the next exposure in the server's own scope",
+  JSON.stringify(projectCalls("set_mcp_exposure")[0]?.[1]) ===
+    JSON.stringify({ project: app.state.project, name: "filesystem", exposure: "direct", scope: "global" }),
+  JSON.stringify(projectCalls("set_mcp_exposure")),
+);
+check(
+  "redrew the new exposure and reported it",
+  rowFor("filesystem").children[0].children[2].children[0].textContent === "direct" &&
+    rowFor("filesystem").children[0].children[2].children[0].className === "mcp-exposure exposure-direct" &&
+    toastText() === "filesystem is now direct",
+  elementFor("mcp-list").outline() + " / " + toastText(),
+);
+
+const toggle = rowFor("filesystem").children[0].children[2].children[1];
 calls.length = 0;
 await toggle.onclick();
 check(
   "asked the core to turn the server off in this project",
   JSON.stringify(projectCalls("set_mcp_server")[0]?.[1]) ===
-    JSON.stringify({ project: app.state.project, name: "filesystem", enabled: false }),
+    JSON.stringify({ project: app.state.project, name: "filesystem", enabled: false, scope: "global" }),
   JSON.stringify(projectCalls("set_mcp_server")),
 );
 const after = elementFor("mcp-list").outline();
 check(
   "redrew from the core's answer",
   rowFor("filesystem").children[0].children[1].textContent === "Disabled" &&
-    String(rowFor("filesystem").children[0].children[2].children[0].title).startsWith("Enable filesystem") &&
-    rowFor("filesystem").children[0].children[2].children[0].className === "icon mcp-toggle",
+    String(rowFor("filesystem").children[0].children[2].children[1].title).startsWith("Enable filesystem") &&
+    rowFor("filesystem").children[0].children[2].children[1].className === "icon mcp-toggle",
   after,
 );
 check("reported the toggle outside the composer", toastText() === "filesystem disabled", toastText());

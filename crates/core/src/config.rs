@@ -4127,6 +4127,10 @@ mod tests {
                 oauth: None,
             },
             domains: vec!["docs.example.com".to_string()],
+            description: None,
+            exposure: crate::ecosystem::McpExposure::Deferred,
+            tool_exposure: Default::default(),
+            timeout: None,
         });
 
         let prompt = config.compose_system_prompt();

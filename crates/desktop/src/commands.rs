@@ -480,9 +480,24 @@ pub async fn set_mcp_server(
     project: String,
     name: String,
     enabled: bool,
+    scope: Option<String>,
 ) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
     let cwd = project_dir(&project)?;
-    oxide_core::mcp_config::set_enabled(&cwd, None, name, enabled).map_err(err)?;
+    oxide_core::mcp_config::set_enabled(&cwd, scope, name, enabled).map_err(err)?;
+    Ok(oxide_core::mcp_config::server_views(&cwd).await)
+}
+
+/// Changes how a server's tools reach the model — `deferred`, `direct`, or
+/// `hidden` — in the file that defines it. The fresh listing is the answer so
+/// the modal repaints from the same probe every other MCP action uses.
+pub async fn set_mcp_exposure(
+    project: String,
+    name: String,
+    exposure: String,
+    scope: Option<String>,
+) -> CmdResult<Vec<oxide_core::mcp_config::ServerView>> {
+    let cwd = project_dir(&project)?;
+    oxide_core::mcp_config::set_exposure(&cwd, scope, name, exposure).map_err(err)?;
     Ok(oxide_core::mcp_config::server_views(&cwd).await)
 }
 
@@ -2095,6 +2110,16 @@ pub async fn dispatch(
                 arg(&args, "project")?,
                 arg(&args, "name")?,
                 arg(&args, "enabled")?,
+                optional_arg(&args, "scope")?,
+            )
+            .await,
+        ),
+        "set_mcp_exposure" => command_value(
+            set_mcp_exposure(
+                arg(&args, "project")?,
+                arg(&args, "name")?,
+                arg(&args, "exposure")?,
+                optional_arg(&args, "scope")?,
             )
             .await,
         ),

@@ -8,11 +8,11 @@ use crate::agent::{self, AgentEvent, Runtime};
 use crate::approval::{ApprovalBroker, Decision};
 use crate::catalog;
 use crate::config::{Config, Reasoning};
-use crate::ecosystem::AgentMode;
+use crate::ecosystem::{AgentMode, McpExposure};
 use crate::install::InstallMethod;
 use crate::llm::{ContentPart, LlmClient, Message};
 use crate::lsp::LspManager;
-use crate::mcp::{McpRegistry, McpStatus};
+use crate::mcp::{McpRegistry, McpStatus, McpStatusRow};
 use crate::media;
 use crate::notice::{self, Level, Notice};
 use crate::plugin::PluginHost;
@@ -271,7 +271,7 @@ async fn event_loop(
     let mut rx: Option<UnboundedReceiver<AgentEvent>> = None;
     let (paste_tx, mut paste_rx) = unbounded_channel::<ClipboardResult>();
     let (models_tx, mut models_rx) = unbounded_channel::<ModelCatalogs>();
-    let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<(String, String, McpStatus)>>();
+    let (mcps_tx, mut mcps_rx) = unbounded_channel::<Vec<McpStatusRow>>();
     let (plugins_tx, mut plugins_rx) = unbounded_channel::<String>();
     let (listings_tx, mut listings_rx) = unbounded_channel::<Result<ChatItem, String>>();
     let (marketplaces_tx, mut marketplaces_rx) = unbounded_channel::<MarketplaceOutcome>();
@@ -662,7 +662,7 @@ fn handle_key(
     session: &mut Option<SessionLog>,
     approvals: &Arc<ApprovalBroker>,
     models_tx: &UnboundedSender<ModelCatalogs>,
-    mcps_tx: &UnboundedSender<Vec<(String, String, McpStatus)>>,
+    mcps_tx: &UnboundedSender<Vec<McpStatusRow>>,
     plugins_tx: &UnboundedSender<String>,
     listings_tx: &UnboundedSender<Result<ChatItem, String>>,
     marketplaces_tx: &UnboundedSender<MarketplaceOutcome>,
@@ -4579,13 +4579,32 @@ fn mcp_tone(status: &McpStatus) -> Tone {
     }
 }
 
-fn mcp_listing(statuses: &[(String, String, McpStatus)], lang: crate::i18n::Language) -> ChatItem {
+fn mcp_listing(statuses: &[McpStatusRow], lang: crate::i18n::Language) -> ChatItem {
     if statuses.is_empty() {
         return ChatItem::Info(crate::i18n::t(lang, "terminal.noMcpServers").to_string());
     }
     let rows = statuses
         .iter()
-        .map(|(name, source, status)| {
+        .map(|row_data| {
+            let name = &row_data.name;
+            let status = &row_data.status;
+            let tools = if row_data.tools > 0 {
+                format!(
+                    " \u{b7} {}",
+                    crate::i18n::tf(
+                        lang,
+                        "ui.mcpTools",
+                        &[("count", &row_data.tools.to_string())],
+                    )
+                )
+            } else {
+                String::new()
+            };
+            let detail = format!(
+                "{} \u{b7} {}{tools}",
+                row_data.source,
+                mcp_exposure_label(row_data.exposure, lang)
+            );
             let mut row = ListRow::new(name.clone())
                 .status(
                     match status {
@@ -4599,7 +4618,7 @@ fn mcp_listing(statuses: &[(String, String, McpStatus)], lang: crate::i18n::Lang
                     },
                     mcp_tone(status),
                 )
-                .detail(source.clone());
+                .detail(detail);
             // Authorization opens a browser and waits for the callback, so it
             // cannot run inside a turn. The listing is where the user finds out
             // how to do it themselves.
@@ -4621,6 +4640,16 @@ fn mcp_listing(statuses: &[(String, String, McpStatus)], lang: crate::i18n::Lang
         ),
         rows,
     }
+}
+
+/// How a server's tools reach the model, in the language on screen.
+fn mcp_exposure_label(exposure: McpExposure, lang: crate::i18n::Language) -> String {
+    let key = match exposure {
+        McpExposure::Deferred => "ui.exposureDeferred",
+        McpExposure::Direct => "ui.exposureDirect",
+        McpExposure::Hidden => "ui.exposureHidden",
+    };
+    crate::i18n::t(lang, key).to_string()
 }
 
 /// Installed plugins as a structured listing for `/plugins`, including the
@@ -7856,9 +7885,9 @@ mod tests {
         assert_eq!(suggestions[0].name, "on");
         assert_eq!(suggestions[0].description, "运行受限工具前询问");
         let ChatItem::Listing { title, rows } = mcp_listing(
-            &[(
-                "original-server".into(),
-                "project".into(),
+            &[status_row(
+                "original-server",
+                "project",
                 McpStatus::NeedsAuth,
             )],
             crate::i18n::Language::ZhCn,
@@ -7870,18 +7899,31 @@ mod tests {
         assert_eq!(rows[0].status.as_deref(), Some("需要授权"));
     }
 
+    fn status_row(name: &str, source: &str, status: McpStatus) -> McpStatusRow {
+        McpStatusRow {
+            name: name.to_string(),
+            source: source.to_string(),
+            status,
+            exposure: McpExposure::Deferred,
+            tools: 0,
+        }
+    }
+
     #[test]
     fn formats_mcp_statuses() {
         let ChatItem::Listing { title, rows } = mcp_listing(
             &[
-                (
-                    "context7".to_string(),
-                    "remote: https://mcp.context7.com/mcp/oauth".to_string(),
-                    McpStatus::Connected,
-                ),
-                (
-                    "newrelic".to_string(),
-                    "remote: https://mcp.newrelic.com/mcp/".to_string(),
+                McpStatusRow {
+                    tools: 12,
+                    ..status_row(
+                        "context7",
+                        "remote: https://mcp.context7.com/mcp/oauth",
+                        McpStatus::Connected,
+                    )
+                },
+                status_row(
+                    "newrelic",
+                    "remote: https://mcp.newrelic.com/mcp/",
                     McpStatus::NeedsAuth,
                 ),
             ],
@@ -7893,6 +7935,10 @@ mod tests {
         assert_eq!(rows[0].name, "context7");
         assert_eq!(rows[0].status.as_deref(), Some("Connected"));
         assert_eq!(rows[0].tone, Tone::Success);
+        assert_eq!(
+            rows[0].detail.as_deref(),
+            Some("remote: https://mcp.context7.com/mcp/oauth · deferred · 12 tools")
+        );
         assert_eq!(rows[1].status.as_deref(), Some("Needs Auth"));
         assert_eq!(rows[1].tone, Tone::Warning);
         assert!(matches!(

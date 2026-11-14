@@ -19,6 +19,12 @@ export interface McpServerView {
   scope: string;
   /// Whether the runtime connects it.
   enabled: boolean;
+  /// How its tools reach the model: `deferred`, `direct`, or `hidden`.
+  exposure: string;
+  /// What the server says it offers, flattened to one line by its author.
+  description: string;
+  /// Tools the server listed when it was probed; 0 when it did not answer.
+  tools: number;
   /// `connected`, `needs-auth`, `needs-trust`, `disabled`, or `error`.
   state: string;
   /// Display form: `Connected`, `Needs Auth`, or `Error: <detail>`.
@@ -53,6 +59,9 @@ export function parseMcpList(output: string): McpServerView[] {
       source: stringOf(record.source),
       scope: stringOf(record.scope).toLowerCase() || "project",
       enabled: record.enabled !== false,
+      exposure: exposureOf(record.exposure),
+      description: stringOf(record.description),
+      tools: typeof record.tools === "number" && record.tools > 0 ? Math.floor(record.tools) : 0,
       state: stringOf(record.state) || (record.enabled === false ? "disabled" : "unknown"),
       status: stringOf(record.status),
     });
@@ -63,6 +72,37 @@ export function parseMcpList(output: string): McpServerView[] {
 
 function stringOf(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+/// The three ways a server's tools reach the model, in the order the row's
+/// exposure button cycles them.
+export const MCP_EXPOSURES = ["deferred", "direct", "hidden"] as const;
+
+export type McpExposure = (typeof MCP_EXPOSURES)[number];
+
+function exposureOf(value: unknown): McpExposure {
+  return (MCP_EXPOSURES as readonly string[]).includes(value as string)
+    ? (value as McpExposure)
+    : "deferred";
+}
+
+/// The one an exposure button asks the CLI for next.
+export function nextMcpExposure(exposure: string): McpExposure {
+  const current = MCP_EXPOSURES.indexOf(exposureOf(exposure));
+  return MCP_EXPOSURES[(current + 1) % MCP_EXPOSURES.length];
+}
+
+/// The word an exposure is painted with, sharing the keys the terminal and the
+/// desktop app use so all three name the setting the same way.
+export function mcpExposureLabel(exposure: string, info: LanguageInfo | null = null): string {
+  switch (exposureOf(exposure)) {
+    case "direct":
+      return translate(info, "ui.exposureDirect", "direct");
+    case "hidden":
+      return translate(info, "ui.exposureHidden", "hidden");
+    default:
+      return translate(info, "ui.exposureDeferred", "deferred");
+  }
 }
 
 /// The word a state is painted with, so the dialog reads at a glance the way the
@@ -116,6 +156,12 @@ export function mcpToggleArgs(server: McpServerView, enabled: boolean): string[]
 /// listed when the same name exists in both scopes.
 export function mcpAuthArgs(server: McpServerView): string[] {
   return ["mcp", "auth", server.name, "--scope", server.scope];
+}
+
+/// The arguments that set how a server's tools reach the model. The scope pins
+/// the change to the file that defines the server, like the toggle beside it.
+export function mcpExposureArgs(server: McpServerView, exposure: string): string[] {
+  return ["mcp", "exposure", server.name, exposure, "--scope", server.scope];
 }
 
 /// The arguments that list the servers as JSON, for the project the command

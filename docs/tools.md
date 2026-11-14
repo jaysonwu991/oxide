@@ -8,12 +8,18 @@ Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`, `code
 `memory`, `diagnostics`, `ask`, and `tool_search`. Enabled MCP servers connect
 in the background; `tool_search` discovers capabilities and declares only the
 matching `<server>__<tool>` schemas on the next model call. `mcp_load` connects or
-retries a particular server while keeping its catalog deferred.
+retries a particular server while keeping its catalog deferred. `tool_search` is
+declared only while an enabled server has a deferred tool to find. A server's
+`exposure` (or a tool's `toolExposure` entry) can declare tools directly instead,
+or hide them from the model entirely — see
+[MCP servers](cli.md#tool-exposure).
 
 A remote MCP request rejected with HTTP 404 while carrying a session ID clears
 that ID, initializes a new session, and retries the request once. A second
-rejection is reported. An ordinary 404 without a session ID, a timeout, or a
-server error is not replayed: the outcome of a writing tool may be unknown.
+rejection is reported. A transient status (408, 429, 5xx) is replayed twice, or
+once for `tools/call`, whose side effects may already have happened; a timeout
+is not replayed, because it cannot say whether the server acted. A server's
+`timeout` (seconds, default 60) bounds one request.
 
 | Tool | Parameters |
 | --- | --- |

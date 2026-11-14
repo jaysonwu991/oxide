@@ -19,6 +19,7 @@ import {
   languageDialog,
   logoutDialog,
   MCP_AUTHORIZE,
+  MCP_EXPOSURE_SET,
   MCP_TOGGLE,
   modelDialog,
   NEW_SESSION,
@@ -326,6 +327,18 @@ describe("MCP dialog", () => {
     assert.equal(sentry.action, "");
   });
 
+  it("sets the exposure beside the switch, cycling the three modes", () => {
+    const rows = mcpDialog(parseMcpList(listing)).rows;
+    const sentry = rows.find((row) => row.value === "sentry")!;
+    assert.deepEqual(
+      sentry.buttons?.map((button) => [button.label, button.action, button.icon]),
+      [
+        ["Exposure: deferred", MCP_EXPOSURE_SET, ""],
+        ["Enable sentry", MCP_TOGGLE, "power"],
+      ],
+    );
+  });
+
   it("offers Disable for a server that is on", () => {
     const rows = mcpDialog(parseMcpList(listing)).rows;
     assert.equal(rows.find((row) => row.value === "context7")!.button, "Disable context7");
@@ -343,10 +356,11 @@ describe("MCP dialog", () => {
       status: "Needs Auth",
     }]));
     const dialog = mcpDialog([server]);
-    assert.equal(dialog.rows[0].buttons?.length, 2);
+    assert.equal(dialog.rows[0].buttons?.length, 3);
     assert.deepEqual(
       dialog.rows[0].buttons?.map((button) => [button.label, button.action, button.icon]),
       [
+        ["Exposure: deferred", MCP_EXPOSURE_SET, ""],
         ["Authorize context7", MCP_AUTHORIZE, ""],
         ["Disable context7", MCP_TOGGLE, "power"],
       ],

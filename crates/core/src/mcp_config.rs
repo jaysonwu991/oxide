@@ -499,6 +499,12 @@ pub struct ServerView {
     /// Whether the runtime connects it: `enabled: false` (or the Claude Code
     /// `disabled: true`) turns a server off without deleting its config.
     pub enabled: bool,
+    /// How its tools reach the model: `deferred`, `direct`, or `hidden`.
+    pub exposure: String,
+    /// What the server says it offers, flattened to one line by its author.
+    pub description: Option<String>,
+    /// Tools it listed when probed; 0 when it did not answer.
+    pub tools: usize,
     /// Machine-readable state: `connected`, `needs-auth`, `needs-trust`,
     /// `disabled`, or `error`.
     pub state: String,
@@ -523,6 +529,28 @@ async fn views_for(sources: Vec<Source>, project_trusted: bool) -> Vec<ServerVie
             continue;
         };
         for (name, config) in servers {
+            // A project entry that names no transport changes the server of that
+            // name instead of replacing it, so the listing shows what the
+            // runtime loads: the user-level command and credentials with the
+            // project's own on/off and exposure. An untrusted project's files
+            // are not read at all, so its override is not applied either — the
+            // base entry is what the runtime has.
+            if crate::ecosystem::is_mcp_override(config) {
+                if !project_trusted {
+                    continue;
+                }
+                if let Some((_, _, base)) = merged.get(name) {
+                    merged.insert(
+                        name.clone(),
+                        (
+                            source.label.clone(),
+                            source.scope,
+                            crate::ecosystem::merge_mcp_override(base, config),
+                        ),
+                    );
+                }
+                continue;
+            }
             merged.insert(
                 name.clone(),
                 (source.label.clone(), source.scope, config.clone()),
@@ -535,30 +563,33 @@ async fn views_for(sources: Vec<Source>, project_trusted: bool) -> Vec<ServerVie
     for (name, (_, scope, config)) in &merged {
         // A server turned off is reported as off wherever it lives: its state is
         // about the machine, not about whether the project was trusted.
-        if !enabled_in(config) {
-            statuses.insert(name.clone(), crate::mcp::McpStatus::Disabled);
+        if !crate::ecosystem::mcp_enabled(config) {
+            statuses.insert(name.clone(), (crate::mcp::McpStatus::Disabled, 0));
             continue;
         }
         if *scope == Scope::Project && !project_trusted {
-            statuses.insert(name.clone(), crate::mcp::McpStatus::NeedsTrust);
+            statuses.insert(name.clone(), (crate::mcp::McpStatus::NeedsTrust, 0));
             continue;
         }
         match crate::ecosystem::mcp_from_claude(name, config) {
             Some(server) => {
                 let name = name.clone();
-                probes.spawn(async move { (name, crate::mcp::probe(&server).await) });
+                probes.spawn(async move { (name, crate::mcp::probe_tools(&server).await) });
             }
             None => {
                 statuses.insert(
                     name.clone(),
-                    crate::mcp::McpStatus::Error("invalid configuration".to_string()),
+                    (
+                        crate::mcp::McpStatus::Error("invalid configuration".to_string()),
+                        0,
+                    ),
                 );
             }
         }
     }
     while let Some(result) = probes.join_next().await {
-        if let Ok((name, status)) = result {
-            statuses.insert(name, status);
+        if let Ok((name, probe)) = result {
+            statuses.insert(name, probe);
         }
     }
 
@@ -566,17 +597,27 @@ async fn views_for(sources: Vec<Source>, project_trusted: bool) -> Vec<ServerVie
         .iter()
         .map(|(name, (source, scope, config))| {
             let (transport, detail) = describe(config);
-            let status = statuses
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| crate::mcp::McpStatus::Error("status check failed".to_string()));
+            let (status, tools) = statuses.get(name).cloned().unwrap_or_else(|| {
+                (
+                    crate::mcp::McpStatus::Error("status check failed".to_string()),
+                    0,
+                )
+            });
             ServerView {
                 name: name.clone(),
                 transport: transport.to_string(),
                 detail,
                 source: source.clone(),
                 scope: scope.label().to_string(),
-                enabled: enabled_in(config),
+                enabled: crate::ecosystem::mcp_enabled(config),
+                exposure: exposure_in(config).as_str().to_string(),
+                description: config
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|description| !description.is_empty())
+                    .map(str::to_string),
+                tools,
                 state: status.state().to_string(),
                 status: status.to_string(),
             }
@@ -600,7 +641,15 @@ pub async fn list(cwd: &Path) -> Result<()> {
     for view in &views {
         println!("  {} [{}] {}", view.name, view.transport, view.status);
         println!("      {}", view.detail);
-        println!("      source: {}", view.source);
+        if let Some(description) = &view.description {
+            println!("      {description}");
+        }
+        let tools = if view.tools > 0 {
+            format!(" · {} tool(s)", view.tools)
+        } else {
+            String::new()
+        };
+        println!("      source: {} · {}{tools}", view.source, view.exposure);
     }
     Ok(())
 }
@@ -744,19 +793,87 @@ fn try_set_enabled(path: &Path, root: &Value, name: &str, enabled: bool) -> Resu
     Ok(true)
 }
 
-/// Whether an entry is turned on, mirroring how
-/// [`crate::ecosystem::mcp_from_claude`] reads the same keys: `enabled` when
-/// present, otherwise `disabled` inverted.
-fn enabled_in(config: &Value) -> bool {
+/// How an entry's tools reach the model. An unknown spelling falls back to the
+/// default rather than failing the listing it is drawn in.
+fn exposure_in(config: &Value) -> crate::ecosystem::McpExposure {
     config
-        .get("enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or_else(|| {
-            !config
-                .get("disabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        })
+        .get("exposure")
+        .and_then(Value::as_str)
+        .and_then(crate::ecosystem::McpExposure::parse)
+        .unwrap_or_default()
+}
+
+/// Changes how a server's tools reach the model, in the file that defines it —
+/// the setting behind `exposure` and `toolExposure` in its entry.
+pub fn set_exposure(
+    cwd: &Path,
+    scope: Option<String>,
+    name: String,
+    exposure: String,
+) -> Result<()> {
+    let parsed = crate::ecosystem::McpExposure::parse(&exposure).with_context(|| {
+        format!("unknown exposure `{exposure}`: use deferred, direct, or hidden")
+    })?;
+    let scope = explicit_scope(scope.as_deref())?;
+    match set_exposure_first(&candidates(sources(cwd), scope), &name, parsed)? {
+        Some((path, label)) => println!(
+            "set MCP server `{name}` to {} in {} ({label})",
+            parsed.as_str(),
+            path.display()
+        ),
+        None => println!("no MCP server named `{name}`"),
+    }
+    Ok(())
+}
+
+fn set_exposure_first(
+    sources: &[Source],
+    name: &str,
+    exposure: crate::ecosystem::McpExposure,
+) -> Result<Option<(PathBuf, String)>> {
+    let mut broken = Vec::new();
+    for source in sources {
+        let Ok(root) = read_file(&source.path) else {
+            broken.push(source.path.clone());
+            continue;
+        };
+        if try_set_exposure(&source.path, &root, name, exposure)? {
+            return Ok(Some((source.path.clone(), source.label.clone())));
+        }
+        if holds_name(&root, name) {
+            bail!(
+                "`{name}` in {} is not a server object; fix the file, then change its exposure",
+                source.path.display()
+            );
+        }
+    }
+    if let Some(path) = broken.first() {
+        bail!(
+            "cannot read {} to change the exposure of `{name}`",
+            path.display()
+        );
+    }
+    Ok(None)
+}
+
+fn try_set_exposure(
+    path: &Path,
+    root: &Value,
+    name: &str,
+    exposure: crate::ecosystem::McpExposure,
+) -> Result<bool> {
+    let mut root = root.clone();
+    let Some(config) = root
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .and_then(|servers| servers.get_mut(name))
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(false);
+    };
+    config.insert("exposure".to_string(), json!(exposure.as_str()));
+    write_file(path, &root)?;
+    Ok(true)
 }
 
 fn describe(config: &Value) -> (&'static str, String) {
@@ -930,7 +1047,7 @@ mod tests {
         assert!(entry.get("disabled").is_none());
         assert_eq!(entry["command"], json!("npx"));
         assert_eq!(entry["args"], json!(["-y", "docs-server"]));
-        assert!(enabled_in(entry));
+        assert!(crate::ecosystem::mcp_enabled(entry));
 
         set_enabled_first(&candidates(sources.clone(), None), "docs", false).unwrap();
         let written: Value =
@@ -940,7 +1057,7 @@ mod tests {
         // The Claude Code spelling is written too, so a reader that only knows
         // `disabled` does not keep connecting a server this turned off.
         assert_eq!(entry["disabled"], json!(true));
-        assert!(!enabled_in(entry));
+        assert!(!crate::ecosystem::mcp_enabled(entry));
 
         assert!(
             set_enabled_first(&candidates(sources, None), "absent", false)
@@ -1023,12 +1140,20 @@ mod tests {
 
     #[test]
     fn a_view_reports_whether_a_server_is_turned_on() {
-        assert!(enabled_in(&json!({"command":"npx"})));
-        assert!(enabled_in(&json!({"command":"npx", "enabled":true})));
-        assert!(!enabled_in(&json!({"command":"npx", "enabled":false})));
-        assert!(!enabled_in(&json!({"command":"npx", "disabled":true})));
+        assert!(crate::ecosystem::mcp_enabled(&json!({"command":"npx"})));
+        assert!(crate::ecosystem::mcp_enabled(
+            &json!({"command":"npx", "enabled":true})
+        ));
+        assert!(!crate::ecosystem::mcp_enabled(
+            &json!({"command":"npx", "enabled":false})
+        ));
+        assert!(!crate::ecosystem::mcp_enabled(
+            &json!({"command":"npx", "disabled":true})
+        ));
         // `enabled` wins over the legacy `disabled` when both are present.
-        assert!(enabled_in(&json!({"enabled":true, "disabled":true})));
+        assert!(crate::ecosystem::mcp_enabled(
+            &json!({"enabled":true, "disabled":true})
+        ));
     }
 
     #[test]
@@ -1266,6 +1391,8 @@ mod tests {
         assert_eq!(views[0].detail, "oxide-views-missing --serve");
         assert_eq!(views[0].source, "project");
         assert_eq!(views[0].scope, "project");
+        assert_eq!(views[0].exposure, "deferred");
+        assert_eq!(views[0].tools, 0);
         assert_eq!(views[1].state, "disabled");
         assert_eq!(views[1].status, "Disabled");
         assert!(!views[1].enabled);
@@ -1309,6 +1436,85 @@ mod tests {
         assert_eq!(views[0].scope, "project");
         assert_eq!(views[0].state, "error");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_project_override_keeps_the_user_level_transport_in_the_listing() {
+        let dir = temp_dir("override_views");
+        let home = dir.join("home");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(home.join(".oxide")).unwrap();
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        std::fs::write(
+            home.join(".oxide").join("mcp.json"),
+            r#"{"mcpServers":{"docs":{"command":"oxide-views-missing","description":"Search docs"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".oxide").join("mcp.json"),
+            r#"{"mcpServers":{"docs":{"enabled":false,"exposure":"hidden"}}}"#,
+        )
+        .unwrap();
+
+        let views = views_for(sources_for(Some(&home), None, &root), true).await;
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].detail, "oxide-views-missing");
+        assert_eq!(views[0].description.as_deref(), Some("Search docs"));
+        assert!(!views[0].enabled);
+        assert_eq!(views[0].exposure, "hidden");
+        assert_eq!(views[0].source, "project");
+        assert_eq!(views[0].scope, "project");
+
+        // Until the project is trusted its files are not read, so the listing is
+        // the user-level entry the runtime would load.
+        let untrusted = views_for(sources_for(Some(&home), None, &root), false).await;
+        assert_eq!(untrusted.len(), 1);
+        assert_eq!(untrusted[0].detail, "oxide-views-missing");
+        assert!(untrusted[0].enabled);
+        assert_eq!(untrusted[0].exposure, "deferred");
+        assert_eq!(untrusted[0].source, "global");
+        assert_eq!(untrusted[0].scope, "global");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_exposure_rewrites_only_the_entry_it_names() {
+        let dir = temp_dir("set_exposure");
+        let root = dir.join("repo");
+        std::fs::create_dir_all(root.join(".oxide")).unwrap();
+        let path = root.join(".oxide").join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"docs":{"command":"npx","args":["-y","docs"]},"other":{"url":"https://example.com/mcp"}}}"#,
+        )
+        .unwrap();
+
+        let sources = candidates(sources_for(None, None, &root), None);
+        let changed = set_exposure_first(&sources, "docs", crate::ecosystem::McpExposure::Direct)
+            .unwrap()
+            .expect("the file that defines docs");
+        assert_eq!(changed.0, path);
+
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(root["mcpServers"]["docs"]["exposure"], "direct");
+        assert_eq!(root["mcpServers"]["docs"]["command"], "npx");
+        assert!(root["mcpServers"]["other"].get("exposure").is_none());
+        assert_eq!(
+            exposure_in(&root["mcpServers"]["docs"]),
+            crate::ecosystem::McpExposure::Direct
+        );
+        assert_eq!(
+            exposure_in(&root["mcpServers"]["other"]),
+            crate::ecosystem::McpExposure::Deferred
+        );
+
+        assert!(
+            set_exposure_first(&sources, "absent", crate::ecosystem::McpExposure::Hidden)
+                .unwrap()
+                .is_none()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
