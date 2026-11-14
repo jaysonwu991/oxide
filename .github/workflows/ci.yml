@@ -118,6 +118,70 @@ jobs:
       - name: Check shared diagram rendering
         run: node --test shared/diagrams.test.mjs
 
+  # The GPUI front-end is a workspace of its own too, so the root jobs never
+  # compile it. It is checked on each platform it ships to — the window system
+  # it opens and the GPU backend it draws with have a per-platform branch — with
+  # formatting, clippy, its tests, a release build and the engine check the
+  # release workflow runs before packaging, so a break in the beta is caught on
+  # the pull request rather than at tag time.
+  desktop-gpui:
+    name: desktop-gpui (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-gpui
+          workspaces: crates/desktop-gpui
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libvulkan1 \
+            libvulkan-dev \
+            libasound2t64 \
+            libssl-dev \
+            libgbm1
+      - name: Check formatting
+        working-directory: crates/desktop-gpui
+        run: cargo fmt -- --check
+      - name: Lint the beta front-end
+        working-directory: crates/desktop-gpui
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test the beta front-end
+        working-directory: crates/desktop-gpui
+        run: cargo test --locked
+      - name: Build the beta front-end
+        working-directory: crates/desktop-gpui
+        run: cargo build --release --locked
+      - name: Check the engine contract
+        working-directory: crates/desktop-gpui
+        shell: bash
+        run: |
+          binary=./target/release/oxide-desktop-gpui
+          if [ ! -f "$binary" ]; then
+            binary="$binary.exe"
+          fi
+          "$binary" --check
+
   # The extension is a standalone pnpm/TypeScript package, so it is not covered
   # by the Cargo jobs. Run its type check and unit tests on each platform the
   # extension is installed on — the resume path, the CLI's path lookup, the

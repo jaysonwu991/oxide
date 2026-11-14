@@ -13,13 +13,8 @@
 //! it; the process ends when its stdin does, which is the window quitting or
 //! being killed.
 
-mod approval;
-mod ask;
-mod bridge;
-mod commands;
-
-use bridge::{EventSink, Host};
-use commands::{dispatch, DesktopState};
+use oxide_desktop::bridge::{EventSink, Host};
+use oxide_desktop::commands::{dispatch, DesktopState};
 use oxide_desktop::manager::DesktopManager;
 use serde_json::Value;
 use std::io::BufRead;
@@ -58,12 +53,12 @@ fn run() -> Result<(), String> {
     // window's own row — and every step is kept beside the state as well as
     // emitted, since the page subscribes to the channel after the install has
     // started.
-    runtime.spawn(commands::auto_update(Arc::clone(&state)));
+    runtime.spawn(oxide_desktop::commands::auto_update(Arc::clone(&state)));
     // The context window a model resolves to comes from the catalog its provider
     // published, so the launch looks for a newer one beside the update check:
     // without it a model released since this build keeps the built-in table's
     // conservative window for the life of the session.
-    runtime.spawn(commands::auto_catalog(Arc::clone(&state)));
+    runtime.spawn(oxide_desktop::commands::auto_catalog(Arc::clone(&state)));
 
     // The window owns this process's lifetime: it spawned it, so its stdin
     // closing is the app quitting.

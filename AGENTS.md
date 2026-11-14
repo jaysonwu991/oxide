@@ -10,6 +10,10 @@ An optimized AI coding agent CLI written in Rust.
 - `crates/desktop/` (`oxide-desktop`): a separate Cargo workspace. `electron/`
   hosts the window and preload; `src/` is the Rust harness. The bridge uses one
   JSON packet per line. `ui/` holds the page shared behavior checks exercise.
+- `crates/desktop-gpui/` (`oxide-desktop-gpui`): the beta GPUI desktop window, a
+  separate Cargo workspace that links `oxide-desktop`'s library half (the same
+  `commands::dispatch`, approvals, turns and stores) and draws it natively. It
+  is packaged by `package.sh` and released by `desktop-gpui.yml`.
 - `editors/vscode/`: separate pnpm/TypeScript package. Runs the installed CLI with
   `oxide --mode rpc`; shares its configuration and session store.
 - `.github/`: CI, release workflows and packaging.
@@ -50,8 +54,12 @@ and detailed explanations in the relevant guide.
 - `cd crates/desktop && cargo test` (desktop manager, turn, command, bridge and updater tests)
 - `cd crates/desktop && pnpm start` (build both halves and open the window)
 - `cd crates/desktop && pnpm run dist` (an installer for this platform under `artifacts/`; it compiles the window, builds the harness in release mode, and runs electron-builder)
+- `cd crates/desktop-gpui && cargo run` (the beta GPUI window; `--check` answers
+  engine commands without a window, and `./package.sh` writes this platform's
+  beta installer under `artifacts/`)
 - `node crates/desktop/check-app.mjs` (front-end behavior against a stubbed DOM and bridge)
 - `node crates/desktop/check-shell.mjs` (command/event contract, the window and preload, the window's own rules, the menu bar, the release and its installer, the packaging config, bundle)
+- `cd crates/desktop-gpui && cargo test && cargo clippy --all-targets -- -D warnings` (the beta front-end's parsers and transcript model; the release workflow also runs `--check` against the packaged binary)
 - `cd editors/vscode && pnpm test` (VS Code extension; `tsc -p .` then `node --test out/test/`)
 
 ## Conventions
