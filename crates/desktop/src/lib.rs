@@ -10,9 +10,16 @@
 //! conversation can open. These build without any GUI dependency so they
 //! are unit tested like the rest of the workspace; the window in `electron/` is
 //! what turns them into packets, and the engine in `src/main.rs` is what hands it
-//! each one.
+//! each one. `commands` is the packet contract itself, `approval` and `ask` are
+//! the two brokers a turn waits on, and `bridge` is the pipe it all leaves
+//! through — all of them library modules so the GPUI front-end in
+//! `crates/desktop-gpui` runs the same engine in its own process.
 
+pub mod approval;
+pub mod ask;
 pub mod at;
+pub mod bridge;
+pub mod commands;
 pub mod git;
 pub mod manager;
 pub mod predict;
@@ -28,6 +35,7 @@ pub mod turn;
 pub mod update;
 
 pub use at::{AtAnswer, PathCache};
+pub use commands::DesktopState;
 pub use git::GitView;
 pub use manager::{
     expand_project_path, load_project_config, load_project_config_with, set_project_trust,

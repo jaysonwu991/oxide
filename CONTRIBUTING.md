@@ -46,6 +46,9 @@ cargo run -- -p "summarize this repository"
 | `node crates/desktop/check-markdown-input.mjs <chrome>` | Optional: both composers' `installMarkdownInput` against a real Chromium layout (pass a Chromium or `chrome-headless-shell` binary). |
 | `node crates/desktop/check-transcript-scroll.mjs <chrome>` | Optional: both transcripts' follow-the-newest-line controller against Chromium's real layout. |
 | `node --test shared/diagrams.test.mjs` | The shared Mermaid renderer's lifecycle checks (run by CI). |
+| `cd crates/desktop-gpui && cargo test` | The beta GPUI desktop front-end's tests (markdown blocks, inline spans, the transcript model). |
+| `cd crates/desktop-gpui && cargo run` | Run the beta GPUI window (`--check` answers engine commands without a window). |
+| `cd crates/desktop-gpui && ./package.sh` | Package the beta for this platform under `crates/desktop-gpui/artifacts/`. |
 | `cd editors/vscode && pnpm test` | VS Code extension tests (`tsc -p .` then `node --test out/test/`). |
 
 Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
@@ -65,7 +68,11 @@ packaged by electron-builder and versioned with the app, so the package is
 the root one and built from its own directory. It is an Electron window in
 TypeScript (`electron/`) over the Rust engine (`src/`, one JSON packet per line)
 and the front-end the window loads (`ui/`), documented in
-[`docs/desktop.md`](docs/desktop.md). The VS Code extension under
+[`docs/desktop.md`](docs/desktop.md). `oxide-desktop-gpui`
+(`crates/desktop-gpui`) is the beta GPUI window: a workspace of its own that
+links the same engine's library half in-process and draws it natively, packaged
+by its own `package.sh`, documented in
+[`docs/desktop-gpui.md`](docs/desktop-gpui.md). The VS Code extension under
 `editors/vscode` is a separate pnpm/TypeScript package, not a Cargo workspace
 member, documented in [`docs/vscode.md`](docs/vscode.md). Every path below is
 relative to the repository root.
@@ -123,7 +130,8 @@ relative to the repository root.
 | `crates/core/src/approval.rs` | The interactive approve/deny broker shared by the TUI, the CLI's rpc mode and the desktop app: emits an `approval_request` event carrying a request id and resolves `deny`/`once`/`always` from the answer. The desktop brokers the same decisions through its Rust-host event sink in `crates/desktop/src/approval.rs`. |
 | `crates/core/src/approvals.rs` | The persisted side of an `always` answer: per-project `allow` rules in the shared `<config>/Oxide/approvals.json`, so the terminal, the desktop app and the VS Code extension stop asking for the same tool. |
 | `crates/core/src/ask.rs` | The other direction: a skill's `ask` tool, the questions it parses, and the broker the desktop app and an `--mode rpc` client answer through (unanswered after five minutes, announced closed so a dialog stops offering an answer nothing waits for). |
-| `crates/desktop/src/commands.rs` | The window's commands (projects, sessions, turns, models, themes, providers, approvals), reached through the single `oxide_invoke` the page sends; `crates/desktop/electron/main.ts` owns the window, the menu and the channel to the engine, `crates/desktop/src/main.rs` is the engine's own entry point (read a packet, answer it), `src/bridge.rs` the channel back to the page, and `ui/` the HTML/CSS/JS front-end. |
+| `crates/desktop/src/commands.rs` | The window's commands (projects, sessions, turns, models, themes, providers, approvals), reached through the single `oxide_invoke` the page sends; `crates/desktop/electron/main.ts` owns the window, the menu and the channel to the engine, `crates/desktop/src/main.rs` is the engine's own entry point (read a packet, answer it), `src/bridge.rs` the channel back to the page, and `ui/` the HTML/CSS/JS front-end. The same `commands` module is the library the beta GPUI window (`crates/desktop-gpui`) dispatches through. |
+| `crates/desktop-gpui/src/` | The beta GPUI front-end: `engine.rs` runs the desktop engine in-process, `app.rs` holds the window's state and packets, `views.rs` draws the rail, sidebar, transcript, composer and changes pane, `overlays.rs` the dialogs, `editor.rs` the composer's text field, `markdown.rs` the transcript's markdown, and `model.rs` the cards a turn leaves. |
 | `editors/vscode/` | VS Code extension (separate pnpm/TypeScript package): a chat webview and editor actions that drive the installed `oxide` binary as `oxide --mode rpc` (its prompt, and the answer to a tool approval, are request frames on the process's stdin); `src/core/` is webview-free and unit tested under `node --test`. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 

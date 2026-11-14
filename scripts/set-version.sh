@@ -13,7 +13,8 @@
 #
 # A tag may carry a component prefix so each component releases independently:
 # `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
-# and `extension-v1.2.3` for the VS Code extension (which is versioned in its
+# `desktop-gpui-v1.2.3` for the beta GPUI front-end, and
+# `extension-v1.2.3` for the VS Code extension (which is versioned in its
 # own `editors/vscode/package.json`). A bare `1.2.3` is also accepted.
 #
 # Usage: scripts/set-version.sh v1.2.3
@@ -33,6 +34,10 @@ version="${raw}"
 component=""
 case "$version" in
   cli-*) version="${version#cli-}" ;;
+  desktop-gpui-*)
+    component="gpui"
+    version="${version#desktop-gpui-}"
+    ;;
   desktop-*) version="${version#desktop-}" ;;
   extension-*)
     component="vscode"
@@ -102,6 +107,31 @@ if not patched_cargo:
     sys.exit("error: could not find version in [workspace.package] of Cargo.toml")
 with open(cargo_path, "w", encoding="utf-8") as handle:
     handle.writelines(lines)
+
+# crates/desktop-gpui/Cargo.toml: the beta front-end is its own workspace as
+# well, and reports the version in its own manifest.
+if component == "gpui":
+    gpui_manifest = f"{root}/crates/desktop-gpui/Cargo.toml"
+    with open(gpui_manifest, encoding="utf-8") as handle:
+        lines = handle.readlines()
+    in_section = False
+    patched = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped == "[package]"
+            continue
+        if in_section and re.match(r"^version\s*=", stripped):
+            indent = line[: len(line) - len(line.lstrip())]
+            lines[index] = f'{indent}version = "{version}"\n'
+            patched = True
+            break
+    if not patched:
+        sys.exit("error: could not find version in [package] of crates/desktop-gpui/Cargo.toml")
+    with open(gpui_manifest, "w", encoding="utf-8") as handle:
+        handle.writelines(lines)
+    print(f"set beta desktop version to {version}")
+    sys.exit(0)
 
 # crates/desktop/Cargo.toml: the desktop package is excluded from the root
 # workspace, so it reports the version in its own manifest — the one the app

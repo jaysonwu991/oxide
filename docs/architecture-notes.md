@@ -17,7 +17,11 @@ reader's shell, `review.rs` for the repository's pull requests, `predict.rs` for
 suggestion the composer offers, `preview.rs` for the file the viewer opens, the window's own
 command layer, and a single `oxide_invoke` command the page reaches through the
 preload's bridge, one JSON packet per line between the two halves). The Cargo
-package names are `oxide-core`, `oxide` (the CLI), and `oxide-desktop`. The VS
+package names are `oxide-core`, `oxide` (the CLI), `oxide-desktop` and
+`oxide-desktop-gpui` (the beta window, a workspace of its own that links the
+desktop package's library half — `commands::dispatch`, `bridge::Host`,
+`approval`, `ask` — and runs it in-process instead of speaking packets to a
+child). The VS
 Code extension in `editors/vscode/` is a separate pnpm/TypeScript package, not a
 Cargo workspace member: it drives the installed `oxide` binary as
 `oxide --mode rpc`, with the prompt and any tool approval travelling on the

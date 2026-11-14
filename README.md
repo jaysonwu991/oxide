@@ -23,7 +23,9 @@ support for compatibility.
   app (`crates/desktop`) whose window drives the same Rust engine, and a VS Code
   extension (`editors/vscode`), all sharing the same configuration, sessions,
   trust decisions, and MCP servers. All three draw the interface in British
-  English or Simplified Chinese from one shared setting.
+  English or Simplified Chinese from one shared setting. A fourth, **beta**
+  window (`crates/desktop-gpui`) draws the same desktop app natively with GPUI
+  over the same engine and stores.
 - **Providers** — 35 built-in providers behind one table: every OpenAI-compatible
   endpoint (OpenAI, DeepSeek, Groq, Mistral, xAI, OpenRouter, Z.AI/GLM, …), the
   Anthropic Messages API, Gemini and Vertex AI, Amazon Bedrock, Azure OpenAI,
@@ -166,6 +168,24 @@ cd crates/desktop && pnpm install && pnpm start
 Prebuilt installers are in [Installers](#installers). See
 [docs/desktop.md](docs/desktop.md) for the layout, approvals, change cards,
 shortcuts, signing, and packaging.
+
+### Desktop app (Beta, GPUI)
+
+`crates/desktop-gpui` is a second, **beta** desktop window: the same app drawn
+with [GPUI](https://gpui.rs) instead of a webview, in one native process. It
+links the desktop engine in-process (`oxide_desktop::commands::dispatch`), so it
+reads and writes the same projects, sessions, approvals, configuration, themes
+and language as the stable window and the terminal, and can be installed beside
+them. It is marked beta in its window title, its bundle identifier
+(`dev.oxide.desktop.beta`) and its installers (`Oxide-Beta-*`), and releases
+from its own `desktop-gpui-v*` train.
+
+```sh
+cd crates/desktop-gpui && cargo run
+```
+
+See [docs/desktop-gpui.md](docs/desktop-gpui.md) for what the beta covers, what
+it does not yet, and how it is packaged, signed and released.
 
 ## VS Code extension
 

@@ -1,0 +1,175 @@
+# Release Drafter configuration for the beta (GPUI) desktop app. It drafts the
+# next beta release on every push to `main`, alongside the CLI draft
+# (`release-drafter.cli.yml`), the stable desktop draft
+# (`release-drafter.desktop.yml`) and the VS Code extension draft
+# (`release-drafter.vscode.yml`); all four are run by
+# .github/workflows/release-drafter.yml.
+#
+# The drafters coexist because each one is pinned to the tag prefix of its own
+# component: a run only ever sees its own releases, which keeps the other
+# components' drafts out of the draft search and out of the previous-release
+# lookup that resolves the next version. Without a prefix, every run would
+# adopt whichever draft GitHub returns first.
+#
+# Categories match a conventional-commit title directly, and also accept the
+# type labels the autolabeler action
+# (release-drafter/release-drafter/autolabeler@v7) derives from that title. That
+# action runs once, from the CLI config, so the labels land on the PR either
+# way. `.github/labels.yml` creates the labels it applies.
+#
+# The categories, replacers, and change templates are shared with the CLI,
+# stable desktop and VS Code configs; keep the four files in sync.
+
+name-template: 'Oxide Desktop Beta v$RESOLVED_VERSION'
+tag-template: 'desktop-gpui-v$RESOLVED_VERSION'
+tag-prefix: 'desktop-gpui-v'
+change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
+change-title-escapes: '\<*_&'
+category-template: '### $TITLE'
+sort-by: merged_at
+sort-direction: descending
+
+# Drop a `feat(scope): ` prefix so the notes read as plain English.
+replacers:
+  - search: '/^(feat|fix|perf|refactor|docs|test|ci|build|chore)(\(.+?\))?!?:\s*/i'
+    replace: ''
+
+categories:
+  # Administrative labels that should never reach the changelog.
+  - type: 'pre-exclude'
+    when:
+      labels:
+        - 'skip-changelog'
+        - 'duplicate'
+        - 'invalid'
+        - 'question'
+        - 'wontfix'
+
+  - title: '⚠️ Breaking Changes'
+    semver-increment: 'major'
+    collapse-after: 3
+    when:
+      - conventional:
+          breaking: true
+      - label: 'breaking'
+
+  - title: '🚀 Features'
+    semver-increment: 'minor'
+    when:
+      - conventional:
+          type: 'feat'
+      - labels:
+          - 'enhancement'
+          - 'feat'
+          - 'feature'
+
+  - title: '🐛 Bug Fixes'
+    when:
+      - conventional:
+          type: 'fix'
+      - labels:
+          - 'bug'
+          - 'fix'
+          - 'bugfix'
+
+  - title: '⚡ Performance'
+    when:
+      - conventional:
+          type: 'perf'
+      - label: 'performance'
+
+  - title: '📚 Documentation'
+    when:
+      - conventional:
+          type: 'docs'
+      - label: 'documentation'
+
+  - title: '♻️ Refactoring'
+    when:
+      - conventional:
+          type: 'refactor'
+      - label: 'refactor'
+
+  - title: '🧪 Tests'
+    collapse-after: 5
+    when:
+      - conventional:
+          type: 'test'
+      - label: 'test'
+
+  - title: '🏗️ Build & CI'
+    collapse-after: 5
+    when:
+      - conventional:
+          types:
+            - 'ci'
+            - 'build'
+      - label: 'ci'
+
+  - title: '📦 Dependencies'
+    collapse-after: 5
+    when:
+      labels:
+        - 'dependencies'
+        - 'deps'
+
+  - title: '🧰 Maintenance'
+    collapse-after: 5
+    when:
+      - conventional:
+          type: 'chore'
+      - label: 'chore'
+
+  # The one changelog category without `when` receives anything uncategorized.
+  - title: '🧩 Other Changes'
+
+no-changes-template: |
+  _No user-facing changes in this release._
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ## Install
+
+  Download the installer for your platform from the assets below. The app is
+  built for Apple Silicon, Intel and 64-bit Windows and Linux.
+
+  - **macOS, Apple Silicon** — `Oxide-macos-arm64.dmg`
+  - **macOS, Intel** — `Oxide-macos-x64.dmg`
+  - **Windows x64** — `Oxide-win-x64-Setup.exe`, a one-click install for the
+    user who runs it
+  - **Linux x64** — `Oxide-linux-x86_64-Setup.AppImage`, or
+    `Oxide-linux-x64-Setup.tar.gz` to unpack by hand
+  - **Linux arm64** — `Oxide-linux-arm64-Setup.AppImage`, or
+    `Oxide-linux-arm64-Setup.tar.gz` to unpack by hand
+
+  On macOS the app is notarized only when this release was built with both an
+  Apple Developer certificate and an App Store Connect key configured; a build
+  carrying the certificate alone is signed but left unnotarized. If macOS
+  reports it as **damaged** instead of opening it — what a quarantined build
+  without a notarization ticket looks like — clear the download's quarantine
+  flag and open it again:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/Oxide.app
+  ```
+
+  A released app keeps itself current: **Check for Updates…** in the app menu (or
+  **↻** in the sidebar footer) installs the newest `desktop-v` release for your
+  platform in place, so this download is only needed for the first install. The
+  CLI is released separately: its binaries, install scripts, and notes live on
+  the [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
+
+  ## Full Changelog
+
+  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...desktop-v$RESOLVED_VERSION
+
+  ## New Contributors
+
+  $NEW_CONTRIBUTORS
+
+  ## Contributors
+
+  $CONTRIBUTORS

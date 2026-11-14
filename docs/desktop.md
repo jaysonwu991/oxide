@@ -1,5 +1,10 @@
 # Desktop app
 
+A second, **beta** window of the same app — drawn natively with GPUI instead of
+a webview, over the same engine and stores — lives in `crates/desktop-gpui` and
+is documented in [desktop-gpui.md](desktop-gpui.md). This file describes the
+stable Electron app.
+
 The `oxide-desktop` package (`crates/desktop`) is an
 [Electron](https://www.electronjs.org) front-end for the same agent the terminal
 CLI runs: a **TypeScript window** (`electron/`) around a **Rust engine** (`src/`,

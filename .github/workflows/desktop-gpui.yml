@@ -1,0 +1,235 @@
+name: Desktop Beta (GPUI)
+
+# Builds Oxide for Desktop (Beta) — the GPUI front-end in
+# `crates/desktop-gpui` — for macOS x64 and arm64, Linux x64 and arm64, and
+# Windows, and hands the installers it produced to the release job. It is the
+# same shape as `desktop.yml`: the same five hosts, the same independent
+# `desktop-gpui-v*` tag train, the same signing and notarization secrets, the
+# same release and permanent alias. Only the packaging differs, because this
+# front-end is one native binary rather than Electron plus a harness.
+#
+# Every architecture builds on its own host, so the binary carries the
+# architecture it is named after, including on Intel Macs.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-gpui-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            name: macOS arm64
+            artifact: macos-arm64
+            arch: arm64
+
+          - platform: macos-15-intel
+            name: macOS x64
+            artifact: macos-x64
+            arch: x64
+
+          - platform: ubuntu-24.04
+            name: Linux x64
+            artifact: linux-x64
+            arch: x64
+
+          # The arm64 Linux artifact is built on an arm64 runner rather than
+          # cross-compiled, so the binary in it is native.
+          - platform: ubuntu-24.04-arm
+            name: Linux arm64
+            artifact: linux-arm64
+            arch: arm64
+
+          - platform: windows-latest
+            name: Windows x64
+            artifact: windows-x64
+            arch: x64
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # GPUI draws through the platform's own window system and a GPU backend:
+      # X11 and Wayland clients, fontconfig for the text system, Vulkan for the
+      # renderer, and the same audio/dbus libraries the framework's own
+      # dependencies link against.
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libvulkan1 \
+            libvulkan-dev \
+            libasound2t64 \
+            libssl-dev \
+            libgbm1
+
+      # The front-end's package is its own workspace, so its build lands in its
+      # own `target/`, which is what this caches.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-gpui
+          workspaces: crates/desktop-gpui
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/desktop-gpui-v')
+        shell: bash
+        run: bash ./scripts/set-version.sh "${GITHUB_REF_NAME}"
+
+      # The same Developer ID import as `desktop.yml`: the certificate is a
+      # base64 `.p12`, imported into a keychain of this run's own and put first
+      # in the search list. `package.sh` finds the identity there and signs the
+      # bundle with it; a build with no certificate produces an unsigned bundle
+      # rather than a half-signed one.
+      - name: Import the Developer ID certificate
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "no Developer ID certificate is configured; building unsigned"
+            exit 0
+          fi
+          keychain="${RUNNER_TEMP}/oxide-signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          printf '%s' "${APPLE_CERTIFICATE}" | openssl base64 -d -A > "${RUNNER_TEMP}/certificate.p12"
+          security create-keychain -p "${password}" "${keychain}"
+          security set-keychain-settings -lut 21600 "${keychain}"
+          security unlock-keychain -p "${password}" "${keychain}"
+          security import "${RUNNER_TEMP}/certificate.p12" \
+            -k "${keychain}" \
+            -P "${APPLE_CERTIFICATE_PASSWORD}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "${password}" \
+            "${keychain}"
+          security list-keychains -d user -s "${keychain}" "$(security default-keychain | tr -d ' "')"
+
+      # An App Store Connect key is a downloaded file, so it travels as a base64
+      # secret and is materialized where `xcrun notarytool` reads it.
+      - name: Write App Store Connect API key
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_API_KEY_P8:-}" ] || [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_ISSUER:-}" ]; then
+            echo "no App Store Connect key is configured; this build is left unnotarized"
+            exit 0
+          fi
+          printf '%s' "${APPLE_API_KEY_P8}" | openssl base64 -d -A > "${RUNNER_TEMP}/AuthKey.p8"
+          {
+            printf 'APPLE_API_KEY=%s\n' "${RUNNER_TEMP}/AuthKey.p8"
+            printf 'APPLE_API_KEY_ID=%s\n' "${APPLE_API_KEY}"
+            printf 'APPLE_API_ISSUER=%s\n' "${APPLE_API_ISSUER}"
+          } >> "${GITHUB_ENV}"
+
+      # One command produces this platform's artifact: it compiles the binary
+      # and lays the bundle out — the app, its icon and its plugins on macOS; a
+      # directory with the binary, icon and desktop entry elsewhere.
+      - name: Build
+        working-directory: crates/desktop-gpui
+        shell: bash
+        run: bash ./package.sh ${{ matrix.arch }}
+
+      # The binary answers the engine's own commands before it is shipped, so a
+      # build that could not reach the configuration, the session store or the
+      # approval store fails here rather than on a reader's machine.
+      - name: Check the engine contract
+        working-directory: crates/desktop-gpui
+        shell: bash
+        run: |
+          binary=./target/release/oxide-desktop-gpui
+          if [ ! -f "$binary" ]; then
+            binary="$binary.exe"
+          fi
+          "$binary" --check
+
+      # The installers `docs/desktop-gpui.md` lists under **Release assets**,
+      # named the same way from release to release so the permanent link works.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxide-desktop-gpui-${{ matrix.artifact }}
+          path: |
+            crates/desktop-gpui/artifacts/*.dmg
+            crates/desktop-gpui/artifacts/*-Setup.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-gpui-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: oxide-desktop-gpui-*
+          merge-multiple: true
+      # Keep the notes release-drafter already drafted for this tag; only create
+      # a release when none exists yet. Upload everything before publishing,
+      # including when reusing a draft.
+      - name: Upload installers and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft \
+              --title "Oxide Desktop Beta ${GITHUB_REF_NAME#desktop-gpui-}" --generate-notes
+          fi
+          find release-assets -type f -print0 \
+            | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
+          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
+
+      # The beta's own permanent address, beside the stable app's
+      # `desktop-latest`: a pre-release so `/releases/latest` keeps pointing at a
+      # versioned release.
+      - name: Refresh the desktop-gpui-latest alias
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          alias_tag=desktop-gpui-latest
+          if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
+              --title "Oxide Desktop Beta installers" \
+              --notes "The newest beta (GPUI) desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-gpui-v*\` release is the one that names a version."
+          fi
+          find release-assets -type f -print0 \
+            | xargs -0 gh release upload "$alias_tag" --repo "${GITHUB_REPOSITORY}" --clobber

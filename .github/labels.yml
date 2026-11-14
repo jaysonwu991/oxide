@@ -27,6 +27,9 @@
 - name: cli
   color: 006b75
   description: Change limited to the CLI crate
+- name: desktop-gpui
+  color: "8a5cf6"
+  description: Change limited to the beta GPUI desktop crate
 - name: desktop
   color: bfd4f2
   description: Change limited to the desktop crate

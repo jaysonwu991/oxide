@@ -2,7 +2,12 @@
 
 use crate::approval::ApprovalBroker;
 use crate::ask::AskBroker;
+use crate::at::{AtAnswer, PathCache};
 use crate::bridge::{EventSink, Host};
+use crate::manager::{expand_project_path, DesktopManager, ProjectView, SessionView};
+use crate::prefs::Prefs;
+use crate::turn::{notify_finished, open_session, start_turn, Turn};
+use crate::update;
 use anyhow::Context;
 use oxide_core::agent::{AgentEvent, Cancel, Steering};
 use oxide_core::auth::{self, AuthStore};
@@ -18,11 +23,6 @@ use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_core::update_notice;
 use oxide_core::updates::Component;
-use oxide_desktop::at::{AtAnswer, PathCache};
-use oxide_desktop::manager::{expand_project_path, DesktopManager, ProjectView, SessionView};
-use oxide_desktop::prefs::Prefs;
-use oxide_desktop::turn::{notify_finished, open_session, start_turn, Turn};
-use oxide_desktop::update;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ pub struct DesktopState {
     pub approvals: Arc<ApprovalBroker>,
     pub questions: Arc<AskBroker>,
     /// The `@path` completion's listing of the open project, walked once and
-    /// dropped when a turn ends (see `oxide_desktop::at`).
+    /// dropped when a turn ends (see `crate::at`).
     pub at: PathCache,
     /// The newest word the launch's own install has for the window, as the event
     /// it would have heard. See `LaunchUpdate`.
@@ -66,7 +66,7 @@ pub struct DesktopState {
     /// The terminals the window has open, by the id it was given when it opened
     /// one. A terminal outlives the panel that shows it — closing the panel puts
     /// the shell away with it, through `terminal_close`.
-    terminals: Arc<Mutex<HashMap<u64, oxide_desktop::terminal::Terminal>>>,
+    terminals: Arc<Mutex<HashMap<u64, crate::terminal::Terminal>>>,
     next_terminal: AtomicU64,
     next_run: AtomicU64,
     events: EventSink,
@@ -322,7 +322,7 @@ pub async fn set_project_trust(
     state: &DesktopState,
 ) -> CmdResult<Value> {
     let path = PathBuf::from(&project);
-    oxide_desktop::manager::set_project_trust(&path, trusted).map_err(err)?;
+    crate::manager::set_project_trust(&path, trusted).map_err(err)?;
     let manager = state.manager.lock().await;
     let config = manager.config_for(&path).map_err(err)?;
     Ok(project_info_value(&config, &path))
@@ -341,7 +341,7 @@ fn advertised_reasoning_levels(config: &Config) -> Value {
 /// What the header's own line adds to the model chip: the window the model
 /// resolves to, the trust state, and what the user has to act on.
 fn project_info_value(config: &Config, project: &Path) -> Value {
-    let trust = oxide_desktop::manager::project_trust(config, project);
+    let trust = crate::manager::project_trust(config, project);
     json!({
         "provider": config.provider,
         "model": config.model,
@@ -365,8 +365,8 @@ fn project_info_value(config: &Config, project: &Path) -> Value {
 /// from the repository itself rather than by asking git, so a folder that is not
 /// a clone answers with no repository at all instead of a failure — there is no
 /// branch to name, which the row draws by leaving the fact out.
-pub fn git_info(project: String) -> CmdResult<oxide_desktop::GitView> {
-    Ok(oxide_desktop::git::view(&project_dir(&project)?))
+pub fn git_info(project: String) -> CmdResult<crate::GitView> {
+    Ok(crate::git::view(&project_dir(&project)?))
 }
 
 /// The active model's reasoning levels, for the picker the thinking chip opens.
@@ -741,7 +741,7 @@ pub async fn archived_sessions(state: &DesktopState) -> CmdResult<Vec<SessionVie
 pub async fn search_sessions(
     query: String,
     state: &DesktopState,
-) -> CmdResult<Vec<oxide_desktop::search::SearchHit>> {
+) -> CmdResult<Vec<crate::search::SearchHit>> {
     let views = {
         let manager = state.manager.lock().await;
         let sessions = manager.all_sessions().map_err(err)?;
@@ -752,14 +752,11 @@ pub async fn search_sessions(
 
 /// The scan itself, over views the caller already has: the same code the command
 /// runs, so a test can hold the threads it searches without a store on disk.
-async fn search_in(
-    views: &[SessionView],
-    query: &str,
-) -> CmdResult<Vec<oxide_desktop::search::SearchHit>> {
+async fn search_in(views: &[SessionView], query: &str) -> CmdResult<Vec<crate::search::SearchHit>> {
     let views = views.to_vec();
     let query = query.to_string();
     let limit = SEARCH_LIMIT;
-    tokio::task::spawn_blocking(move || oxide_desktop::search::search(&views, &query, limit))
+    tokio::task::spawn_blocking(move || crate::search::search(&views, &query, limit))
         .await
         .map_err(|error| format!("searching the stored threads failed: {error}"))
 }
@@ -775,7 +772,7 @@ const SEARCH_LIMIT: usize = 40;
 /// again.
 fn read_pull_states(
     state: &DesktopState,
-    pulls: Arc<oxide_desktop::pulls::PullStore>,
+    pulls: Arc<crate::pulls::PullStore>,
     views: &[SessionView],
 ) {
     let urls: Vec<String> = views
@@ -1166,7 +1163,7 @@ pub async fn change_sides(project: String, baseline: String, path: String) -> Cm
 
 pub async fn repository_changes(project: String) -> CmdResult<oxide_core::changes::TurnChanges> {
     let root = project_dir(&project)?;
-    tokio::task::spawn_blocking(move || oxide_desktop::repository::changes(&root))
+    tokio::task::spawn_blocking(move || crate::repository::changes(&root))
         .await
         .map_err(err)?
         .map_err(err)
@@ -1175,7 +1172,7 @@ pub async fn repository_changes(project: String) -> CmdResult<oxide_core::change
 pub async fn repository_sides(project: String, path: String) -> CmdResult<Value> {
     let root = project_dir(&project)?;
     tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
-        let (old, new) = oxide_desktop::repository::sides(&root, &path)?;
+        let (old, new) = crate::repository::sides(&root, &path)?;
         let (Some(old), Some(new)) = (side_text(old), side_text(new)) else {
             return Ok(json!({ "binary": true, "omitted": false, "lines": [] }));
         };
@@ -1191,11 +1188,9 @@ pub async fn repository_sides(project: String, path: String) -> CmdResult<Value>
 /// What the index holds for each file the working tree differs in, so the
 /// review pane can offer the action that applies: a file with a working-tree
 /// change can be staged, one with a staged change can have it taken back.
-pub async fn repository_status(
-    project: String,
-) -> CmdResult<Vec<oxide_desktop::staging::FileState>> {
+pub async fn repository_status(project: String) -> CmdResult<Vec<crate::staging::FileState>> {
     let root = project_dir(&project)?;
-    tokio::task::spawn_blocking(move || oxide_desktop::staging::states(&root))
+    tokio::task::spawn_blocking(move || crate::staging::states(&root))
         .await
         .map_err(err)?
         .map_err(err)
@@ -1206,7 +1201,7 @@ pub async fn repository_status(
 pub async fn shape_change(
     project: String,
     path: Option<String>,
-    hunk: Option<oxide_desktop::staging::Hunk>,
+    hunk: Option<crate::staging::Hunk>,
     action: String,
     state: &DesktopState,
 ) -> CmdResult<()> {
@@ -1216,21 +1211,19 @@ pub async fn shape_change(
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let path = path.as_deref();
         match (action.as_str(), path, hunk.as_ref()) {
-            ("stage", Some(path), _) => oxide_desktop::staging::stage(&root, path),
-            ("unstage", Some(path), _) => oxide_desktop::staging::unstage(&root, path),
-            ("revert", Some(path), _) => oxide_desktop::staging::revert(&root, path),
-            ("stage-hunk", Some(path), Some(hunk)) => {
-                oxide_desktop::staging::stage_hunk(&root, path, hunk)
-            }
+            ("stage", Some(path), _) => crate::staging::stage(&root, path),
+            ("unstage", Some(path), _) => crate::staging::unstage(&root, path),
+            ("revert", Some(path), _) => crate::staging::revert(&root, path),
+            ("stage-hunk", Some(path), Some(hunk)) => crate::staging::stage_hunk(&root, path, hunk),
             ("unstage-hunk", Some(path), Some(hunk)) => {
-                oxide_desktop::staging::unstage_hunk(&root, path, hunk)
+                crate::staging::unstage_hunk(&root, path, hunk)
             }
             ("revert-hunk", Some(path), Some(hunk)) => {
-                oxide_desktop::staging::revert_hunk(&root, path, hunk)
+                crate::staging::revert_hunk(&root, path, hunk)
             }
-            ("stage-all", None, _) => oxide_desktop::staging::stage_all(&root),
-            ("unstage-all", None, _) => oxide_desktop::staging::unstage_all(&root),
-            ("revert-all", None, _) => oxide_desktop::staging::revert_all(&root),
+            ("stage-all", None, _) => crate::staging::stage_all(&root),
+            ("unstage-all", None, _) => crate::staging::unstage_all(&root),
+            ("revert-all", None, _) => crate::staging::revert_all(&root),
             ("stage", None, _) | ("unstage", None, _) | ("revert", None, _) => {
                 Err(anyhow::anyhow!("`{action}` names no file to act on"))
             }
@@ -1249,12 +1242,9 @@ pub async fn shape_change(
 
 /// Reads one file of the project for the viewer: an image as a data URL the page
 /// can paint, anything else as text it can draw or show as source.
-pub async fn file_view(
-    project: String,
-    path: String,
-) -> CmdResult<oxide_desktop::preview::FileView> {
+pub async fn file_view(project: String, path: String) -> CmdResult<crate::preview::FileView> {
     let root = project_dir(&project)?;
-    tokio::task::spawn_blocking(move || oxide_desktop::preview::read(&root, &path))
+    tokio::task::spawn_blocking(move || crate::preview::read(&root, &path))
         .await
         .map_err(err)?
         .map_err(err)
@@ -1267,10 +1257,10 @@ pub async fn file_view(
 /// says nothing, comes back as no suggestion rather than as a failed run.
 pub async fn predict(project: String, id: String) -> CmdResult<Value> {
     let root = project_dir(&project)?;
-    let config = oxide_desktop::manager::load_project_config(&root).map_err(err)?;
+    let config = crate::manager::load_project_config(&root).map_err(err)?;
     let log = SessionLog::open_ref(&root, &id).map_err(err)?;
     let messages = log.messages().map_err(err)?;
-    let suggestion = oxide_desktop::predict::suggest(&config, &messages)
+    let suggestion = crate::predict::suggest(&config, &messages)
         .await
         .map_err(err)?;
     Ok(json!({ "suggestion": suggestion }))
@@ -1320,10 +1310,10 @@ pub async fn forget_memory(id: String, project: Option<String>) -> CmdResult<boo
 pub async fn pull_requests(
     project: String,
     state: &DesktopState,
-) -> CmdResult<Vec<oxide_desktop::review::PullRequest>> {
+) -> CmdResult<Vec<crate::review::PullRequest>> {
     let _ = state;
     let root = project_dir(&project)?;
-    tokio::task::spawn_blocking(move || oxide_desktop::review::list(&root, 20))
+    tokio::task::spawn_blocking(move || crate::review::list(&root, 20))
         .await
         .map_err(err)?
         .map_err(err)
@@ -1335,10 +1325,10 @@ pub async fn pull_request(
     project: String,
     number: u64,
     state: &DesktopState,
-) -> CmdResult<oxide_desktop::review::PullDetail> {
+) -> CmdResult<crate::review::PullDetail> {
     let _ = state;
     let root = project_dir(&project)?;
-    tokio::task::spawn_blocking(move || oxide_desktop::review::view(&root, number))
+    tokio::task::spawn_blocking(move || crate::review::view(&root, number))
         .await
         .map_err(err)?
         .map_err(err)
@@ -1358,8 +1348,7 @@ pub async fn terminal_open(
     let id = state
         .next_terminal
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let (terminal, reader) =
-        oxide_desktop::terminal::Terminal::open(&cwd, cols, rows).map_err(err)?;
+    let (terminal, reader) = crate::terminal::Terminal::open(&cwd, cols, rows).map_err(err)?;
     let cwd = terminal.cwd.clone();
     state.terminals.lock().await.insert(id, terminal);
     pump_terminal(id, reader, state.events.clone());
@@ -1574,9 +1563,7 @@ pub async fn at_suggestions(
     state: &DesktopState,
 ) -> CmdResult<AtAnswer> {
     let cwd = project_dir(&project)?;
-    Ok(oxide_desktop::at::suggestions(
-        &cwd, &state.at, &text, caret,
-    ))
+    Ok(crate::at::suggestions(&cwd, &state.at, &text, caret))
 }
 
 /// Answers a pending `approval-request`.
@@ -2353,9 +2340,7 @@ fn set_language(project: Option<String>, tag: String) -> CmdResult<Value> {
 /// that cannot be read is the window's defaults rather than a launch that fails:
 /// the sheet's next save writes the file whole.
 fn read_prefs() -> CmdResult<Value> {
-    Ok(oxide_desktop::prefs::describe(
-        &Prefs::load().unwrap_or_default(),
-    ))
+    Ok(crate::prefs::describe(&Prefs::load().unwrap_or_default()))
 }
 
 /// Takes the change a control in the settings sheet made and answers with the
@@ -2368,7 +2353,7 @@ fn write_prefs(patch: Value) -> CmdResult<Value> {
         .ok_or_else(|| "invalid `patch`: expected an object".to_string())?;
     prefs.apply(patch).map_err(err)?;
     prefs.save().map_err(err)?;
-    Ok(oxide_desktop::prefs::describe(&prefs))
+    Ok(crate::prefs::describe(&prefs))
 }
 
 #[cfg(test)]
