@@ -5,10 +5,11 @@
 //! the same stored preferences, the same approval broker — drawn as GPUI panels
 //! over the conversation.
 
-use crate::app::{Button, ConfirmAction, Overlay, Root};
+use crate::app::{Button, ConfirmAction, Overlay, Root, SettingsTab};
+use crate::icons::{self, Icon};
 use crate::theme::Theme;
 use gpui::prelude::*;
-use gpui::{div, hsla, px, Context, FontWeight, SharedString, Window};
+use gpui::{div, hsla, px, Context, Div, FontWeight, SharedString, Stateful, Window};
 use serde_json::{json, Value};
 
 pub fn layer(
@@ -56,6 +57,7 @@ pub fn layer(
             name,
             pinned,
         } => project_actions(theme, id, path, name, pinned, cx),
+        Overlay::Approvals => approvals(root, theme, cx),
         Overlay::Archived => archived(root, theme, cx),
     };
 
@@ -88,19 +90,29 @@ fn dialog(theme: &Theme, title: &str, width: f32) -> gpui::Div {
         )
 }
 
+/// The way out of a dialog, in words as well as in the glyph: a bare `\u{00d7}`
+/// asks a reader to know what it does, and the same control answers one keystroke
+/// away as well.
 fn close_button(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
     div()
         .id("overlay-close")
         .flex()
+        .flex_row()
         .items_center()
-        .justify_center()
-        .w(px(26.0))
-        .h(px(26.0))
+        .gap(px(6.0))
+        .h(px(30.0))
+        .px(px(10.0))
         .rounded(px(7.0))
         .cursor_pointer()
-        .text_color(theme.dim())
-        .hover(move |style| style.bg(theme.panel_2()))
-        .child("×")
+        .border_1()
+        .border_color(theme.border())
+        .bg(theme.panel_2())
+        .text_size(px(12.0))
+        .text_color(theme.text())
+        .hover(move |style| style.bg(theme.panel_3()))
+        .tooltip(crate::views::tip("Close \u{00b7} Esc", theme))
+        .child(icons::icon(Icon::Close, 14.0, theme.dim()))
+        .child("Close")
         .on_click(cx.listener(|root, _, _, cx| {
             root.overlay = None;
             cx.notify();
@@ -154,190 +166,638 @@ fn selectable(
     row.on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
-fn setting_row(
-    id: impl Into<gpui::ElementId>,
-    label: &str,
-    detail: &str,
-    theme: &Theme,
-    cx: &mut Context<Root>,
-    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .flex()
-        .flex_col()
-        .gap_1()
-        .p_2()
-        .rounded(px(8.0))
-        .bg(theme.panel_2())
-        .cursor_pointer()
-        .hover(move |style| style.bg(theme.panel_3()))
-        .child(
-            div()
-                .text_size(px(12.5))
-                .text_color(theme.text())
-                .child(label.to_string()),
-        )
-        .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(theme.dim())
-                .child(detail.to_string()),
-        )
-        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
-}
-
 // ---------- settings ----------
 
+/// The settings sheet: the page's own two columns — the sections down the left,
+/// the active section's fields in a card on the right. Everything it writes goes
+/// through `save_prefs`, so the terminal and the stable window see the same
+/// values.
 fn settings(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    let prefs = root.prefs.clone();
-    let send_key = prefs["send_key"].as_str().unwrap_or("enter").to_string();
-    let sidebar = prefs["sidebar_visible"].as_bool().unwrap_or(true);
-    let predictions = prefs["predictions"].as_bool().unwrap_or(false);
-    let notifications = prefs["notifications"]
-        .as_str()
-        .unwrap_or("background")
-        .to_string();
-    let scale = prefs["font_scale"].as_f64().unwrap_or(1.0);
     let version = env!("CARGO_PKG_VERSION");
+    let tab = root.settings_tab;
 
-    let mut panel = dialog(theme, "Settings", 560.0)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .id("settings-body")
-                .overflow_y_scroll()
-                .max_h(px(440.0))
-                .child(setting_row(
-                    "setting-send-key",
-                    "Send with",
-                    &format!("Enter, or {send_key} — currently {send_key}"),
-                    theme,
-                    cx,
-                    move |root, _, cx| {
-                        let next = if send_key == "enter" {
-                            "cmd+enter"
-                        } else {
-                            "enter"
-                        };
-                        root.save_prefs(json!({ "send_key": next }), cx);
-                    },
-                ))
-                .child(setting_row(
-                    "setting-sidebar",
-                    "Sidebar",
-                    if sidebar { "Shown" } else { "Hidden" },
-                    theme,
-                    cx,
-                    move |root, _, cx| root.save_prefs(json!({ "sidebar_visible": !sidebar }), cx),
-                ))
-                .child(setting_row(
-                    "setting-predictions",
-                    "Composer predictions",
-                    if predictions {
-                        "On, as the terminal's ghost text"
-                    } else {
-                        "Off"
-                    },
-                    theme,
-                    cx,
-                    move |root, _, cx| root.save_prefs(json!({ "predictions": !predictions }), cx),
-                ))
-                .child(setting_row(
-                    "setting-notifications",
-                    "Notifications",
-                    &format!("{notifications} — approvals and questions are announced"),
-                    theme,
-                    cx,
-                    move |root, _, cx| {
-                        let next = match notifications.as_str() {
-                            "background" => "always",
-                            "always" => "off",
-                            _ => "background",
-                        };
-                        root.save_prefs(json!({ "notifications": next }), cx)
-                    },
-                ))
-                .child(setting_row(
-                    "setting-scale",
-                    "Text size",
-                    &format!("{:.0}%", scale * 100.0),
-                    theme,
-                    cx,
-                    move |root, _, cx| {
-                        let next = match scale {
-                            value if value < 0.9 => 1.0,
-                            value if value < 1.1 => 1.2,
-                            value if value < 1.3 => 1.4,
-                            _ => 0.8,
-                        };
-                        root.save_prefs(json!({ "font_scale": next }), cx)
-                    },
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap_2()
-                .child(
-                    Button::new("Models").render("settings-models", theme, cx, |root, _, cx| {
-                        root.open_overlay(Overlay::Models, cx)
-                    }),
-                )
-                .child(
-                    Button::new("Themes").render("settings-themes", theme, cx, |root, _, cx| {
-                        root.open_overlay(Overlay::Themes, cx)
-                    }),
-                )
-                .child(Button::new("Language").render(
-                    "settings-language",
-                    theme,
-                    cx,
-                    |root, _, cx| root.open_overlay(Overlay::Language, cx),
-                ))
-                .child(Button::new("Shortcuts").render(
-                    "settings-shortcuts",
-                    theme,
-                    cx,
-                    |root, _, cx| root.open_overlay(Overlay::Shortcuts, cx),
-                )),
-        )
+    let mut navigation = div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(px(232.0))
+        .h_full()
+        .px(px(16.0))
+        .pt(px(24.0))
+        .pb(px(16.0))
+        .gap(px(3.0))
+        .bg(theme.sidebar())
+        .border_r_1()
+        .border_color(theme.border())
         .child(
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .border_t_1()
-                .border_color(theme.border())
-                .pt_2()
+                .px(px(6.0))
+                .pb(px(18.0))
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(11.5))
-                        .text_color(theme.faint())
-                        .child(format!("Oxide Beta {version} — GPUI front-end")),
+                        .text_size(px(19.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text())
+                        .child("Settings"),
+                )
+                .child(close_button(theme, cx)),
+        );
+
+    navigation = navigation.child(nav_group(
+        "Personal",
+        theme,
+        vec![
+            nav_tab(
+                "settings-tab-general",
+                Icon::Settings,
+                "General",
+                tab == SettingsTab::General,
+                theme,
+                cx,
+                |root, _, cx| {
+                    root.settings_tab = SettingsTab::General;
+                    cx.notify();
+                },
+            ),
+            nav_tab(
+                "settings-tab-appearance",
+                Icon::Image,
+                "Appearance",
+                tab == SettingsTab::Appearance,
+                theme,
+                cx,
+                |root, _, cx| {
+                    root.settings_tab = SettingsTab::Appearance;
+                    cx.notify();
+                },
+            ),
+            nav_tab(
+                "settings-tab-notifications",
+                Icon::Bell,
+                "Notifications",
+                tab == SettingsTab::Notifications,
+                theme,
+                cx,
+                |root, _, cx| {
+                    root.settings_tab = SettingsTab::Notifications;
+                    cx.notify();
+                },
+            ),
+        ],
+    ));
+
+    navigation = navigation.child(nav_group(
+        "Integrations",
+        theme,
+        vec![
+            nav_tab(
+                "settings-tab-models",
+                Icon::Globe,
+                "Models",
+                false,
+                theme,
+                cx,
+                |root, _, cx| root.open_overlay(Overlay::Models, cx),
+            ),
+            nav_tab(
+                "settings-tab-shortcuts",
+                Icon::Keyboard,
+                "Shortcuts",
+                false,
+                theme,
+                cx,
+                |root, _, cx| root.open_overlay(Overlay::Shortcuts, cx),
+            ),
+        ],
+    ));
+
+    navigation = navigation.child(div().flex_1()).child(
+        div()
+            .px(px(10.0))
+            .text_size(px(11.0))
+            .text_color(theme.faint())
+            .child(format!("Oxide Beta {version}")),
+    );
+
+    let (title, hint) = match tab {
+        SettingsTab::General => (
+            "General",
+            "How the composer sends, and how a turn in flight is followed up.",
+        ),
+        SettingsTab::Appearance => (
+            "Appearance",
+            "The theme, the language and the size this window paints with.",
+        ),
+        SettingsTab::Notifications => (
+            "Notifications",
+            "What the window announces when a turn finishes or waits on you.",
+        ),
+    };
+
+    let rows = match tab {
+        SettingsTab::General => general_fields(root, theme, cx),
+        SettingsTab::Appearance => appearance_fields(root, theme, cx),
+        SettingsTab::Notifications => notification_fields(root, theme, cx),
+    };
+
+    let content = div()
+        .id("settings-content")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .h_full()
+        .overflow_y_scroll()
+        .px(px(40.0))
+        .pt(px(36.0))
+        .pb(px(28.0))
+        .gap(px(24.0))
+        .bg(theme.background())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(px(22.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text())
+                        .child(title),
                 )
                 .child(
                     div()
-                        .id("settings-close")
-                        .text_size(px(11.5))
+                        .text_size(px(12.5))
+                        .line_height(px(20.0))
                         .text_color(theme.dim())
-                        .cursor_pointer()
-                        .child("Close")
-                        .on_click(cx.listener(|root, _, _, cx| {
-                            root.overlay = None;
-                            cx.notify();
-                        })),
+                        .child(hint),
                 ),
-        );
+        )
+        .child(fields(theme, rows));
 
-    panel = panel.child(close_button(theme, cx));
-    panel
+    div()
+        .flex()
+        .flex_row()
+        .w(px(880.0))
+        .h(px(600.0))
+        .max_w_full()
+        .max_h_full()
+        .bg(theme.background())
+        .border_1()
+        .border_color(theme.border())
+        .rounded(px(16.0))
+        .overflow_hidden()
+        .child(navigation)
+        .child(content)
+}
+
+fn general_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpui::Div> {
+    let prefs = root.prefs.clone();
+    let send_key = prefs["send_key"].as_str().unwrap_or("enter").to_string();
+    let follow_up = prefs["follow_up"].as_str().unwrap_or("queue").to_string();
+    let predictions = prefs["predictions"].as_bool().unwrap_or(false);
+    let awake = prefs["keep_awake"].as_bool().unwrap_or(false);
+
+    let mut send = segments(theme);
+    let current = send_key.clone();
+    send = send.child(segment(
+        "settings-send-enter",
+        "Enter",
+        current == "enter",
+        theme,
+        cx,
+        |root, _, cx| root.save_prefs(json!({ "send_key": "enter" }), cx),
+    ));
+    send = send.child(segment(
+        "settings-send-cmd-enter",
+        "\u{2318}Enter",
+        send_key != "enter",
+        theme,
+        cx,
+        |root, _, cx| root.save_prefs(json!({ "send_key": "cmd+enter" }), cx),
+    ));
+
+    let mut follow = segments(theme);
+    follow = follow.child(segment(
+        "settings-follow-queue",
+        "Queue",
+        follow_up == "queue",
+        theme,
+        cx,
+        |root, _, cx| root.save_prefs(json!({ "follow_up": "queue" }), cx),
+    ));
+    follow = follow.child(segment(
+        "settings-follow-steer",
+        "Steer",
+        follow_up == "steer",
+        theme,
+        cx,
+        |root, _, cx| root.save_prefs(json!({ "follow_up": "steer" }), cx),
+    ));
+
+    vec![
+        field(
+            "Send with",
+            "Enter sends and \u{2318}Enter starts a new line, or the other way round.",
+            theme,
+            send,
+        ),
+        field(
+            "Follow-ups",
+            "Send a note while a turn is running: it joins the queue, or steers the turn in flight.",
+            theme,
+            follow,
+        ),
+        field(
+            "Composer predictions",
+            "Offer the next words as ghost text after the caret.",
+            theme,
+            switch(
+                "settings-predictions",
+                predictions,
+                theme,
+                cx,
+                move |root, _, cx| root.save_prefs(json!({ "predictions": !predictions }), cx),
+            ),
+        ),
+        field(
+            "Keep awake",
+            "Hold the display awake while a turn runs.",
+            theme,
+            switch(
+                "settings-keep-awake",
+                awake,
+                theme,
+                cx,
+                move |root, _, cx| root.save_prefs(json!({ "keep_awake": !awake }), cx),
+            ),
+        ),
+    ]
+}
+
+fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpui::Div> {
+    let prefs = root.prefs.clone();
+    let theme_name = root.current_theme.clone();
+    let language = root.language.clone();
+    let scale = prefs["font_scale"].as_f64().unwrap_or(1.0);
+    let sidebar = prefs["sidebar_visible"].as_bool().unwrap_or(true);
+    let language_label = root
+        .languages
+        .iter()
+        .find(|row| row["tag"].as_str() == Some(language.as_str()))
+        .and_then(|row| row["label"].as_str())
+        .unwrap_or("English")
+        .to_string();
+
+    let mut sizes = segments(theme);
+    for (id, label, value) in [
+        ("settings-scale-80", "80%", 0.8_f64),
+        ("settings-scale-100", "100%", 1.0),
+        ("settings-scale-120", "120%", 1.2),
+        ("settings-scale-140", "140%", 1.4),
+    ] {
+        sizes = sizes.child(segment(
+            id,
+            label,
+            (scale - value).abs() < 0.01,
+            theme,
+            cx,
+            move |root, _, cx| root.save_prefs(json!({ "font_scale": value }), cx),
+        ));
+    }
+
+    vec![
+        field(
+            "Theme",
+            "The palette the window, the terminal and the stable app all read.",
+            theme,
+            link_button(
+                "settings-open-themes",
+                &theme_name,
+                theme,
+                cx,
+                |root, _, cx| root.open_overlay(Overlay::Themes, cx),
+            ),
+        ),
+        field(
+            "Language",
+            "The strings the window draws, from the shared catalog.",
+            theme,
+            link_button(
+                "settings-open-language",
+                &language_label,
+                theme,
+                cx,
+                |root, _, cx| root.open_overlay(Overlay::Language, cx),
+            ),
+        ),
+        field(
+            "Text size",
+            "The scale every label and line in the window uses.",
+            theme,
+            sizes,
+        ),
+        field(
+            "Sidebar",
+            "Show the project tree beside the conversation.",
+            theme,
+            switch(
+                "settings-sidebar",
+                sidebar,
+                theme,
+                cx,
+                move |root, _, cx| root.save_prefs(json!({ "sidebar_visible": !sidebar }), cx),
+            ),
+        ),
+    ]
+}
+
+fn notification_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpui::Div> {
+    let prefs = root.prefs.clone();
+    let mode = prefs["notifications"]
+        .as_str()
+        .unwrap_or("background")
+        .to_string();
+    let approvals = prefs["notify_approvals"].as_bool().unwrap_or(true);
+    let questions = prefs["notify_questions"].as_bool().unwrap_or(true);
+
+    let mut modes = segments(theme);
+    for (id, label, value) in [
+        ("settings-notify-off", "Off", "off"),
+        ("settings-notify-background", "Background", "background"),
+        ("settings-notify-always", "Always", "always"),
+    ] {
+        modes = modes.child(segment(
+            id,
+            label,
+            mode == value,
+            theme,
+            cx,
+            move |root, _, cx| root.save_prefs(json!({ "notifications": value }), cx),
+        ));
+    }
+
+    vec![
+        field(
+            "Notifications",
+            "When a turn finishes: only while the window is in the background, always, or never.",
+            theme,
+            modes,
+        ),
+        field(
+            "Approval requests",
+            "Announce a tool that is waiting for an approval.",
+            theme,
+            switch(
+                "settings-notify-approvals",
+                approvals,
+                theme,
+                cx,
+                move |root, _, cx| root.save_prefs(json!({ "notify_approvals": !approvals }), cx),
+            ),
+        ),
+        field(
+            "Question requests",
+            "Announce a question the turn asked and is waiting on.",
+            theme,
+            switch(
+                "settings-notify-questions",
+                questions,
+                theme,
+                cx,
+                move |root, _, cx| root.save_prefs(json!({ "notify_questions": !questions }), cx),
+            ),
+        ),
+    ]
+}
+
+/// The card a section's rows sit in, with a hairline between them.
+fn fields(theme: &Theme, rows: Vec<gpui::Div>) -> gpui::Div {
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .border_1()
+        .border_color(theme.border())
+        .rounded(px(14.0))
+        .overflow_hidden()
+        .bg(theme.panel());
+    for (index, row) in rows.into_iter().enumerate() {
+        if index > 0 {
+            card = card.child(div().h(px(1.0)).w_full().bg(theme.border()));
+        }
+        card = card.child(row);
+    }
+    card
+}
+
+fn field(label: &str, hint: &str, theme: &Theme, control: impl IntoElement) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(24.0))
+        .px(px(24.0))
+        .py(px(20.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(5.0))
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text())
+                        .child(label.to_string()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .line_height(px(20.0))
+                        .text_color(theme.dim())
+                        .child(hint.to_string()),
+                ),
+        )
+        .child(div().flex_none().child(control))
+}
+
+fn nav_group(title: &str, theme: &Theme, rows: Vec<Stateful<Div>>) -> gpui::Div {
+    let mut group = div().flex().flex_col().gap(px(3.0)).mb(px(20.0)).child(
+        div()
+            .px(px(10.0))
+            .pb(px(5.0))
+            .text_size(px(12.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.dim())
+            .child(title.to_string()),
+    );
+    for row in rows {
+        group = group.child(row);
+    }
+    group
+}
+
+fn nav_tab(
+    id: impl Into<gpui::ElementId>,
+    mark: Icon,
+    label: &str,
+    active: bool,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<Div> {
+    let color = if active { theme.text() } else { theme.dim() };
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
+        .h(px(40.0))
+        .px(px(12.0))
+        .rounded(px(8.0))
+        .cursor_pointer()
+        .bg(if active {
+            theme.panel_3()
+        } else {
+            theme.sidebar()
+        })
+        .hover(move |style| style.bg(theme.panel_2()))
+        .child(icons::icon(mark, 18.0, color))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(color)
+                .child(label.to_string()),
+        )
+        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
+/// A row of choices: the selected one wears the panel's own surface.
+fn segments(theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(3.0))
+        .p(px(3.0))
+        .border_1()
+        .border_color(theme.border())
+        .rounded(px(9.0))
+        .bg(theme.background())
+}
+
+fn segment(
+    id: impl Into<gpui::ElementId>,
+    label: &str,
+    active: bool,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .h(px(30.0))
+        .px(px(10.0))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .text_size(px(12.0))
+        .text_color(if active { theme.text() } else { theme.dim() })
+        .bg(if active {
+            theme.panel_3()
+        } else {
+            theme.background()
+        })
+        .hover(move |style| style.bg(theme.panel_2()))
+        .child(label.to_string())
+        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
+fn switch(
+    id: impl Into<gpui::ElementId>,
+    on: bool,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<Div> {
+    // The track is 38x22, but the control a pointer has to hit is the padding
+    // around it: a switch is a small thing to ask anyone to land on.
+    let mut track = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .flex_none()
+        .w(px(38.0))
+        .h(px(22.0))
+        .p(px(4.0))
+        .rounded(px(11.0))
+        .bg(if on { theme.accent() } else { theme.panel_3() })
+        .border_1()
+        .border_color(if on { theme.accent() } else { theme.faint() });
+    track = if on {
+        track.justify_end()
+    } else {
+        track.justify_start()
+    };
+    track = track.child(
+        div()
+            .flex_none()
+            .w(px(12.0))
+            .h(px(12.0))
+            .rounded(px(6.0))
+            .bg(if on { theme.background() } else { theme.dim() }),
+    );
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .flex_none()
+        .p(px(6.0))
+        .rounded(px(8.0))
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.panel_2()))
+        .child(track)
+        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
+fn link_button(
+    id: impl Into<gpui::ElementId>,
+    label: &str,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(30.0))
+        .px(px(10.0))
+        .rounded(px(7.0))
+        .cursor_pointer()
+        .border_1()
+        .border_color(theme.border())
+        .bg(theme.panel_2())
+        .text_size(px(12.0))
+        .text_color(theme.text())
+        .hover(move |style| style.bg(theme.panel_3()))
+        .child(label.to_string())
+        .child(icons::icon(Icon::ChevronRight, 12.0, theme.dim()))
+        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
 // ---------- models ----------
@@ -1043,6 +1503,76 @@ fn archived(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
             .child(close_button(theme, cx)),
     );
     panel
+}
+
+// ---------- approvals ----------
+
+/// The approvals the composer's lock names: the tools this project runs without
+/// asking first. It is the same store the terminal and the Electron window
+/// read, and clearing it puts every call back behind a prompt.
+fn approvals(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let tools = root.approvals.clone();
+    let mut panel = dialog(theme, "Tool approvals", 470.0).child(
+        div()
+            .text_size(px(12.5))
+            .line_height(px(19.0))
+            .text_color(theme.dim())
+            .child(
+                "Tools this project runs without asking first. The terminal and the Electron window read the same list.",
+            ),
+    );
+
+    if tools.is_empty() {
+        panel = panel.child(
+            div()
+                .p_3()
+                .rounded(px(10.0))
+                .bg(theme.panel_2())
+                .text_size(px(12.5))
+                .text_color(theme.faint())
+                .child("Nothing is pre-approved: every call asks before it runs."),
+        );
+    } else {
+        let mut list = div()
+            .id("approvals-list")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .max_h(px(320.0))
+            .overflow_y_scroll();
+        for tool in tools {
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .h(px(30.0))
+                    .px_2()
+                    .rounded(px(8.0))
+                    .bg(theme.panel_2())
+                    .text_size(px(12.5))
+                    .text_color(theme.text())
+                    .child(icons::icon(Icon::Check, 13.0, theme.success()))
+                    .child(tool),
+            );
+        }
+        panel = panel
+            .child(list)
+            .child(Button::new("Clear approvals").danger().render(
+                "approvals-clear",
+                theme,
+                cx,
+                |root, _, cx| root.clear_approvals(cx),
+            ));
+    }
+    panel.child(
+        div()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .child(close_button(theme, cx)),
+    )
 }
 
 // ---------- confirmations ----------

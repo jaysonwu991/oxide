@@ -7,21 +7,26 @@
 //! `crate::app::Root` keeps.
 
 use crate::app::{Button, Overlay, Rail, Root};
+use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
 use crate::model::{Entry, Status};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
-    div, px, Context, Font, FontStyle, FontWeight, MouseButton, Pixels, SharedString, Stateful,
-    StrikethroughStyle, StyledText, TextRun, UnderlineStyle, Window,
+    div, px, Context, Font, FontStyle, FontWeight, MouseButton, Pixels, Render, SharedString,
+    Stateful, StrikethroughStyle, StyledText, TextRun, UnderlineStyle, Window, WindowControlArea,
 };
 
 // ---------- shared pieces ----------
 
-fn glyph_button(
+/// A square icon control: the window's own buttons in the topbar, the rail, a
+/// card's header and a row's trailing actions. `box_size` is the target the
+/// control fills; the glyph inside it is three fifths of that, the 18-in-30 the
+/// page's `.icon` buttons use.
+fn icon_button(
     id: impl Into<gpui::ElementId>,
-
-    glyph: &'static str,
+    mark: Icon,
+    box_size: f32,
     theme: &Theme,
     active: bool,
 ) -> Stateful<gpui::Div> {
@@ -32,29 +37,31 @@ fn glyph_button(
         .items_center()
         .justify_center()
         .flex_none()
-        .w(px(30.0))
-        .h(px(30.0))
+        .w(px(box_size))
+        .h(px(box_size))
         .rounded(px(8.0))
         .cursor_pointer()
         .text_color(color)
         .hover(move |style| style.bg(theme.panel_2()))
-        .child(div().text_size(px(15.0)).child(glyph))
+        .child(icons::icon(mark, box_size * 0.6, color))
 }
 
 fn pill(text: impl Into<String>, theme: &Theme, accent: bool) -> gpui::Div {
     div()
         .flex()
         .items_center()
-        .h(px(20.0))
-        .px_2()
-        .rounded(px(10.0))
+        .flex_none()
+        .h(px(19.0))
+        .px(px(7.0))
+        .rounded(px(6.0))
         .bg(if accent {
-            theme.wash("accent", 0.3)
+            theme.wash("accent", 0.2)
         } else {
             theme.panel_3()
         })
         .text_color(if accent { theme.accent() } else { theme.dim() })
-        .text_size(px(11.0))
+        .text_size(px(10.0))
+        .font_weight(FontWeight::MEDIUM)
         .child(text.into())
 }
 
@@ -155,7 +162,73 @@ fn relative_time(seconds: u64) -> String {
     }
 }
 
+// ---------- tooltips ----------
+
+/// The hover label a control carries: GPUI draws no accessible name of its own,
+/// so the words a glyph would have said live here.
+pub struct Tip {
+    text: SharedString,
+    theme: Theme,
+}
+
+impl Render for Tip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.0))
+            .py(px(4.0))
+            .rounded(px(6.0))
+            .bg(self.theme.panel_3())
+            .border_1()
+            .border_color(self.theme.border())
+            .text_size(px(11.0))
+            .text_color(self.theme.text())
+            .child(self.text.clone())
+    }
+}
+
+pub fn tip(
+    text: &'static str,
+    theme: &Theme,
+) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    let theme = theme.clone();
+    move |_window, cx| {
+        let tip = cx.new(|_| Tip {
+            text: SharedString::from(text),
+            theme: theme.clone(),
+        });
+        gpui::AnyView::from(tip)
+    }
+}
+
 // ---------- topbar ----------
+
+/// The thread the window is on: the folder it runs in and its title. Drawn in
+/// place of the tabs while one chat is open.
+fn thread_label(root: &Root, theme: &Theme) -> impl IntoElement {
+    let title = match root.chats.get(root.active) {
+        Some(chat) => chat.title.clone(),
+        None => "No open chats".to_string(),
+    };
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .flex_1()
+        .min_w(px(0.0))
+        .gap_2()
+        .child(icons::icon(Icon::Folder, 16.0, theme.faint()))
+        .child(
+            div()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text())
+                .child(title),
+        )
+        .child(div().flex_1())
+}
 
 pub fn topbar(
     root: &mut Root,
@@ -165,41 +238,50 @@ pub fn topbar(
     cx: &mut Context<Root>,
 ) -> impl IntoElement {
     let mut row = div()
+        .window_control_area(WindowControlArea::Drag)
         .flex()
         .flex_row()
         .items_center()
         .flex_none()
         .h(px(46.0 * scale))
-        .px_2()
+        .pl(px(76.0))
+        .pr_2()
         .gap_1()
-        .bg(theme.sidebar())
+        .bg(theme.background())
         .border_b_1()
         .border_color(theme.border());
 
-    let back =
-        glyph_button("nav-back", "←", theme, false).on_click(cx.listener(|root, _, _, cx| {
+    let back = icon_button("nav-back", Icon::Back, 30.0, theme, false)
+        .tooltip(tip("Back \u{00b7} \u{2318}[", theme))
+        .on_click(cx.listener(|root, _, _, cx| {
             if let Some(previous) = root.history.pop() {
                 root.forward.push(root.active);
                 root.active = previous.min(root.chats.len().saturating_sub(1));
                 cx.notify();
             }
         }));
-    let forward =
-        glyph_button("nav-forward", "→", theme, false).on_click(cx.listener(|root, _, _, cx| {
+    let forward = icon_button("nav-forward", Icon::Forward, 30.0, theme, false)
+        .tooltip(tip("Forward \u{00b7} \u{2318}]", theme))
+        .on_click(cx.listener(|root, _, _, cx| {
             if let Some(next) = root.forward.pop() {
                 root.history.push(root.active);
                 root.active = next.min(root.chats.len().saturating_sub(1));
                 cx.notify();
             }
         }));
-    let toggle =
-        glyph_button("nav-sidebar", "☰", theme, false).on_click(cx.listener(|root, _, _, cx| {
+    let toggle = icon_button("nav-sidebar", Icon::Sidebar, 30.0, theme, false)
+        .tooltip(tip("Show or hide the sidebar \u{00b7} \u{2318}B", theme))
+        .on_click(cx.listener(|root, _, _, cx| {
             root.sidebar_visible = !root.sidebar_visible;
             let visible = root.sidebar_visible;
             root.save_prefs(serde_json::json!({ "sidebar_visible": visible }), cx);
             cx.notify();
         }));
-    row = row.child(back).child(forward).child(toggle);
+    row = row
+        .child(back)
+        .child(forward)
+        .child(toggle)
+        .child(div().flex_none().w(px(6.0)));
 
     let mut tabs = div()
         .flex()
@@ -260,7 +342,8 @@ pub fn topbar(
             );
         }
         tab = tab.child(
-            glyph_button(("close-tab", index), "×", theme, false)
+            icon_button(("close-tab", index), Icon::Close, 22.0, theme, false)
+                .tooltip(tip("Close this chat", theme))
                 .on_click(cx.listener(move |root, _, _, cx| root.close_chat(index, cx))),
         );
         tab_elements.push(tab.on_click(cx.listener(move |root, _, _window, cx| {
@@ -274,24 +357,45 @@ pub fn topbar(
         })));
     }
     tabs = tabs.children(tab_elements);
-    row = row.child(tabs);
+    // One chat open has nothing to switch between, so the topbar names the
+    // thread that is on screen — the folder, its title — the way the page swaps
+    // its tabs for the thread's own label.
+    if root.chats.len() > 1 {
+        row = row.child(tabs);
+    } else {
+        row = row.child(thread_label(root, theme));
+    }
 
-    let new_chat = glyph_button("new-chat", "＋", theme, false)
+    let new_chat = icon_button("new-chat", Icon::Plus, 30.0, theme, false)
+        .tooltip(tip("New chat \u{00b7} \u{2318}N", theme))
         .on_click(cx.listener(|root, _, window, cx| root.new_chat(window, cx)));
-    let changes = glyph_button("changes", "±", theme, root.show_changes).on_click(cx.listener(
-        |root, _, _, cx| {
+    let changes = icon_button("changes", Icon::Changes, 30.0, theme, root.show_changes)
+        .tooltip(tip(
+            "Changes this turn left \u{00b7} \u{2318}\u{23ce}",
+            theme,
+        ))
+        .on_click(cx.listener(|root, _, _, cx| {
             root.show_changes = !root.show_changes;
             if root.show_changes {
                 let index = root.active;
                 root.refresh_repository(index, cx);
             }
             cx.notify();
-        },
-    ));
+        }));
+    let details = icon_button(
+        "details-toggle",
+        Icon::Details,
+        30.0,
+        theme,
+        root.show_details,
+    )
+    .tooltip(tip("Project details", theme))
+    .on_click(cx.listener(|root, _, _, cx| root.toggle_details(cx)));
     let beta = pill("BETA", theme, true);
     row.child(new_chat)
         .child(changes)
-        .child(div().flex_none().w(px(6.0)))
+        .child(details)
+        .child(div().flex_none().w(px(4.0)))
         .child(beta)
 }
 
@@ -300,42 +404,56 @@ pub fn topbar(
 pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
     let chats = root.rail == Rail::Chats;
     let customize = root.rail == Rail::Customize;
+    let sidebar = root.sidebar_visible;
     div()
         .flex()
         .flex_col()
         .items_center()
         .flex_none()
-        .w(px(48.0))
+        .w(px(56.0))
         .h_full()
-        .py_2()
-        .gap_1()
+        .py(px(12.0))
+        .px(px(8.0))
+        .gap(px(5.0))
         .bg(theme.sidebar())
         .border_r_1()
         .border_color(theme.border())
         .child(
-            glyph_button("rail-new", "＋", theme, false)
-                .on_click(cx.listener(|root, _, window, cx| root.new_chat(window, cx))),
-        )
-        .child(
-            glyph_button("rail-chats", "☰", theme, chats).on_click(cx.listener(
-                |root, _, _, cx| {
+            icon_button("rail-home", Icon::Home, 40.0, theme, chats)
+                .tooltip(tip("Chats", theme))
+                .on_click(cx.listener(|root, _, _, cx| {
                     root.rail = Rail::Chats;
                     root.overlay = None;
                     cx.notify();
-                },
-            )),
+                })),
         )
         .child(
-            glyph_button("rail-customize", "◇", theme, customize).on_click(cx.listener(
-                |root, _, _, cx| {
-                    root.rail = Rail::Customize;
+            icon_button("rail-sidebar", Icon::Sidebar, 40.0, theme, sidebar)
+                .tooltip(tip("Show or hide the sidebar", theme))
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.sidebar_visible = !root.sidebar_visible;
+                    let visible = root.sidebar_visible;
+                    root.save_prefs(serde_json::json!({ "sidebar_visible": visible }), cx);
                     cx.notify();
-                },
-            )),
+                })),
+        )
+        .child(
+            icon_button("rail-archived", Icon::Archive, 40.0, theme, false)
+                .tooltip(tip("Archived threads", theme))
+                .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Archived, cx))),
         )
         .child(div().flex_1())
         .child(
-            glyph_button("rail-settings", "⚙", theme, false)
+            icon_button("rail-customize", Icon::Customize, 40.0, theme, customize)
+                .tooltip(tip("Customize", theme))
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.rail = Rail::Customize;
+                    cx.notify();
+                })),
+        )
+        .child(
+            icon_button("rail-settings", Icon::Settings, 40.0, theme, false)
+                .tooltip(tip("Settings \u{00b7} \u{2318},", theme))
                 .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Settings, cx))),
         )
 }
@@ -346,11 +464,13 @@ pub fn sidebar(
     root: &mut Root,
     theme: &Theme,
     scale: f32,
+    _window: &mut Window,
     cx: &mut Context<Root>,
 ) -> impl IntoElement {
     let width = root.sidebar_width;
     let search = root.search.clone();
     let height = px(scale * 20.0).max(px(20.0));
+    let searching = root.searching;
 
     let mut column = div()
         .flex()
@@ -361,18 +481,80 @@ pub fn sidebar(
         .min_h(px(0.0))
         .bg(theme.sidebar());
 
-    column = column.child(
-        div().flex().flex_col().px_3().pt_3().pb_2().child(
+    let mut top = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .h(px(44.0))
+        .px(px(12.0));
+    if searching {
+        top = top.child(
             div()
                 .flex()
+                .flex_row()
                 .items_center()
+                .gap_2()
+                .flex_1()
+                .min_w(px(0.0))
                 .h(px(30.0))
                 .px_2()
                 .rounded(px(8.0))
                 .bg(theme.panel())
                 .border_1()
                 .border_color(theme.border())
-                .child(div().h(height).w_full().child(search)),
+                .child(icons::icon(Icon::Search, 14.0, theme.faint()))
+                .child(div().flex_1().min_w(px(0.0)).h(height).child(search))
+                .child(
+                    icon_button("sidebar-search-close", Icon::Close, 22.0, theme, false)
+                        .on_click(cx.listener(|root, _, _, cx| root.close_search(cx))),
+                ),
+        );
+    } else {
+        top = top
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text())
+                    .child("Oxide"),
+            )
+            .child(
+                icon_button("sidebar-search", Icon::Search, 28.0, theme, false)
+                    .tooltip(tip("Search chats", theme))
+                    .on_click(cx.listener(|root, _, window, cx| root.open_search(window, cx))),
+            )
+            .child(
+                icon_button("sidebar-add-project-top", Icon::Plus, 28.0, theme, false)
+                    .tooltip(tip("Add a project", theme))
+                    .on_click(cx.listener(|root, _, _, cx| root.add_project(cx))),
+            );
+    }
+    column = column.child(top);
+
+    column = column.child(
+        div().px(px(8.0)).pb(px(6.0)).child(
+            div()
+                .id("sidebar-new-chat")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(7.0))
+                .h(px(34.0))
+                .px_2()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel()))
+                .child(icons::icon(Icon::Pencil, 15.0, theme.accent()))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text())
+                        .child("New Chat"),
+                )
+                .on_click(cx.listener(|root, _, window, cx| root.new_chat(window, cx))),
         ),
     );
 
@@ -383,9 +565,9 @@ pub fn sidebar(
         .flex_1()
         .min_h(px(0.0))
         .overflow_y_scroll()
-        .px_2()
-        .pb_2()
-        .gap_1();
+        .px(px(4.0))
+        .pb(px(14.0))
+        .gap(px(2.0));
 
     if !root.query.trim().is_empty() {
         let results = root.results.clone();
@@ -417,6 +599,7 @@ pub fn sidebar(
                 &session.title,
                 &when,
                 session.pinned,
+                session.worktree.is_some(),
                 theme,
                 cx,
                 move |root, window, cx| {
@@ -443,6 +626,7 @@ pub fn sidebar(
                     &title,
                     &when,
                     true,
+                    session.worktree.is_some(),
                     theme,
                     cx,
                     move |root, window, cx| {
@@ -455,6 +639,7 @@ pub fn sidebar(
             }
         }
 
+        list = list.child(projects_header(theme, cx));
         let projects = root.projects.clone();
         let collapsed = root.collapsed.clone();
         for project in projects {
@@ -485,30 +670,33 @@ pub fn sidebar(
                 .flex_row()
                 .items_center()
                 .gap_1()
-                .h(px(28.0))
+                .h(px(30.0))
                 .px_2()
-                .rounded(px(7.0))
+                .rounded(px(8.0))
                 .cursor_pointer()
                 .hover(move |style| style.bg(theme.panel()))
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(10.0))
-                        .text_size(px(10.0))
-                        .text_color(theme.faint())
-                        .child(if expanded { "▾" } else { "▸" }),
-                )
+                .child(div().flex_none().w(px(4.0)))
+                .child(icons::icon(
+                    if expanded {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    12.0,
+                    theme.faint(),
+                ))
+                .child(icons::icon(Icon::Folder, 15.0, theme.dim()))
                 .child(
                     div()
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(px(12.5))
+                        .text_size(px(13.0))
                         .text_color(theme.dim())
                         .child(name),
                 )
-                .children(pinned.then(|| pill("★", theme, false)))
+                .children(pinned.then(|| icons::icon(Icon::Pin, 12.0, theme.accent())))
                 .children(missing.then(|| {
                     div()
                         .flex_none()
@@ -528,13 +716,16 @@ pub fn sidebar(
                         }),
                 )
                 .child(
-                    glyph_button(
+                    icon_button(
                         SharedString::from(format!("project-new-{path}")),
-                        "＋",
+                        Icon::Plus,
+                        20.0,
                         theme,
                         false,
                     )
+                    .tooltip(tip("New chat in this project", theme))
                     .on_click(cx.listener(move |root, _, window, cx| {
+                        cx.stop_propagation();
                         root.push_chat(
                             window,
                             path_for_new.clone(),
@@ -546,13 +737,16 @@ pub fn sidebar(
                     })),
                 )
                 .child(
-                    glyph_button(
+                    icon_button(
                         SharedString::from(format!("project-remove-{path}")),
-                        "⋯",
+                        Icon::More,
+                        20.0,
                         theme,
                         false,
                     )
+                    .tooltip(tip("Pin or remove this project", theme))
                     .on_click(cx.listener(move |root, _, _window, cx| {
+                        cx.stop_propagation();
                         let pinned = root
                             .projects
                             .iter()
@@ -581,12 +775,12 @@ pub fn sidebar(
                 if sessions.is_empty() {
                     list = list.child(
                         div()
-                            .pl(px(24.0))
+                            .pl(px(46.0))
                             .pr_2()
-                            .py_1()
+                            .pb_1()
                             .text_size(px(12.0))
                             .text_color(theme.faint())
-                            .child("No chats yet"),
+                            .child("No chats"),
                     );
                 }
                 for session in sessions {
@@ -598,6 +792,7 @@ pub fn sidebar(
                         &title,
                         &when,
                         pinned,
+                        session.worktree.is_some(),
                         theme,
                         cx,
                         move |root, window, cx| {
@@ -611,31 +806,40 @@ pub fn sidebar(
                 }
             }
         }
+
+        // The threads the reader was in most recently, across every folder: the
+        // page ends its sidebar with the same list, so a thread is one click
+        // away even when its project is folded away.
+        let mut recents = root.sessions.clone();
+        recents.retain(|session| !session.pinned);
+        recents.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
+        recents.truncate(5);
+        if !recents.is_empty() {
+            list = list.child(section("Recents", theme));
+            for session in recents {
+                let id = session.id.clone();
+                let title = session.title.clone();
+                let when = session_when(&session);
+                let pinned = session.pinned;
+                list = list.child(session_row(
+                    &title,
+                    &when,
+                    pinned,
+                    session.worktree.is_some(),
+                    theme,
+                    cx,
+                    move |root, window, cx| {
+                        if let Some(found) = root.sessions.iter().find(|row| row.id == id).cloned()
+                        {
+                            root.open_session(window, found, cx);
+                        }
+                    },
+                ));
+            }
+        }
     }
 
     column = column.child(list);
-    column = column.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .py_2()
-            .border_t_1()
-            .border_color(theme.border())
-            .child(
-                Button::new("Add project")
-                    .render("add-project", theme, cx, |root, _, cx| root.add_project(cx)),
-            )
-            .child(
-                Button::new("Archived").render("open-archived", theme, cx, |root, _, cx| {
-                    root.open_overlay(Overlay::Archived, cx)
-                }),
-            )
-            .child(div().flex_1())
-            .child(pill("Beta", theme, false)),
-    );
     column
 }
 
@@ -650,10 +854,35 @@ fn section(title: &'static str, theme: &Theme) -> gpui::Div {
         .child(title)
 }
 
+/// The sidebar's `Projects` heading: the name on the left, the folder-picker
+/// behind the plus on the right, the way the page pairs them.
+fn projects_header(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .h(px(28.0))
+        .px_2()
+        .pt_1()
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.faint())
+                .child("Projects"),
+        )
+        .child(
+            icon_button("sidebar-add-project", Icon::Plus, 22.0, theme, false)
+                .on_click(cx.listener(|root, _, _, cx| root.add_project(cx))),
+        )
+}
+
 fn session_row(
     title: &str,
     when: &str,
     pinned: bool,
+    worktree: bool,
     theme: &Theme,
     cx: &mut Context<Root>,
     open: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
@@ -661,17 +890,26 @@ fn session_row(
     let title = title.to_string();
     let when = when.to_string();
     div()
-        .id(SharedString::from(format!("session-{}", title.clone())))
+        .id(SharedString::from(format!("session-{title}")))
         .flex()
         .flex_row()
         .items_center()
-        .gap_1()
-        .h(px(28.0))
-        .pl(px(24.0))
+        .gap_2()
+        .h(px(30.0))
+        .pl(px(30.0))
         .pr_2()
-        .rounded(px(7.0))
+        .rounded(px(8.0))
         .cursor_pointer()
         .hover(move |style| style.bg(theme.panel()))
+        .child(icons::icon(
+            if pinned { Icon::Pin } else { Icon::Chat },
+            13.0,
+            if pinned {
+                theme.accent()
+            } else {
+                theme.faint()
+            },
+        ))
         .child(
             div()
                 .flex_1()
@@ -682,14 +920,14 @@ fn session_row(
                 .text_color(theme.text())
                 .child(title.clone()),
         )
-        .children(pinned.then(|| pill("★", theme, false)))
         .child(
             div()
                 .flex_none()
-                .text_size(px(11.0))
+                .text_size(px(10.5))
                 .text_color(theme.faint())
                 .child(when),
         )
+        .children(worktree.then(|| icons::icon(Icon::Branch, 12.0, theme.accent())))
         .on_click(cx.listener(move |root, _, window, cx| open(root, window, cx)))
         .on_mouse_down(
             MouseButton::Right,
@@ -732,6 +970,325 @@ pub fn sidebar_resizer(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -
 
 // ---------- main ----------
 
+// ---------- details ----------
+
+/// The pane beside the conversation: the project, the work tree's own totals,
+/// the branch, and the sources (MCP servers) the thread can reach — the page's
+/// right-hand column, at the same 280px.
+pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
+    let project = root.selected_project().cloned();
+    let branch = root.branch.clone();
+    let sources = root.sources.clone();
+    let totals = root
+        .chats
+        .get(root.active)
+        .and_then(|chat| chat.changes.clone())
+        .unwrap_or(serde_json::Value::Null);
+    let added = totals["added"].as_u64().unwrap_or(0);
+    let removed = totals["removed"].as_u64().unwrap_or(0);
+    let files = totals["files"].as_array().map(Vec::len).unwrap_or(0);
+
+    let mut column = div()
+        .id("details-pane")
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(px(280.0))
+        .h_full()
+        .min_h(px(0.0))
+        .overflow_y_scroll()
+        .gap_1()
+        .px(px(14.0))
+        .py(px(12.0))
+        .bg(theme.background())
+        .border_l_1()
+        .border_color(theme.border());
+
+    let name = project
+        .as_ref()
+        .map(|project| root.project_name(&project.path))
+        .unwrap_or_else(|| "No project".to_string());
+    column = column.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .h(px(30.0))
+            .px_2()
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(12.5))
+                    .text_color(theme.dim())
+                    .child(name),
+            )
+            .child({
+                let project = project.clone();
+                icon_button("details-more", Icon::More, 24.0, theme, false)
+                    .tooltip(tip("Project actions", theme))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        let Some(project) = project.clone() else {
+                            return;
+                        };
+                        root.overlay = Some(Overlay::ProjectActions {
+                            id: project.id,
+                            path: project.path,
+                            name: project.name,
+                            pinned: project.pinned,
+                        });
+                        cx.notify();
+                    }))
+            }),
+    );
+
+    column = column.child(detail_row(
+        "details-changes",
+        Icon::Changes,
+        "View changes",
+        if files > 0 {
+            Some(vec![
+                (format!("+{added}"), theme.success()),
+                (format!("\u{2212}{removed}"), theme.error()),
+            ])
+        } else {
+            None
+        },
+        theme,
+        cx,
+        |root, _, cx| {
+            root.show_changes = !root.show_changes;
+            let index = root.active;
+            if root.show_changes {
+                root.refresh_repository(index, cx);
+            }
+            cx.notify();
+        },
+    ));
+
+    column = column.child(detail_row(
+        "details-repository",
+        Icon::Folder,
+        "Repository",
+        Some(vec![(
+            branch.unwrap_or_else(|| "Local checkout".to_string()),
+            theme.faint(),
+        )]),
+        theme,
+        cx,
+        |root, _, cx| {
+            root.rail = Rail::Customize;
+            root.overlay = None;
+            cx.notify();
+        },
+    ));
+
+    column = column.child(div().h(px(12.0)));
+
+    column = column.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .h(px(26.0))
+            .px_2()
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.faint())
+                    .child("Sources"),
+            )
+            .child(
+                icon_button("details-add-source", Icon::Plus, 22.0, theme, false)
+                    .tooltip(tip("Sources come from the project's mcp.json", theme))
+                    .on_click(cx.listener(|root, _, _, cx| {
+                        root.rail = Rail::Customize;
+                        root.overlay = None;
+                        cx.notify();
+                    })),
+            ),
+    );
+
+    if sources.is_empty() {
+        column = column.child(
+            div()
+                .px_2()
+                .py_1()
+                .text_size(px(11.5))
+                .text_color(theme.faint())
+                .child("No MCP servers in this project"),
+        );
+    } else {
+        for server in &sources {
+            let name = server["name"].as_str().unwrap_or_default().to_string();
+            let state = if !server["enabled"].as_bool().unwrap_or(true) {
+                "Off".to_string()
+            } else {
+                match server["state"].as_str().unwrap_or_default() {
+                    "connected" => "Connected".to_string(),
+                    "needs-auth" => "Needs auth".to_string(),
+                    "needs-trust" => "Needs trust".to_string(),
+                    "" => "Ready".to_string(),
+                    other => other.to_string(),
+                }
+            };
+            let color = if state == "Connected" {
+                theme.success()
+            } else if state == "Off" {
+                theme.faint()
+            } else {
+                theme.tool()
+            };
+            column = column.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .h(px(28.0))
+                    .px_2()
+                    .rounded(px(7.0))
+                    .child(icons::icon(Icon::Globe, 14.0, theme.faint()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(12.0))
+                            .text_color(theme.text())
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(10.5))
+                            .text_color(color)
+                            .child(state),
+                    ),
+            );
+        }
+    }
+
+    column = column.child(
+        div()
+            .id("details-view-all")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .h(px(28.0))
+            .px_2()
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .text_size(px(12.0))
+            .text_color(theme.dim())
+            .hover(move |style| style.bg(theme.panel()).text_color(theme.text()))
+            .child("View all")
+            .on_click(cx.listener(|root, _, _, cx| {
+                root.rail = Rail::Customize;
+                root.overlay = None;
+                cx.notify();
+            })),
+    );
+
+    column
+}
+
+fn detail_row(
+    id: &'static str,
+    mark: Icon,
+    label: &str,
+    trailing: Option<Vec<(String, gpui::Hsla)>>,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<gpui::Div> {
+    let mut row = div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .h(px(30.0))
+        .px_2()
+        .rounded(px(7.0))
+        .cursor_pointer()
+        .text_size(px(12.5))
+        .text_color(theme.dim())
+        .hover(move |style| style.bg(theme.panel()).text_color(theme.text()))
+        .child(icons::icon(mark, 15.0, theme.faint()))
+        .child(div().flex_1().child(label.to_string()));
+    if let Some(values) = trailing {
+        for (value, color) in values {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_size(px(11.0))
+                    .text_color(color)
+                    .child(value),
+            );
+        }
+    }
+    row.on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
+fn changes_pill(
+    files: usize,
+    added: u64,
+    removed: u64,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    div()
+        .id("changes-pill")
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .flex_none()
+        .h(px(28.0))
+        .px(px(12.0))
+        .rounded(px(14.0))
+        .bg(theme.panel())
+        .border_1()
+        .border_color(theme.border())
+        .cursor_pointer()
+        .text_size(px(11.5))
+        .text_color(theme.dim())
+        .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+        .tooltip(tip(
+            "Open the changes pane \u{00b7} \u{2318}\u{23ce}",
+            theme,
+        ))
+        .child(if files == 1 {
+            "1 file changed".to_string()
+        } else {
+            format!("{files} files changed")
+        })
+        .child(
+            div()
+                .flex_none()
+                .text_color(theme.success())
+                .child(format!("+{added}")),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(theme.error())
+                .child(format!("\u{2212}{removed}")),
+        )
+        .on_click(cx.listener(|root, _, _, cx| {
+            root.show_changes = !root.show_changes;
+            let index = root.active;
+            if root.show_changes {
+                root.refresh_repository(index, cx);
+            }
+            cx.notify();
+        }))
+}
+
 pub fn main(
     root: &mut Root,
     theme: &Theme,
@@ -752,6 +1309,9 @@ pub fn main(
     }
 
     column = column.child(conversation(root, theme, scale, window, cx));
+    if root.show_details {
+        column = column.child(details(root, theme, cx));
+    }
     if root.show_changes {
         column = column.child(changes_panel(root, theme, cx));
     }
@@ -779,10 +1339,11 @@ fn conversation(
     }
 
     let index = root.active;
-    let chat = &root.chats[index];
-    let title = chat.title.clone();
-    let project = root.project_name(&chat.project);
     let trust = root.info["trust"].clone();
+    // Trust is the object `project_info` answers with, not a flag: the prompt to
+    // grant it belongs to a project whose own resources are still unloaded.
+    let untrusted =
+        trust["required"].as_bool().unwrap_or(false) && !trust["trusted"].as_bool().unwrap_or(true);
     let mut scroll = gpui::ScrollHandle::new();
     std::mem::swap(&mut scroll, &mut root.chats[index].scroll);
     let scroll_to_end = root.chats[index].scroll_to_end;
@@ -796,29 +1357,12 @@ fn conversation(
         .min_h(px(0.0))
         .overflow_y_scroll()
         .track_scroll(&scroll)
-        .px_4()
-        .pt_4()
-        .pb_2()
-        .gap_4();
+        .px(px(28.0))
+        .pt(px(38.0))
+        .pb(px(16.0))
+        .gap(px(24.0));
 
-    transcript = transcript.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .pb_1()
-            .child(
-                div()
-                    .text_size(px(17.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text())
-                    .child(title),
-            )
-            .child(pill(project, theme, false)),
-    );
-
-    if !trust.as_bool().unwrap_or(true) {
+    if untrusted {
         let path = root.chats[index].project.clone();
         transcript = transcript.child(
             div()
@@ -852,17 +1396,17 @@ fn conversation(
     }
 
     if entries.is_empty() {
-        transcript = transcript.child(
-            div()
-                .py_8()
-                .text_size(px(13.5))
-                .text_color(theme.faint())
-                .child("Ask Oxide to read, change or run something in this project."),
-        );
+        transcript = transcript.child(empty_state(root, theme, cx));
     }
 
     for (position, entry) in entries.iter().enumerate() {
-        transcript = transcript.child(entry_view(entry, index, position, theme, cx));
+        transcript = transcript.child(
+            div()
+                .w_full()
+                .max_w(px(780.0))
+                .mx_auto()
+                .child(entry_view(entry, index, position, theme, cx)),
+        );
     }
 
     let composer_editor = root.editors.get(&root.chats[index].id).cloned();
@@ -878,6 +1422,31 @@ fn conversation(
         .min_h(px(0.0))
         .child(transcript);
 
+    // What the work tree holds right now, on the composer's own top edge: the
+    // page's chip, and the way into the changes pane.
+    let totals = root.chats[index]
+        .changes
+        .clone()
+        .unwrap_or(serde_json::Value::Null);
+    let files = totals["files"].as_array().map(Vec::len).unwrap_or(0);
+    if files > 0 {
+        pane_body = pane_body.child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_center()
+                .w_full()
+                .pb(px(10.0))
+                .child(changes_pill(
+                    files,
+                    totals["added"].as_u64().unwrap_or(0),
+                    totals["removed"].as_u64().unwrap_or(0),
+                    theme,
+                    cx,
+                )),
+        );
+    }
+
     if scroll_to_end {
         scroll.scroll_to_bottom();
         root.chats[index].scroll_to_end = false;
@@ -889,50 +1458,307 @@ fn conversation(
     pane
 }
 
+/// The page the window opens on before a thread is in the transcript: the mark,
+/// the invitation and — once a project is open — the four suggestions, which put
+/// their text in the composer to edit rather than sending it.
+const SUGGESTIONS: [&str; 4] = [
+    "Explain this codebase and its architecture.",
+    "Find and fix the highest-priority bug in this repository.",
+    "Add tests for the most important untested code path.",
+    "Review the working tree changes and summarize the risks.",
+];
+
 fn empty_state(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
     let project = root.selected_project().cloned();
-    div()
+    let mut page = div()
         .flex()
         .flex_col()
         .flex_1()
         .items_center()
         .justify_center()
-        .gap_3()
-        .child(
-            div()
-                .text_size(px(22.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text())
-                .child("Oxide Beta"),
-        )
-        .child(
-            div()
-                .text_size(px(13.0))
-                .text_color(theme.dim())
-                .child("A native GPUI window onto the same projects, chats and approvals."),
-        )
+        .w_full()
+        .max_w(px(640.0))
+        .mx_auto()
+        .pb(px(32.0))
         .child(
             div()
                 .flex()
-                .flex_row()
-                .gap_2()
-                .child(Button::new("New chat").primary().render(
-                    "empty-new",
-                    theme,
-                    cx,
-                    |root, window, cx| root.new_chat(window, cx),
-                ))
-                .child(
-                    Button::new("Add project")
-                        .render("empty-add", theme, cx, |root, _, cx| root.add_project(cx)),
-                ),
+                .items_center()
+                .justify_center()
+                .flex_none()
+                .w(px(64.0))
+                .h(px(64.0))
+                .rounded(px(18.0))
+                .bg(theme.well())
+                .child(icons::mark(40.0)),
         )
-        .children(project.map(|project| {
+        .child(
             div()
-                .text_size(px(12.0))
+                .pt(px(16.0))
+                .text_size(px(28.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text())
+                .child("What should we build?"),
+        );
+
+    match project {
+        Some(project) => {
+            page = page
+                .child(
+                    div()
+                        .pt(px(8.0))
+                        .text_size(px(12.5))
+                        .text_color(theme.faint())
+                        .child(project.display_path),
+                )
+                .child(div().pt(px(22.0)).w_full().child(suggestions(theme, cx)));
+        }
+        None => {
+            page =
+                page.child(
+                    div()
+                        .pt(px(8.0))
+                        .text_size(px(12.5))
+                        .text_color(theme.dim())
+                        .child("Open a folder to start a chat in it."),
+                )
+                .child(div().pt(px(22.0)).child(
+                    Button::new("Add project").primary().render(
+                        "empty-add",
+                        theme,
+                        cx,
+                        |root, _, cx| root.add_project(cx),
+                    ),
+                ));
+        }
+    }
+    page
+}
+
+fn suggestions(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
+    let mut grid = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .justify_center()
+        .gap_3()
+        .pt_1();
+    for text in SUGGESTIONS {
+        grid = grid.child(
+            div()
+                .id(SharedString::from(format!("suggestion-{text}")))
+                .flex()
+                .items_center()
+                .w(px(314.0))
+                .min_h(px(76.0))
+                .p(px(16.0))
+                .rounded(px(14.0))
+                .border_1()
+                .border_color(theme.border())
+                .bg(theme.panel())
+                .text_size(px(13.0))
+                .line_height(px(18.0))
+                .text_color(theme.dim())
+                .cursor_pointer()
+                .hover(move |style| {
+                    style
+                        .border_color(theme.dim())
+                        .bg(theme.panel_2())
+                        .text_color(theme.text())
+                })
+                .child(text)
+                .on_click(cx.listener(move |root, _, window, cx| {
+                    root.fill_composer(text.to_string(), window, cx)
+                })),
+        );
+    }
+    grid
+}
+
+/// The card a turn leaves behind when it changed files: the count, the totals,
+/// the first few files it touched, and the two things a reader wants next —
+/// putting them back, or reading them in the changes pane.
+fn edited_card(
+    card: &crate::model::EditedCard,
+    chat: usize,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    let count = card.files.len();
+    let mut head = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_none()
+                .w(px(26.0))
+                .h(px(26.0))
+                .rounded(px(7.0))
+                .bg(theme.panel_3())
+                .child(icons::icon(Icon::File, 14.0, theme.dim())),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text())
+                .child(if count == 1 {
+                    "Edited 1 file".to_string()
+                } else {
+                    format!("Edited {count} files")
+                }),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(11.5))
+                .text_color(theme.success())
+                .child(format!("+{}", card.added)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(11.5))
+                .text_color(theme.error())
+                .child(format!("\u{2212}{}", card.removed)),
+        );
+
+    if card.undone {
+        head = head.child(
+            div()
+                .flex_none()
+                .text_size(px(11.0))
                 .text_color(theme.faint())
-                .child(format!("New chats open in {}", project.display_path))
-        }))
+                .child("Undone"),
+        );
+    } else if card.latest {
+        head = head.child(
+            div()
+                .id(("edited-undo", chat))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .flex_none()
+                .h(px(26.0))
+                .px_2()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .border_1()
+                .border_color(theme.border())
+                .text_size(px(11.5))
+                .text_color(theme.text())
+                .hover(move |style| style.bg(theme.panel_3()))
+                .tooltip(tip("Put this turn's files back", theme))
+                .child("Undo")
+                .child(icons::icon(Icon::Back, 12.0, theme.dim()))
+                .on_click(cx.listener(|root, _, _, cx| root.undo_turn(cx))),
+        );
+    }
+    head = head.child(
+        div()
+            .id(("edited-view", chat))
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_none()
+            .h(px(26.0))
+            .px_2()
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .border_1()
+            .border_color(theme.border())
+            .text_size(px(11.5))
+            .text_color(theme.text())
+            .hover(move |style| style.bg(theme.panel_3()))
+            .child("View changes")
+            .on_click(cx.listener(|root, _, _, cx| {
+                root.show_changes = true;
+                let index = root.active;
+                root.refresh_repository(index, cx);
+                cx.notify();
+            })),
+    );
+
+    let mut block = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_3()
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(theme.border())
+        .bg(theme.panel())
+        .child(head);
+
+    let shown = card.files.len().min(6);
+    for file in card.files.iter().take(shown) {
+        block = block.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(12.0))
+                        .text_size(px(11.0))
+                        .text_color(theme.faint())
+                        .child(status_letter(&file.status)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .font_family("Menlo")
+                        .text_size(px(11.5))
+                        .text_color(theme.dim())
+                        .child(file.path.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(theme.success())
+                        .child(format!("+{}", file.added)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(theme.error())
+                        .child(format!("\u{2212}{}", file.removed)),
+                ),
+        );
+    }
+    if card.files.len() > shown {
+        block = block.child(
+            div()
+                .text_size(px(11.5))
+                .text_color(theme.faint())
+                .child(format!("and {} more", card.files.len() - shown)),
+        );
+    }
+    block
+}
+
+/// `status_letter` names a change the way git does: added, modified, deleted.
+fn status_letter(status: &str) -> &'static str {
+    match status {
+        "added" => "A",
+        "deleted" => "D",
+        "renamed" => "R",
+        _ => "M",
+    }
 }
 
 fn entry_view(
@@ -948,19 +1774,11 @@ fn entry_view(
                 .flex()
                 .flex_col()
                 .gap_2()
-                .px_3()
-                .py_2()
-                .rounded(px(12.0))
+                .px(px(15.0))
+                .py(px(11.0))
+                .rounded(px(18.0))
                 .bg(theme.panel_2())
-                .border_1()
-                .border_color(theme.border())
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.user())
-                        .child("You"),
-                )
+                .max_w(px(676.0))
                 .child(
                     div()
                         .text_size(px(13.5))
@@ -977,7 +1795,7 @@ fn entry_view(
                     ),
                 );
             }
-            card
+            div().flex().flex_row().w_full().justify_end().child(card)
         }
         Entry::Assistant {
             blocks,
@@ -1044,56 +1862,69 @@ fn entry_view(
                 )
         }
         Entry::Tool(card) => {
-            let (dot, color) = match card.status {
-                Status::Pending => ("○", theme.faint()),
-                Status::Running => ("◌", theme.accent()),
-                Status::Done => ("●", theme.success()),
-                Status::Failed => ("●", theme.error()),
+            let (color, state) = match card.status {
+                Status::Pending => (theme.faint(), "Queued"),
+                Status::Running => (theme.accent(), "Running"),
+                Status::Done => (theme.success(), ""),
+                Status::Failed => (theme.error(), "Failed"),
             };
-            let mut block = div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .px_3()
-                .py_2()
-                .rounded(px(10.0))
-                .bg(theme.color("tool_pending_bg"))
-                .border_1()
-                .border_color(theme.border())
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .child(div().text_size(px(10.0)).text_color(color).child(dot))
-                        .child(
-                            div()
-                                .text_size(px(12.5))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.tool())
-                                .child(card.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(px(12.0))
-                                .text_color(theme.dim())
-                                .child(card.detail.clone()),
-                        ),
-                );
+            // A finished call is a line of text, the way the page draws it: no
+            // panel, no border, just the name, what it acted on and its output.
+            // A running or failed one is the only card that gets a surface.
+            let mut block = div().flex().flex_col().py(px(4.0));
+            if matches!(card.status, Status::Running | Status::Failed) {
+                block = block
+                    .px(px(12.0))
+                    .py(px(9.0))
+                    .rounded(px(12.0))
+                    .border_l_2()
+                    .border_color(color)
+                    .bg(if card.status == Status::Failed {
+                        theme.color("tool_error_bg")
+                    } else {
+                        theme.color("tool_pending_bg")
+                    });
+            }
+            block = block.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text())
+                            .child(card.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .font_family("Menlo")
+                            .text_size(px(11.5))
+                            .text_color(theme.faint())
+                            .child(card.detail.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(11.0))
+                            .text_color(color)
+                            .child(state.to_string()),
+                    ),
+            );
             if !card.output.trim().is_empty() {
                 block = block.child(
                     div()
                         .id(SharedString::from(format!("tool-output-{}", card.id)))
-                        .max_h(px(240.0))
+                        .mt(px(6.0))
+                        .max_h(px(110.0))
                         .overflow_hidden()
-                        .rounded(px(8.0))
-                        .bg(theme.color("panel"))
-                        .p_2()
                         .text_size(px(11.5))
                         .line_height(px(17.0))
                         .font_family("Menlo")
@@ -1108,6 +1939,7 @@ fn entry_view(
             }
             block
         }
+        Entry::Edited(card) => edited_card(card, chat, theme, cx),
         Entry::Error(message) => div()
             .flex()
             .flex_col()
@@ -1274,7 +2106,7 @@ fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
     match block {
         Block::Paragraph(spans) => div()
             .text_size(px(13.5))
-            .line_height(px(21.0))
+            .line_height(px(22.0))
             .child(styled(theme, spans)),
         Block::Heading { level, spans } => div()
             .pt_1()
@@ -1395,11 +2227,9 @@ fn composer(
     let attachments = chat.attachments.clone();
     let project = root.project_name(&chat.project);
     let model = root.info["model"].as_str().unwrap_or("model").to_string();
-    let provider = root.info["provider"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
     let reasoning = root.info["reasoning"].as_str().unwrap_or("off").to_string();
+
+    let branch = root.branch.clone();
 
     let mut box_row = div()
         .key_context("Composer")
@@ -1407,37 +2237,98 @@ fn composer(
         .on_action(cx.listener(|root, _: &crate::app::Stop, _window, cx| root.stop(cx)))
         .flex()
         .flex_col()
-        .gap_2()
+        .gap_1()
         .w_full()
-        .p_3()
+        .px(px(13.0))
+        .py(px(11.0))
         .bg(theme.panel_2())
         .border_1()
         .border_color(theme.border())
-        .rounded(px(18.0));
+        .rounded(px(22.0));
+
+    // The row on the box's top edge, the way the page's composer carries its
+    // own: the folder the thread runs in and the branch it writes to. It sits
+    // inside the box rather than above it, so the two edges read as one.
+    box_row = box_row.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .h(px(24.0))
+            .px_1()
+            .child(icons::icon(Icon::Folder, 13.0, theme.faint()))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(11.5))
+                    .text_color(theme.dim())
+                    .child(project.clone()),
+            )
+            .children(branch.map(|branch| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .child(icons::icon(Icon::Branch, 13.0, theme.faint()))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(11.0))
+                            .text_color(theme.faint())
+                            .child(branch),
+                    )
+            }))
+            .child(div().flex_1())
+            .children(running.then(|| {
+                div()
+                    .flex_none()
+                    .text_size(px(11.0))
+                    .text_color(theme.accent())
+                    .child("Working…")
+            })),
+    );
 
     if !attachments.is_empty() {
         box_row = box_row.child(
-            div().flex().flex_row().flex_wrap().gap_1().children(
+            div().flex().flex_row().flex_wrap().gap_2().px_1().children(
                 attachments
                     .iter()
                     .enumerate()
                     .map(|(position, attachment)| {
                         let name = attachment.name.clone();
+                        let image = attachment.data_url.starts_with("data:image");
                         div()
                             .id(("attachment", position))
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap_1()
-                            .px_2()
-                            .h(px(22.0))
-                            .rounded(px(11.0))
+                            .h(px(26.0))
+                            .px(px(6.0))
+                            .rounded(px(7.0))
                             .bg(theme.panel_3())
                             .text_size(px(11.5))
                             .text_color(theme.dim())
-                            .child(name)
-                            .child("×")
                             .cursor_pointer()
+                            .child(icons::icon(
+                                if image { Icon::Image } else { Icon::File },
+                                14.0,
+                                theme.faint(),
+                            ))
+                            .child(
+                                div()
+                                    .max_w(px(220.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(name),
+                            )
+                            .child(icons::icon(Icon::Close, 11.0, theme.faint()))
                             .on_click(cx.listener(move |root, _, _window, cx| {
                                 if let Some(chat) = root.chats.get_mut(index) {
                                     chat.attachments.remove(position);
@@ -1459,49 +2350,65 @@ fn composer(
 
     box_row = box_row.child(input);
 
-    let mut controls = div().flex().flex_row().items_center().gap_2().w_full();
-    controls = controls
-        .child(chip(
-            ("chip-project", 0usize),
-            project,
-            theme,
-            cx,
-            |root, _, cx| {
-                if let Some(project) = root.selected_project().cloned() {
-                    root.overlay = Some(Overlay::Confirm {
-                        title: "Project".to_string(),
-                        body: format!("Chats in this window run in {}", project.display_path),
-                        action: crate::app::ConfirmAction::RemoveProject(project.id.clone()),
-                    });
+    let mut footer = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .w_full()
+        .min_h(px(34.0));
+    footer = footer
+        .child(
+            icon_button(
+                ("composer-attach", 0usize),
+                Icon::Paperclip,
+                28.0,
+                theme,
+                false,
+            )
+            .tooltip(tip("Attach a file", theme))
+            .on_click(cx.listener(|root, _, _, cx| root.attach_files(cx))),
+        )
+        .child(
+            icon_button(("composer-tools", 1usize), Icon::More, 28.0, theme, false)
+                .tooltip(tip("More tools", theme))
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.rail = Rail::Customize;
+                    root.overlay = None;
                     cx.notify();
-                }
-            },
-        ))
-        .child(chip(
-            ("chip-model", 1usize),
-            model.clone(),
-            theme,
-            cx,
-            |root, _, cx| root.open_overlay(Overlay::Models, cx),
-        ));
-    if !provider.is_empty() {
-        controls = controls.child(
+                })),
+        )
+        .child(
             div()
-                .text_size(px(11.0))
-                .text_color(theme.faint())
-                .child(provider),
-        );
-    }
-    controls = controls.child(chip(
-        ("chip-attach", 3usize),
-        "+ attach",
+                .id("composer-approvals")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .h(px(28.0))
+                .px_2()
+                .rounded(px(8.0))
+                .cursor_pointer()
+                .text_size(px(11.5))
+                .text_color(theme.dim())
+                .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
+                .tooltip(tip("Tool approvals", theme))
+                .child(icons::icon(Icon::Lock, 13.0, theme.faint()))
+                .child("Tool approvals")
+                .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Approvals, cx))),
+        )
+        .child(div().flex_1());
+
+    footer = footer.child(setting_chip(
+        ("chip-model", 1usize),
+        model.clone(),
         theme,
         cx,
-        |root, _, cx| root.attach_files(cx),
+        |root, _, cx| root.open_overlay(Overlay::Models, cx),
     ));
-    controls = controls.child(chip(
+    footer = footer.child(setting_chip(
         ("chip-reasoning", 2usize),
-        format!("thinking: {reasoning}"),
+        capitalised(&reasoning),
         theme,
         cx,
         |root, _, cx| {
@@ -1522,28 +2429,49 @@ fn composer(
             root.set_reasoning(next, cx);
         },
     ));
-    controls = controls.child(div().flex_1());
 
     if running {
-        controls = controls.child(Button::new("Stop").danger().render(
-            "composer-stop",
-            theme,
-            cx,
-            |root, _, cx| root.stop(cx),
-        ));
+        footer = footer.child(
+            div()
+                .id("composer-stop")
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_none()
+                .w(px(28.0))
+                .h(px(28.0))
+                .rounded(px(14.0))
+                .cursor_pointer()
+                .bg(theme.panel_3())
+                .hover(move |style| style.bg(theme.panel()))
+                .tooltip(tip("Stop the turn", theme))
+                .child(icons::icon(Icon::Square, 14.0, theme.text()))
+                .on_click(cx.listener(|root, _, _, cx| root.stop(cx))),
+        );
     } else {
-        controls = controls.child(Button::new("Send").primary().render(
-            "composer-send",
-            theme,
-            cx,
-            |root, window, cx| {
-                root.send(cx);
-                root.focus_composer(window, cx);
-            },
-        ));
+        footer = footer.child(
+            div()
+                .id("composer-send")
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_none()
+                .w(px(28.0))
+                .h(px(28.0))
+                .rounded(px(14.0))
+                .cursor_pointer()
+                .bg(theme.text())
+                .hover(move |style| style.bg(theme.accent()))
+                .tooltip(tip("Send \u{00b7} \u{23ce}", theme))
+                .child(icons::icon(Icon::ArrowUp, 15.0, theme.background()))
+                .on_click(cx.listener(|root, _, window, cx| {
+                    root.send(cx);
+                    root.focus_composer(window, cx);
+                })),
+        );
     }
 
-    box_row = box_row.child(controls);
+    box_row = box_row.child(footer);
 
     if let Some(usage) = &chat.usage {
         box_row = box_row.child(
@@ -1584,24 +2512,28 @@ fn composer(
         .flex_col()
         .flex_none()
         .w_full()
-        .px_4()
-        .pb_4()
-        .pt_2()
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_center()
-                .w_full()
-                .child(div().w(px(820.0)).max_w_full().child(box_row)),
-        )
+        .items_center()
+        .px(px(28.0))
+        .pb(px(14.0))
+        .pt(px(16.0))
+        .child(div().w_full().max_w(px(820.0)).child(box_row))
+}
+
+/// The label a reasoning level wears: the stored name is `high`, the chip says
+/// `High`, the way the page prints it.
+fn capitalised(label: &str) -> String {
+    let mut characters = label.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => String::new(),
+    }
 }
 
 fn reasoning_level(root: &Root) -> String {
     root.info["reasoning"].as_str().unwrap_or("off").to_string()
 }
 
-fn chip(
+fn setting_chip(
     id: impl Into<gpui::ElementId>,
     label: impl Into<String>,
     theme: &Theme,
@@ -1611,16 +2543,19 @@ fn chip(
     div()
         .id(id)
         .flex()
+        .flex_row()
         .items_center()
-        .h(px(24.0))
-        .px_2()
-        .rounded(px(12.0))
-        .bg(theme.panel_3())
+        .gap_1()
+        .flex_none()
+        .h(px(26.0))
+        .px(px(7.0))
+        .rounded(px(6.0))
+        .cursor_pointer()
         .text_size(px(11.5))
         .text_color(theme.dim())
-        .cursor_pointer()
-        .hover(move |style| style.bg(theme.panel()))
+        .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
         .child(label.into())
+        .child(icons::icon(Icon::ChevronDown, 12.0, theme.faint()))
         .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
@@ -1697,10 +2632,12 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
             );
     }
     header = header.child(div().flex_1()).child(
-        glyph_button("changes-close", "×", theme, false).on_click(cx.listener(|root, _, _, cx| {
-            root.show_changes = false;
-            cx.notify();
-        })),
+        icon_button("changes-close", Icon::Close, 26.0, theme, false).on_click(cx.listener(
+            |root, _, _, cx| {
+                root.show_changes = false;
+                cx.notify();
+            },
+        )),
     );
     column = column.child(header);
 

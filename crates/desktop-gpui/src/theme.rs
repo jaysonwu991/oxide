@@ -11,10 +11,10 @@ use std::collections::BTreeMap;
 
 const DEFAULTS: &[(&str, &str)] = &[
     ("background", "#1c1c1c"),
-    ("sidebar", "#131313"),
-    ("panel", "#202020"),
-    ("panel_2", "#2a2a2a"),
-    ("panel_3", "#303030"),
+    ("sidebar", "#161616"),
+    ("panel", "#212121"),
+    ("panel_2", "#262626"),
+    ("panel_3", "#2d2d2d"),
     ("border", "#2b2b2b"),
     ("text", "#ededed"),
     ("dim", "#9a9a9a"),
@@ -115,9 +115,6 @@ impl Theme {
     pub fn accent(&self) -> Hsla {
         self.color("accent")
     }
-    pub fn user(&self) -> Hsla {
-        self.color("user")
-    }
     pub fn assistant(&self) -> Hsla {
         self.color("assistant")
     }
@@ -146,6 +143,19 @@ impl Theme {
             h: base.h,
             s: base.s,
             l: base.l * amount + background.l * (1.0 - amount),
+            a: 1.0,
+        }
+    }
+
+    /// A surface sunk below the page, for the tile the brand mark sits in: the
+    /// page paints `#14141a` there rather than a panel, so the mark stands on
+    /// something darker than the column around it.
+    pub fn well(&self) -> Hsla {
+        let background = self.background();
+        gpui::Hsla {
+            h: background.h,
+            s: background.s,
+            l: background.l * 0.72,
             a: 1.0,
         }
     }

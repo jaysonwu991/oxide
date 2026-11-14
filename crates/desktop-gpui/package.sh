@@ -132,7 +132,14 @@ PLIST
     echo "signing with $identity"
     codesign --force --deep --options runtime --timestamp --sign "$identity" "$app"
   else
-    echo "no Developer ID identity found; leaving the bundle unsigned"
+    # A bundle whose binary carries only the linker's signature fails
+    # `codesign --verify` as a bundle ("code has no resources but signature
+    # indicates they must be present"), and a copy of it that keeps the
+    # download's quarantine attribute is killed on launch. Signing ad-hoc at
+    # least makes the bundle valid; Gatekeeper still asks before opening a
+    # build it cannot identify, which is the right-click the README mentions.
+    echo "no Developer ID identity found; signing ad-hoc"
+    codesign --force --deep --sign - "$app"
   fi
 
   if [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ]; then
@@ -147,10 +154,23 @@ PLIST
     echo "no notarization credentials; skipping notarization"
   fi
 
+  # The image carries the app and a link to Applications: dragging one onto
+  # the other is the install, and a reader who never leaves the read-only
+  # volume ends up running the app out of the mount instead.
+  stage_dmg="$artifact_dir/dmg"
+  rm -rf "$stage_dmg"
+  mkdir -p "$stage_dmg"
+  cp -R "$app" "$stage_dmg/"
+  ln -s /Applications "$stage_dmg/Applications"
   dmg="$artifact_dir/Oxide-Beta-macos-$arch.dmg"
   rm -f "$dmg"
-  hdiutil create -volname "$app_name" -srcfolder "$app" -ov -format UDZO "$dmg" >/dev/null
+  hdiutil create -volname "$app_name" -srcfolder "$stage_dmg" -ov -format UDZO "$dmg" >/dev/null
+  rm -rf "$stage_dmg"
   echo "wrote $dmg"
+  if [ -z "$identity" ]; then
+    echo "note: this build is not notarized, so a downloaded copy needs one"
+    echo "      right-click → Open (or: xattr -dr com.apple.quarantine \"$app\")"
+  fi
   exit 0
 fi
 

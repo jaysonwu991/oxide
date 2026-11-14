@@ -29,6 +29,12 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "io-std", "sync", "net"] }
 unicode-segmentation = "1"
 
+# The window's glyphs are SVG, and the tests rasterise each one to prove it
+# draws something: these are the same versions GPUI paints them with.
+[dev-dependencies]
+resvg = "0.45"
+usvg = "0.45"
+
 [[bin]]
 name = "oxide-desktop-gpui"
 path = "src/main.rs"

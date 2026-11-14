@@ -47,6 +47,14 @@ pub enum Rail {
     Customize,
 }
 
+/// Which section the settings sheet is showing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    General,
+    Appearance,
+    Notifications,
+}
+
 /// What is drawn over the window.
 #[derive(Clone)]
 pub enum Overlay {
@@ -83,6 +91,7 @@ pub enum Overlay {
         pinned: bool,
     },
     Archived,
+    Approvals,
     Connect {
         provider: String,
     },
@@ -141,14 +150,24 @@ pub struct Root {
     pub editors: HashMap<u64, Entity<Editor>>,
     pub search: Entity<Editor>,
     pub query: String,
+    /// Whether the sidebar is showing the search field in place of its brand row,
+    /// the page's own swap between the name and the box.
+    pub searching: bool,
     pub results: Vec<SessionRow>,
     pub rail: Rail,
+    pub settings_tab: SettingsTab,
     pub overlay: Option<Overlay>,
     pub toast: Option<Toast>,
     pub prefs: Value,
     pub info: Value,
     pub models: Value,
     pub approvals: Vec<String>,
+    /// The branch the open thread's folder is on, when it is a repository. The
+    /// composer's top row names it, and leaves the fact out when there is none.
+    pub branch: Option<String>,
+    /// The MCP servers this project loads, as the details pane lists them.
+    pub sources: Vec<Value>,
+    pub show_details: bool,
     pub theme_names: Vec<String>,
     pub current_theme: String,
     pub languages: Vec<Value>,
@@ -206,14 +225,19 @@ impl Root {
             editors: HashMap::new(),
             search,
             query: String::new(),
+            searching: false,
             results: Vec::new(),
             rail: Rail::Chats,
+            settings_tab: SettingsTab::General,
             overlay: None,
             toast: None,
             prefs: Value::Null,
             info: Value::Null,
             models: Value::Null,
             approvals: Vec::new(),
+            branch: None,
+            sources: Vec::new(),
+            show_details: false,
             theme_names: Vec::new(),
             current_theme: "dark".to_string(),
             languages: Vec::new(),
@@ -221,7 +245,7 @@ impl Root {
             archived: Vec::new(),
             changes: None,
             sidebar_visible: true,
-            sidebar_width: 268.0,
+            sidebar_width: 300.0,
             resizing: None,
             collapsed: HashSet::new(),
             show_changes: false,
@@ -376,6 +400,7 @@ impl Root {
                     if let Some(visible) = root.prefs["sidebar_visible"].as_bool() {
                         root.sidebar_visible = visible;
                     }
+                    cx.notify();
                 }
                 Err(error) => root.toast(format!("Could not save that setting: {error}"), true, cx),
             },
@@ -470,12 +495,7 @@ impl Root {
             cx,
             |root, result, cx| match result {
                 Ok(value) => {
-                    root.projects = value["projects"]
-                        .as_array()
-                        .map(|projects| {
-                            projects.iter().filter_map(ProjectRow::from_value).collect()
-                        })
-                        .unwrap_or_default();
+                    root.projects = crate::model::projects(&value);
                     root.refresh_sessions(cx);
                 }
                 Err(error) => root.toast(format!("Could not list projects: {error}"), true, cx),
@@ -513,6 +533,25 @@ impl Root {
                 }
             },
         );
+    }
+
+    /// The sidebar's search: the field takes the brand row's place and the caret
+    /// goes into it, so looking for a thread is one click rather than an always
+    /// present box above the list.
+    pub fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.searching = true;
+        let editor = self.search.clone();
+        window.focus(&editor.read(cx).focus_handle(cx));
+        cx.notify();
+    }
+
+    pub fn close_search(&mut self, cx: &mut Context<Self>) {
+        self.searching = false;
+        self.query.clear();
+        self.results.clear();
+        let editor = self.search.clone();
+        editor.update(cx, |editor, cx| editor.clear(cx));
+        cx.notify();
     }
 
     pub fn search_text(&self, cx: &App) -> String {
@@ -587,10 +626,85 @@ impl Root {
         );
     }
 
+    pub fn load_git(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            self.branch = None;
+            return;
+        };
+        self.call(
+            "git_info",
+            json!({ "project": project }),
+            cx,
+            |root, result, cx| {
+                root.branch = result.ok().and_then(|value| {
+                    if !value["repo"].as_bool().unwrap_or(false) {
+                        return None;
+                    }
+                    let branch = value["branch"].as_str().unwrap_or_default().trim();
+                    if !branch.is_empty() {
+                        return Some(branch.to_string());
+                    }
+                    let detached = value["detached"].as_str().unwrap_or_default().trim();
+                    (!detached.is_empty()).then(|| detached.to_string())
+                });
+                cx.notify();
+            },
+        );
+    }
+
+    pub fn load_sources(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            self.sources.clear();
+            return;
+        };
+        self.call(
+            "mcp_servers",
+            json!({ "project": project }),
+            cx,
+            |root, result, cx| {
+                if let Ok(value) = result {
+                    root.sources = value.as_array().cloned().unwrap_or_default();
+                    cx.notify();
+                }
+            },
+        );
+    }
+
     pub fn load_project_commands(&mut self, cx: &mut Context<Self>) {
         self.load_project_info(cx);
         self.load_models(cx);
         self.load_approvals(cx);
+        self.load_git(cx);
+        self.load_sources(cx);
+    }
+
+    pub fn toggle_details(&mut self, cx: &mut Context<Self>) {
+        self.show_details = !self.show_details;
+        if self.show_details {
+            let index = self.active;
+            self.refresh_repository(index, cx);
+            self.load_sources(cx);
+        }
+        cx.notify();
+    }
+
+    /// Puts a draft in the composer and puts the caret in it: what a welcome
+    /// suggestion does, since a suggestion is text to edit rather than a prompt
+    /// that was sent.
+    pub fn fill_composer(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.chats.is_empty() {
+            self.new_chat(window, cx);
+        }
+        let Some(id) = self.chats.get(self.active).map(|chat| chat.id) else {
+            return;
+        };
+        if let Some(editor) = self.editors.get(&id).cloned() {
+            editor.update(cx, |editor, cx| {
+                editor.set_text(text, cx);
+            });
+            window.focus(&editor.read(cx).focus_handle(cx));
+        }
+        cx.notify();
     }
 
     // ---------- chats ----------
@@ -652,6 +766,10 @@ impl Root {
             self.open_session_messages(project, session, cx);
         }
         self.load_project_commands(cx);
+        // The work tree's own totals are what the composer's chip and the
+        // details pane show, so they are read with the thread rather than only
+        // when a turn ends.
+        self.refresh_repository(self.active, cx);
         if let Some(editor) = self.editors.get(&id) {
             window.focus(&editor.read(cx).focus_handle(cx));
         }
@@ -687,6 +805,11 @@ impl Root {
         session: SessionRow,
         cx: &mut Context<Self>,
     ) {
+        // Picking a result is the end of a search: the field goes back to being
+        // the brand row, the way the page closes its palette.
+        if self.searching {
+            self.close_search(cx);
+        }
         if let Some(index) = self
             .chats
             .iter()
@@ -1105,12 +1228,7 @@ impl Root {
             cx,
             |root, result, cx| match result {
                 Ok(value) => {
-                    root.projects = value["projects"]
-                        .as_array()
-                        .map(|projects| {
-                            projects.iter().filter_map(ProjectRow::from_value).collect()
-                        })
-                        .unwrap_or_default();
+                    root.projects = crate::model::projects(&value);
                     cx.notify();
                 }
                 Err(error) => root.toast(error, true, cx),
@@ -1137,6 +1255,9 @@ impl Root {
             cx,
             move |root, result, cx| match result {
                 Ok(_) => {
+                    if let Some(chat) = root.chats.get_mut(index) {
+                        chat.mark_undone();
+                    }
                     root.refresh_repository(index, cx);
                     root.toast("The turn's changes were undone", false, cx);
                 }
@@ -1254,6 +1375,7 @@ impl Root {
                     chat.changes = payload.get("changes").cloned();
                     chat.baseline = payload["baseline"].as_str().map(str::to_string);
                     chat.after = payload["after"].as_str().map(str::to_string);
+                    chat.record_turn(&payload);
                     for entry in chat.entries.iter_mut() {
                         if let Entry::Approval(card) = entry {
                             if card.decision.is_none() {
@@ -1473,6 +1595,16 @@ fn attachment_from_path(path: &std::path::Path) -> Result<Option<Attachment>, St
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A window with no thread in it opens on the invite and the composer under
+        // it, the way the page does, rather than on a page with nothing to type
+        // into: the first project's draft is made in memory here and becomes a
+        // session only when something is sent.
+        if self.chats.is_empty() {
+            if let Some(project) = self.current_project() {
+                self.push_chat(window, project, None, "New chat".to_string(), cx);
+            }
+        }
+
         let theme = self.theme.clone();
         let scale = self.prefs["font_scale"]
             .as_f64()
@@ -1543,7 +1675,7 @@ impl Render for Root {
         let mut body = div().flex().flex_row().flex_1().min_h(px(0.0));
         body = body.child(views::rail(self, &theme, cx));
         if self.sidebar_visible {
-            body = body.child(views::sidebar(self, &theme, scale, cx));
+            body = body.child(views::sidebar(self, &theme, scale, window, cx));
             body = body.child(views::sidebar_resizer(self, &theme, cx));
         }
         body = body.child(views::main(self, &theme, scale, window, cx));
@@ -1593,10 +1725,13 @@ pub fn open(engine: Engine, packets: tokio::sync::mpsc::UnboundedReceiver<Value>
     let bounds = gpui::Bounds::centered(None, size(px(1280.0), px(840.0)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
+        // The window draws its own topbar, so the platform's is hidden and the
+        // traffic lights are placed inside it, the 76 points the topbar leaves
+        // for them.
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some(SharedString::from("Oxide Beta")),
-            appears_transparent: false,
-            traffic_light_position: None,
+            title: Some(SharedString::from("Oxide")),
+            appears_transparent: true,
+            traffic_light_position: Some(gpui::point(px(14.0), px(16.0))),
         }),
         ..Default::default()
     };
