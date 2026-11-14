@@ -128,6 +128,12 @@ const GLYPHS: &[(&str, &str)] = &[
         ),
     ),
     (
+        "worktree",
+        glyph!(
+            r##"<rect x="2.5" y="4" width="9.5" height="11" rx="2"/><path d="M7.2 8h4.6M7.2 11.5h3.2"/><rect x="15" y="6" width="6.5" height="12" rx="2"/>"##
+        ),
+    ),
+    (
         "details",
         glyph!(
             r##"<circle cx="5" cy="6" r="1.8" stroke-width="1.8"/><circle cx="5" cy="18" r="1.8" stroke-width="1.8"/><path d="M10.5 6H21M10.5 12H21M10.5 18H21M3 12h4" stroke-width="1.8"/>"##
@@ -182,6 +188,7 @@ pub enum Icon {
     ArrowUp,
     Square,
     Branch,
+    Worktree,
     Close,
     Details,
     Check,
@@ -217,6 +224,7 @@ impl Icon {
             Icon::ArrowUp => "icons/arrow-up.svg",
             Icon::Square => "icons/square.svg",
             Icon::Branch => "icons/branch.svg",
+            Icon::Worktree => "icons/worktree.svg",
             Icon::Close => "icons/close.svg",
             Icon::Details => "icons/details.svg",
             Icon::Check => "icons/check.svg",
@@ -365,6 +373,7 @@ mod tests {
             Icon::ArrowUp,
             Icon::Square,
             Icon::Branch,
+            Icon::Worktree,
             Icon::Close,
             Icon::Details,
             Icon::Check,

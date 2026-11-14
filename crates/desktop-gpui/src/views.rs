@@ -6,24 +6,29 @@
 //! and its composer, and the changes a turn left behind — from the same state
 //! `crate::app::Root` keeps.
 
-use crate::app::{Button, Overlay, Rail, Root};
+use crate::app::{Button, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
 use crate::model::{Entry, Status};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
-    div, px, Context, Font, FontStyle, FontWeight, MouseButton, Pixels, Render, SharedString,
-    Stateful, StrikethroughStyle, StyledText, TextRun, UnderlineStyle, Window, WindowControlArea,
+    canvas, div, point, px, ClickEvent, Context, Focusable, Font, FontStyle, FontWeight,
+    MouseButton, PathBuilder, Pixels, Render, SharedString, Stateful, StrikethroughStyle,
+    StyledText, TextRun, UnderlineStyle, Window, WindowControlArea,
 };
 
 // ---------- shared pieces ----------
+
+const RAIL_WIDTH: f32 = 56.0;
+const TOPBAR_HEIGHT: f32 = 46.0;
+const SIDEBAR_RESIZER_WIDTH: f32 = 7.0;
 
 /// A square icon control: the window's own buttons in the topbar, the rail, a
 /// card's header and a row's trailing actions. `box_size` is the target the
 /// control fills; the glyph inside it is three fifths of that, the 18-in-30 the
 /// page's `.icon` buttons use.
-fn icon_button(
+pub(crate) fn icon_button(
     id: impl Into<gpui::ElementId>,
     mark: Icon,
     box_size: f32,
@@ -39,14 +44,19 @@ fn icon_button(
         .flex_none()
         .w(px(box_size))
         .h(px(box_size))
-        .rounded(px(8.0))
+        .rounded(px(if box_size >= 38.0 { 10.0 } else { 8.0 }))
         .cursor_pointer()
         .text_color(color)
+        .bg(if active {
+            theme.panel_2()
+        } else {
+            gpui::transparent_black()
+        })
         .hover(move |style| style.bg(theme.panel_2()))
         .child(icons::icon(mark, box_size * 0.6, color))
 }
 
-fn pill(text: impl Into<String>, theme: &Theme, accent: bool) -> gpui::Div {
+pub(crate) fn pill(text: impl Into<String>, theme: &Theme, accent: bool) -> gpui::Div {
     div()
         .flex()
         .items_center()
@@ -187,13 +197,14 @@ impl Render for Tip {
 }
 
 pub fn tip(
-    text: &'static str,
+    text: impl Into<SharedString>,
     theme: &Theme,
 ) -> impl Fn(&mut Window, &mut gpui::App) -> gpui::AnyView + 'static {
+    let text = text.into();
     let theme = theme.clone();
     move |_window, cx| {
         let tip = cx.new(|_| Tip {
-            text: SharedString::from(text),
+            text: text.clone(),
             theme: theme.clone(),
         });
         gpui::AnyView::from(tip)
@@ -227,6 +238,18 @@ fn thread_label(root: &Root, theme: &Theme) -> impl IntoElement {
                 .text_color(theme.text())
                 .child(title),
         )
+        .children(root.current_worktree().map(|worktree| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .flex_none()
+                .text_size(px(11.0))
+                .text_color(theme.accent())
+                .child(icons::icon(Icon::Worktree, 12.0, theme.accent()))
+                .child(worktree.name.clone())
+        }))
         .child(div().flex_1())
 }
 
@@ -237,19 +260,54 @@ pub fn topbar(
     _window: &mut Window,
     cx: &mut Context<Root>,
 ) -> impl IntoElement {
+    let destination = match root.overlay {
+        Some(Overlay::Settings) => Some("Settings"),
+        _ => match root.rail {
+            Rail::Projects => Some("Projects"),
+            Rail::Customize => Some("Customize"),
+            Rail::Chats => None,
+        },
+    };
     let mut row = div()
+        .id("topbar")
         .window_control_area(WindowControlArea::Drag)
         .flex()
         .flex_row()
         .items_center()
         .flex_none()
-        .h(px(46.0 * scale))
-        .pl(px(76.0))
-        .pr_2()
-        .gap_1()
-        .bg(theme.background())
+        .h(px(TOPBAR_HEIGHT * scale))
+        .bg(theme.sidebar())
         .border_b_1()
-        .border_color(theme.border());
+        .border_color(theme.border())
+        .on_click(cx.listener(|_, event: &ClickEvent, window, _| {
+            if event.click_count() == 2 {
+                window.titlebar_double_click();
+            }
+        }));
+
+    if let Some(title) = destination {
+        return row
+            .child(div().flex_none().w(px(RAIL_WIDTH)).h_full())
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .flex_1()
+                    .h_full()
+                    .pl(px(14.0))
+                    .pr_2()
+                    .border_l_1()
+                    .border_color(theme.border())
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text())
+                    .child(title)
+                    .child(div().flex_1())
+                    .child(pill("BETA", theme, true)),
+            );
+    }
 
     let back = icon_button("nav-back", Icon::Back, 30.0, theme, false)
         .tooltip(tip("Back \u{00b7} \u{2318}[", theme))
@@ -277,11 +335,40 @@ pub fn topbar(
             root.save_prefs(serde_json::json!({ "sidebar_visible": visible }), cx);
             cx.notify();
         }));
-    row = row
-        .child(back)
-        .child(forward)
-        .child(toggle)
-        .child(div().flex_none().w(px(6.0)));
+    let leading_width = if root.sidebar_visible {
+        RAIL_WIDTH + root.sidebar_width + SIDEBAR_RESIZER_WIDTH
+    } else {
+        220.0
+    };
+    row = row.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .flex_none()
+            .w(px(leading_width))
+            .h_full()
+            .pl(px(76.0))
+            .pr_2()
+            .child(back)
+            .child(forward)
+            .child(toggle)
+            .child(div().flex_none().w(px(6.0))),
+    );
+
+    let mut content = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .flex_1()
+        .min_w(px(0.0))
+        .h_full()
+        .pl(px(14.0))
+        .pr_2()
+        .border_l_1()
+        .border_color(theme.border());
 
     let mut tabs = div()
         .flex()
@@ -361,9 +448,9 @@ pub fn topbar(
     // thread that is on screen — the folder, its title — the way the page swaps
     // its tabs for the thread's own label.
     if root.chats.len() > 1 {
-        row = row.child(tabs);
+        content = content.child(tabs);
     } else {
-        row = row.child(thread_label(root, theme));
+        content = content.child(thread_label(root, theme));
     }
 
     let new_chat = icon_button("new-chat", Icon::Plus, 30.0, theme, false)
@@ -392,29 +479,32 @@ pub fn topbar(
     .tooltip(tip("Project details", theme))
     .on_click(cx.listener(|root, _, _, cx| root.toggle_details(cx)));
     let beta = pill("BETA", theme, true);
-    row.child(new_chat)
+    content = content
+        .child(new_chat)
         .child(changes)
         .child(details)
         .child(div().flex_none().w(px(4.0)))
-        .child(beta)
+        .child(beta);
+    row.child(content)
 }
 
 // ---------- rail ----------
 
 pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
-    let chats = root.rail == Rail::Chats;
-    let customize = root.rail == Rail::Customize;
-    let sidebar = root.sidebar_visible;
+    let chats = root.rail == Rail::Chats && !matches!(root.overlay, Some(Overlay::Settings));
+    let projects = root.rail == Rail::Projects && !matches!(root.overlay, Some(Overlay::Settings));
+    let settings = matches!(root.overlay, Some(Overlay::Settings));
+    let customize = root.rail == Rail::Customize && !settings;
     div()
         .flex()
         .flex_col()
         .items_center()
         .flex_none()
-        .w(px(56.0))
+        .w(px(RAIL_WIDTH))
         .h_full()
-        .py(px(12.0))
-        .px(px(8.0))
-        .gap(px(5.0))
+        .py(px(9.0))
+        .px(px(4.0))
+        .gap(px(7.0))
         .bg(theme.sidebar())
         .border_r_1()
         .border_color(theme.border())
@@ -428,12 +518,11 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
                 })),
         )
         .child(
-            icon_button("rail-sidebar", Icon::Sidebar, 40.0, theme, sidebar)
-                .tooltip(tip("Show or hide the sidebar", theme))
+            icon_button("rail-projects", Icon::Folder, 40.0, theme, projects)
+                .tooltip(tip("Projects", theme))
                 .on_click(cx.listener(|root, _, _, cx| {
-                    root.sidebar_visible = !root.sidebar_visible;
-                    let visible = root.sidebar_visible;
-                    root.save_prefs(serde_json::json!({ "sidebar_visible": visible }), cx);
+                    root.rail = Rail::Projects;
+                    root.overlay = None;
                     cx.notify();
                 })),
         )
@@ -441,6 +530,11 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
             icon_button("rail-archived", Icon::Archive, 40.0, theme, false)
                 .tooltip(tip("Archived threads", theme))
                 .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Archived, cx))),
+        )
+        .child(
+            icon_button("rail-worktrees", Icon::Worktree, 40.0, theme, false)
+                .tooltip(tip("Git worktrees", theme))
+                .on_click(cx.listener(|root, _, _, cx| root.open_worktrees(cx))),
         )
         .child(div().flex_1())
         .child(
@@ -452,7 +546,7 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
                 })),
         )
         .child(
-            icon_button("rail-settings", Icon::Settings, 40.0, theme, false)
+            icon_button("rail-settings", Icon::Settings, 40.0, theme, settings)
                 .tooltip(tip("Settings \u{00b7} \u{2318},", theme))
                 .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Settings, cx))),
         )
@@ -486,8 +580,10 @@ pub fn sidebar(
         .flex_row()
         .items_center()
         .gap_1()
-        .h(px(44.0))
-        .px(px(12.0));
+        .h(px(46.0))
+        .px(px(8.0))
+        .border_b_1()
+        .border_color(theme.border());
     if searching {
         top = top.child(
             div()
@@ -515,11 +611,13 @@ pub fn sidebar(
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(16.0))
+                    .px_2()
+                    .text_size(px(17.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text())
                     .child("Oxide"),
             )
+            .child(pill("BETA", theme, true))
             .child(
                 icon_button("sidebar-search", Icon::Search, 28.0, theme, false)
                     .tooltip(tip("Search chats", theme))
@@ -567,7 +665,7 @@ pub fn sidebar(
         .overflow_y_scroll()
         .px(px(4.0))
         .pb(px(14.0))
-        .gap(px(2.0));
+        .gap(px(1.0));
 
     if !root.query.trim().is_empty() {
         let results = root.results.clone();
@@ -583,6 +681,10 @@ pub fn sidebar(
         }
         for session in results {
             let id = session.id.clone();
+            let active = root
+                .chats
+                .iter()
+                .any(|chat| chat.session.as_deref() == Some(id.as_str()));
             let when = if session.preview.is_empty() {
                 relative_time(session.modified_at)
             } else {
@@ -598,8 +700,11 @@ pub fn sidebar(
             list = list.child(session_row(
                 &session.title,
                 &when,
-                session.pinned,
-                session.worktree.is_some(),
+                SessionFlags {
+                    pinned: session.pinned,
+                    worktree: session.worktree.is_some(),
+                    active,
+                },
                 theme,
                 cx,
                 move |root, window, cx| {
@@ -622,11 +727,18 @@ pub fn sidebar(
                 let id = session.id.clone();
                 let title = session.title.clone();
                 let when = session_when(&session);
+                let active = root
+                    .chats
+                    .iter()
+                    .any(|chat| chat.session.as_ref() == Some(&id));
                 list = list.child(session_row(
                     &title,
                     &when,
-                    true,
-                    session.worktree.is_some(),
+                    SessionFlags {
+                        pinned: true,
+                        worktree: session.worktree.is_some(),
+                        active,
+                    },
                     theme,
                     cx,
                     move |root, window, cx| {
@@ -641,7 +753,7 @@ pub fn sidebar(
 
         list = list.child(projects_header(theme, cx));
         let projects = root.projects.clone();
-        let collapsed = root.collapsed.clone();
+        let current_project = root.current_project_owner();
         for project in projects {
             let path = project.path.clone();
             let name = root.project_name(&path);
@@ -650,41 +762,23 @@ pub fn sidebar(
                 .into_iter()
                 .cloned()
                 .collect::<Vec<_>>();
-            let count = if project.session_count > 0 {
-                project.session_count
-            } else {
-                sessions.len()
-            };
-            let expanded = !collapsed.contains(&path);
             let missing = !project.exists;
             let pinned = project.pinned;
-            let when = relative_time(project.last_session_at);
+            let selected = current_project.as_deref() == Some(path.as_str());
             let path_for_new = path.clone();
             let path_for_remove = path.clone();
-            let path_for_toggle = path.clone();
             let project_id = project.id.clone();
             let project_name = name.clone();
-            let mut header = div()
+            let header = div()
                 .id(SharedString::from(format!("project-{path}")))
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_1()
-                .h(px(30.0))
+                .h(px(28.0))
                 .px_2()
                 .rounded(px(8.0))
-                .cursor_pointer()
                 .hover(move |style| style.bg(theme.panel()))
-                .child(div().flex_none().w(px(4.0)))
-                .child(icons::icon(
-                    if expanded {
-                        Icon::ChevronDown
-                    } else {
-                        Icon::ChevronRight
-                    },
-                    12.0,
-                    theme.faint(),
-                ))
                 .child(icons::icon(Icon::Folder, 15.0, theme.dim()))
                 .child(
                     div()
@@ -693,7 +787,12 @@ pub fn sidebar(
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_size(px(13.0))
-                        .text_color(theme.dim())
+                        .font_weight(if selected {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(if selected { theme.text() } else { theme.dim() })
                         .child(name),
                 )
                 .children(pinned.then(|| icons::icon(Icon::Pin, 12.0, theme.accent())))
@@ -704,17 +803,6 @@ pub fn sidebar(
                         .text_color(theme.error())
                         .child("missing")
                 }))
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(px(11.0))
-                        .text_color(theme.faint())
-                        .child(if when.is_empty() {
-                            count.to_string()
-                        } else {
-                            format!("{count} · {when}")
-                        }),
-                )
                 .child(
                     icon_button(
                         SharedString::from(format!("project-new-{path}")),
@@ -762,56 +850,48 @@ pub fn sidebar(
                         cx.notify();
                     })),
                 );
-            header = header.on_click(cx.listener(move |root, _, _window, cx| {
-                if root.collapsed.contains(&path_for_toggle) {
-                    root.collapsed.remove(&path_for_toggle);
-                } else {
-                    root.collapsed.insert(path_for_toggle.clone());
-                }
-                cx.notify();
-            }));
             list = list.child(header);
-            if expanded {
-                if sessions.is_empty() {
-                    list = list.child(
-                        div()
-                            .pl(px(46.0))
-                            .pr_2()
-                            .pb_1()
-                            .text_size(px(12.0))
-                            .text_color(theme.faint())
-                            .child("No chats"),
-                    );
-                }
-                for session in sessions {
-                    let id = session.id.clone();
-                    let title = session.title.clone();
-                    let when = session_when(&session);
-                    let pinned = session.pinned;
-                    list = list.child(session_row(
-                        &title,
-                        &when,
+            if sessions.is_empty() {
+                list = list.child(
+                    div()
+                        .pl(px(40.0))
+                        .pr_2()
+                        .pb_1()
+                        .text_size(px(12.0))
+                        .text_color(theme.faint())
+                        .child("No chats"),
+                );
+            }
+            for session in sessions {
+                let id = session.id.clone();
+                let title = session.title.clone();
+                let when = session_when(&session);
+                let pinned = session.pinned;
+                let active = root
+                    .chats
+                    .iter()
+                    .any(|chat| chat.session.as_ref() == Some(&id));
+                list = list.child(session_row(
+                    &title,
+                    &when,
+                    SessionFlags {
                         pinned,
-                        session.worktree.is_some(),
-                        theme,
-                        cx,
-                        move |root, window, cx| {
-                            if let Some(found) =
-                                root.sessions.iter().find(|row| row.id == id).cloned()
-                            {
-                                root.open_session(window, found, cx);
-                            }
-                        },
-                    ));
-                }
+                        worktree: session.worktree.is_some(),
+                        active,
+                    },
+                    theme,
+                    cx,
+                    move |root, window, cx| {
+                        if let Some(found) = root.sessions.iter().find(|row| row.id == id).cloned()
+                        {
+                            root.open_session(window, found, cx);
+                        }
+                    },
+                ));
             }
         }
 
-        // The threads the reader was in most recently, across every folder: the
-        // page ends its sidebar with the same list, so a thread is one click
-        // away even when its project is folded away.
         let mut recents = root.sessions.clone();
-        recents.retain(|session| !session.pinned);
         recents.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
         recents.truncate(5);
         if !recents.is_empty() {
@@ -820,12 +900,18 @@ pub fn sidebar(
                 let id = session.id.clone();
                 let title = session.title.clone();
                 let when = session_when(&session);
-                let pinned = session.pinned;
+                let active = root
+                    .chats
+                    .iter()
+                    .any(|chat| chat.session.as_ref() == Some(&id));
                 list = list.child(session_row(
                     &title,
                     &when,
-                    pinned,
-                    session.worktree.is_some(),
+                    SessionFlags {
+                        pinned: session.pinned,
+                        worktree: session.worktree.is_some(),
+                        active,
+                    },
                     theme,
                     cx,
                     move |root, window, cx| {
@@ -878,38 +964,48 @@ fn projects_header(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
         )
 }
 
+#[derive(Clone, Copy)]
+struct SessionFlags {
+    pinned: bool,
+    worktree: bool,
+    active: bool,
+}
+
 fn session_row(
     title: &str,
     when: &str,
-    pinned: bool,
-    worktree: bool,
+    flags: SessionFlags,
     theme: &Theme,
     cx: &mut Context<Root>,
     open: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
 ) -> impl IntoElement {
+    let SessionFlags {
+        pinned,
+        worktree,
+        active,
+    } = flags;
     let title = title.to_string();
     let when = when.to_string();
+    let title_for_more = title.clone();
+    let title_for_menu = title.clone();
     div()
         .id(SharedString::from(format!("session-{title}")))
         .flex()
         .flex_row()
         .items_center()
         .gap_2()
-        .h(px(30.0))
-        .pl(px(30.0))
+        .h(px(28.0))
+        .pl(px(44.0))
         .pr_2()
         .rounded(px(8.0))
         .cursor_pointer()
+        .bg(if active {
+            theme.panel_3()
+        } else {
+            theme.sidebar()
+        })
         .hover(move |style| style.bg(theme.panel()))
-        .child(icons::icon(
-            if pinned { Icon::Pin } else { Icon::Chat },
-            13.0,
-            if pinned {
-                theme.accent()
-            } else {
-                theme.faint()
-            },
-        ))
+        .children(pinned.then(|| icons::icon(Icon::Pin, 12.0, theme.accent())))
         .child(
             div()
                 .flex_1()
@@ -917,7 +1013,7 @@ fn session_row(
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_size(px(12.5))
-                .text_color(theme.text())
+                .text_color(if active { theme.text() } else { theme.dim() })
                 .child(title.clone()),
         )
         .child(
@@ -928,17 +1024,50 @@ fn session_row(
                 .child(when),
         )
         .children(worktree.then(|| icons::icon(Icon::Branch, 12.0, theme.accent())))
-        .on_click(cx.listener(move |root, _, window, cx| open(root, window, cx)))
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |root, _, _, cx| {
-                let Some(session) = root.sessions.iter().find(|row| row.title == title).cloned()
+        .child(
+            icon_button(
+                SharedString::from(format!("session-more-{}", title_for_more)),
+                Icon::More,
+                22.0,
+                theme,
+                false,
+            )
+            .tooltip(tip("Chat actions", theme))
+            .on_click(cx.listener(move |root, _, _, cx| {
+                cx.stop_propagation();
+                let Some(session) = root
+                    .sessions
+                    .iter()
+                    .find(|row| row.title == title_for_more)
+                    .cloned()
                 else {
                     return;
                 };
                 root.overlay = Some(Overlay::SessionActions {
                     id: session.id,
                     title: session.title,
+                    project: session.project,
+                    pinned: session.pinned,
+                });
+                cx.notify();
+            })),
+        )
+        .on_click(cx.listener(move |root, _, window, cx| open(root, window, cx)))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |root, _, _, cx| {
+                let Some(session) = root
+                    .sessions
+                    .iter()
+                    .find(|row| row.title == title_for_menu)
+                    .cloned()
+                else {
+                    return;
+                };
+                root.overlay = Some(Overlay::SessionActions {
+                    id: session.id,
+                    title: session.title,
+                    project: session.project,
                     pinned: session.pinned,
                 });
                 cx.notify();
@@ -951,7 +1080,7 @@ pub fn sidebar_resizer(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -
     div()
         .id("sidebar-resizer")
         .flex_none()
-        .w(px(6.0))
+        .w(px(SIDEBAR_RESIZER_WIDTH))
         .h_full()
         .cursor(gpui::CursorStyle::ResizeLeftRight)
         .bg(theme.sidebar())
@@ -1234,61 +1363,6 @@ fn detail_row(
     row.on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
-fn changes_pill(
-    files: usize,
-    added: u64,
-    removed: u64,
-    theme: &Theme,
-    cx: &mut Context<Root>,
-) -> impl IntoElement {
-    div()
-        .id("changes-pill")
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .flex_none()
-        .h(px(28.0))
-        .px(px(12.0))
-        .rounded(px(14.0))
-        .bg(theme.panel())
-        .border_1()
-        .border_color(theme.border())
-        .cursor_pointer()
-        .text_size(px(11.5))
-        .text_color(theme.dim())
-        .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
-        .tooltip(tip(
-            "Open the changes pane \u{00b7} \u{2318}\u{23ce}",
-            theme,
-        ))
-        .child(if files == 1 {
-            "1 file changed".to_string()
-        } else {
-            format!("{files} files changed")
-        })
-        .child(
-            div()
-                .flex_none()
-                .text_color(theme.success())
-                .child(format!("+{added}")),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_color(theme.error())
-                .child(format!("\u{2212}{removed}")),
-        )
-        .on_click(cx.listener(|root, _, _, cx| {
-            root.show_changes = !root.show_changes;
-            let index = root.active;
-            if root.show_changes {
-                root.refresh_repository(index, cx);
-            }
-            cx.notify();
-        }))
-}
-
 pub fn main(
     root: &mut Root,
     theme: &Theme,
@@ -1302,11 +1376,6 @@ pub fn main(
         .flex_1()
         .min_w(px(0.0))
         .min_h(px(0.0));
-
-    if root.rail == Rail::Customize {
-        column = column.child(customize_page(root, theme, cx));
-        return column;
-    }
 
     column = column.child(conversation(root, theme, scale, window, cx));
     if root.show_details {
@@ -1357,10 +1426,10 @@ fn conversation(
         .min_h(px(0.0))
         .overflow_y_scroll()
         .track_scroll(&scroll)
-        .px(px(28.0))
-        .pt(px(38.0))
-        .pb(px(16.0))
-        .gap(px(24.0));
+        .px(px(22.0))
+        .pt(px(34.0))
+        .pb(px(10.0))
+        .gap(px(22.0));
 
     if untrusted {
         let path = root.chats[index].project.clone();
@@ -1422,31 +1491,6 @@ fn conversation(
         .min_h(px(0.0))
         .child(transcript);
 
-    // What the work tree holds right now, on the composer's own top edge: the
-    // page's chip, and the way into the changes pane.
-    let totals = root.chats[index]
-        .changes
-        .clone()
-        .unwrap_or(serde_json::Value::Null);
-    let files = totals["files"].as_array().map(Vec::len).unwrap_or(0);
-    if files > 0 {
-        pane_body = pane_body.child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_center()
-                .w_full()
-                .pb(px(10.0))
-                .child(changes_pill(
-                    files,
-                    totals["added"].as_u64().unwrap_or(0),
-                    totals["removed"].as_u64().unwrap_or(0),
-                    theme,
-                    cx,
-                )),
-        );
-    }
-
     if scroll_to_end {
         scroll.scroll_to_bottom();
         root.chats[index].scroll_to_end = false;
@@ -1477,7 +1521,7 @@ fn empty_state(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         .items_center()
         .justify_center()
         .w_full()
-        .max_w(px(640.0))
+        .max_w(px(560.0))
         .mx_auto()
         .pb(px(32.0))
         .child(
@@ -1486,16 +1530,16 @@ fn empty_state(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                 .items_center()
                 .justify_center()
                 .flex_none()
-                .w(px(64.0))
-                .h(px(64.0))
-                .rounded(px(18.0))
+                .w(px(56.0))
+                .h(px(56.0))
+                .rounded(px(11.0))
                 .bg(theme.well())
                 .child(icons::mark(40.0)),
         )
         .child(
             div()
                 .pt(px(16.0))
-                .text_size(px(28.0))
+                .text_size(px(24.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text())
                 .child("What should we build?"),
@@ -1549,15 +1593,16 @@ fn suggestions(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
                 .id(SharedString::from(format!("suggestion-{text}")))
                 .flex()
                 .items_center()
-                .w(px(314.0))
-                .min_h(px(76.0))
-                .p(px(16.0))
-                .rounded(px(14.0))
+                .w(px(270.0))
+                .min_h(px(68.0))
+                .px(px(16.0))
+                .py(px(14.0))
+                .rounded(px(12.0))
                 .border_1()
                 .border_color(theme.border())
                 .bg(theme.panel())
-                .text_size(px(13.0))
-                .line_height(px(18.0))
+                .text_size(px(12.5))
+                .line_height(px(18.5))
                 .text_color(theme.dim())
                 .cursor_pointer()
                 .hover(move |style| {
@@ -1761,6 +1806,35 @@ fn status_letter(status: &str) -> &'static str {
     }
 }
 
+fn tool_label(name: &str) -> &str {
+    match name {
+        "tool" | "" => "Tool result",
+        "bash" => "Command",
+        "read" => "Read",
+        "edit" => "Edit",
+        "find" => "Find",
+        "grep" => "Search",
+        "web_search" => "Web search",
+        "web_fetch" => "Web fetch",
+        other => other,
+    }
+}
+
+fn compact_tool_output(output: &str) -> (String, bool) {
+    let pretty = serde_json::from_str::<serde_json::Value>(output.trim())
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| output.to_string());
+    let lines = pretty.lines().collect::<Vec<_>>();
+    let shown = lines
+        .iter()
+        .take(10)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    (shown, lines.len() > 10)
+}
+
 fn entry_view(
     entry: &Entry,
     chat: usize,
@@ -1799,24 +1873,17 @@ fn entry_view(
         }
         Entry::Assistant {
             blocks,
-            streaming,
+            streaming: _,
             text,
         } => {
-            let mut column = div().flex().flex_col().gap_2().child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.assistant())
-                            .child("Oxide"),
-                    )
-                    .children(streaming.then(|| pill("streaming", theme, true))),
-            );
+            let mut column = div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .min_w(px(0.0))
+                .gap_2()
+                .pl(px(18.0))
+                .pr(px(4.0));
             if blocks.is_empty() && text.is_empty() {
                 column = column.child(
                     div()
@@ -1868,23 +1935,28 @@ fn entry_view(
                 Status::Done => (theme.success(), ""),
                 Status::Failed => (theme.error(), "Failed"),
             };
-            // A finished call is a line of text, the way the page draws it: no
-            // panel, no border, just the name, what it acted on and its output.
-            // A running or failed one is the only card that gets a surface.
-            let mut block = div().flex().flex_col().py(px(4.0));
-            if matches!(card.status, Status::Running | Status::Failed) {
-                block = block
-                    .px(px(12.0))
-                    .py(px(9.0))
-                    .rounded(px(12.0))
-                    .border_l_2()
-                    .border_color(color)
-                    .bg(if card.status == Status::Failed {
-                        theme.color("tool_error_bg")
-                    } else {
-                        theme.color("tool_pending_bg")
-                    });
-            }
+            let mut block = div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .min_w(px(0.0))
+                .gap_2()
+                .px(px(12.0))
+                .py(px(10.0))
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(if card.status == Status::Failed {
+                    theme.error()
+                } else {
+                    theme.border()
+                })
+                .bg(if card.status == Status::Failed {
+                    theme.color("tool_error_bg")
+                } else if card.status == Status::Running {
+                    theme.color("tool_pending_bg")
+                } else {
+                    theme.panel()
+                });
             block = block.child(
                 div()
                     .flex()
@@ -1893,11 +1965,23 @@ fn entry_view(
                     .gap_2()
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .flex_none()
+                            .w(px(22.0))
+                            .h(px(22.0))
+                            .rounded(px(6.0))
+                            .bg(theme.panel_2())
+                            .child(icons::icon(Icon::More, 13.0, theme.faint())),
+                    )
+                    .child(
+                        div()
                             .flex_none()
                             .text_size(px(12.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text())
-                            .child(card.name.clone()),
+                            .child(tool_label(&card.name).to_string()),
                     )
                     .child(
                         div()
@@ -1919,17 +2003,34 @@ fn entry_view(
                     ),
             );
             if !card.output.trim().is_empty() {
+                let (output, hidden) = compact_tool_output(&card.output);
                 block = block.child(
                     div()
                         .id(SharedString::from(format!("tool-output-{}", card.id)))
-                        .mt(px(6.0))
-                        .max_h(px(110.0))
-                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .w_full()
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .rounded(px(7.0))
+                        .bg(theme.background())
+                        .border_1()
+                        .border_color(theme.border())
                         .text_size(px(11.5))
                         .line_height(px(17.0))
                         .font_family("Menlo")
+                        .whitespace_normal()
+                        .overflow_hidden()
                         .text_color(theme.dim())
-                        .child(card.output.chars().take(6000).collect::<String>()),
+                        .child(output)
+                        .children(hidden.then(|| {
+                            div()
+                                .pt_1()
+                                .text_size(px(10.5))
+                                .text_color(theme.faint())
+                                .child("Output truncated")
+                        })),
                 );
             }
             if let Some(diff) = &card.diff {
@@ -2105,10 +2206,16 @@ fn entry_view(
 fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
     match block {
         Block::Paragraph(spans) => div()
+            .w_full()
+            .min_w(px(0.0))
+            .whitespace_normal()
             .text_size(px(13.5))
             .line_height(px(22.0))
             .child(styled(theme, spans)),
         Block::Heading { level, spans } => div()
+            .w_full()
+            .min_w(px(0.0))
+            .whitespace_normal()
             .pt_1()
             .text_size(px(match level {
                 1 => 18.0,
@@ -2127,6 +2234,9 @@ fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
             div()
                 .flex()
                 .flex_col()
+                .w_full()
+                .min_w(px(0.0))
+                .overflow_hidden()
                 .rounded(px(9.0))
                 .bg(theme.panel())
                 .border_1()
@@ -2146,11 +2256,16 @@ fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
                         .text_size(px(12.0))
                         .line_height(px(18.0))
                         .font_family("Menlo")
+                        .whitespace_normal()
+                        .overflow_hidden()
                         .text_color(theme.text())
                         .child(text.clone()),
                 )
         }
         Block::Quote(spans) => div()
+            .w_full()
+            .min_w(px(0.0))
+            .whitespace_normal()
             .pl_3()
             .border_l_2()
             .border_color(theme.border())
@@ -2161,12 +2276,20 @@ fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
         Block::Bullet { depth, spans } => div()
             .flex()
             .flex_row()
+            .w_full()
+            .min_w(px(0.0))
             .gap_2()
             .pl(px(*depth as f32 * 14.0))
             .text_size(px(13.5))
             .line_height(px(21.0))
             .child(div().text_color(theme.faint()).child("•"))
-            .child(div().flex_1().child(styled(theme, spans))),
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
+                    .child(styled(theme, spans)),
+            ),
         Block::Numbered {
             depth,
             number,
@@ -2174,12 +2297,20 @@ fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
         } => div()
             .flex()
             .flex_row()
+            .w_full()
+            .min_w(px(0.0))
             .gap_2()
             .pl(px(*depth as f32 * 14.0))
             .text_size(px(13.5))
             .line_height(px(21.0))
             .child(div().text_color(theme.faint()).child(number.clone()))
-            .child(div().flex_1().child(styled(theme, spans))),
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .whitespace_normal()
+                    .child(styled(theme, spans)),
+            ),
         Block::Rule => crate::app::rule(theme),
     }
 }
@@ -2223,11 +2354,36 @@ fn composer(
     let index = root.active;
     let chat = &root.chats[index];
     let editor = root.editors.get(&chat.id).cloned();
+    let editor_text = editor
+        .as_ref()
+        .map(|editor| editor.read(cx).text().to_string())
+        .unwrap_or_default();
     let running = chat.running();
     let attachments = chat.attachments.clone();
-    let project = root.project_name(&chat.project);
+    let queued = chat.queued.clone();
+    let project = root
+        .selected_project()
+        .map(|project| root.project_name(&project.path))
+        .unwrap_or_else(|| root.project_name(&chat.project));
+    let worktree = root.current_worktree().cloned();
     let model = root.info["model"].as_str().unwrap_or("model").to_string();
     let reasoning = root.info["reasoning"].as_str().unwrap_or("off").to_string();
+    let context_tokens = chat
+        .context_tokens
+        .or_else(|| chat.usage.as_ref().map(|usage| usage.context_tokens))
+        .unwrap_or(0);
+    let context_window = root.info["contextWindow"].as_u64().unwrap_or(0);
+    let usage_detail = chat.usage.as_ref().map(|usage| {
+        format!(
+            "↑{} ↓{} · cache read {} · write {} · ${:.2} · {} calls",
+            format_tokens(usage.input),
+            format_tokens(usage.output),
+            format_tokens(usage.cache_read),
+            format_tokens(usage.cache_write),
+            usage.cost,
+            usage.model_calls
+        )
+    });
 
     let branch = root.branch.clone();
 
@@ -2237,14 +2393,14 @@ fn composer(
         .on_action(cx.listener(|root, _: &crate::app::Stop, _window, cx| root.stop(cx)))
         .flex()
         .flex_col()
-        .gap_1()
+        .gap(px(4.0))
         .w_full()
-        .px(px(13.0))
-        .py(px(11.0))
+        .px(px(12.0))
+        .py(px(10.0))
         .bg(theme.panel_2())
         .border_1()
         .border_color(theme.border())
-        .rounded(px(22.0));
+        .rounded(px(20.0));
 
     // The row on the box's top edge, the way the page's composer carries its
     // own: the folder the thread runs in and the branch it writes to. It sits
@@ -2257,13 +2413,27 @@ fn composer(
             .gap_2()
             .h(px(24.0))
             .px_1()
-            .child(icons::icon(Icon::Folder, 13.0, theme.faint()))
             .child(
                 div()
-                    .flex_none()
-                    .text_size(px(11.5))
-                    .text_color(theme.dim())
-                    .child(project.clone()),
+                    .id("composer-project")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .cursor_pointer()
+                    .rounded(px(6.0))
+                    .hover(move |style| style.bg(theme.panel_3()))
+                    .child(icons::icon(Icon::Folder, 13.0, theme.faint()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(11.5))
+                            .text_color(theme.dim())
+                            .child(project.clone()),
+                    )
+                    .on_click(
+                        cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Projects, cx)),
+                    ),
             )
             .children(branch.map(|branch| {
                 div()
@@ -2284,6 +2454,34 @@ fn composer(
                             .child(branch),
                     )
             }))
+            .child(
+                div()
+                    .id("composer-worktree")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .h(px(22.0))
+                    .px_1()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .text_size(px(11.0))
+                    .text_color(if worktree.is_some() {
+                        theme.accent()
+                    } else {
+                        theme.faint()
+                    })
+                    .hover(move |style| style.bg(theme.panel_3()))
+                    .tooltip(tip("Choose a Git worktree", theme))
+                    .child(icons::icon(Icon::Worktree, 13.0, theme.faint()))
+                    .child(
+                        worktree
+                            .as_ref()
+                            .map(|worktree| worktree.name.clone())
+                            .unwrap_or_else(|| "Worktree".to_string()),
+                    )
+                    .on_click(cx.listener(|root, _, _, cx| root.open_worktrees(cx))),
+            )
             .child(div().flex_1())
             .children(running.then(|| {
                 div()
@@ -2340,6 +2538,209 @@ fn composer(
         );
     }
 
+    if let Some(query) = editor_text
+        .strip_prefix('/')
+        .filter(|query| !query.chars().any(char::is_whitespace))
+    {
+        let commands = root
+            .commands
+            .iter()
+            .filter(|command| {
+                command["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with(&query.to_ascii_lowercase()))
+            })
+            .take(7)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !commands.is_empty() {
+            let mut menu = div()
+                .id("composer-command-menu")
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .mb_1()
+                .p(px(5.0))
+                .rounded(px(10.0))
+                .bg(theme.background())
+                .border_1()
+                .border_color(theme.border());
+            for command in commands {
+                let name = command["name"].as_str().unwrap_or_default().to_string();
+                let description = command["description"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let arguments = command["arguments"].as_str().map(str::to_string);
+                menu = menu.child(
+                    div()
+                        .id(SharedString::from(format!("composer-command-{name}")))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(theme.panel_3()))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(px(112.0))
+                                .text_size(px(12.0))
+                                .font_family("Menlo")
+                                .text_color(theme.text())
+                                .child(format!("/{name}")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(11.5))
+                                .text_color(theme.dim())
+                                .child(description),
+                        )
+                        .children(arguments.map(|arguments| {
+                            div()
+                                .flex_none()
+                                .text_size(px(10.5))
+                                .text_color(theme.faint())
+                                .child(arguments)
+                        }))
+                        .on_click(cx.listener(move |root, _, window, cx| {
+                            root.fill_composer(format!("/{name} "), window, cx)
+                        })),
+                );
+            }
+            box_row = box_row.child(menu);
+        }
+    }
+
+    if root.at_chat == Some(chat.id) {
+        let start = root.at_answer["start"].as_u64().unwrap_or(0) as usize;
+        let end = root.at_answer["end"].as_u64().unwrap_or(start as u64) as usize;
+        let rows = root.at_answer["rows"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !rows.is_empty() {
+            let mut menu = div()
+                .id("composer-at-menu")
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .mb_1()
+                .p(px(5.0))
+                .rounded(px(10.0))
+                .bg(theme.background())
+                .border_1()
+                .border_color(theme.border());
+            for row in rows {
+                let label = row["label"].as_str().unwrap_or_default().to_string();
+                let insert = row["insert"].as_str().unwrap_or_default().to_string();
+                let kind = row["kind"].as_str().unwrap_or_default().to_string();
+                let editor = editor.clone();
+                menu = menu.child(
+                    div()
+                        .id(SharedString::from(format!("composer-at-{label}")))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(32.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(theme.panel_3()))
+                        .child(icons::icon(
+                            if kind == "folder" {
+                                Icon::Folder
+                            } else {
+                                Icon::File
+                            },
+                            14.0,
+                            theme.faint(),
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .font_family("Menlo")
+                                .text_size(px(11.5))
+                                .text_color(theme.text())
+                                .child(label),
+                        )
+                        .on_click(cx.listener(move |root, _, window, cx| {
+                            if let Some(editor) = &editor {
+                                editor.update(cx, |editor, cx| {
+                                    editor.replace_utf16_range(start..end, &insert, cx)
+                                });
+                                window.focus(&editor.read(cx).focus_handle(cx));
+                            }
+                            root.at_answer = serde_json::Value::Null;
+                            root.at_chat = None;
+                            cx.notify();
+                        })),
+                );
+            }
+            box_row = box_row.child(menu);
+        }
+    }
+
+    if !queued.is_empty() {
+        let mut rows = div().flex().flex_col().gap_1().px_1();
+        for message in queued {
+            rows = rows.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .min_h(px(34.0))
+                    .px_2()
+                    .rounded(px(9.0))
+                    .bg(theme.background())
+                    .border_1()
+                    .border_color(theme.border())
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if message.follow_up {
+                                theme.faint()
+                            } else {
+                                theme.accent()
+                            })
+                            .child(if message.follow_up { "Queued" } else { "Steer" }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(11.5))
+                            .text_color(theme.dim())
+                            .child(message.text),
+                    )
+                    .children((!message.attachments.is_empty()).then(|| {
+                        div()
+                            .flex_none()
+                            .text_size(px(10.5))
+                            .text_color(theme.faint())
+                            .child(format!("{} attached", message.attachments.len()))
+                    })),
+            );
+        }
+        box_row = box_row.child(rows);
+    }
+
     let input = match editor {
         Some(editor) => {
             let height = (f32::from(editor_height) + 6.0).clamp(26.0, 240.0);
@@ -2356,7 +2757,7 @@ fn composer(
         .items_center()
         .gap_1()
         .w_full()
-        .min_h(px(34.0));
+        .min_h(px(30.0));
     footer = footer
         .child(
             icon_button(
@@ -2372,11 +2773,9 @@ fn composer(
         .child(
             icon_button(("composer-tools", 1usize), Icon::More, 28.0, theme, false)
                 .tooltip(tip("More tools", theme))
-                .on_click(cx.listener(|root, _, _, cx| {
-                    root.rail = Rail::Customize;
-                    root.overlay = None;
-                    cx.notify();
-                })),
+                .on_click(
+                    cx.listener(|root, _, _, cx| root.open_overlay(Overlay::ComposerTools, cx)),
+                ),
         )
         .child(
             div()
@@ -2429,6 +2828,12 @@ fn composer(
             root.set_reasoning(next, cx);
         },
     ));
+    footer = footer.child(context_ring(
+        context_tokens,
+        context_window,
+        usage_detail.as_deref(),
+        theme,
+    ));
 
     if running {
         footer = footer.child(
@@ -2473,50 +2878,16 @@ fn composer(
 
     box_row = box_row.child(footer);
 
-    if let Some(usage) = &chat.usage {
-        box_row = box_row.child(
-            div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .gap_2()
-                .text_size(px(10.5))
-                .text_color(theme.faint())
-                .child(format!(
-                    "{} in · {} out · {} cache read · {} cache write · ${:.2} · {} calls · {} context",
-                    usage.input,
-                    usage.output,
-                    usage.cache_read,
-                    usage.cache_write,
-                    usage.cost,
-                    usage.model_calls,
-                    usage.context_tokens
-                )),
-        );
-    }
-    if let Some(tokens) = chat.context_tokens {
-        box_row = box_row.child(div().text_size(px(10.5)).text_color(theme.faint()).child(
-            format!(
-                "context {tokens} tokens{}",
-                if chat.context_model.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {} / {}", chat.context_provider, chat.context_model)
-                }
-            ),
-        ));
-    }
-
     div()
         .flex()
         .flex_col()
         .flex_none()
         .w_full()
         .items_center()
-        .px(px(28.0))
-        .pb(px(14.0))
-        .pt(px(16.0))
-        .child(div().w_full().max_w(px(820.0)).child(box_row))
+        .px(px(22.0))
+        .pb(px(10.0))
+        .pt(px(14.0))
+        .child(div().w_full().max_w(px(780.0)).child(box_row))
 }
 
 /// The label a reasoning level wears: the stored name is `high`, the chip says
@@ -2531,6 +2902,129 @@ fn capitalised(label: &str) -> String {
 
 fn reasoning_level(root: &Root) -> String {
     root.info["reasoning"].as_str().unwrap_or("off").to_string()
+}
+
+fn context_ring(
+    tokens: u64,
+    window: u64,
+    usage_detail: Option<&str>,
+    theme: &Theme,
+) -> impl IntoElement {
+    let percent = if window == 0 {
+        None
+    } else {
+        Some((tokens as f64 / window as f64) * 100.0)
+    };
+    let shown = percent
+        .map(|value| value.clamp(0.0, 100.0).round() as u32)
+        .unwrap_or(0);
+    let color = match shown {
+        91.. => theme.error(),
+        71..=90 => theme.tool(),
+        _ => theme.dim(),
+    };
+    let mut label = percent.map_or_else(
+        || "Context window · no request yet".to_string(),
+        |value| {
+            format!(
+                "Context window · {} / {} tokens ({:.0}%)",
+                format_tokens(tokens),
+                format_tokens(window),
+                value
+            )
+        },
+    );
+    if let Some(detail) = usage_detail {
+        label.push('\n');
+        label.push_str(detail);
+    }
+    div()
+        .id("context-ring")
+        .relative()
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_none()
+        .w(px(30.0))
+        .h(px(30.0))
+        .rounded(px(15.0))
+        .hover(move |style| style.bg(theme.panel_3()))
+        .tooltip(tip(label, theme))
+        .child(
+            canvas(
+                |bounds, _, _| bounds,
+                move |bounds, _, window, _| {
+                    let extent = f32::from(bounds.size.width).min(f32::from(bounds.size.height));
+                    let center = point(
+                        bounds.origin.x + px(extent / 2.0),
+                        bounds.origin.y + px(extent / 2.0),
+                    );
+                    let radius = extent * 0.43;
+                    let stroke = px(1.5);
+                    let mut base = PathBuilder::stroke(stroke);
+                    for step in 0..=64 {
+                        let angle = -std::f32::consts::FRAC_PI_2
+                            + step as f32 * std::f32::consts::TAU / 64.0;
+                        let at = point(
+                            center.x + px(radius * angle.cos()),
+                            center.y + px(radius * angle.sin()),
+                        );
+                        if step == 0 {
+                            base.move_to(at);
+                        } else {
+                            base.line_to(at);
+                        }
+                    }
+                    if let Ok(path) = base.build() {
+                        window.paint_path(path, gpui::Hsla { a: 0.28, ..color });
+                    }
+
+                    let arc = (shown as f32 / 100.0 * 64.0).round() as usize;
+                    if arc > 0 {
+                        let mut filled = PathBuilder::stroke(stroke);
+                        for step in 0..=arc {
+                            let angle = -std::f32::consts::FRAC_PI_2
+                                + step as f32 * std::f32::consts::TAU / 64.0;
+                            let at = point(
+                                center.x + px(radius * angle.cos()),
+                                center.y + px(radius * angle.sin()),
+                            );
+                            if step == 0 {
+                                filled.move_to(at);
+                            } else {
+                                filled.line_to(at);
+                            }
+                        }
+                        if let Ok(path) = filled.build() {
+                            window.paint_path(path, color);
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
+        .child(
+            div()
+                .text_size(px(8.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(color)
+                .child(if percent.is_some() {
+                    shown.to_string()
+                } else {
+                    String::new()
+                }),
+        )
+}
+
+fn format_tokens(count: u64) -> String {
+    match count {
+        0..=999 => count.to_string(),
+        1_000..=9_999 => format!("{:.1}k", count as f64 / 1_000.0),
+        10_000..=999_999 => format!("{}k", (count as f64 / 1_000.0).round() as u64),
+        1_000_000..=9_999_999 => format!("{:.1}M", count as f64 / 1_000_000.0),
+        _ => format!("{}M", (count as f64 / 1_000_000.0).round() as u64),
+    }
 }
 
 fn setting_chip(
@@ -2733,115 +3227,733 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
     column.child(body)
 }
 
+// ---------- projects ----------
+
+pub fn projects_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
+    let projects = root.projects.clone();
+    let mut rows = div()
+        .id("projects-directory")
+        .flex()
+        .flex_col()
+        .w_full()
+        .border_t_1()
+        .border_color(theme.border());
+
+    if projects.is_empty() {
+        rows = rows.child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_3()
+                .py(px(72.0))
+                .child(icons::icon(Icon::Folder, 28.0, theme.faint()))
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .text_color(theme.dim())
+                        .child("No projects yet."),
+                )
+                .child(Button::new("Add a project").primary().render(
+                    "projects-empty-add",
+                    theme,
+                    cx,
+                    |root, _, cx| root.add_project(cx),
+                )),
+        );
+    }
+
+    for project in projects {
+        let path = project.path.clone();
+        let name = root.project_name(&path);
+        let session_count = root.sessions_of(&path).len();
+        let chats = project.session_count.max(session_count);
+        let updated = relative_time(project.last_session_at);
+        let open_path = path.clone();
+        let new_path = path.clone();
+        let action_path = path.clone();
+        let action_id = project.id.clone();
+        let action_name = name.clone();
+        let new_control = SharedString::from(format!("project-directory-new-{path}"));
+        let more_control = SharedString::from(format!("project-directory-more-{path}"));
+        let pinned = project.pinned;
+        rows = rows.child(
+            div()
+                .id(SharedString::from(format!("project-directory-{path}")))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_4()
+                .h(px(72.0))
+                .px_2()
+                .border_b_1()
+                .border_color(theme.border())
+                .rounded(px(10.0))
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel()))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(16.0))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .flex_none()
+                                .w(px(36.0))
+                                .h(px(36.0))
+                                .rounded(px(10.0))
+                                .bg(theme.panel())
+                                .border_1()
+                                .border_color(theme.border())
+                                .child(icons::icon(Icon::Folder, 18.0, theme.dim())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .child(
+                                    div()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(theme.text())
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_size(px(12.0))
+                                        .text_color(theme.faint())
+                                        .child(project.display_path.clone()),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(90.0))
+                        .text_size(px(12.5))
+                        .text_color(theme.dim())
+                        .child(format!("{chats} chats")),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(92.0))
+                        .text_size(px(12.5))
+                        .text_color(theme.faint())
+                        .child(if updated.is_empty() {
+                            "Never".to_string()
+                        } else {
+                            updated
+                        }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            icon_button(new_control, Icon::Plus, 30.0, theme, false)
+                                .tooltip(tip("New chat in this project", theme))
+                                .on_click(cx.listener(move |root, _, window, cx| {
+                                    cx.stop_propagation();
+                                    root.push_chat(
+                                        window,
+                                        new_path.clone(),
+                                        None,
+                                        "New chat".to_string(),
+                                        cx,
+                                    );
+                                    root.focus_composer(window, cx);
+                                })),
+                        )
+                        .child(
+                            icon_button(more_control, Icon::More, 30.0, theme, false)
+                                .tooltip(tip("Project actions", theme))
+                                .on_click(cx.listener(move |root, _, _, cx| {
+                                    cx.stop_propagation();
+                                    let pinned = root
+                                        .projects
+                                        .iter()
+                                        .find(|project| project.id == action_id)
+                                        .map(|project| project.pinned)
+                                        .unwrap_or(pinned);
+                                    root.overlay = Some(Overlay::ProjectActions {
+                                        id: action_id.clone(),
+                                        path: action_path.clone(),
+                                        name: action_name.clone(),
+                                        pinned,
+                                    });
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .on_click(cx.listener(move |root, _, window, cx| {
+                    root.rail = Rail::Chats;
+                    root.sidebar_visible = true;
+                    root.select_project(window, open_path.clone(), cx);
+                })),
+        );
+    }
+
+    div()
+        .id("projects-page")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .overflow_y_scroll()
+        .bg(theme.background())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .max_w(px(1160.0))
+                .mx_auto()
+                .px(px(48.0))
+                .pt(px(30.0))
+                .pb(px(48.0))
+                .gap_4()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(25.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text())
+                                .child("Projects"),
+                        )
+                        .child(Button::new("+  Create").primary().render(
+                            "projects-create",
+                            theme,
+                            cx,
+                            |root, _, cx| root.add_project(cx),
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .h(px(38.0))
+                        .px_2()
+                        .text_size(px(12.0))
+                        .text_color(theme.dim())
+                        .child(div().flex_1().child("Name"))
+                        .child(div().w(px(90.0)).child("Chats"))
+                        .child(div().w(px(92.0)).child("Updated"))
+                        .child(div().w(px(64.0))),
+                )
+                .child(rows),
+        )
+}
+
 // ---------- customize ----------
 
-fn customize_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
-    let project = root
-        .selected_project()
-        .map(|project| project.display_path.clone())
-        .unwrap_or_else(|| "No project selected".to_string());
-    let mut rows: Vec<(String, String)> = vec![
-        (
-            "Plugins".to_string(),
-            "Installed plugins extend the agent: skills, tools and MCP servers.".to_string(),
-        ),
-        (
-            "Skills".to_string(),
-            "Each plugin's skills load from the project's own trust, as in the terminal."
-                .to_string(),
-        ),
-        (
-            "MCP servers".to_string(),
-            "Configured servers are shared through the same config the CLI reads.".to_string(),
-        ),
-        (
-            "Approvals".to_string(),
-            "Tools allowed for this project, kept in the shared approval store.".to_string(),
-        ),
-    ];
-    rows.push((
-        "Appearance".to_string(),
-        format!(
-            "Themes are the CLI's: {} available.",
-            root.theme_names.len()
-        ),
-    ));
+pub fn customize_sidebar(
+    root: &mut Root,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let sources = root.sources.clone();
+    let width = root.sidebar_width;
+    let selected = root.customize_tab;
+    let mut nav = div().flex().flex_col().gap(px(3.0));
+    for (tab, mark, label) in [
+        (CustomizeTab::Plugins, Icon::Customize, "Plugins"),
+        (CustomizeTab::Skills, Icon::Chat, "Skills"),
+        (CustomizeTab::McpServers, Icon::Globe, "MCP servers"),
+        (CustomizeTab::Approvals, Icon::Lock, "Approvals"),
+    ] {
+        nav = nav.child(
+            div()
+                .id(SharedString::from(format!("customize-{label}")))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(38.0))
+                .px(px(12.0))
+                .rounded(px(8.0))
+                .cursor_pointer()
+                .bg(if selected == tab {
+                    theme.panel_3()
+                } else {
+                    theme.sidebar()
+                })
+                .text_color(if selected == tab {
+                    theme.text()
+                } else {
+                    theme.dim()
+                })
+                .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+                .child(icons::icon(mark, 17.0, theme.dim()))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(label),
+                )
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    root.customize_tab = tab;
+                    root.overlay = None;
+                    cx.notify();
+                })),
+        );
+    }
+
+    let mut installed = div()
+        .id("customize-installed")
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .flex_1()
+        .min_h(px(0.0))
+        .overflow_y_scroll();
+    if sources.is_empty() {
+        installed = installed.child(
+            div()
+                .px(px(12.0))
+                .py_1()
+                .text_size(px(12.0))
+                .text_color(theme.faint())
+                .child("No project integrations"),
+        );
+    } else {
+        for source in sources {
+            let name = source["name"].as_str().unwrap_or("MCP server").to_string();
+            let online = source["state"].as_str() == Some("connected");
+            installed = installed.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .h(px(32.0))
+                    .px(px(12.0))
+                    .rounded(px(6.0))
+                    .text_size(px(12.5))
+                    .text_color(theme.dim())
+                    .child(icons::icon(Icon::Globe, 14.0, theme.faint()))
+                    .child(div().flex_1().child(name))
+                    .child(div().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(if online {
+                        theme.success()
+                    } else {
+                        theme.faint()
+                    })),
+            );
+        }
+    }
 
     div()
         .flex()
         .flex_col()
-        .flex_1()
+        .flex_none()
+        .w(px(width))
+        .h_full()
         .min_h(px(0.0))
-        .id("customize-page")
-        .overflow_y_scroll()
-        .p_6()
+        .px(px(12.0))
+        .pt(px(16.0))
+        .pb(px(14.0))
         .gap_3()
+        .bg(theme.sidebar())
         .child(
             div()
-                .text_size(px(20.0))
+                .px(px(8.0))
+                .pb_1()
+                .text_size(px(18.0))
                 .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text())
                 .child("Customize"),
+        )
+        .child(nav)
+        .child(
+            div()
+                .px(px(8.0))
+                .pt_2()
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.dim())
+                .child("Installed"),
+        )
+        .child(installed)
+        .child(
+            div()
+                .id("customize-back")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .h(px(38.0))
+                .px(px(10.0))
+                .rounded(px(8.0))
+                .cursor_pointer()
+                .text_size(px(13.0))
+                .text_color(theme.dim())
+                .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+                .child(icons::icon(Icon::Back, 16.0, theme.faint()))
+                .child("Back to chat")
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.rail = Rail::Chats;
+                    root.overlay = None;
+                    cx.notify();
+                })),
+        )
+}
+
+pub fn customize_page(
+    root: &mut Root,
+    theme: &Theme,
+    _window: &mut Window,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let project = root
+        .selected_project()
+        .map(|project| project.display_path.clone())
+        .unwrap_or_else(|| "No project selected".to_string());
+    let tab = root.customize_tab;
+    let (title, subtitle) = match tab {
+        CustomizeTab::Plugins => (
+            "Plugins",
+            "Extend Oxide with tools, skills, and commands from your project and marketplaces.",
+        ),
+        CustomizeTab::Skills => (
+            "Skills",
+            "Skills available to chats in the selected project.",
+        ),
+        CustomizeTab::McpServers => (
+            "MCP servers",
+            "The servers this project loads, and whether Oxide can reach them.",
+        ),
+        CustomizeTab::Approvals => (
+            "Approvals",
+            "Tools this project can run without asking first.",
+        ),
+    };
+
+    let mut content = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .max_w(px(1100.0))
+        .mx_auto()
+        .gap_5()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(26.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text())
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(15.0))
+                        .line_height(px(23.0))
+                        .text_color(theme.dim())
+                        .child(subtitle),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme.faint())
+                        .child(format!("Loading from {project}")),
+                ),
+        );
+
+    match tab {
+        CustomizeTab::Plugins => {
+            content = content
+                .child(
+                    customize_card(theme)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .w(px(40.0))
+                                        .h(px(40.0))
+                                        .rounded(px(11.0))
+                                        .bg(theme.panel_2())
+                                        .child(icons::icon(Icon::Customize, 21.0, theme.accent())),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .flex_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(15.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.text())
+                                                .child("Project plugins"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.5))
+                                                .line_height(px(19.0))
+                                                .text_color(theme.dim())
+                                                .child("Plugins come from the project's own trusted configuration and the shared plugin store."),
+                                        ),
+                                )
+                                .child(Button::new("Refresh").render(
+                                    "customize-plugins-refresh",
+                                    theme,
+                                    cx,
+                                    |root, _, cx| root.load_project_commands(cx),
+                                )),
+                        ),
+                )
+                .child(
+                    customize_empty(
+                        theme,
+                        Icon::Customize,
+                        "No marketplace plugins are exposed by this engine build.",
+                        "The installed project integrations remain available under MCP servers and Approvals.",
+                    ),
+                );
+        }
+        CustomizeTab::Skills => {
+            let agents = root.info["agents"].as_array().cloned().unwrap_or_default();
+            let mut list = div().flex().flex_col().gap_2();
+            if agents.is_empty() {
+                list = list.child(customize_empty(
+                    theme,
+                    Icon::Chat,
+                    "No project skills loaded",
+                    "Trust the project and refresh to load its skills.",
+                ));
+            } else {
+                for agent in agents {
+                    let name = agent["name"].as_str().unwrap_or("Agent").to_string();
+                    let description = agent["description"].as_str().unwrap_or("").to_string();
+                    list = list.child(
+                        customize_card(theme)
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(icons::icon(Icon::Chat, 20.0, theme.accent()))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .flex_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.5))
+                                            .text_color(theme.dim())
+                                            .child(description),
+                                    ),
+                            )
+                            .child(pill("Loaded", theme, false)),
+                    );
+                }
+            }
+            content = content.child(list);
+        }
+        CustomizeTab::McpServers => {
+            let sources = root.sources.clone();
+            let mut list = div().flex().flex_col().gap_2();
+            if sources.is_empty() {
+                list = list.child(customize_empty(
+                    theme,
+                    Icon::Globe,
+                    "No MCP servers in this project",
+                    "Servers configured in mcp.json appear here.",
+                ));
+            } else {
+                for source in sources {
+                    let name = source["name"].as_str().unwrap_or("MCP server").to_string();
+                    let state = source["state"].as_str().unwrap_or("ready").to_string();
+                    let enabled = source["enabled"].as_bool().unwrap_or(true);
+                    let label = if !enabled {
+                        "Off"
+                    } else if state == "connected" {
+                        "Connected"
+                    } else if state == "needs-auth" {
+                        "Needs auth"
+                    } else {
+                        "Ready"
+                    };
+                    list = list.child(
+                        customize_card(theme)
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(icons::icon(Icon::Globe, 19.0, theme.dim()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(if label == "Connected" {
+                                        theme.success()
+                                    } else {
+                                        theme.dim()
+                                    })
+                                    .child(label),
+                            ),
+                    );
+                }
+            }
+            content = content.child(list);
+        }
+        CustomizeTab::Approvals => {
+            let approvals = root.approvals.clone();
+            let mut list = div().flex().flex_col().gap_2();
+            if approvals.is_empty() {
+                list = list.child(customize_empty(
+                    theme,
+                    Icon::Lock,
+                    "No pre-approved tools",
+                    "Every tool call asks before it runs.",
+                ));
+            } else {
+                for tool in approvals {
+                    list = list.child(
+                        customize_card(theme)
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_3()
+                            .child(icons::icon(Icon::Check, 17.0, theme.success()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(13.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(tool),
+                            ),
+                    );
+                }
+                list = list.child(Button::new("Clear approvals").danger().render(
+                    "customize-clear-approvals",
+                    theme,
+                    cx,
+                    |root, _, cx| root.clear_approvals(cx),
+                ));
+            }
+            content = content.child(list);
+        }
+    }
+
+    content = content.child(
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .pt_2()
+            .border_t_1()
+            .border_color(theme.border())
+            .child(Button::new("Appearance").render(
+                "customize-appearance",
+                theme,
+                cx,
+                |root, _, cx| {
+                    root.settings_tab = crate::app::SettingsTab::Appearance;
+                    root.open_overlay(Overlay::Settings, cx);
+                },
+            ))
+            .child(Button::new("Keyboard shortcuts").render(
+                "customize-shortcuts",
+                theme,
+                cx,
+                |root, _, cx| root.open_overlay(Overlay::Shortcuts, cx),
+            )),
+    );
+
+    div()
+        .id("customize-page")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .overflow_y_scroll()
+        .px(px(48.0))
+        .pt(px(36.0))
+        .pb(px(48.0))
+        .bg(theme.background())
+        .child(content)
+}
+
+fn customize_card(theme: &Theme) -> gpui::Div {
+    div()
+        .w_full()
+        .px(px(18.0))
+        .py(px(16.0))
+        .rounded(px(12.0))
+        .bg(theme.panel())
+        .border_1()
+        .border_color(theme.border())
+}
+
+fn customize_empty(theme: &Theme, mark: Icon, title: &str, detail: &str) -> gpui::Div {
+    customize_card(theme)
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .py(px(44.0))
+        .child(icons::icon(mark, 24.0, theme.faint()))
+        .child(
+            div()
+                .text_size(px(14.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text())
+                .child(title.to_string()),
         )
         .child(
             div()
                 .text_size(px(12.5))
                 .text_color(theme.dim())
-                .child(format!("Loading from {project}")),
-        )
-        .children(rows.into_iter().map(|(title, body)| {
-            crate::app::card(theme)
-                .flex()
-                .flex_col()
-                .gap_1()
-                .p_3()
-                .child(
-                    div()
-                        .text_size(px(13.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(theme.dim())
-                        .child(body),
-                )
-        }))
-        .children(
-            root.approvals
-                .iter()
-                .map(|tool| pill(tool.clone(), theme, false)),
-        )
-        .children((!root.approvals.is_empty()).then(|| {
-            Button::new("Clear allowed tools").danger().render(
-                "clear-approvals",
-                theme,
-                cx,
-                |root, _, cx| root.clear_approvals(cx),
-            )
-        }))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_2()
-                .child(Button::new("Themes").render(
-                    "customize-themes",
-                    theme,
-                    cx,
-                    |root, _, cx| root.open_overlay(Overlay::Themes, cx),
-                ))
-                .child(Button::new("Language").render(
-                    "customize-language",
-                    theme,
-                    cx,
-                    |root, _, cx| root.open_overlay(Overlay::Language, cx),
-                ))
-                .child(Button::new("Settings").render(
-                    "customize-settings",
-                    theme,
-                    cx,
-                    |root, _, cx| root.open_overlay(Overlay::Settings, cx),
-                )),
+                .child(detail.to_string()),
         )
 }

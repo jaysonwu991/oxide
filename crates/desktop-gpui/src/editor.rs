@@ -140,6 +140,27 @@ impl Editor {
         self.measured_height
     }
 
+    pub fn cursor_utf16(&self) -> usize {
+        self.offset_to_utf16(self.cursor_offset())
+    }
+
+    pub fn replace_utf16_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        let range = self.range_from_utf16(&range);
+        self.content = format!(
+            "{}{}{}",
+            &self.content[..range.start],
+            text,
+            &self.content[range.end..]
+        )
+        .into();
+        let caret = range.start + text.len();
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.notify();
+        cx.emit(EditorEvent::Changed);
+    }
+
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.content = text.into();
         let end = self.content.len();
