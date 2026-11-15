@@ -191,9 +191,12 @@ that composer instead of being sent.
   `Local checkout`), and the sources the thread can reach with their state
   (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
 - **Menus and keys** — the macOS menu bar carries the app's own menu, File,
-  View and Window menus over the same actions as the shortcuts (⌘N, ⌘W, ⌘B,
-  ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git worktrees, ⌘1–⌘9 for the
-  sidebar's chats, ⌘[ / ⌘], Esc to close a dialog, ⌘Q).
+  Edit, View, Window and Help menus over the same actions as the shortcuts
+  (⌘N/⌘T, ⌘W, ⌘B, ⌘J, ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git
+  worktrees, ⌘+ / ⌘− / ⌘0 for text size, ⌘1–⌘9 for the sidebar's chats, ⌘[ /
+  ⌘], Esc to close a dialog, ⌘Q). The application menu has About, Check for
+  Updates, Settings, Hide and Quit; the update dialog checks the
+  `desktop-gpui-v*` release train and links to the beta installer it finds.
   Back leaves Settings, Customize or Projects before it walks the open-chat
   history.
 - **Appearance and language** — `theme_colors`/`set_theme` read the same theme
@@ -254,10 +257,10 @@ and planned, and the beta does not pretend otherwise:
 - the provider Connect dialog (the model picker says how to connect, and the
   stored credential is read on refresh);
 - the composer's inline predictions;
-- updating in place: the beta does not self-install updates, because
-  `oxide_core::updates::Component::Desktop` resolves the stable app's artifact
-  names and an install would put the Electron app in the beta's place. Update
-  the beta by installing its newest release.
+- updating in place: Check for Updates reads the beta's own
+  `desktop-gpui-v*` release train, but the beta does not self-install because
+  it would need its own replacement path. Download and install the release the
+  dialog names.
 
 ## Verification
 

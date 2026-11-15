@@ -32,10 +32,20 @@ actions!(
         NewChat,
         CloseChat,
         ToggleSidebar,
+        ToggleDetails,
         OpenSettings,
         ToggleChanges,
         OpenModels,
         OpenWorktrees,
+        AboutApp,
+        CheckForUpdates,
+        HideApp,
+        IncreaseTextSize,
+        DecreaseTextSize,
+        ResetTextSize,
+        ToggleFullscreen,
+        MinimizeWindow,
+        CloseWindow,
         Back,
         Forward,
         DismissOverlay,
@@ -82,6 +92,8 @@ pub enum SettingsTab {
 #[derive(Clone)]
 pub enum Overlay {
     Settings,
+    About,
+    Updates,
     Models,
     Shortcuts,
     Trust {
@@ -228,6 +240,9 @@ pub struct Root {
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
+    pub update_check: Option<Value>,
+    pub update_error: Option<String>,
+    pub checking_updates: bool,
     pub subscriptions: Vec<Subscription>,
 }
 
@@ -357,6 +372,9 @@ impl Root {
             inline_project_actions: None,
             resizing: None,
             show_changes: false,
+            update_check: None,
+            update_error: None,
+            checking_updates: false,
             subscriptions,
         };
 
@@ -385,15 +403,28 @@ impl Root {
 
     pub fn bind_keys(cx: &mut App) {
         let mut bindings = editor::key_bindings();
+        bindings.push(KeyBinding::new("cmd-t", NewChat, Some("Root")));
         bindings.push(KeyBinding::new("cmd-n", NewChat, Some("Root")));
         bindings.push(KeyBinding::new("cmd-w", CloseChat, Some("Root")));
         bindings.push(KeyBinding::new("cmd-b", ToggleSidebar, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-j", ToggleDetails, Some("Root")));
         bindings.push(KeyBinding::new("cmd-,", OpenSettings, Some("Root")));
         bindings.push(KeyBinding::new("cmd-enter", ToggleChanges, Some("Root")));
         bindings.push(KeyBinding::new("cmd-shift-m", OpenModels, Some("Root")));
         bindings.push(KeyBinding::new("cmd-shift-g", OpenWorktrees, Some("Root")));
         bindings.push(KeyBinding::new("cmd-[", Back, Some("Root")));
         bindings.push(KeyBinding::new("cmd-]", Forward, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-h", HideApp, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-+", IncreaseTextSize, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-=", IncreaseTextSize, Some("Root")));
+        bindings.push(KeyBinding::new("cmd--", DecreaseTextSize, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-0", ResetTextSize, Some("Root")));
+        bindings.push(KeyBinding::new(
+            "ctrl-cmd-f",
+            ToggleFullscreen,
+            Some("Root"),
+        ));
+        bindings.push(KeyBinding::new("cmd-shift-w", CloseWindow, Some("Root")));
         bindings.push(KeyBinding::new("escape", DismissOverlay, Some("Root")));
         bindings.push(KeyBinding::new("cmd-q", QuitApp, Some("Root")));
         bindings.push(KeyBinding::new("cmd-1", SwitchToSession1, Some("Root")));
@@ -417,12 +448,17 @@ impl Root {
 
     /// The window's menu bar, the way the stable app's Electron menu is built.
     pub fn install_menus(cx: &mut App) {
-        use gpui::{Menu, MenuItem};
+        use gpui::{Menu, MenuItem, OsAction};
         cx.set_menus(vec![
             Menu {
                 name: "Oxide Beta".into(),
                 items: vec![
-                    MenuItem::action("About Oxide Beta", ShowShortcuts),
+                    MenuItem::action("About Oxide Beta", AboutApp),
+                    MenuItem::separator(),
+                    MenuItem::action("Check for Updates…", CheckForUpdates),
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
+                    MenuItem::action("Hide Oxide Beta", HideApp),
                     MenuItem::separator(),
                     MenuItem::action("Quit Oxide Beta", QuitApp),
                 ],
@@ -435,20 +471,43 @@ impl Root {
                 ],
             },
             Menu {
+                name: "Edit".into(),
+                items: vec![
+                    MenuItem::os_action("Cut", editor::Cut, OsAction::Cut),
+                    MenuItem::os_action("Copy", editor::Copy, OsAction::Copy),
+                    MenuItem::os_action("Paste", editor::Paste, OsAction::Paste),
+                    MenuItem::os_action("Select All", editor::SelectAll, OsAction::SelectAll),
+                ],
+            },
+            Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action("Show or Hide Details", ToggleDetails),
                     MenuItem::action("Show or Hide the Sidebar", ToggleSidebar),
                     MenuItem::action("Changes", ToggleChanges),
                     MenuItem::action("Model Picker", OpenModels),
                     MenuItem::action("Git Worktrees", OpenWorktrees),
+                    MenuItem::separator(),
+                    MenuItem::action("Larger Text", IncreaseTextSize),
+                    MenuItem::action("Smaller Text", DecreaseTextSize),
+                    MenuItem::action("Actual Size", ResetTextSize),
+                    MenuItem::separator(),
+                    MenuItem::action("Back", Back),
+                    MenuItem::action("Forward", Forward),
+                    MenuItem::separator(),
+                    MenuItem::action("Toggle Full Screen", ToggleFullscreen),
                 ],
             },
             Menu {
                 name: "Window".into(),
                 items: vec![
-                    MenuItem::action("Settings", OpenSettings),
-                    MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
+                    MenuItem::action("Minimize", MinimizeWindow),
+                    MenuItem::action("Close Window", CloseWindow),
                 ],
+            },
+            Menu {
+                name: "Help".into(),
+                items: vec![MenuItem::action("Keyboard Shortcuts", ShowShortcuts)],
             },
         ]);
     }
@@ -619,6 +678,38 @@ impl Root {
                 Err(error) => root.toast(error, true, cx),
             },
         );
+    }
+
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        self.overlay = Some(Overlay::Updates);
+        self.update_check = None;
+        self.update_error = None;
+        self.checking_updates = true;
+        self.call(
+            "check_gpui_updates",
+            json!({ "current": env!("CARGO_PKG_VERSION") }),
+            cx,
+            |root, result, cx| {
+                root.checking_updates = false;
+                match result {
+                    Ok(value) => root.update_check = Some(value),
+                    Err(error) => root.update_error = Some(error),
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
+    }
+
+    fn set_text_scale(&mut self, scale: f64, cx: &mut Context<Self>) {
+        self.save_prefs(json!({ "font_scale": scale.clamp(0.7, 1.6) }), cx);
+        cx.notify();
+    }
+
+    fn adjust_text_scale(&mut self, delta: f64, cx: &mut Context<Self>) {
+        let current = self.prefs["font_scale"].as_f64().unwrap_or(1.0);
+        let stepped = ((current * 10.0).round() / 10.0 + delta).clamp(0.7, 1.6);
+        self.set_text_scale((stepped * 10.0).round() / 10.0, cx);
     }
 
     pub fn set_language(&mut self, tag: String, cx: &mut Context<Self>) {
@@ -2214,9 +2305,35 @@ impl Render for Root {
                 this.save_prefs(json!({ "sidebar_visible": visible }), cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ToggleDetails, _window, cx| {
+                this.show_details = !this.show_details;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| {
                 this.open_overlay(Overlay::Settings, cx)
             }))
+            .on_action(cx.listener(|this, _: &AboutApp, _window, cx| {
+                this.overlay = Some(Overlay::About);
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|this, _: &CheckForUpdates, _window, cx| this.check_for_updates(cx)),
+            )
+            .on_action(cx.listener(|_, _: &HideApp, _window, cx| cx.hide()))
+            .on_action(cx.listener(|this, _: &IncreaseTextSize, _window, cx| {
+                this.adjust_text_scale(0.1, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DecreaseTextSize, _window, cx| {
+                this.adjust_text_scale(-0.1, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ResetTextSize, _window, cx| this.set_text_scale(1.0, cx)),
+            )
+            .on_action(
+                cx.listener(|_, _: &ToggleFullscreen, window, _cx| window.toggle_fullscreen()),
+            )
+            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _cx| window.minimize_window()))
+            .on_action(cx.listener(|_, _: &CloseWindow, window, _cx| window.remove_window()))
             .on_action(cx.listener(|this, _: &ToggleChanges, _window, cx| {
                 this.show_changes = !this.show_changes;
                 if this.show_changes {

@@ -35,6 +35,8 @@ pub fn layer(
 
     let panel = match overlay.clone() {
         Overlay::Settings => settings_page(root, theme, cx),
+        Overlay::About => about_dialog(theme, cx),
+        Overlay::Updates => update_dialog(root, theme, cx),
         Overlay::Models => models(root, theme, cx),
         Overlay::Shortcuts => shortcuts(theme, cx),
         Overlay::Trust { project } => trust(root, theme, project, cx),
@@ -917,6 +919,196 @@ fn theme_card(
                 .children(active.then(|| icons::icon(Icon::Check, 13.0, theme.accent()))),
         )
         .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
+fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    dialog(theme, "About Oxide Beta", 430.0)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(14.0))
+                .child(icons::mark(44.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0))
+                        .child(
+                            div()
+                                .text_size(px(17.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text())
+                                .child("Oxide Desktop Beta"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(theme.dim())
+                                .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .mt(px(12.0))
+                .text_size(px(12.0))
+                .line_height(px(18.0))
+                .text_color(theme.dim())
+                .child(
+                    "The native GPUI desktop renderer, sharing configuration, sessions, approvals and tools with Oxide for Desktop and the terminal.",
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .mt(px(8.0))
+                .child(close_button(theme, cx)),
+        )
+}
+
+fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let mut panel = dialog(theme, "Updates", 560.0);
+    if root.checking_updates {
+        return panel
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(theme.dim())
+                    .child("Checking the beta release channel…"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .mt(px(12.0))
+                    .child(close_button(theme, cx)),
+            );
+    }
+    if let Some(error) = root.update_error.as_deref() {
+        return panel
+            .child(
+                div()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(theme.color("tool_error_bg"))
+                    .text_size(px(12.5))
+                    .text_color(theme.error())
+                    .child(format!("Could not check for updates: {error}")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .mt(px(12.0))
+                    .child(Button::new("Try Again").render(
+                        "updates-retry",
+                        theme,
+                        cx,
+                        |root, _, cx| root.check_for_updates(cx),
+                    ))
+                    .child(close_button(theme, cx)),
+            );
+    }
+    let Some(check) = root.update_check.as_ref() else {
+        return panel.child(close_button(theme, cx));
+    };
+    let available = check["updateAvailable"].as_bool().unwrap_or(false);
+    let current = check["current"].as_str().unwrap_or("unknown");
+    let latest = check["latest"].as_str().unwrap_or("unknown");
+    let released = check["releasedAt"].as_str().unwrap_or_default();
+    let asset = check["asset"]["name"].as_str().unwrap_or_default();
+    let advice = check["advice"].as_str().unwrap_or_default();
+    let release_url = check["releaseUrl"].as_str().unwrap_or_default().to_string();
+    let notes = check["notes"].as_str().unwrap_or_default();
+
+    panel = panel
+        .child(
+            div()
+                .text_size(px(17.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text())
+                .child(if available {
+                    format!("Oxide Beta {latest} is available")
+                } else {
+                    "Oxide Beta is up to date".to_string()
+                }),
+        )
+        .child(
+            div()
+                .mt(px(4.0))
+                .text_size(px(12.0))
+                .text_color(theme.dim())
+                .child(format!(
+                    "Current {current} · Latest {latest}{}",
+                    if released.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {released}")
+                    }
+                )),
+        );
+    if available {
+        if !asset.is_empty() {
+            panel = panel.child(
+                div()
+                    .mt(px(10.0))
+                    .text_size(px(12.0))
+                    .text_color(theme.dim())
+                    .child(format!("Download: {asset}")),
+            );
+        }
+        if !advice.is_empty() {
+            panel = panel.child(
+                div()
+                    .mt(px(8.0))
+                    .text_size(px(12.0))
+                    .line_height(px(18.0))
+                    .text_color(theme.dim())
+                    .child(advice.to_string()),
+            );
+        }
+        if !notes.is_empty() {
+            panel = panel.child(
+                div()
+                    .id("update-notes")
+                    .mt(px(10.0))
+                    .max_h(px(190.0))
+                    .overflow_y_scroll()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(theme.border())
+                    .bg(theme.background())
+                    .text_size(px(11.5))
+                    .line_height(px(17.0))
+                    .text_color(theme.dim())
+                    .child(notes.to_string()),
+            );
+        }
+    }
+    let mut actions = div()
+        .flex()
+        .flex_row()
+        .justify_end()
+        .gap(px(8.0))
+        .mt(px(12.0));
+    if !release_url.is_empty() {
+        actions = actions.child(Button::new("Open Release Page").primary().render(
+            "updates-release",
+            theme,
+            cx,
+            move |_, _, cx| cx.open_url(&release_url),
+        ));
+    }
+    actions = actions.child(close_button(theme, cx));
+    panel.child(actions)
 }
 
 fn switch(
