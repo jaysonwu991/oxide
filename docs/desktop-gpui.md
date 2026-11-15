@@ -99,9 +99,10 @@ libraries (X11, Wayland, fontconfig, freetype, Vulkan, ALSA) before building.
 `crates/desktop-gpui/Cargo.toml` (and the root workspace version, as a
 `desktop-v*` tag does).
 
-CI (`.github/workflows/ci.yml`, job `desktop-gpui`) checks formatting, clippy
-with warnings denied, the crate's tests, a release build and the engine check on
-Ubuntu, macOS and Windows.
+CI (`.github/workflows/ci.yml`) checks formatting and clippy once in
+`desktop-gpui-lint`, then runs the crate's tests, a debug build and the engine
+check on Ubuntu, macOS and Windows. The optimized LTO build, installer and its
+engine check remain in the tag-time `desktop-gpui` release workflow.
 
 GPUI is pinned to Zed commit
 `596dfdcf32d85d4d8d17a8887b4d0979ec7c5e14`, whose AccessKit integration emits
