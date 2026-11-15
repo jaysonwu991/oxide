@@ -619,7 +619,7 @@ impl Chat {
     }
 }
 
-fn image_from_data_url(data_url: &str) -> Option<Arc<Image>> {
+pub(crate) fn image_from_data_url(data_url: &str) -> Option<Arc<Image>> {
     let (meta, payload) = data_url.strip_prefix("data:")?.split_once(',')?;
     let mime = meta.split(';').next()?;
     if !meta.split(';').any(|part| part == "base64") {

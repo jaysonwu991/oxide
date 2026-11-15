@@ -101,6 +101,9 @@ pub(crate) fn icon_button(
         .h(px(box_size))
         .rounded(px(if box_size >= 38.0 { 10.0 } else { 8.0 }))
         .cursor_pointer()
+        .tab_index(0)
+        .role(gpui::Role::Button)
+        .aria_label(mark.label())
         .text_color(color)
         .bg(if active {
             theme.panel_2()
@@ -108,6 +111,12 @@ pub(crate) fn icon_button(
             gpui::transparent_black()
         })
         .hover(move |style| style.bg(theme.panel_2()))
+        .focus(move |style| {
+            style
+                .bg(theme.panel_3())
+                .border_1()
+                .border_color(theme.accent())
+        })
         .child(icons::icon(
             mark,
             if box_size >= 38.0 {
@@ -128,6 +137,8 @@ fn navigation_button(
     let color = if enabled { theme.dim() } else { theme.faint() };
     let button = div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(mark.label())
         .flex()
         .items_center()
         .justify_center()
@@ -474,6 +485,8 @@ pub fn topbar(
     let forward_enabled = root.can_navigate_forward();
     let mut row = div()
         .id("topbar")
+        .role(gpui::Role::Toolbar)
+        .aria_label("Window toolbar")
         .window_control_area(WindowControlArea::Drag)
         .flex()
         .flex_row()
@@ -564,6 +577,9 @@ pub fn topbar(
         .border_color(theme.border());
 
     let mut tabs = div()
+        .id("chat-tabs")
+        .role(gpui::Role::TabList)
+        .aria_label("Open chats")
         .flex()
         .flex_row()
         .items_center()
@@ -585,6 +601,9 @@ pub fn topbar(
         let title = chat.title.clone();
         let mut tab = div()
             .id(("chat-tab", index))
+            .role(gpui::Role::Tab)
+            .aria_label(title.clone())
+            .aria_selected(active)
             .flex()
             .flex_row()
             .items_center()
@@ -708,6 +727,9 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
     let settings = matches!(root.overlay, Some(Overlay::Settings));
     let customize = root.rail == Rail::Customize && !settings;
     div()
+        .id("primary-navigation")
+        .role(gpui::Role::Navigation)
+        .aria_label("Primary navigation")
         .flex()
         .flex_col()
         .items_center()
@@ -724,6 +746,9 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
             icon_button("rail-home", Icon::Home, 40.0, theme, chats)
                 .tooltip(tip("Chats", theme))
                 .on_click(cx.listener(|root, _, window, cx| {
+                    if root.show_changes {
+                        root.close_workspace_panel(cx);
+                    }
                     root.rail = Rail::Chats;
                     root.overlay = None;
                     root.new_chat(window, cx);
@@ -733,6 +758,9 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
             icon_button("rail-projects", Icon::Folder, 40.0, theme, projects)
                 .tooltip(tip("Projects", theme))
                 .on_click(cx.listener(|root, _, _, cx| {
+                    if root.show_changes {
+                        root.close_workspace_panel(cx);
+                    }
                     root.rail = if root.rail == Rail::Projects {
                         Rail::Chats
                     } else {
@@ -771,9 +799,15 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
             icon_button("rail-customize", Icon::Customize, 40.0, theme, customize)
                 .tooltip(tip("Customize", theme))
                 .on_click(cx.listener(|root, _, _, cx| {
+                    if root.show_changes {
+                        root.close_workspace_panel(cx);
+                    }
                     let settings = matches!(root.overlay, Some(Overlay::Settings));
                     root.overlay = None;
                     root.rail = customize_destination(root.rail, settings);
+                    if root.rail == Rail::Customize {
+                        root.load_plugins(cx);
+                    }
                     cx.notify();
                 })),
         )
@@ -782,6 +816,9 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
             icon_button("rail-settings", Icon::Settings, 40.0, theme, settings)
                 .tooltip(tip("Settings \u{00b7} \u{2318},", theme))
                 .on_click(cx.listener(|root, _, _, cx| {
+                    if root.show_changes {
+                        root.close_workspace_panel(cx);
+                    }
                     if matches!(root.overlay, Some(Overlay::Settings)) {
                         root.overlay = None;
                         cx.notify();
@@ -808,6 +845,9 @@ pub fn sidebar(
     let activities_open = root.activities_open;
     let activity_busy = root.chats.iter().any(|chat| chat.running());
     let mut column = div()
+        .id("thread-sidebar")
+        .role(gpui::Role::Complementary)
+        .aria_label("Projects and chats")
         .flex()
         .flex_col()
         .flex_none()
@@ -824,8 +864,16 @@ pub fn sidebar(
         .flex_none()
         .min_h(px(32.0));
     if searching {
+        let search_focus = search.clone();
         top = top.child(
             div()
+                .id("chat-search")
+                .role(gpui::Role::SearchInput)
+                .aria_label("Search chats")
+                .aria_value(root.query.clone())
+                .on_a11y_action(gpui::AccessibleAction::Focus, move |_, window, cx| {
+                    window.focus(&search_focus.read(cx).focus_handle(cx), cx);
+                })
                 .flex()
                 .flex_row()
                 .items_center()
@@ -1032,6 +1080,10 @@ pub fn sidebar(
             let mut project_group = div().flex().flex_col().mb(px(6.0));
             let header = div()
                 .id(SharedString::from(format!("project-{path}")))
+                .role(gpui::Role::TreeItem)
+                .aria_label(format!("Project {name}"))
+                .aria_selected(selected)
+                .aria_expanded(!collapsed)
                 .group(group)
                 .relative()
                 .flex()
@@ -1047,6 +1099,13 @@ pub fn sidebar(
                 .child(
                     div()
                         .id(SharedString::from(format!("project-toggle-{path}")))
+                        .role(gpui::Role::Button)
+                        .aria_label(if collapsed {
+                            format!("Expand project {name}")
+                        } else {
+                            format!("Collapse project {name}")
+                        })
+                        .aria_expanded(!collapsed)
                         .flex()
                         .items_center()
                         .justify_center()
@@ -1460,6 +1519,10 @@ fn activity_row(
     } = item;
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(title.clone())
+        .aria_description(format!("{project} · {detail}"))
+        .aria_selected(active)
         .flex()
         .flex_col()
         .gap(px(3.0))
@@ -1805,6 +1868,10 @@ fn session_row(
     let meta = shortcut.map(shortcut_label).unwrap_or(when.clone());
     div()
         .id(SharedString::from(format!("session-{id}")))
+        .role(gpui::Role::TreeItem)
+        .aria_label(title.clone())
+        .aria_description(format!("{project} · {meta}"))
+        .aria_selected(active)
         .group(group)
         .relative()
         .flex()
@@ -1989,6 +2056,8 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
 
     let mut panel = div()
         .id("details-pane")
+        .role(gpui::Role::Complementary)
+        .aria_label("Project details")
         .flex()
         .flex_col()
         .flex_1()
@@ -2088,7 +2157,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         let number = pull["number"].as_u64().unwrap_or(0);
         let state = pull["state"].as_str().unwrap_or_default();
         let url = pull["url"].as_str().unwrap_or_default().to_string();
-        if number > 0 && !url.is_empty() {
+        if number > 0 {
             let color = if state.eq_ignore_ascii_case("open") {
                 theme.success()
             } else if state.eq_ignore_ascii_case("merged") {
@@ -2103,7 +2172,14 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                 Some(vec![(format!("PR #{number}"), color)]),
                 theme,
                 cx,
-                move |_, _, cx| cx.open_url(&url),
+                move |root, _, cx| {
+                    if url.is_empty() {
+                        root.open_pulls(cx);
+                    } else {
+                        root.open_pulls(cx);
+                        root.load_pull(number, cx);
+                    }
+                },
             ));
         }
     }
@@ -2277,6 +2353,9 @@ pub fn main(
     cx: &mut Context<Root>,
 ) -> impl IntoElement {
     let mut column = div()
+        .id("main-workspace")
+        .role(gpui::Role::Main)
+        .aria_label("Conversation workspace")
         .flex()
         .flex_row()
         .items_start()
@@ -2291,7 +2370,11 @@ pub fn main(
     }
     if root.show_changes {
         column = column.child(changes_resizer(root, theme, cx));
-        column = column.child(changes_panel(root, theme, cx));
+        column = column.child(if root.panel_tab == crate::app::PanelTab::Changes {
+            changes_panel(root, theme, cx).into_any_element()
+        } else {
+            crate::workspace::panel(root, theme, window, cx).into_any_element()
+        });
     }
     column
 }
@@ -2344,6 +2427,8 @@ fn conversation(
 
     let mut transcript = div()
         .id("transcript")
+        .role(gpui::Role::Log)
+        .aria_label("Conversation transcript")
         .flex()
         .flex_col()
         .flex_1()
@@ -2395,9 +2480,27 @@ fn conversation(
     }
 
     for (position, entry) in entries.iter().enumerate() {
-        transcript = transcript.child(div().w_full().max_w(px(740.0)).mx_auto().flex_none().child(
-            entry_view(entry, index, position, theme, reading_width, window, cx),
-        ));
+        transcript = transcript.child(
+            div()
+                .id(SharedString::from(format!(
+                    "transcript-entry-{index}-{position}"
+                )))
+                .role(gpui::Role::Article)
+                .aria_label(entry_accessibility_label(entry))
+                .w_full()
+                .max_w(px(740.0))
+                .mx_auto()
+                .flex_none()
+                .child(entry_view(
+                    entry,
+                    index,
+                    position,
+                    theme,
+                    reading_width,
+                    window,
+                    cx,
+                )),
+        );
     }
 
     let composer_editor = root.editors.get(&root.chats[index].id).cloned();
@@ -2460,6 +2563,10 @@ fn empty_state(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         )
         .child(
             div()
+                .id("welcome-heading")
+                .role(gpui::Role::Heading)
+                .aria_level(1)
+                .aria_label("What should we build?")
                 .pt(px(16.0))
                 .text_size(px(24.0))
                 .font_weight(FontWeight::SEMIBOLD)
@@ -2516,6 +2623,8 @@ fn suggestions(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
         grid = grid.child(
             div()
                 .id(SharedString::from(format!("suggestion-{text}")))
+                .role(gpui::Role::Button)
+                .aria_label(text.to_string())
                 .flex()
                 .items_start()
                 .w(px(270.0))
@@ -2788,6 +2897,48 @@ fn compact_tool_output(output: &str) -> (String, bool) {
         .collect::<Vec<_>>()
         .join("\n");
     (shown, lines.len() > 10)
+}
+
+fn entry_accessibility_label(entry: &Entry) -> String {
+    match entry {
+        Entry::User { text, attachments } => {
+            let attachment_text = match attachments.len() {
+                0 => String::new(),
+                1 => " with 1 attachment".to_string(),
+                count => format!(" with {count} attachments"),
+            };
+            format!("You said: {text}{attachment_text}")
+        }
+        Entry::Assistant { text, .. } => format!("Oxide said: {text}"),
+        Entry::Thinking { text, done, .. } => {
+            if *done {
+                format!("Oxide thinking: {text}")
+            } else {
+                format!("Oxide is thinking: {text}")
+            }
+        }
+        Entry::Tool(card) => format!(
+            "{} {}: {}",
+            tool_label(&card.name),
+            card.detail,
+            compact_tool_output(&card.output).0
+        ),
+        Entry::Edited(card) => format!(
+            "Edited {} file{}: {}",
+            card.files.len(),
+            if card.files.len() == 1 { "" } else { "s" },
+            card.files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Entry::Error(error) => format!("Error: {error}"),
+        Entry::Info(info) => info.clone(),
+        Entry::Compaction { summary, .. } => format!("Conversation compacted: {summary}"),
+        Entry::Approval(card) => format!("Approval needed for {}: {}", card.tool, card.detail),
+        Entry::Question(_) => "Oxide has a question".to_string(),
+    }
 }
 
 fn entry_view(
@@ -3348,6 +3499,25 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
     }
 }
 
+pub(crate) fn markdown_document(
+    text: &str,
+    theme: &Theme,
+    width: f32,
+    window: &mut Window,
+) -> gpui::Div {
+    let blocks = crate::markdown::parse(text);
+    let mut document = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .gap_3()
+        .text_color(theme.text());
+    for block in blocks {
+        document = document.child(block_view(&block, theme, width, window));
+    }
+    document
+}
+
 fn inline_lines(spans: &[Inline]) -> Vec<Vec<Inline>> {
     let mut lines = vec![Vec::new()];
     for span in spans {
@@ -3571,6 +3741,8 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
 
     let mut body = div()
         .id("composer-model-list")
+        .role(gpui::Role::ListBox)
+        .aria_label("Models")
         .flex()
         .flex_col()
         .gap(px(2.0))
@@ -3591,6 +3763,8 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
             .child(
                 div()
                     .id("composer-model-connect")
+                    .role(gpui::Role::Button)
+                    .aria_label("Connect a provider")
                     .mx_2()
                     .mt_1()
                     .px_2()
@@ -3602,12 +3776,7 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
                     .hover(move |style| style.bg(theme.panel_2()))
                     .child("Connect a provider")
                     .on_click(cx.listener(|root, _, _, cx| {
-                        root.open_overlay(
-                            Overlay::Connect {
-                                provider: "a provider".to_string(),
-                            },
-                            cx,
-                        )
+                        root.open_connect("a provider".to_string(), cx)
                     })),
             );
     }
@@ -3703,6 +3872,10 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
                     .id(SharedString::from(format!(
                         "composer-model-{provider_name}-{id}"
                     )))
+                    .role(gpui::Role::RadioButton)
+                    .aria_label(label.clone())
+                    .aria_description(detail.clone().unwrap_or_default())
+                    .aria_selected(selected)
                     .flex()
                     .flex_row()
                     .items_center()
@@ -3895,6 +4068,8 @@ fn composer_tools_menu(
     let project = root.current_project().unwrap_or_default();
     div()
         .id("composer-tools-menu")
+        .role(gpui::Role::Menu)
+        .aria_label("Composer tools")
         .absolute()
         .left_0()
         .bottom(px(36.0))
@@ -3921,12 +4096,7 @@ fn composer_tools_menu(
             cx,
             |root, _, cx| {
                 root.composer_tools_open = false;
-                root.open_overlay(
-                    Overlay::Connect {
-                        provider: "a provider".to_string(),
-                    },
-                    cx,
-                );
+                root.open_connect("a provider".to_string(), cx);
             },
         ))
         .child(composer_tool_item(
@@ -3982,6 +4152,8 @@ fn composer_tool_item(
 ) -> Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(gpui::Role::MenuItem)
+        .aria_label(label)
         .flex()
         .flex_row()
         .items_center()
@@ -4018,6 +4190,9 @@ fn composer(
         .map(|editor| editor.read(cx).text().to_string())
         .unwrap_or_default();
     let running = chat.running();
+    let prediction = (root.prediction_chat == Some(chat.id))
+        .then(|| root.prediction.clone())
+        .filter(|text| !text.is_empty());
     let attachments = chat.attachments.clone();
     let queued = chat.queued.clone();
     let show_strip = chat.entries.is_empty() && !running;
@@ -4048,9 +4223,21 @@ fn composer(
     let branch = root.branch.clone();
 
     let mut box_row = div()
-        .key_context("Composer")
+        .id(("composer", chat.id))
+        .role(gpui::Role::Form)
+        .aria_label("Message composer")
+        .key_context(if prediction.is_some() {
+            "Composer prediction"
+        } else {
+            "Composer"
+        })
         .on_action(cx.listener(|root, _: &crate::app::Send, window, cx| root.send(window, cx)))
         .on_action(cx.listener(|root, _: &crate::app::Stop, _window, cx| root.stop(cx)))
+        .on_action(
+            cx.listener(|root, _: &crate::app::AcceptPrediction, window, cx| {
+                root.accept_prediction(window, cx)
+            }),
+        )
         .flex()
         .flex_col()
         .gap(px(2.0))
@@ -4367,7 +4554,7 @@ fn composer(
                                 editor.update(cx, |editor, cx| {
                                     editor.replace_utf16_range(start..end, &insert, cx)
                                 });
-                                window.focus(&editor.read(cx).focus_handle(cx));
+                                window.focus(&editor.read(cx).focus_handle(cx), cx);
                             }
                             root.at_answer = serde_json::Value::Null;
                             root.at_chat = None;
@@ -4428,10 +4615,67 @@ fn composer(
         box_row = box_row.child(rows);
     }
 
+    if let Some(prediction) = prediction {
+        box_row = box_row.child(
+            div()
+                .id("composer-prediction")
+                .role(gpui::Role::Suggestion)
+                .aria_label(format!("Suggested next message: {prediction}"))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .min_h(px(30.0))
+                .px_2()
+                .rounded(px(8.0))
+                .bg(theme.background())
+                .border_1()
+                .border_color(theme.border())
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel_3()))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.faint())
+                        .child("TAB"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(11.5))
+                        .text_color(theme.dim())
+                        .child(prediction),
+                )
+                .child(icons::icon(Icon::ArrowUp, 12.0, theme.faint()))
+                .on_click(cx.listener(|root, _, window, cx| root.accept_prediction(window, cx))),
+        );
+    }
+
     let input = match editor {
         Some(editor) => {
             let height = (f32::from(editor_height) + 12.0).clamp(50.0, 220.0);
+            let focus_editor = editor.clone();
+            let value_editor = editor.clone();
             div()
+                .id(("composer-input", chat.id))
+                .role(gpui::Role::MultilineTextInput)
+                .aria_label("Message")
+                .aria_value(editor_text.clone())
+                .aria_placeholder("Ask Oxide…")
+                .on_a11y_action(gpui::AccessibleAction::Focus, move |_, window, cx| {
+                    window.focus(&focus_editor.read(cx).focus_handle(cx), cx);
+                })
+                .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, _, cx| {
+                    if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+                        value_editor
+                            .update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
+                    }
+                })
                 .w_full()
                 .h(px(height))
                 .px_1()
@@ -4439,7 +4683,7 @@ fn composer(
                 .overflow_hidden()
                 .child(editor.clone())
         }
-        None => div().h(px(50.0)),
+        None => div().id(("composer-input", chat.id)).h(px(50.0)),
     };
 
     box_row = box_row.child(input);
@@ -4722,8 +4966,11 @@ fn setting_chip(
     cx: &mut Context<Root>,
     on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
 ) -> impl IntoElement {
+    let access_label = label.into();
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(access_label.clone())
         .flex()
         .flex_row()
         .items_center()
@@ -4736,7 +4983,7 @@ fn setting_chip(
         .text_size(px(11.5))
         .text_color(theme.dim())
         .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
-        .child(label.into())
+        .child(access_label)
         .child(icons::icon(Icon::ChevronDown, 12.0, theme.faint()))
         .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
@@ -4801,11 +5048,15 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
         .as_ref()
         .map(|review| review.errors.clone())
         .unwrap_or_default();
+    let repository_status = root.repository_status.clone();
     let has_turn = review
         .as_ref()
         .is_some_and(|review| !review.turn_files.is_empty());
 
     let mut column = div()
+        .id("changes-panel")
+        .role(gpui::Role::Region)
+        .aria_label("Code review")
         .flex()
         .flex_col()
         .flex_none()
@@ -4817,16 +5068,38 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
 
     let mut header = div()
         .flex()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .px_3()
-        .py_2()
+        .flex_col()
         .border_b_1()
         .border_color(theme.border())
         .child(
             div()
-                .flex_1()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .pt_2()
+                .child(crate::workspace::panel_tabs(root, theme, cx))
+                .child(div().flex_1())
+                .child(
+                    icon_button("changes-close", Icon::Close, 26.0, theme, false)
+                        .tooltip(tip("Close panel", theme))
+                        .on_click(cx.listener(|root, _, _, cx| {
+                            root.close_workspace_panel(cx);
+                        })),
+                ),
+        );
+    let mut tools = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .child(
+            div()
+                .flex_none()
                 .text_size(px(12.5))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("Changes"),
@@ -4877,13 +5150,13 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
         .and_then(|chat| chat.baseline.clone())
         .is_some()
     {
-        header =
-            header.child(
+        tools =
+            tools.child(
                 Button::new("Undo")
                     .render("changes-undo", theme, cx, |root, _, cx| root.undo_turn(cx)),
             );
     }
-    header = header
+    tools = tools
         .child(
             div()
                 .id("changes-layout")
@@ -4909,16 +5182,8 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
             icon_button("changes-refresh", Icon::Activity, 26.0, theme, false)
                 .tooltip(tip("Refresh changes", theme))
                 .on_click(cx.listener(|root, _, _, cx| root.refresh_change_review(cx))),
-        )
-        .child(
-            icon_button("changes-close", Icon::Close, 26.0, theme, false).on_click(cx.listener(
-                |root, _, _, cx| {
-                    root.show_changes = false;
-                    root.change_review = None;
-                    cx.notify();
-                },
-            )),
         );
+    header = header.child(tools);
     column = column.child(header);
 
     let mut body = div()
@@ -4942,69 +5207,135 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
     }
     for file in files {
         let path = file.path.clone();
+        let toggle_path = path.clone();
         let open = open_files.contains(&path);
-        let mut card =
-            div()
-                .flex()
-                .flex_col()
-                .rounded(px(8.0))
-                .bg(theme.background())
-                .border_1()
-                .border_color(theme.border())
-                .overflow_hidden()
-                .child(
-                    div()
-                        .id(SharedString::from(format!("change-file-{path}")))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .min_h(px(38.0))
-                        .px_2()
-                        .cursor_pointer()
-                        .bg(if open {
-                            theme.panel_2()
+        let mut card = div()
+            .flex()
+            .flex_col()
+            .rounded(px(8.0))
+            .bg(theme.background())
+            .border_1()
+            .border_color(theme.border())
+            .overflow_hidden()
+            .child(
+                div()
+                    .id(SharedString::from(format!("change-file-{path}")))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("{} change {}", file.status, path))
+                    .aria_expanded(open)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .min_h(px(38.0))
+                    .px_2()
+                    .cursor_pointer()
+                    .bg(if open {
+                        theme.panel_2()
+                    } else {
+                        theme.background()
+                    })
+                    .hover(move |style| style.bg(theme.panel_2()))
+                    .child(change_status_badge(&file.status, theme))
+                    .child(change_path_label(&path, theme))
+                    .children((!file.binary).then(|| {
+                        div()
+                            .flex_none()
+                            .text_size(px(10.5))
+                            .text_color(theme.success())
+                            .child(format!("+{}", file.added))
+                    }))
+                    .children((!file.binary).then(|| {
+                        div()
+                            .flex_none()
+                            .text_size(px(10.5))
+                            .text_color(theme.error())
+                            .child(format!("\u{2212}{}", file.removed))
+                    }))
+                    .child(icons::icon(
+                        if open {
+                            Icon::ChevronDown
                         } else {
-                            theme.background()
-                        })
-                        .hover(move |style| style.bg(theme.panel_2()))
-                        .child(change_status_badge(&file.status, theme))
-                        .child(change_path_label(&path, theme))
-                        .children((!file.binary).then(|| {
-                            div()
-                                .flex_none()
-                                .text_size(px(10.5))
-                                .text_color(theme.success())
-                                .child(format!("+{}", file.added))
-                        }))
-                        .children((!file.binary).then(|| {
-                            div()
-                                .flex_none()
-                                .text_size(px(10.5))
-                                .text_color(theme.error())
-                                .child(format!("\u{2212}{}", file.removed))
-                        }))
-                        .child(icons::icon(
-                            if open {
-                                Icon::ChevronDown
-                            } else {
-                                Icon::ChevronRight
-                            },
-                            12.0,
-                            theme.faint(),
-                        ))
-                        .on_click(cx.listener(move |root, _, _, cx| {
-                            root.toggle_change_file(path.clone(), cx)
-                        })),
-                );
+                            Icon::ChevronRight
+                        },
+                        12.0,
+                        theme.faint(),
+                    ))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        root.toggle_change_file(toggle_path.clone(), cx)
+                    })),
+            );
         if open {
+            let state = repository_status
+                .iter()
+                .find(|state| state["path"].as_str() == Some(path.as_str()));
+            let staged = state
+                .and_then(|state| state["staged"].as_bool())
+                .unwrap_or(false);
+            let worktree = state
+                .and_then(|state| state["worktree"].as_bool())
+                .unwrap_or(false);
             if loading.contains(&file.path) {
                 card = card.child(change_note("Reading the change…", theme));
             } else if let Some(error) = errors.get(&file.path) {
                 card = card.child(change_note(error, theme));
             } else if let Some(lines) = sides.get(&file.path) {
-                card = card.child(change_review_diff(
-                    &file, lines, unified, &expanded, theme, cx,
+                let mut controls = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(theme.border());
+                if worktree {
+                    controls = controls.child(Button::new("Stage file").render(
+                        SharedString::from(format!("change-stage-{path}")),
+                        theme,
+                        cx,
+                        {
+                            let path = path.clone();
+                            move |root, _, cx| {
+                                root.shape_change("stage".to_string(), Some(path.clone()), None, cx)
+                            }
+                        },
+                    ));
+                }
+                if staged {
+                    controls = controls.child(Button::new("Unstage file").render(
+                        SharedString::from(format!("change-unstage-{path}")),
+                        theme,
+                        cx,
+                        {
+                            let path = path.clone();
+                            move |root, _, cx| {
+                                root.shape_change(
+                                    "unstage".to_string(),
+                                    Some(path.clone()),
+                                    None,
+                                    cx,
+                                )
+                            }
+                        },
+                    ));
+                }
+                controls = controls
+                    .child(div().flex_1())
+                    .child(Button::new("Open file").render(
+                        SharedString::from(format!("change-open-{path}")),
+                        theme,
+                        cx,
+                        move |root, _, cx| root.open_file(path.clone(), cx),
+                    ));
+                card = card.child(controls).child(change_review_diff(
+                    &file,
+                    lines,
+                    unified,
+                    &expanded,
+                    (staged, worktree),
+                    theme,
+                    cx,
                 ));
             } else if !file.diff.is_empty() {
                 card = card.child(diff_block(&file.diff, theme));
@@ -5120,9 +5451,11 @@ fn change_review_diff(
     sides: &Value,
     unified: bool,
     expanded: &HashSet<String>,
+    state: (bool, bool),
     theme: &Theme,
     cx: &mut Context<Root>,
 ) -> impl IntoElement {
+    let (staged, worktree) = state;
     if sides["binary"].as_bool().unwrap_or(false) {
         return div()
             .id(SharedString::from(format!("change-diff-{}", file.path)))
@@ -5166,6 +5499,65 @@ fn change_review_diff(
     let mut index = 0;
     while index < lines.len() {
         if lines[index]["kind"].as_str() != Some("context") {
+            if index == 0 || lines[index - 1]["kind"].as_str() == Some("context") {
+                let mut end = index + 1;
+                while end < lines.len() && lines[end]["kind"].as_str() != Some("context") {
+                    end += 1;
+                }
+                let hunk = crate::app::change_hunk(&lines, index, end - 1);
+                let old = hunk["old_start"].as_u64().unwrap_or(1);
+                let new = hunk["new_start"].as_u64().unwrap_or(1);
+                let path = file.path.clone();
+                let mut actions = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .h(px(28.0))
+                    .px_2()
+                    .bg(theme.panel());
+                actions = actions.child(
+                    div()
+                        .flex_1()
+                        .font_family(".SystemUIFont")
+                        .text_size(px(10.5))
+                        .text_color(theme.faint())
+                        .child(format!("Hunk at {old}/{new}")),
+                );
+                if worktree {
+                    let path_for_stage = path.clone();
+                    let hunk_for_stage = hunk.clone();
+                    actions = actions.child(Button::new("Stage hunk").render(
+                        SharedString::from(format!("stage-hunk-{path}-{index}")),
+                        theme,
+                        cx,
+                        move |root, _, cx| {
+                            root.shape_change(
+                                "stage-hunk".to_string(),
+                                Some(path_for_stage.clone()),
+                                Some(hunk_for_stage.clone()),
+                                cx,
+                            )
+                        },
+                    ));
+                }
+                if staged {
+                    actions = actions.child(Button::new("Unstage hunk").render(
+                        SharedString::from(format!("unstage-hunk-{path}-{index}")),
+                        theme,
+                        cx,
+                        move |root, _, cx| {
+                            root.shape_change(
+                                "unstage-hunk".to_string(),
+                                Some(path.clone()),
+                                Some(hunk.clone()),
+                                cx,
+                            )
+                        },
+                    ));
+                }
+                column = column.child(actions);
+            }
             column = column.child(change_diff_row(&lines[index], unified, theme));
             index += 1;
             continue;
@@ -5327,6 +5719,9 @@ pub fn projects_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
         rows = rows.child(
             div()
                 .id(SharedString::from(format!("project-directory-{path}")))
+                .role(gpui::Role::Button)
+                .aria_label(format!("Open project {name}"))
+                .aria_description(format!("{chats} chats · updated {updated}"))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -5458,6 +5853,8 @@ pub fn projects_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
 
     div()
         .id("projects-page")
+        .role(gpui::Role::Main)
+        .aria_label("Projects")
         .flex()
         .flex_col()
         .flex_1()
@@ -5535,6 +5932,9 @@ pub fn customize_sidebar(
         nav = nav.child(
             div()
                 .id(SharedString::from(format!("customize-{label}")))
+                .role(gpui::Role::Tab)
+                .aria_label(label.to_string())
+                .aria_selected(selected == tab)
                 .flex()
                 .flex_row()
                 .items_center()
@@ -5712,6 +6112,10 @@ pub fn customize_page(
                 .gap_2()
                 .child(
                     div()
+                        .id("customize-title")
+                        .role(gpui::Role::Heading)
+                        .aria_level(1)
+                        .aria_label(title.to_string())
                         .text_size(px(26.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text())
@@ -5734,65 +6138,453 @@ pub fn customize_page(
 
     match tab {
         CustomizeTab::Plugins => {
-            content = content
+            let catalog = root.plugin_catalog.clone();
+            let query = root.plugin_query.read(cx).text().to_ascii_lowercase();
+            let plugin_query_focus = root.plugin_query.clone();
+            let plugin_query_value = root.plugin_query.clone();
+            let marketplace_focus = root.marketplace_source.clone();
+            let marketplace_value = root.marketplace_source.clone();
+            let installed = catalog["installed"].as_array().cloned().unwrap_or_default();
+            let marketplaces = catalog["marketplaces"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+
+            let toolbar = customize_card(theme)
+                .flex()
+                .flex_col()
+                .gap_3()
                 .child(
-                    customize_card(theme)
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
                         .child(
                             div()
+                                .id("plugin-search")
+                                .role(gpui::Role::SearchInput)
+                                .aria_label("Search plugins")
+                                .aria_value(query.clone())
+                                .on_a11y_action(
+                                    gpui::AccessibleAction::Focus,
+                                    move |_, window, cx| {
+                                        window.focus(
+                                            &plugin_query_focus.read(cx).focus_handle(cx),
+                                            cx,
+                                        );
+                                    },
+                                )
+                                .on_a11y_action(
+                                    gpui::AccessibleAction::SetValue,
+                                    move |data, _, cx| {
+                                        if let Some(gpui::accesskit::ActionData::Value(value)) =
+                                            data
+                                        {
+                                            plugin_query_value.update(cx, |editor, cx| {
+                                                editor.set_text(value.to_string(), cx)
+                                            });
+                                        }
+                                    },
+                                )
                                 .flex()
                                 .flex_row()
                                 .items_center()
-                                .gap_3()
+                                .gap_2()
+                                .flex_1()
+                                .h(px(34.0))
+                                .px_2()
+                                .rounded(px(8.0))
+                                .bg(theme.background())
+                                .border_1()
+                                .border_color(theme.border())
+                                .child(icons::icon(Icon::Search, 14.0, theme.faint()))
                                 .child(
                                     div()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .w(px(40.0))
-                                        .h(px(40.0))
-                                        .rounded(px(11.0))
-                                        .bg(theme.panel_2())
-                                        .child(icons::icon(Icon::Customize, 21.0, theme.accent())),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_1()
                                         .flex_1()
                                         .min_w(px(0.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(15.0))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(theme.text())
-                                                .child("Project plugins"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.5))
-                                                .line_height(px(19.0))
-                                                .text_color(theme.dim())
-                                                .whitespace_normal()
-                                                .child("Plugins come from the project's own trusted configuration and the shared plugin store."),
-                                        ),
-                                )
-                                .child(Button::new("Refresh").render(
-                                    "customize-plugins-refresh",
-                                    theme,
-                                    cx,
-                                    |root, _, cx| root.load_project_commands(cx),
-                                )),
-                        ),
+                                        .child(root.plugin_query.clone()),
+                                ),
+                        )
+                        .child(Button::new("Refresh").render(
+                            "customize-plugins-refresh",
+                            theme,
+                            cx,
+                            |root, _, cx| root.load_plugins(cx),
+                        )),
                 )
                 .child(
-                    customize_empty(
-                        theme,
-                        Icon::Customize,
-                        "No marketplace plugins are exposed by this engine build.",
-                        "The installed project integrations remain available under MCP servers and Approvals.",
-                    ),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("marketplace-source")
+                                .role(gpui::Role::TextInput)
+                                .aria_label("Marketplace URL or owner/repo")
+                                .aria_value(root.marketplace_source.read(cx).text().to_string())
+                                .on_a11y_action(
+                                    gpui::AccessibleAction::Focus,
+                                    move |_, window, cx| {
+                                        window.focus(
+                                            &marketplace_focus.read(cx).focus_handle(cx),
+                                            cx,
+                                        );
+                                    },
+                                )
+                                .on_a11y_action(
+                                    gpui::AccessibleAction::SetValue,
+                                    move |data, _, cx| {
+                                        if let Some(gpui::accesskit::ActionData::Value(value)) =
+                                            data
+                                        {
+                                            marketplace_value.update(cx, |editor, cx| {
+                                                editor.set_text(value.to_string(), cx)
+                                            });
+                                        }
+                                    },
+                                )
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .flex_1()
+                                .h(px(34.0))
+                                .px_2()
+                                .rounded(px(8.0))
+                                .bg(theme.background())
+                                .border_1()
+                                .border_color(theme.border())
+                                .child(icons::icon(Icon::Globe, 14.0, theme.faint()))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .child(root.marketplace_source.clone()),
+                                ),
+                        )
+                        .child(Button::new("Add marketplace").render(
+                            "customize-marketplace-add",
+                            theme,
+                            cx,
+                            |root, _, cx| {
+                                let source =
+                                    root.marketplace_source.read(cx).text().trim().to_string();
+                                if source.is_empty() {
+                                    root.toast("Enter a marketplace URL or path.", true, cx);
+                                    return;
+                                }
+                                root.change_plugin("add_marketplace".to_string(), source, None, cx);
+                                root.marketplace_source
+                                    .update(cx, |editor, cx| editor.clear(cx));
+                            },
+                        )),
+                )
+                .children(root.plugin_message.clone().map(|message| {
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(theme.dim())
+                        .child(message)
+                }));
+            content = content.child(toolbar);
+
+            let mut installed_list = div().flex().flex_col().gap_2();
+            let mut installed_shown = false;
+            for plugin in installed {
+                let name = plugin["name"].as_str().unwrap_or("Plugin").to_string();
+                let description = plugin["description"].as_str().unwrap_or("").to_string();
+                let version = plugin["version"].as_str().unwrap_or("").to_string();
+                let haystack = format!("{name} {description}").to_ascii_lowercase();
+                if !query.is_empty() && !haystack.contains(&query) {
+                    continue;
+                }
+                installed_shown = true;
+                let enabled = plugin["enabled"].as_bool().unwrap_or(false);
+                let managed = plugin["managed"].as_bool().unwrap_or(false);
+                let action_name = name.clone();
+                let uninstall_name = name.clone();
+                installed_list = installed_list.child(
+                    customize_card(theme)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .w(px(38.0))
+                                .h(px(38.0))
+                                .rounded(px(10.0))
+                                .bg(theme.panel_2())
+                                .child(icons::icon(Icon::Customize, 19.0, theme.accent())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(px(14.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(name),
+                                        )
+                                        .children((!version.is_empty()).then(|| {
+                                            div()
+                                                .text_size(px(10.5))
+                                                .text_color(theme.faint())
+                                                .child(version)
+                                        }))
+                                        .child(pill(
+                                            if enabled { "Enabled" } else { "Disabled" },
+                                            theme,
+                                            false,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(theme.dim())
+                                        .whitespace_normal()
+                                        .child(if description.is_empty() {
+                                            "Installed plugin".to_string()
+                                        } else {
+                                            description
+                                        }),
+                                ),
+                        )
+                        .child(
+                            Button::new(if enabled { "Disable" } else { "Enable" }).render(
+                                SharedString::from(format!("plugin-toggle-{action_name}")),
+                                theme,
+                                cx,
+                                move |root, _, cx| {
+                                    root.change_plugin(
+                                        if enabled { "disable" } else { "enable" }.to_string(),
+                                        action_name.clone(),
+                                        None,
+                                        cx,
+                                    )
+                                },
+                            ),
+                        )
+                        .children((!managed).then(|| {
+                            Button::new("Uninstall").danger().render(
+                                SharedString::from(format!("plugin-uninstall-{uninstall_name}")),
+                                theme,
+                                cx,
+                                move |root, _, cx| {
+                                    root.change_plugin(
+                                        "uninstall".to_string(),
+                                        uninstall_name.clone(),
+                                        None,
+                                        cx,
+                                    )
+                                },
+                            )
+                        })),
                 );
+            }
+            if !installed_shown {
+                installed_list = installed_list.child(customize_empty(
+                    theme,
+                    Icon::Customize,
+                    "No installed plugins",
+                    "Add a marketplace below to discover plugins.",
+                ));
+            }
+            content = content.child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.dim())
+                    .child("Installed"),
+            );
+            content = content.child(installed_list);
+
+            if marketplaces.is_empty() {
+                content = content.child(customize_empty(
+                    theme,
+                    Icon::Globe,
+                    "No marketplaces",
+                    "Add an owner/repository or a local marketplace path above.",
+                ));
+            }
+            for marketplace in marketplaces {
+                let marketplace_name = marketplace["name"]
+                    .as_str()
+                    .unwrap_or("Marketplace")
+                    .to_string();
+                let source = marketplace["source"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let update_name = marketplace_name.clone();
+                let remove_name = marketplace_name.clone();
+                let mut group = customize_card(theme).flex().flex_col().gap_2().child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("projects-title")
+                                .role(gpui::Role::Heading)
+                                .aria_level(1)
+                                .aria_label("Projects")
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(marketplace_name),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.5))
+                                        .text_color(theme.faint())
+                                        .whitespace_normal()
+                                        .child(source),
+                                ),
+                        )
+                        .child(Button::new("Update").render(
+                            SharedString::from(format!("marketplace-update-{update_name}")),
+                            theme,
+                            cx,
+                            move |root, _, cx| {
+                                root.change_plugin(
+                                    "update_marketplace".to_string(),
+                                    update_name.clone(),
+                                    None,
+                                    cx,
+                                )
+                            },
+                        ))
+                        .child(Button::new("Remove").danger().render(
+                            SharedString::from(format!("marketplace-remove-{remove_name}")),
+                            theme,
+                            cx,
+                            move |root, _, cx| {
+                                root.change_plugin(
+                                    "remove_marketplace".to_string(),
+                                    remove_name.clone(),
+                                    None,
+                                    cx,
+                                )
+                            },
+                        )),
+                );
+                if let Some(error) = marketplace["error"].as_str() {
+                    group = group.child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(theme.error())
+                            .whitespace_normal()
+                            .child(error.to_string()),
+                    );
+                }
+                for plugin in marketplace["plugins"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    let name = plugin["name"].as_str().unwrap_or("Plugin").to_string();
+                    let description = plugin["description"].as_str().unwrap_or("").to_string();
+                    let version = plugin["version"].as_str().unwrap_or("").to_string();
+                    let haystack = format!("{name} {description}").to_ascii_lowercase();
+                    if !query.is_empty() && !haystack.contains(&query) {
+                        continue;
+                    }
+                    let installed_here = plugin["installed"].as_bool().unwrap_or(false);
+                    let enabled_here = plugin["enabled"].as_bool().unwrap_or(false);
+                    let action_name = name.clone();
+                    let marketplace_id =
+                        marketplace["name"].as_str().unwrap_or_default().to_string();
+                    let mut row = div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_3()
+                        .p_2()
+                        .rounded(px(8.0))
+                        .bg(theme.background())
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(name),
+                                        )
+                                        .children((!version.is_empty()).then(|| {
+                                            div()
+                                                .text_size(px(10.5))
+                                                .text_color(theme.faint())
+                                                .child(version)
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(theme.dim())
+                                        .whitespace_normal()
+                                        .child(if description.is_empty() {
+                                            "No description provided.".to_string()
+                                        } else {
+                                            description
+                                        }),
+                                ),
+                        );
+                    if installed_here {
+                        row = row.child(pill(
+                            if enabled_here { "Enabled" } else { "Disabled" },
+                            theme,
+                            false,
+                        ));
+                    } else {
+                        row = row.child(Button::new("Install").primary().render(
+                            SharedString::from(format!("plugin-install-{action_name}")),
+                            theme,
+                            cx,
+                            move |root, _, cx| {
+                                root.change_plugin(
+                                    "install".to_string(),
+                                    action_name.clone(),
+                                    Some(marketplace_id.clone()),
+                                    cx,
+                                )
+                            },
+                        ));
+                    }
+                    group = group.child(row);
+                }
+                content = content.child(group);
+            }
         }
         CustomizeTab::Skills => {
             let agents = root.info["agents"].as_array().cloned().unwrap_or_default();
@@ -5858,6 +6650,12 @@ pub fn customize_page(
                     let name = source["name"].as_str().unwrap_or("MCP server").to_string();
                     let state = source["state"].as_str().unwrap_or("ready").to_string();
                     let enabled = source["enabled"].as_bool().unwrap_or(true);
+                    let exposure = source["exposure"]
+                        .as_str()
+                        .unwrap_or("deferred")
+                        .to_string();
+                    let scope = source["scope"].as_str().unwrap_or("project").to_string();
+                    let detail = source["detail"].as_str().unwrap_or_default().to_string();
                     let label = if !enabled {
                         "Off"
                     } else if state == "connected" {
@@ -5867,6 +6665,9 @@ pub fn customize_page(
                     } else {
                         "Ready"
                     };
+                    let toggle_name = name.clone();
+                    let exposure_name = name.clone();
+                    let authorize_name = name.clone();
                     list = list.child(
                         customize_card(theme)
                             .flex()
@@ -5876,12 +6677,25 @@ pub fn customize_page(
                             .child(icons::icon(Icon::Globe, 19.0, theme.dim()))
                             .child(
                                 div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
                                     .flex_1()
                                     .min_w(px(0.0))
-                                    .text_size(px(14.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .whitespace_normal()
-                                    .child(name),
+                                    .child(
+                                        div()
+                                            .text_size(px(14.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .whitespace_normal()
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .text_color(theme.faint())
+                                            .whitespace_normal()
+                                            .child(detail),
+                                    ),
                             )
                             .child(
                                 div()
@@ -5892,6 +6706,44 @@ pub fn customize_page(
                                         theme.dim()
                                     })
                                     .child(label),
+                            )
+                            .children((state == "needs-auth").then(|| {
+                                Button::new("Authorize").primary().render(
+                                    SharedString::from(format!("mcp-authorize-{authorize_name}")),
+                                    theme,
+                                    cx,
+                                    move |root, _, cx| {
+                                        root.authorize_mcp(
+                                            authorize_name.clone(),
+                                            scope.clone(),
+                                            cx,
+                                        )
+                                    },
+                                )
+                            }))
+                            .child(
+                                Button::new(format!("Expose: {}", capitalised(&exposure))).render(
+                                    SharedString::from(format!("mcp-exposure-{exposure_name}")),
+                                    theme,
+                                    cx,
+                                    move |root, _, cx| {
+                                        root.cycle_mcp_exposure(
+                                            exposure_name.clone(),
+                                            exposure.clone(),
+                                            cx,
+                                        )
+                                    },
+                                ),
+                            )
+                            .child(
+                                Button::new(if enabled { "Disable" } else { "Enable" }).render(
+                                    SharedString::from(format!("mcp-toggle-{toggle_name}")),
+                                    theme,
+                                    cx,
+                                    move |root, _, cx| {
+                                        root.toggle_mcp(toggle_name.clone(), !enabled, cx)
+                                    },
+                                ),
                             ),
                     );
                 }
@@ -5941,6 +6793,8 @@ pub fn customize_page(
 
     div()
         .id("customize-page")
+        .role(gpui::Role::Main)
+        .aria_label("Customize")
         .flex()
         .flex_col()
         .flex_1()
@@ -5989,4 +6843,35 @@ fn customize_empty(theme: &Theme, mark: Icon, title: &str, detail: &str) -> gpui
                 .text_color(theme.dim())
                 .child(detail.to_string()),
         )
+}
+
+#[cfg(test)]
+mod accessibility_tests {
+    use super::entry_accessibility_label;
+    use crate::model::{Attachment, Entry};
+
+    #[test]
+    fn transcript_entries_have_speaker_and_content_labels() {
+        let user = Entry::User {
+            text: "Explain this file".to_string(),
+            attachments: vec![Attachment::new(
+                "shot.png".to_string(),
+                "data:image/png;base64,iVBORw0KGgo=".to_string(),
+            )],
+        };
+        assert_eq!(
+            entry_accessibility_label(&user),
+            "You said: Explain this file with 1 attachment"
+        );
+
+        let assistant = Entry::Assistant {
+            text: "It opens the project.".to_string(),
+            blocks: Vec::new(),
+            streaming: false,
+        };
+        assert_eq!(
+            entry_accessibility_label(&assistant),
+            "Oxide said: It opens the project."
+        );
+    }
 }

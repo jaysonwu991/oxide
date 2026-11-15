@@ -5,12 +5,12 @@
 //! the same stored preferences, the same approval broker — drawn as GPUI panels
 //! over the conversation.
 
-use crate::app::{Button, ConfirmAction, Overlay, Root, SettingsTab};
+use crate::app::{rule, Button, ConfirmAction, Overlay, Root, SettingsTab};
 use crate::icons::{self, Icon};
 use crate::theme::Theme;
 use crate::views::{icon_button, pill, SETTINGS_NAVIGATION_WIDTH};
 use gpui::prelude::*;
-use gpui::{div, hsla, px, Context, Div, FontWeight, SharedString, Stateful, Window};
+use gpui::{div, hsla, px, Context, Div, Focusable, FontWeight, SharedString, Stateful, Window};
 use serde_json::{json, Value};
 
 pub fn layer(
@@ -22,12 +22,43 @@ pub fn layer(
 ) -> impl IntoElement {
     let overlay = root.overlay.clone();
     let Some(overlay) = overlay else {
-        return div();
+        return div().id("overlay-hidden");
+    };
+    let dialog_label = match &overlay {
+        Overlay::Settings => "Settings".to_string(),
+        Overlay::About => "About Oxide".to_string(),
+        Overlay::ImagePreview { name, .. } => format!("Image {name}"),
+        Overlay::Updates => "Software update".to_string(),
+        Overlay::Help => "Slash commands".to_string(),
+        Overlay::CommandMenu => "Command menu".to_string(),
+        Overlay::Mcp => "MCP servers".to_string(),
+        Overlay::Agents => "Agents".to_string(),
+        Overlay::Shortcuts => "Keyboard shortcuts".to_string(),
+        Overlay::Trust { .. } => "Project trust".to_string(),
+        Overlay::Approval { .. } => "Tool approval".to_string(),
+        Overlay::Question { .. } => "Question".to_string(),
+        Overlay::Confirm { title, .. } => title.clone(),
+        Overlay::Connect { provider } => format!("Connect {provider}"),
+        Overlay::FileViewer => "File viewer".to_string(),
+        Overlay::NewProject => "Create project".to_string(),
+        Overlay::SessionActions { .. } => "Chat actions".to_string(),
+        Overlay::ProjectActions { .. } => "Project actions".to_string(),
+        Overlay::Approvals => "Tool approvals".to_string(),
+        Overlay::Worktrees => "Git worktrees".to_string(),
+        Overlay::WorktreeBranch { .. } => "Create branch".to_string(),
+        Overlay::Projects => "Projects".to_string(),
+        Overlay::RenameSession { .. } => "Rename chat".to_string(),
     };
 
     let rail_popover = matches!(&overlay, Overlay::CommandMenu);
     let create_project = matches!(&overlay, Overlay::NewProject);
-    let mut scrim = div().absolute().size_full().flex();
+    let mut scrim = div()
+        .id("overlay")
+        .role(gpui::Role::Dialog)
+        .aria_label(dialog_label)
+        .absolute()
+        .size_full()
+        .flex();
     scrim = if rail_popover {
         scrim
             .items_start()
@@ -65,7 +96,8 @@ pub fn layer(
             body,
             action,
         } => confirm(theme, title, body, action, cx),
-        Overlay::Connect { provider } => connect(theme, provider, cx),
+        Overlay::Connect { provider } => connect(root, theme, provider, cx),
+        Overlay::FileViewer => crate::workspace::file_viewer(root, theme, window, cx),
         Overlay::NewProject => new_project(root, theme, cx),
         Overlay::SessionActions {
             id,
@@ -262,6 +294,9 @@ pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
     let tab = root.settings_tab;
 
     let mut navigation = div()
+        .id("settings-navigation")
+        .role(gpui::Role::Navigation)
+        .aria_label("Settings sections")
         .flex()
         .flex_col()
         .flex_none()
@@ -436,7 +471,7 @@ pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
         ),
     };
 
-    let rows = match tab {
+    let rows: Vec<Stateful<Div>> = match tab {
         SettingsTab::General => general_fields(root, theme, cx),
         SettingsTab::Appearance => appearance_fields(root, theme, cx),
         SettingsTab::Notifications => notification_fields(root, theme, cx),
@@ -456,6 +491,10 @@ pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
                 .gap(px(7.0))
                 .child(
                     div()
+                        .id("settings-title")
+                        .role(gpui::Role::Heading)
+                        .aria_level(1)
+                        .aria_label(title.to_string())
                         .text_size(px(26.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text())
@@ -473,6 +512,8 @@ pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
 
     let content = div()
         .id("settings-content")
+        .role(gpui::Role::Main)
+        .aria_label("Settings")
         .flex()
         .flex_col()
         .flex_1()
@@ -499,7 +540,7 @@ pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
         .child(content)
 }
 
-fn general_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpui::Div> {
+fn general_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<Stateful<Div>> {
     let prefs = root.prefs.clone();
     let send_key = prefs["send_key"].as_str().unwrap_or("enter").to_string();
     let follow_up = prefs["follow_up"].as_str().unwrap_or("queue").to_string();
@@ -562,6 +603,7 @@ fn general_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpu
             theme,
             switch(
                 "settings-predictions",
+                "Composer predictions",
                 predictions,
                 theme,
                 cx,
@@ -574,6 +616,7 @@ fn general_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpu
             theme,
             switch(
                 "settings-keep-awake",
+                "Keep awake",
                 awake,
                 theme,
                 cx,
@@ -583,7 +626,7 @@ fn general_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpu
     ]
 }
 
-fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpui::Div> {
+fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<Stateful<Div>> {
     let prefs = root.prefs.clone();
     let theme_name = root.current_theme.clone();
     let language = root.language.clone();
@@ -673,6 +716,7 @@ fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<
             theme,
             switch(
                 "settings-sidebar",
+                "Sidebar",
                 sidebar,
                 theme,
                 cx,
@@ -682,7 +726,7 @@ fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<
     ]
 }
 
-fn notification_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<gpui::Div> {
+fn notification_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<Stateful<Div>> {
     let prefs = root.prefs.clone();
     let mode = prefs["notifications"]
         .as_str()
@@ -720,6 +764,7 @@ fn notification_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Ve
             theme,
             switch(
                 "settings-notify-approvals",
+                "Approval requests",
                 approvals,
                 theme,
                 cx,
@@ -732,6 +777,7 @@ fn notification_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Ve
             theme,
             switch(
                 "settings-notify-questions",
+                "Question requests",
                 questions,
                 theme,
                 cx,
@@ -742,7 +788,7 @@ fn notification_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Ve
 }
 
 /// The card a section's rows sit in, with a hairline between them.
-fn fields(theme: &Theme, rows: Vec<gpui::Div>) -> gpui::Div {
+fn fields(theme: &Theme, rows: Vec<Stateful<Div>>) -> gpui::Div {
     let mut card = div()
         .flex()
         .flex_col()
@@ -761,8 +807,12 @@ fn fields(theme: &Theme, rows: Vec<gpui::Div>) -> gpui::Div {
     card
 }
 
-fn field(label: &str, hint: &str, theme: &Theme, control: impl IntoElement) -> gpui::Div {
+fn field(label: &str, hint: &str, theme: &Theme, control: impl IntoElement) -> Stateful<Div> {
     div()
+        .id(SharedString::from(format!("settings-field-{label}")))
+        .role(gpui::Role::Group)
+        .aria_label(label.to_string())
+        .aria_description(hint.to_string())
         .flex()
         .flex_row()
         .items_center()
@@ -794,8 +844,12 @@ fn field(label: &str, hint: &str, theme: &Theme, control: impl IntoElement) -> g
         .child(div().flex_none().child(control))
 }
 
-fn field_tall(label: &str, hint: &str, theme: &Theme, control: impl IntoElement) -> gpui::Div {
+fn field_tall(label: &str, hint: &str, theme: &Theme, control: impl IntoElement) -> Stateful<Div> {
     div()
+        .id(SharedString::from(format!("settings-field-{label}")))
+        .role(gpui::Role::Group)
+        .aria_label(label.to_string())
+        .aria_description(hint.to_string())
         .flex()
         .flex_col()
         .gap(px(12.0))
@@ -822,6 +876,43 @@ fn field_tall(label: &str, hint: &str, theme: &Theme, control: impl IntoElement)
                 ),
         )
         .child(control)
+}
+
+fn input_box(
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
+    placeholder: &'static str,
+    role: gpui::Role,
+    editor: gpui::Entity<crate::editor::Editor>,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> Stateful<Div> {
+    let focus_editor = editor.clone();
+    let value_editor = editor.clone();
+    let value = editor.read(cx).text().to_string();
+    div()
+        .id(id)
+        .role(role)
+        .aria_label(label)
+        .aria_placeholder(placeholder)
+        .aria_value(value)
+        .on_a11y_action(gpui::AccessibleAction::Focus, move |_, window, cx| {
+            window.focus(&focus_editor.read(cx).focus_handle(cx), cx);
+        })
+        .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, _, cx| {
+            if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+                value_editor.update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
+            }
+        })
+        .h(px(34.0))
+        .px_2()
+        .flex()
+        .items_center()
+        .rounded(px(8.0))
+        .bg(theme.background())
+        .border_1()
+        .border_color(theme.border())
+        .child(editor)
 }
 
 fn capitalised(value: &str) -> String {
@@ -860,6 +951,9 @@ fn nav_tab(
     let color = if active { theme.text() } else { theme.dim() };
     div()
         .id(id)
+        .role(gpui::Role::Tab)
+        .aria_label(label.to_string())
+        .aria_selected(active)
         .flex()
         .flex_row()
         .items_center()
@@ -908,6 +1002,9 @@ fn segment(
 ) -> Stateful<Div> {
     div()
         .id(id)
+        .role(gpui::Role::RadioButton)
+        .aria_label(label.to_string())
+        .aria_selected(active)
         .flex()
         .items_center()
         .justify_center()
@@ -948,6 +1045,9 @@ fn theme_card(
     }
     div()
         .id(id)
+        .role(gpui::Role::RadioButton)
+        .aria_label(label.to_string())
+        .aria_selected(active)
         .flex()
         .flex_col()
         .gap(px(7.0))
@@ -1455,6 +1555,7 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
 
 fn switch(
     id: impl Into<gpui::ElementId>,
+    label: &'static str,
     on: bool,
     theme: &Theme,
     cx: &mut Context<Root>,
@@ -1489,6 +1590,13 @@ fn switch(
     );
     div()
         .id(id)
+        .role(gpui::Role::Switch)
+        .aria_label(label)
+        .aria_toggled(if on {
+            gpui::Toggled::True
+        } else {
+            gpui::Toggled::False
+        })
         .flex()
         .items_center()
         .flex_none()
@@ -1504,6 +1612,8 @@ fn switch(
 
 fn command_menu(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let query = root.command_query.read(cx).text().to_ascii_lowercase();
+    let command_focus = root.command_query.clone();
+    let command_value = root.command_query.clone();
     let entries = [
         ("new-chat", "New chat", "⌘T"),
         ("new-tab", "New tab", ""),
@@ -1514,7 +1624,12 @@ fn command_menu(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui:
         ("open-project", "Open a folder…", "⌘O"),
         ("search", "Search chats…", "⌘⇧F"),
         ("panel", "Show or hide the panel", "⌘J"),
+        ("changes", "Review changes", "⌘⏎"),
+        ("terminal", "Open terminal", "⌘⇧T"),
+        ("pulls", "Review pull requests", "⌘⇧P"),
+        ("connect", "Connect a provider…", ""),
         ("projects", "Manage projects…", ""),
+        ("customize", "Customize plugins and integrations…", ""),
         ("worktrees", "Git worktrees…", "⌘⇧G"),
         ("model", "Choose a model…", "⌘⇧M"),
         ("permissions", "Tool approvals…", ""),
@@ -1525,6 +1640,18 @@ fn command_menu(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui:
     ];
     let panel = dialog(theme, "Command menu", 430.0).child(
         div()
+            .id("command-search")
+            .role(gpui::Role::SearchInput)
+            .aria_label("Search commands")
+            .aria_value(query.clone())
+            .on_a11y_action(gpui::AccessibleAction::Focus, move |_, window, cx| {
+                window.focus(&command_focus.read(cx).focus_handle(cx), cx);
+            })
+            .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, _, cx| {
+                if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+                    command_value.update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
+                }
+            })
             .flex()
             .flex_row()
             .items_center()
@@ -1545,6 +1672,8 @@ fn command_menu(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui:
     );
     let mut list = div()
         .id("command-menu-list")
+        .role(gpui::Role::Menu)
+        .aria_label("Commands")
         .flex()
         .flex_col()
         .gap(px(2.0))
@@ -1560,6 +1689,8 @@ fn command_menu(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui:
         list = list.child(
             div()
                 .id(SharedString::from(format!("command-menu-{id}")))
+                .role(gpui::Role::MenuItem)
+                .aria_label(label)
                 .flex()
                 .flex_row()
                 .items_center()
@@ -1620,8 +1751,17 @@ fn run_command_menu_action(
         "open-project" => root.open_new_project(window, cx),
         "search" => root.open_search(window, cx),
         "panel" => root.toggle_details(cx),
+        "changes" => root.open_repository_changes(cx),
+        "terminal" => root.open_terminal(window, cx),
+        "pulls" => root.open_pulls(cx),
+        "connect" => root.open_connect("a provider".to_string(), cx),
         "projects" => {
             root.rail = crate::app::Rail::Projects;
+            cx.notify();
+        }
+        "customize" => {
+            root.rail = crate::app::Rail::Customize;
+            root.load_plugins(cx);
             cx.notify();
         }
         "worktrees" => root.open_worktrees(cx),
@@ -2337,7 +2477,14 @@ fn rename_session(
     let project_for_save = project.clone();
     let id_for_save = id.clone();
     dialog_with_close(theme, "Rename chat", 440.0, cx)
-        .child(editor_field(root.session_name.clone(), theme))
+        .child(editor_field(
+            "session-title",
+            "Chat title",
+            "Chat title",
+            root.session_name.clone(),
+            theme,
+            cx,
+        ))
         .child(div().flex().flex_row().justify_end().gap_2().child(
             Button::new("Save").primary().render(
                 "rename-session-save",
@@ -2485,8 +2632,22 @@ fn worktrees(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("Create worktree"),
         )
-        .child(editor_field(root.worktree_name.clone(), theme))
-        .child(editor_field(root.worktree_base.clone(), theme))
+        .child(editor_field(
+            "worktree-name",
+            "Worktree name",
+            "Worktree name",
+            root.worktree_name.clone(),
+            theme,
+            cx,
+        ))
+        .child(editor_field(
+            "worktree-base",
+            "Worktree base revision",
+            "HEAD (current checkout)",
+            root.worktree_base.clone(),
+            theme,
+            cx,
+        ))
         .child(
             div()
                 .flex()
@@ -2502,6 +2663,7 @@ fn worktrees(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                 )
                 .child(switch(
                     "worktree-detached",
+                    "Start detached",
                     root.worktree_detached,
                     theme,
                     cx,
@@ -2526,6 +2688,7 @@ fn worktrees(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                 )
                 .child(switch(
                     "worktree-copy-changes",
+                    "Include uncommitted changes",
                     root.worktree_copy_changes,
                     theme,
                     cx,
@@ -2622,18 +2785,23 @@ fn worktree_row(
         .on_click(cx.listener(move |root, _, window, cx| select(root, window, cx)))
 }
 
-fn editor_field(editor: gpui::Entity<crate::editor::Editor>, theme: &Theme) -> gpui::Div {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .h(px(36.0))
-        .px_2()
-        .rounded(px(8.0))
-        .bg(theme.background())
-        .border_1()
-        .border_color(theme.border())
-        .child(div().flex_1().min_w(px(0.0)).child(editor))
+fn editor_field(
+    id: &'static str,
+    label: &'static str,
+    placeholder: &'static str,
+    editor: gpui::Entity<crate::editor::Editor>,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> Stateful<Div> {
+    input_box(
+        id,
+        label,
+        placeholder,
+        gpui::Role::TextInput,
+        editor,
+        theme,
+        cx,
+    )
 }
 
 fn worktree_branch(
@@ -2653,7 +2821,14 @@ fn worktree_branch(
                 .text_color(theme.dim())
                 .child("The worktree switches to this branch."),
         )
-        .child(editor_field(root.worktree_branch.clone(), theme))
+        .child(editor_field(
+            "worktree-branch",
+            "Branch name",
+            "Branch name",
+            root.worktree_branch.clone(),
+            theme,
+            cx,
+        ))
         .child(div().flex().flex_row().justify_end().gap_2().child(
             Button::new("Create branch").primary().render(
                 "worktree-branch-create",
@@ -2866,22 +3041,280 @@ fn confirm(
 
 // ---------- connect ----------
 
-fn connect(theme: &Theme, provider: String, cx: &mut Context<Root>) -> gpui::Div {
-    dialog_with_close(theme, "Connect a provider", 500.0, cx).child(
-        div()
-            .text_size(px(12.5))
-            .line_height(px(19.0))
-            .text_color(theme.dim())
-            .child(format!(
-                "{provider} has no stored credential. Run `oxide connect {provider}` in a terminal — the desktop app and the CLI share `auth.json`, so the key appears here on the next refresh."
-            )),
-    )
+fn connect(root: &mut Root, theme: &Theme, provider: String, cx: &mut Context<Root>) -> gpui::Div {
+    let query = root.provider_filter.read(cx).text().to_ascii_lowercase();
+    let provider_filter_focus = root.provider_filter.clone();
+    let provider_filter_value = root.provider_filter.clone();
+    let providers = root.providers.clone();
+    let selected = if providers
+        .iter()
+        .any(|row| row["name"].as_str() == Some(provider.as_str()))
+    {
+        provider.clone()
+    } else {
+        providers
+            .iter()
+            .find(|row| row["active"].as_bool().unwrap_or(false))
+            .or_else(|| {
+                providers
+                    .iter()
+                    .find(|row| row["stored"].as_bool().unwrap_or(false))
+            })
+            .or_else(|| providers.first())
+            .and_then(|row| row["name"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    if selected != provider {
+        root.overlay = Some(Overlay::Connect {
+            provider: selected.clone(),
+        });
+    }
+
+    let selected_row = providers
+        .iter()
+        .find(|row| row["name"].as_str() == Some(selected.as_str()))
+        .cloned();
+    let keyless = selected_row.as_ref().is_some_and(|row| {
+        row["local"].as_bool().unwrap_or(false) || row["credential"].as_str() == Some("external")
+    });
+    let stored = selected_row
+        .as_ref()
+        .is_some_and(|row| row["stored"].as_bool().unwrap_or(false));
+    let provider_label = selected_row
+        .as_ref()
+        .and_then(|row| row["label"].as_str())
+        .unwrap_or("a provider")
+        .to_string();
+    let selected_for_action = selected.clone();
+    let mut rows = div()
+        .id("provider-list")
+        .role(gpui::Role::ListBox)
+        .aria_label("Providers")
+        .flex()
+        .flex_col()
+        .gap_1()
+        .max_h(px(270.0))
+        .overflow_y_scroll();
+    let matching = providers
+        .into_iter()
+        .filter(|row| {
+            query.is_empty()
+                || format!(
+                    "{} {} {}",
+                    row["name"].as_str().unwrap_or_default(),
+                    row["label"].as_str().unwrap_or_default(),
+                    row["description"].as_str().unwrap_or_default()
+                )
+                .to_ascii_lowercase()
+                .contains(&query)
+        })
+        .collect::<Vec<_>>();
+    if matching.is_empty() {
+        rows = rows.child(
+            div()
+                .p_3()
+                .text_size(px(12.0))
+                .text_color(theme.faint())
+                .child("No provider matches that search."),
+        );
+    }
+    for row in matching {
+        let name = row["name"].as_str().unwrap_or_default().to_string();
+        let label = row["label"].as_str().unwrap_or(&name).to_string();
+        let description = row["description"].as_str().unwrap_or_default().to_string();
+        let active = row["active"].as_bool().unwrap_or(false);
+        let saved = row["stored"].as_bool().unwrap_or(false);
+        let is_selected = name == selected;
+        let clear_name = name.clone();
+        rows = rows.child(
+            div()
+                .id(SharedString::from(format!("provider-{name}")))
+                .role(gpui::Role::RadioButton)
+                .aria_label(label.clone())
+                .aria_description(format!("{name} · {description}"))
+                .aria_selected(is_selected)
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .bg(if is_selected {
+                    theme.panel_3()
+                } else {
+                    theme.background()
+                })
+                .hover(move |style| style.bg(theme.panel_2()))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(label),
+                        )
+                        .children(active.then(|| pill("In use", theme, false)))
+                        .children(saved.then(|| pill("Stored", theme, false))),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(theme.faint())
+                        .whitespace_normal()
+                        .child(format!("{name} · {description}")),
+                )
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    root.provider_key.update(cx, |editor, cx| editor.clear(cx));
+                    root.overlay = Some(Overlay::Connect {
+                        provider: clear_name.clone(),
+                    });
+                    cx.notify();
+                })),
+        );
+    }
+
+    let mut fields = div().flex().flex_col().gap_2();
+    if keyless {
+        let note = if selected_row
+            .as_ref()
+            .is_some_and(|row| row["local"].as_bool().unwrap_or(false))
+        {
+            format!("{provider_label} is a server on this machine — no key needed.")
+        } else {
+            format!(
+                "{provider_label} authorizes with a credential this machine already has — no key needed."
+            )
+        };
+        fields = fields.child(
+            div()
+                .text_size(px(11.5))
+                .text_color(theme.dim())
+                .child(note),
+        );
+    } else {
+        fields = fields
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(theme.faint())
+                    .child(if stored {
+                        "Leave the key empty to reuse the stored credential."
+                    } else {
+                        "Paste the provider's API key."
+                    }),
+            )
+            .child(input_box(
+                "provider-key",
+                "API key",
+                "Paste your API key",
+                gpui::Role::PasswordInput,
+                root.provider_key.clone(),
+                theme,
+                cx,
+            ));
+    }
+    fields = fields
+        .child(input_box(
+            "provider-model",
+            "Model (optional)",
+            "Model (optional)",
+            gpui::Role::TextInput,
+            root.provider_model.clone(),
+            theme,
+            cx,
+        ))
+        .child(input_box(
+            "provider-url",
+            "Base URL (optional)",
+            "Base URL (optional)",
+            gpui::Role::UrlInput,
+            root.provider_url.clone(),
+            theme,
+            cx,
+        ));
+
+    dialog_with_close(theme, "Connect a provider", 540.0, cx)
+        .child(
+            div()
+                .id("provider-search")
+                .role(gpui::Role::SearchInput)
+                .aria_label("Search providers")
+                .aria_value(query.clone())
+                .on_a11y_action(gpui::AccessibleAction::Focus, move |_, window, cx| {
+                    window.focus(&provider_filter_focus.read(cx).focus_handle(cx), cx);
+                })
+                .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, _, cx| {
+                    if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+                        provider_filter_value
+                            .update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
+                    }
+                })
+                .h(px(36.0))
+                .px_2()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .rounded(px(8.0))
+                .bg(theme.background())
+                .border_1()
+                .border_color(theme.border())
+                .child(icons::icon(Icon::Search, 14.0, theme.faint()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .child(root.provider_filter.clone()),
+                ),
+        )
+        .child(rows)
+        .child(rule(theme))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .child(format!("Connect {provider_label}")),
+        )
+        .child(fields)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("Cancel").render("connect-cancel", theme, cx, |root, _, cx| {
+                        root.overlay = None;
+                        cx.notify();
+                    }),
+                )
+                .child(Button::new("Connect").primary().render(
+                    "connect-submit",
+                    theme,
+                    cx,
+                    move |root, _, cx| {
+                        if selected_for_action.is_empty() {
+                            root.toast("Choose a provider first.", true, cx);
+                        } else {
+                            root.login_provider(selected_for_action.clone(), cx);
+                        }
+                    },
+                )),
+        )
 }
 
 // ---------- new project ----------
 
 fn new_project(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let folders = root.new_project_folders.clone();
+    let project_name_focus = root.project_name.clone();
+    let project_name_value = root.project_name.clone();
     let mut panel = div()
         .flex()
         .flex_col()
@@ -2916,6 +3349,19 @@ fn new_project(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::
         )
         .child(
             div()
+                .id("new-project-name")
+                .role(gpui::Role::TextInput)
+                .aria_label("Project name")
+                .aria_value(root.project_name.read(cx).text().to_string())
+                .on_a11y_action(gpui::AccessibleAction::Focus, move |_, window, cx| {
+                    window.focus(&project_name_focus.read(cx).focus_handle(cx), cx);
+                })
+                .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, _, cx| {
+                    if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+                        project_name_value
+                            .update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
+                    }
+                })
                 .flex()
                 .flex_row()
                 .items_center()

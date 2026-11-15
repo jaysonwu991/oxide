@@ -13,8 +13,8 @@ use gpui::{
     actions, canvas, div, fill, point, px, size, transparent_black, App, Bounds, ClipboardEntry,
     ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle,
     Focusable, Font, FontStyle, FontWeight, ImageFormat, KeyBinding, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent,
-    SharedString, TextAlign, TextRun, UTF16Selection, Window,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollEvent, SharedString,
+    TextAlign, TextRun, UTF16Selection, Window,
 };
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -1329,7 +1329,7 @@ impl Render for Editor {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.focus_handle.focus(window);
+                    this.focus_handle.focus(window, cx);
                     let Some(bounds) = this.last_bounds else {
                         return;
                     };
@@ -1425,7 +1425,7 @@ impl Render for Editor {
             .on_action(cx.listener(|this, _: &DeleteWordBackward, _window, cx| {
                 this.delete_word_backward(cx)
             }))
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, _window, cx| {
                 let delta = match event.delta {
                     ScrollDelta::Pixels(delta) => delta.y,
                     ScrollDelta::Lines(delta) => px(delta.y * LINE_HEIGHT),
@@ -1438,7 +1438,7 @@ impl Render for Editor {
 fn clipboard_image_attachment(item: &ClipboardItem) -> Option<(String, String)> {
     let image = item.entries().iter().find_map(|entry| match entry {
         ClipboardEntry::Image(image) => Some(image),
-        ClipboardEntry::String(_) => None,
+        ClipboardEntry::String(_) | ClipboardEntry::ExternalPaths(_) => None,
     })?;
     let extension = match image.format {
         ImageFormat::Png => "png",
@@ -1448,6 +1448,8 @@ fn clipboard_image_attachment(item: &ClipboardItem) -> Option<(String, String)> 
         ImageFormat::Svg => "svg",
         ImageFormat::Bmp => "bmp",
         ImageFormat::Tiff => "tiff",
+        ImageFormat::Ico => "ico",
+        ImageFormat::Pnm => "pnm",
     };
     Some((
         format!("pasted-image.{extension}"),

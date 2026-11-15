@@ -14,13 +14,14 @@ use crate::model::{
     Attachment, Chat, EditedCard, EditedFile, Entry, ProjectRow, QueuedMessage, SessionRow,
 };
 use crate::overlays;
+use crate::terminal::TerminalPane;
 use crate::theme::Theme;
 use crate::views;
 use gpui::prelude::*;
 use gpui::{
-    actions, div, px, size, App, Context, Entity, Focusable, KeyBinding, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Render, SharedString, Subscription, Window, WindowBounds,
-    WindowOptions,
+    actions, div, px, size, App, Context, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Render, SharedString, Subscription, Window,
+    WindowBounds, WindowOptions,
 };
 use oxide_core::worktree::{Worktree, Worktrees};
 use serde_json::{json, Value};
@@ -42,6 +43,8 @@ actions!(
         ToggleChanges,
         OpenModels,
         OpenWorktrees,
+        OpenTerminal,
+        OpenPulls,
         AboutApp,
         CheckForUpdates,
         HideApp,
@@ -56,6 +59,9 @@ actions!(
         DismissOverlay,
         QuitApp,
         ShowShortcuts,
+        AcceptPrediction,
+        TerminalTab,
+        TerminalBackTab,
         SwitchToSession1,
         SwitchToSession2,
         SwitchToSession3,
@@ -97,6 +103,25 @@ pub enum SettingsTab {
 pub enum ChangeScope {
     Turn,
     Repository,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelTab {
+    Changes,
+    Terminal,
+    Pulls,
+}
+
+#[derive(Clone)]
+pub struct FileViewer {
+    pub path: String,
+    pub kind: String,
+    pub text: String,
+    pub image: Option<std::sync::Arc<gpui::Image>>,
+    pub truncated: bool,
+    pub source: bool,
+    pub loading: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -197,6 +222,7 @@ pub enum Overlay {
         provider: String,
     },
     NewProject,
+    FileViewer,
 }
 
 #[derive(Clone)]
@@ -209,6 +235,20 @@ pub enum ConfirmAction {
 pub struct Toast {
     pub text: String,
     pub error: bool,
+}
+
+fn field_editor(placeholder: &'static str, cx: &mut App) -> Entity<Editor> {
+    cx.new(|cx| {
+        let theme = Theme::default();
+        Editor::new(
+            placeholder,
+            theme.text(),
+            theme.faint(),
+            theme.accent(),
+            theme.wash("accent", 0.25),
+            cx,
+        )
+    })
 }
 
 /// The strings the window draws, from the shared catalog the CLI, the desktop
@@ -257,6 +297,12 @@ pub struct Root {
     pub worktree_branch: Entity<Editor>,
     pub session_name: Entity<Editor>,
     pub project_name: Entity<Editor>,
+    pub plugin_query: Entity<Editor>,
+    pub marketplace_source: Entity<Editor>,
+    pub provider_filter: Entity<Editor>,
+    pub provider_key: Entity<Editor>,
+    pub provider_model: Entity<Editor>,
+    pub provider_url: Entity<Editor>,
     pub new_project_folders: Vec<String>,
     pub query: String,
     pub activities_open: bool,
@@ -288,6 +334,9 @@ pub struct Root {
     pub sources: Vec<Value>,
     pub pulls: Vec<Value>,
     pub pulls_error: Option<String>,
+    pub pull_detail: Option<Value>,
+    pub pull_open: Option<u64>,
+    pub pull_loading: bool,
     pub worktrees: Vec<Worktree>,
     pub worktrees_error: Option<String>,
     pub worktree_detached: bool,
@@ -313,6 +362,18 @@ pub struct Root {
     pub changes_width: f32,
     pub changes_resizing: Option<(f32, f32)>,
     pub change_review: Option<ChangeReview>,
+    pub panel_tab: PanelTab,
+    pub repository_status: Vec<Value>,
+    pub terminal: TerminalPane,
+    pub terminal_focus: FocusHandle,
+    pub file_viewer: Option<FileViewer>,
+    pub plugin_catalog: Value,
+    pub plugin_busy: bool,
+    pub plugin_message: Option<String>,
+    pub providers: Vec<Value>,
+    pub prediction: String,
+    pub prediction_chat: Option<u64>,
+    pub prediction_generation: u64,
     pub update_check: Option<Value>,
     pub update_error: Option<String>,
     pub checking_updates: bool,
@@ -409,6 +470,12 @@ impl Root {
                 cx,
             )
         });
+        let plugin_query = field_editor("Search plugins", cx);
+        let marketplace_source = field_editor("Marketplace URL or owner/repo", cx);
+        let provider_filter = field_editor("Search providers", cx);
+        let provider_key = field_editor("Paste your API key", cx);
+        let provider_model = field_editor("Model (optional)", cx);
+        let provider_url = field_editor("Base URL (optional)", cx);
 
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&search, |root, _editor, _event, cx| {
@@ -422,6 +489,18 @@ impl Root {
         subscriptions.push(cx.subscribe(&command_query, |_root, _editor, _event, cx| {
             cx.notify();
         }));
+        for editor in [
+            &plugin_query,
+            &marketplace_source,
+            &provider_filter,
+            &provider_key,
+            &provider_model,
+            &provider_url,
+        ] {
+            subscriptions.push(cx.subscribe(editor, |_root, _editor, _event, cx| {
+                cx.notify();
+            }));
+        }
 
         let mut root = Self {
             engine,
@@ -443,6 +522,12 @@ impl Root {
             worktree_branch,
             session_name,
             project_name,
+            plugin_query,
+            marketplace_source,
+            provider_filter,
+            provider_key,
+            provider_model,
+            provider_url,
             new_project_folders: Vec::new(),
             query: String::new(),
             activities_open: false,
@@ -469,6 +554,9 @@ impl Root {
             sources: Vec::new(),
             pulls: Vec::new(),
             pulls_error: None,
+            pull_detail: None,
+            pull_open: None,
+            pull_loading: false,
             worktrees: Vec::new(),
             worktrees_error: None,
             worktree_detached: true,
@@ -493,6 +581,18 @@ impl Root {
             changes_width: 430.0,
             changes_resizing: None,
             change_review: None,
+            panel_tab: PanelTab::Changes,
+            repository_status: Vec::new(),
+            terminal: TerminalPane::default(),
+            terminal_focus: cx.focus_handle(),
+            file_viewer: None,
+            plugin_catalog: Value::Null,
+            plugin_busy: false,
+            plugin_message: None,
+            providers: Vec::new(),
+            prediction: String::new(),
+            prediction_chat: None,
+            prediction_generation: 0,
             update_check: None,
             update_error: None,
             checking_updates: false,
@@ -544,6 +644,8 @@ impl Root {
         bindings.push(KeyBinding::new("cmd-enter", ToggleChanges, Some("Root")));
         bindings.push(KeyBinding::new("cmd-shift-m", OpenModels, Some("Root")));
         bindings.push(KeyBinding::new("cmd-shift-g", OpenWorktrees, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-shift-t", OpenTerminal, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-shift-p", OpenPulls, Some("Root")));
         bindings.push(KeyBinding::new("cmd-[", Back, Some("Root")));
         bindings.push(KeyBinding::new("cmd-]", Forward, Some("Root")));
         bindings.push(KeyBinding::new("cmd-h", HideApp, Some("Root")));
@@ -559,6 +661,17 @@ impl Root {
         bindings.push(KeyBinding::new("cmd-shift-w", CloseWindow, Some("Root")));
         bindings.push(KeyBinding::new("escape", DismissOverlay, Some("Root")));
         bindings.push(KeyBinding::new("cmd-q", QuitApp, Some("Root")));
+        bindings.push(KeyBinding::new(
+            "tab",
+            AcceptPrediction,
+            Some("Composer && prediction"),
+        ));
+        bindings.push(KeyBinding::new("tab", TerminalTab, Some("Terminal")));
+        bindings.push(KeyBinding::new(
+            "shift-tab",
+            TerminalBackTab,
+            Some("Terminal"),
+        ));
         bindings.push(KeyBinding::new("cmd-1", SwitchToSession1, Some("Root")));
         bindings.push(KeyBinding::new("cmd-2", SwitchToSession2, Some("Root")));
         bindings.push(KeyBinding::new("cmd-3", SwitchToSession3, Some("Root")));
@@ -584,6 +697,7 @@ impl Root {
         cx.set_menus(vec![
             Menu {
                 name: "Oxide Beta".into(),
+                disabled: false,
                 items: vec![
                     MenuItem::action("About Oxide Beta", AboutApp),
                     MenuItem::separator(),
@@ -597,6 +711,7 @@ impl Root {
             },
             Menu {
                 name: "File".into(),
+                disabled: false,
                 items: vec![
                     MenuItem::action("New Chat", NewChat),
                     MenuItem::action("Close Chat", CloseChat),
@@ -604,6 +719,7 @@ impl Root {
             },
             Menu {
                 name: "Edit".into(),
+                disabled: false,
                 items: vec![
                     MenuItem::os_action("Cut", editor::Cut, OsAction::Cut),
                     MenuItem::os_action("Copy", editor::Copy, OsAction::Copy),
@@ -613,11 +729,14 @@ impl Root {
             },
             Menu {
                 name: "View".into(),
+                disabled: false,
                 items: vec![
                     MenuItem::action("Show or Hide Details", ToggleDetails),
                     MenuItem::action("Show or Hide the Sidebar", ToggleSidebar),
                     MenuItem::action("Activities", ToggleActivities),
                     MenuItem::action("Changes", ToggleChanges),
+                    MenuItem::action("Terminal", OpenTerminal),
+                    MenuItem::action("Pull Requests", OpenPulls),
                     MenuItem::action("Model Picker", OpenModels),
                     MenuItem::action("Git Worktrees", OpenWorktrees),
                     MenuItem::separator(),
@@ -633,6 +752,7 @@ impl Root {
             },
             Menu {
                 name: "Window".into(),
+                disabled: false,
                 items: vec![
                     MenuItem::action("Minimize", MinimizeWindow),
                     MenuItem::action("Close Window", CloseWindow),
@@ -640,6 +760,7 @@ impl Root {
             },
             Menu {
                 name: "Help".into(),
+                disabled: false,
                 items: vec![MenuItem::action("Keyboard Shortcuts", ShowShortcuts)],
             },
         ]);
@@ -1029,7 +1150,7 @@ impl Root {
         self.activities_open = false;
         self.searching = true;
         let editor = self.search.clone();
-        window.focus(&editor.read(cx).focus_handle(cx));
+        window.focus(&editor.read(cx).focus_handle(cx), cx);
         cx.notify();
     }
 
@@ -1220,7 +1341,455 @@ impl Root {
                 Err(error) => {
                     root.pulls.clear();
                     root.pulls_error = Some(error);
+                    root.pull_detail = None;
+                    root.pull_open = None;
                 }
+            },
+        );
+    }
+
+    pub fn open_pulls(&mut self, cx: &mut Context<Self>) {
+        if self.show_changes && self.panel_tab == PanelTab::Pulls {
+            self.close_workspace_panel(cx);
+            return;
+        }
+        self.stop_terminal(cx);
+        self.show_changes = true;
+        self.show_details = false;
+        self.panel_tab = PanelTab::Pulls;
+        self.changes_width = self.changes_width.max(500.0);
+        self.load_pulls(cx);
+        cx.notify();
+    }
+
+    pub fn load_pull(&mut self, number: u64, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            return;
+        };
+        self.pull_open = Some(number);
+        self.pull_loading = true;
+        self.pull_detail = None;
+        self.call(
+            "pull_request",
+            json!({ "project": project, "number": number }),
+            cx,
+            move |root, result, cx| {
+                if root.pull_open != Some(number) {
+                    return;
+                }
+                root.pull_loading = false;
+                match result {
+                    Ok(value) => root.pull_detail = Some(value),
+                    Err(error) => root.toast(error, true, cx),
+                }
+            },
+        );
+    }
+
+    pub fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_changes && self.panel_tab == PanelTab::Terminal {
+            self.close_workspace_panel(cx);
+            return;
+        }
+        self.show_changes = true;
+        self.show_details = false;
+        self.panel_tab = PanelTab::Terminal;
+        self.changes_width = self.changes_width.max(620.0);
+        window.focus(&self.terminal_focus, cx);
+        if self.terminal.id.is_none() {
+            self.start_terminal(cx);
+        }
+        cx.notify();
+    }
+
+    fn start_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            self.toast("Select a project first.", true, cx);
+            return;
+        };
+        let fallback_cwd = project.clone();
+        self.terminal.error = None;
+        self.call(
+            "terminal_open",
+            json!({
+                "project": project,
+                "cols": self.terminal.cols,
+                "rows": self.terminal.rows,
+            }),
+            cx,
+            move |root, result, _cx| match result {
+                Ok(value) => {
+                    let id = value["id"].as_u64().unwrap_or_default();
+                    let cwd = value["cwd"].as_str().unwrap_or(&fallback_cwd).to_string();
+                    root.terminal.start(id, cwd);
+                }
+                Err(error) => root.terminal.error = Some(error.clone()),
+            },
+        );
+    }
+
+    pub fn restart_terminal(&mut self, cx: &mut Context<Self>) {
+        let id = self.terminal.id;
+        self.terminal.stop();
+        if let Some(id) = id {
+            self.call("terminal_close", json!({ "id": id }), cx, |_, _, _| {});
+        }
+        self.start_terminal(cx);
+    }
+
+    pub fn terminal_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(id) = self.terminal.id else {
+            return;
+        };
+        let Some(data) =
+            crate::workspace::terminal_key_bytes(event, self.terminal.application_cursor())
+        else {
+            return;
+        };
+        self.call(
+            "terminal_write",
+            json!({ "id": id, "data": data }),
+            cx,
+            |root, result, cx| {
+                if let Err(error) = result {
+                    root.terminal.error = Some(error.clone());
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    pub fn terminal_write_text(&mut self, text: &'static str, cx: &mut Context<Self>) {
+        let Some(id) = self.terminal.id else {
+            return;
+        };
+        self.call(
+            "terminal_write",
+            json!({ "id": id, "data": text }),
+            cx,
+            |root, result, cx| {
+                if let Err(error) = result {
+                    root.terminal.error = Some(error);
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    pub fn close_workspace_panel(&mut self, cx: &mut Context<Self>) {
+        self.show_changes = false;
+        self.stop_terminal(cx);
+        cx.notify();
+    }
+
+    fn stop_terminal(&mut self, cx: &mut Context<Self>) {
+        let id = self.terminal.id;
+        self.terminal.stop();
+        if let Some(id) = id {
+            self.call("terminal_close", json!({ "id": id }), cx, |_, _, _| {});
+        }
+    }
+
+    pub fn select_panel(&mut self, tab: PanelTab, window: &mut Window, cx: &mut Context<Self>) {
+        match tab {
+            PanelTab::Changes => {
+                self.stop_terminal(cx);
+                self.open_repository_changes(cx);
+            }
+            PanelTab::Terminal => self.open_terminal(window, cx),
+            PanelTab::Pulls => self.open_pulls(cx),
+        }
+    }
+
+    pub fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            return;
+        };
+        self.file_viewer = Some(FileViewer {
+            path: path.clone(),
+            kind: String::new(),
+            text: String::new(),
+            image: None,
+            truncated: false,
+            source: false,
+            loading: true,
+            error: None,
+        });
+        self.overlay = Some(Overlay::FileViewer);
+        self.call(
+            "file_view",
+            json!({ "project": project, "path": path }),
+            cx,
+            move |root, result, _| {
+                let Some(viewer) = root.file_viewer.as_mut() else {
+                    return;
+                };
+                if viewer.path != path {
+                    return;
+                }
+                viewer.loading = false;
+                match result {
+                    Ok(value) => {
+                        viewer.kind = value["kind"].as_str().unwrap_or("text").to_string();
+                        viewer.text = value["text"].as_str().unwrap_or_default().to_string();
+                        viewer.truncated = value["truncated"].as_bool().unwrap_or(false);
+                        viewer.image = value["data_url"]
+                            .as_str()
+                            .and_then(crate::model::image_from_data_url);
+                    }
+                    Err(error) => viewer.error = Some(error),
+                }
+            },
+        );
+    }
+
+    pub fn toggle_file_source(&mut self, cx: &mut Context<Self>) {
+        if let Some(viewer) = self.file_viewer.as_mut() {
+            viewer.source = !viewer.source;
+            cx.notify();
+        }
+    }
+
+    pub fn shape_change(
+        &mut self,
+        action: String,
+        path: Option<String>,
+        hunk: Option<Value>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self
+            .change_review
+            .as_ref()
+            .map(|review| review.project.clone())
+            .or_else(|| self.current_project())
+        else {
+            return;
+        };
+        let mut args = json!({ "project": project, "action": action });
+        if let Some(path) = path.clone() {
+            args["path"] = json!(path);
+        }
+        if let Some(hunk) = hunk {
+            args["hunk"] = hunk;
+        }
+        self.call("shape_change", args, cx, |root, result, cx| match result {
+            Ok(_) => root.refresh_change_review(cx),
+            Err(error) => root.toast(error, true, cx),
+        });
+    }
+
+    pub fn load_plugins(&mut self, cx: &mut Context<Self>) {
+        self.plugin_message = None;
+        self.call(
+            "plugin_catalog",
+            json!({}),
+            cx,
+            |root, result, _| match result {
+                Ok(value) => root.plugin_catalog = value,
+                Err(error) => {
+                    root.plugin_message = Some(format!("Could not load plugins: {error}"))
+                }
+            },
+        );
+    }
+
+    pub fn change_plugin(
+        &mut self,
+        action: String,
+        name: String,
+        marketplace: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.plugin_busy {
+            return;
+        }
+        self.plugin_busy = true;
+        self.plugin_message = Some(format!("Working on {name}…"));
+        let mut args = json!({ "action": action, "name": name });
+        if let Some(marketplace) = marketplace {
+            args["marketplace"] = json!(marketplace);
+        }
+        self.call("change_plugin", args, cx, |root, result, cx| {
+            root.plugin_busy = false;
+            match result {
+                Ok(message) => {
+                    root.plugin_message = message.as_str().map(str::to_string);
+                    root.load_plugins(cx);
+                    root.load_project_commands(cx);
+                }
+                Err(error) => root.plugin_message = Some(format!("Plugin change failed: {error}")),
+            }
+        });
+    }
+
+    pub fn toggle_mcp(&mut self, name: String, enabled: bool, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            return;
+        };
+        self.call(
+            "set_mcp_server",
+            json!({ "project": project, "name": name, "enabled": enabled }),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => {
+                    root.sources = value.as_array().cloned().unwrap_or_default();
+                    root.load_project_info(cx);
+                }
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    pub fn cycle_mcp_exposure(&mut self, name: String, current: String, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            return;
+        };
+        let exposure = match current.as_str() {
+            "deferred" => "direct",
+            "direct" => "hidden",
+            _ => "deferred",
+        };
+        self.call(
+            "set_mcp_exposure",
+            json!({ "project": project, "name": name, "exposure": exposure }),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => root.sources = value.as_array().cloned().unwrap_or_default(),
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    pub fn authorize_mcp(&mut self, name: String, scope: String, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            return;
+        };
+        self.call(
+            "authorize_mcp_server",
+            json!({ "project": project, "name": name, "scope": scope }),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => root.sources = value.as_array().cloned().unwrap_or_default(),
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    pub fn open_connect(&mut self, provider: String, cx: &mut Context<Self>) {
+        self.provider_filter
+            .update(cx, |editor, cx| editor.clear(cx));
+        self.provider_key.update(cx, |editor, cx| editor.clear(cx));
+        self.provider_model
+            .update(cx, |editor, cx| editor.clear(cx));
+        self.provider_url.update(cx, |editor, cx| editor.clear(cx));
+        self.overlay = Some(Overlay::Connect { provider });
+        self.call(
+            "list_providers",
+            json!({}),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => root.providers = value.as_array().cloned().unwrap_or_default(),
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    pub fn login_provider(&mut self, provider: String, cx: &mut Context<Self>) {
+        let key = self.provider_key.read(cx).text().trim().to_string();
+        let model = self.provider_model.read(cx).text().trim().to_string();
+        let base_url = self.provider_url.read(cx).text().trim().to_string();
+        let mut args = json!({ "provider": provider });
+        if !key.is_empty() {
+            args["key"] = json!(key);
+        }
+        if !model.is_empty() {
+            args["model"] = json!(model);
+        }
+        if !base_url.is_empty() {
+            args["baseUrl"] = json!(base_url);
+        }
+        self.call("login", args, cx, |root, result, cx| match result {
+            Ok(_) => {
+                root.overlay = None;
+                root.provider_key.update(cx, |editor, cx| editor.clear(cx));
+                root.load_project_info(cx);
+                root.load_models(cx);
+                root.toast("Provider connected.", false, cx);
+            }
+            Err(error) => root.toast(format!("Login failed: {error}"), true, cx),
+        });
+    }
+
+    pub fn accept_prediction(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prediction.is_empty() {
+            return;
+        }
+        let Some(id) = self.chats.get(self.active).map(|chat| chat.id) else {
+            return;
+        };
+        let Some(editor) = self.editors.get(&id).cloned() else {
+            return;
+        };
+        let current = editor.read(cx).text().to_string();
+        let combined = if current.trim().is_empty() {
+            self.prediction.clone()
+        } else {
+            format!("{} {}", current.trim_end(), self.prediction)
+        };
+        self.prediction.clear();
+        self.prediction_chat = None;
+        self.prediction_generation = self.prediction_generation.wrapping_add(1);
+        editor.update(cx, |editor, cx| editor.set_text(combined, cx));
+        window.focus(&editor.read(cx).focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    fn maybe_predict(&mut self, cx: &mut Context<Self>) {
+        self.prediction.clear();
+        self.prediction_chat = None;
+        if !self.prefs["predictions"].as_bool().unwrap_or(false) {
+            return;
+        }
+        let Some(chat) = self.chats.get(self.active) else {
+            return;
+        };
+        let (Some(project), Some(id)) = (Some(chat.project.clone()), chat.session.clone()) else {
+            return;
+        };
+        if self
+            .editors
+            .get(&chat.id)
+            .is_some_and(|editor| !editor.read(cx).text().trim().is_empty())
+        {
+            return;
+        }
+        let chat_id = chat.id;
+        self.prediction_generation = self.prediction_generation.wrapping_add(1);
+        let generation = self.prediction_generation;
+        self.call(
+            "predict",
+            json!({ "project": project, "id": id }),
+            cx,
+            move |root, result, cx| {
+                if generation != root.prediction_generation {
+                    return;
+                }
+                let Ok(value) = result else {
+                    return;
+                };
+                let suggestion = value["suggestion"].as_str().unwrap_or_default().trim();
+                if suggestion.is_empty()
+                    || root.chats.get(root.active).map(|chat| chat.id) != Some(chat_id)
+                    || root
+                        .editors
+                        .get(&chat_id)
+                        .is_some_and(|editor| !editor.read(cx).text().trim().is_empty())
+                {
+                    return;
+                }
+                root.prediction = suggestion.to_string();
+                root.prediction_chat = Some(chat_id);
+                cx.notify();
             },
         );
     }
@@ -1542,6 +2111,7 @@ impl Root {
         if self.show_details {
             self.show_changes = false;
             self.change_review = None;
+            self.stop_terminal(cx);
             let index = self.active;
             self.refresh_repository(index, cx);
             self.load_sources(cx);
@@ -1563,7 +2133,7 @@ impl Root {
             editor.update(cx, |editor, cx| {
                 editor.set_text(text, cx);
             });
-            window.focus(&editor.read(cx).focus_handle(cx));
+            window.focus(&editor.read(cx).focus_handle(cx), cx);
         }
         cx.notify();
     }
@@ -1581,7 +2151,7 @@ impl Root {
             can_reuse_new_chat(chat, editor.read(cx).text()).then_some(editor.clone())
         });
         if let Some(editor) = reusable {
-            window.focus(&editor.read(cx).focus_handle(cx));
+            window.focus(&editor.read(cx).focus_handle(cx), cx);
             cx.notify();
             return;
         }
@@ -1595,13 +2165,13 @@ impl Root {
     pub fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.project_name.read(cx).focus_handle(cx);
         self.open_overlay(Overlay::NewProject, cx);
-        window.focus(&focus);
+        window.focus(&focus, cx);
     }
 
     pub fn open_command_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.command_query.read(cx).focus_handle(cx);
         self.open_overlay(Overlay::CommandMenu, cx);
-        window.focus(&focus);
+        window.focus(&focus, cx);
     }
 
     pub fn push_chat(
@@ -1635,6 +2205,10 @@ impl Root {
     ) {
         self.model_menu_open = false;
         self.composer_tools_open = false;
+        self.prediction.clear();
+        self.prediction_chat = None;
+        self.prediction_generation = self.prediction_generation.wrapping_add(1);
+        self.stop_terminal(cx);
         let id = self.next_chat;
         self.next_chat += 1;
         let mut chat = Chat::new(project.clone(), title);
@@ -1673,6 +2247,11 @@ impl Root {
                         let editor = editor.read(cx);
                         (editor.text().to_string(), editor.cursor_utf16())
                     };
+                    if !text.is_empty() && root.prediction_chat == Some(id) {
+                        root.prediction.clear();
+                        root.prediction_chat = None;
+                        root.prediction_generation = root.prediction_generation.wrapping_add(1);
+                    }
                     root.refresh_at_suggestions(id, text, caret, cx);
                 }
                 cx.notify();
@@ -1694,7 +2273,7 @@ impl Root {
         self.refresh_repository(self.active, cx);
         if let Some(window) = window {
             if let Some(editor) = self.editors.get(&id) {
-                window.focus(&editor.read(cx).focus_handle(cx));
+                window.focus(&editor.read(cx).focus_handle(cx), cx);
             }
         } else {
             self.pending_focus = Some(id);
@@ -1778,6 +2357,10 @@ impl Root {
         self.active = index;
         self.changes = None;
         self.show_changes = false;
+        self.stop_terminal(cx);
+        self.prediction.clear();
+        self.prediction_chat = None;
+        self.prediction_generation = self.prediction_generation.wrapping_add(1);
         self.load_project_commands(cx);
         self.refresh_repository(index, cx);
         if let Some(editor) = self
@@ -1785,7 +2368,7 @@ impl Root {
             .get(index)
             .and_then(|chat| self.editors.get(&chat.id))
         {
-            window.focus(&editor.read(cx).focus_handle(cx));
+            window.focus(&editor.read(cx).focus_handle(cx), cx);
         }
         cx.notify();
     }
@@ -1811,12 +2394,37 @@ impl Root {
         cx.notify();
     }
 
-    pub fn focus_composer(&self, window: &mut Window, cx: &App) {
+    pub fn focus_composer(&self, window: &mut Window, cx: &mut App) {
         if let Some(chat) = self.chats.get(self.active) {
             if let Some(editor) = self.editors.get(&chat.id) {
-                window.focus(&editor.read(cx).focus_handle(cx));
+                window.focus(&editor.read(cx).focus_handle(cx), cx);
             }
         }
+    }
+
+    fn text_input_focused(&self, window: &Window, cx: &App) -> bool {
+        let fields = [
+            &self.search,
+            &self.command_query,
+            &self.worktree_name,
+            &self.worktree_base,
+            &self.worktree_branch,
+            &self.session_name,
+            &self.project_name,
+            &self.plugin_query,
+            &self.marketplace_source,
+            &self.provider_filter,
+            &self.provider_key,
+            &self.provider_model,
+            &self.provider_url,
+        ];
+        fields
+            .into_iter()
+            .any(|editor| editor.read(cx).focus_handle(cx).is_focused(window))
+            || self
+                .editors
+                .values()
+                .any(|editor| editor.read(cx).focus_handle(cx).is_focused(window))
     }
 
     pub fn open_sidebar_session(
@@ -1878,6 +2486,17 @@ impl Root {
         let Some(project) = self.chats.get(index).map(|chat| chat.project.clone()) else {
             return;
         };
+        let status_project = project.clone();
+        self.call(
+            "repository_status",
+            json!({ "project": status_project }),
+            cx,
+            |root, result, _| {
+                if let Ok(value) = result {
+                    root.repository_status = value.as_array().cloned().unwrap_or_default();
+                }
+            },
+        );
         self.call(
             "repository_changes",
             json!({ "project": project }),
@@ -1930,6 +2549,9 @@ impl Root {
         if !composer_has_content(&prompt, has_attachments) {
             return;
         }
+        self.prediction.clear();
+        self.prediction_chat = None;
+        self.prediction_generation = self.prediction_generation.wrapping_add(1);
         if !prompt.is_empty() && self.run_slash_command(&prompt, window, cx) {
             return;
         }
@@ -2042,7 +2664,7 @@ impl Root {
     pub fn run_slash_command(
         &mut self,
         text: &str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((name, args)) = slash_command(text) else {
@@ -2058,6 +2680,22 @@ impl Root {
             "model" => self.open_model_menu(cx),
             "agent" => self.open_overlay(Overlay::Agents, cx),
             "permissions" => self.open_overlay(Overlay::Approvals, cx),
+            "connect" => self.open_connect(
+                if args.is_empty() {
+                    "a provider".to_string()
+                } else {
+                    args.to_string()
+                },
+                cx,
+            ),
+            "changes" => self.open_repository_changes(cx),
+            "terminal" => self.open_terminal(window, cx),
+            "pulls" => self.open_pulls(cx),
+            "customize" => {
+                self.rail = Rail::Customize;
+                self.overlay = None;
+                self.load_plugins(cx);
+            }
             "trust" => {
                 let Some(project) = self.current_project() else {
                     self.toast("Select a project first.", true, cx);
@@ -2476,6 +3114,7 @@ impl Root {
                 undone: false,
             });
         self.open_change_review(project, ChangeScope::Repository, card, None, cx);
+        self.panel_tab = PanelTab::Changes;
         self.refresh_repository(self.active, cx);
     }
 
@@ -2494,6 +3133,7 @@ impl Root {
             card.project.clone()
         };
         self.open_change_review(project, ChangeScope::Turn, card.clone(), path, cx);
+        self.panel_tab = PanelTab::Changes;
     }
 
     fn open_change_review(
@@ -2831,7 +3471,9 @@ impl Root {
             }
             "agent-end" => {
                 let run = payload["runId"].as_u64();
-                if let Some(index) = self.claim_run(run) {
+                let ended = self.claim_run(run);
+                let ended_active = ended == Some(self.active);
+                if let Some(index) = ended {
                     let chat = &mut self.chats[index];
                     chat.run = None;
                     chat.awaiting_run = false;
@@ -2856,6 +3498,9 @@ impl Root {
                 self.refresh_sessions(cx);
                 let index = self.active;
                 self.refresh_repository(index, cx);
+                if ended_active {
+                    self.maybe_predict(cx);
+                }
             }
             "approval-request" => {
                 let id = payload["id"].as_u64().unwrap_or_default();
@@ -2910,6 +3555,15 @@ impl Root {
                 if self.model_menu_open {
                     self.load_models(cx);
                 }
+            }
+            "terminal-output" => {
+                let id = payload["terminal"].as_u64().unwrap_or_default();
+                let data = payload["data"].as_str().unwrap_or_default();
+                self.terminal.feed(id, data.as_bytes());
+            }
+            "terminal-exit" => {
+                let id = payload["terminal"].as_u64().unwrap_or_default();
+                self.terminal.exit(id);
             }
             "update-progress" => {
                 if payload["token"].as_str().is_none()
@@ -3166,6 +3820,42 @@ fn composer_has_content(prompt: &str, has_attachments: bool) -> bool {
     !prompt.trim().is_empty() || has_attachments
 }
 
+pub(crate) fn change_hunk(lines: &[Value], first: usize, last: usize) -> Value {
+    let start = first.saturating_sub(3);
+    let end = (last + 4).min(lines.len());
+    let old_start = lines[start..end]
+        .iter()
+        .find_map(|line| line["old"].as_u64())
+        .or_else(|| {
+            lines[..start]
+                .iter()
+                .rev()
+                .find_map(|line| line["old"].as_u64().map(|number| number + 1))
+        })
+        .unwrap_or(1);
+    let new_start = lines[start..end]
+        .iter()
+        .find_map(|line| line["new"].as_u64())
+        .or_else(|| {
+            lines[..start]
+                .iter()
+                .rev()
+                .find_map(|line| line["new"].as_u64().map(|number| number + 1))
+        })
+        .unwrap_or(1);
+    json!({
+        "old_start": old_start,
+        "new_start": new_start,
+        "lines": lines[start..end]
+            .iter()
+            .map(|line| json!({
+                "kind": line["kind"].as_str().unwrap_or("context"),
+                "text": line["text"].as_str().unwrap_or_default(),
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A window with no thread in it opens on the invite and the composer under
@@ -3179,7 +3869,7 @@ impl Render for Root {
         }
         if let Some(id) = self.pending_focus.take() {
             if let Some(editor) = self.editors.get(&id) {
-                window.focus(&editor.read(cx).focus_handle(cx));
+                window.focus(&editor.read(cx).focus_handle(cx), cx);
             }
         }
 
@@ -3190,6 +3880,9 @@ impl Render for Root {
             .clamp(0.7, 1.6) as f32;
 
         let mut shell = div()
+            .id("oxide-app")
+            .role(gpui::Role::Application)
+            .aria_label("Oxide")
             .flex()
             .flex_col()
             .size_full()
@@ -3205,6 +3898,18 @@ impl Render for Root {
                 },
             )
             .key_context("Root")
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab"
+                    && !this.text_input_focused(window, cx)
+                    && !this.terminal_focus.is_focused(window)
+                {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                }
+            }))
             .on_mouse_move(cx.listener(|this, event, window, cx| {
                 if this.resizing.is_some() {
                     this.handle_sidebar_drag(event, window, cx);
@@ -3262,19 +3967,32 @@ impl Render for Root {
             .on_action(cx.listener(|_, _: &CloseWindow, window, _cx| window.remove_window()))
             .on_action(cx.listener(|this, _: &ToggleChanges, _window, cx| {
                 if this.show_changes {
-                    this.show_changes = false;
-                    this.change_review = None;
-                    cx.notify();
+                    this.close_workspace_panel(cx);
                 } else {
                     this.open_repository_changes(cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenModels, _window, cx| this.toggle_model_menu(cx)))
             .on_action(cx.listener(|this, _: &OpenWorktrees, _window, cx| this.open_worktrees(cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenTerminal, window, cx| this.open_terminal(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &OpenPulls, _window, cx| this.open_pulls(cx)))
             .on_action(cx.listener(|this, _: &Back, _window, cx| this.navigate_back(cx)))
             .on_action(cx.listener(|this, _: &Forward, _window, cx| this.navigate_forward(cx)))
             .on_action(cx.listener(|this, _: &ShowShortcuts, _window, cx| {
                 this.open_overlay(Overlay::Shortcuts, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AcceptPrediction, window, cx| {
+                this.accept_prediction(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &TerminalTab, _window, cx| {
+                    this.terminal_write_text("\t", cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &TerminalBackTab, _window, cx| {
+                this.terminal_write_text("\u{1b}[Z", cx)
             }))
             .on_action(cx.listener(|this, _: &SwitchToSession1, window, cx| {
                 this.open_sidebar_session(1, window, cx)
@@ -3326,6 +4044,9 @@ impl Render for Root {
                     }
                     cx.notify();
                 } else if !this.updating_update && this.overlay.take().is_some() {
+                    if this.file_viewer.is_some() {
+                        this.file_viewer = None;
+                    }
                     cx.notify();
                 } else {
                     this.focus_composer(window, cx);
@@ -3526,7 +4247,8 @@ fn slash_command(text: &str) -> Option<(&str, &str)> {
 fn performs_slash_command(name: &str, args: &str) -> bool {
     match name {
         "mcp" => args.is_empty(),
-        "help" | "model" | "agent" | "permissions" | "trust" | "reasoning" => true,
+        "help" | "model" | "agent" | "permissions" | "trust" | "reasoning" | "connect" => true,
+        "changes" | "terminal" | "pulls" | "customize" => args.is_empty(),
         _ => false,
     }
 }
@@ -3719,6 +4441,28 @@ pub fn rule(theme: &Theme) -> gpui::Div {
     div().h(px(1.0)).w_full().bg(theme.border())
 }
 
+#[cfg(test)]
+mod workspace_parity_tests {
+    use super::change_hunk;
+    use serde_json::json;
+
+    #[test]
+    fn a_hunk_carries_context_and_the_line_number_each_side_uses() {
+        let lines = vec![
+            json!({ "kind": "context", "old": 3, "new": 3, "text": "before" }),
+            json!({ "kind": "remove", "old": 4, "new": null, "text": "old" }),
+            json!({ "kind": "add", "old": null, "new": 4, "text": "new" }),
+            json!({ "kind": "context", "old": 5, "new": 5, "text": "after" }),
+        ];
+        let hunk = change_hunk(&lines, 1, 2);
+        assert_eq!(hunk["old_start"], 3);
+        assert_eq!(hunk["new_start"], 3);
+        assert_eq!(hunk["lines"].as_array().unwrap().len(), 4);
+        assert_eq!(hunk["lines"][1]["kind"], "remove");
+        assert_eq!(hunk["lines"][2]["kind"], "add");
+    }
+}
+
 /// A button in the window's own style: the page's `ghost` and `primary` rows.
 pub struct Button {
     pub label: String,
@@ -3773,17 +4517,23 @@ impl Button {
         };
         let mut row = div()
             .id(id)
+            .role(gpui::Role::Button)
+            .aria_label(self.label.clone())
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
+            .tab_index(0)
             .h(px(32.0))
             .px_3()
             .rounded(px(8.0))
             .bg(background)
+            .border_1()
+            .border_color(background)
             .text_color(color)
             .text_size(px(12.5))
             .hover(move |style| style.bg(hover))
+            .focus(move |style| style.border_color(theme.accent()))
             .child(self.label);
         if let Some(width) = self.width {
             row = row.w(px(width));

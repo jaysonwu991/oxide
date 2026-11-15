@@ -223,6 +223,45 @@ pub enum Icon {
 }
 
 impl Icon {
+    pub fn label(self) -> &'static str {
+        match self {
+            Icon::Back => "Back",
+            Icon::Forward => "Forward",
+            Icon::Sidebar => "Toggle sidebar",
+            Icon::Home => "Chats",
+            Icon::Folder => "Folder",
+            Icon::Pencil => "New chat",
+            Icon::Plus => "Add",
+            Icon::More => "More",
+            Icon::Search => "Search",
+            Icon::Settings => "Settings",
+            Icon::Customize => "Customize",
+            Icon::Chat => "Chat",
+            Icon::Pin => "Pin",
+            Icon::PullRequest => "Pull request",
+            Icon::Archive => "Archive",
+            Icon::ChevronDown => "Expand",
+            Icon::ChevronRight => "Collapse",
+            Icon::Paperclip => "Attach",
+            Icon::Lock => "Permissions",
+            Icon::ArrowUp => "Send",
+            Icon::Square => "Stop",
+            Icon::Branch => "Branch",
+            Icon::Worktree => "Worktree",
+            Icon::Close => "Close",
+            Icon::Details => "Details",
+            Icon::Check => "Complete",
+            Icon::Changes => "Changes",
+            Icon::Image => "Image",
+            Icon::File => "File",
+            Icon::Globe => "Provider",
+            Icon::Bell => "Notifications",
+            Icon::Activity => "Activity",
+            Icon::Spinner => "Working",
+            Icon::Keyboard => "Keyboard shortcuts",
+        }
+    }
+
     pub fn path(self) -> &'static str {
         match self {
             Icon::Back => "icons/back.svg",
@@ -418,6 +457,48 @@ mod tests {
     fn an_unknown_asset_is_absent() {
         assert!(Assets.load("icons/nothing.svg").unwrap().is_none());
         assert!(Assets.load("logo.png").unwrap().is_none());
+    }
+
+    #[test]
+    fn every_icon_has_an_accessible_name() {
+        for mark in [
+            Icon::Back,
+            Icon::Forward,
+            Icon::Sidebar,
+            Icon::Home,
+            Icon::Folder,
+            Icon::Pencil,
+            Icon::Plus,
+            Icon::More,
+            Icon::Search,
+            Icon::Settings,
+            Icon::Customize,
+            Icon::Chat,
+            Icon::Pin,
+            Icon::PullRequest,
+            Icon::Archive,
+            Icon::ChevronDown,
+            Icon::ChevronRight,
+            Icon::Paperclip,
+            Icon::Lock,
+            Icon::ArrowUp,
+            Icon::Square,
+            Icon::Branch,
+            Icon::Worktree,
+            Icon::Close,
+            Icon::Details,
+            Icon::Check,
+            Icon::Changes,
+            Icon::Image,
+            Icon::File,
+            Icon::Globe,
+            Icon::Bell,
+            Icon::Activity,
+            Icon::Spinner,
+            Icon::Keyboard,
+        ] {
+            assert!(!mark.label().is_empty());
+        }
     }
 
     #[test]
