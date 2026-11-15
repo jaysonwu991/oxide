@@ -95,7 +95,7 @@ pub fn layer(
             | Overlay::Approval { .. }
             | Overlay::Question { .. }
             | Overlay::Trust { .. }
-    );
+    ) && !(matches!(&overlay, Overlay::Updates) && root.updating_update);
     if dismissible {
         scrim = scrim.child(
             div()
@@ -1004,6 +1004,103 @@ fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
 
 fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let mut panel = dialog(theme, "Updates", 560.0);
+
+    if root.updating_update {
+        let progress = root.update_progress.clone().unwrap_or_else(|| json!({}));
+        let stage = progress["stage"].as_str().unwrap_or("checking");
+        let version = progress["version"].as_str().unwrap_or_default();
+        let received = progress["received"].as_u64().unwrap_or(0);
+        let total = progress["total"].as_u64().unwrap_or(0);
+        let transfer = received as f64 / 1_048_576.0;
+        let size = total as f64 / 1_048_576.0;
+        let (heading, detail) = match stage {
+            "downloading" if version.is_empty() => (
+                "Downloading the update".to_string(),
+                "The verified installer is being downloaded.".to_string(),
+            ),
+            "downloading" => (
+                format!("Downloading Oxide Beta {version}"),
+                if total > 0 {
+                    format!("{transfer:.1} of {size:.1} MB")
+                } else {
+                    format!("{transfer:.1} MB downloaded")
+                },
+            ),
+            "verifying" => (
+                "Verifying the download".to_string(),
+                "Checking the installer against the release’s SHA-256 checksum.".to_string(),
+            ),
+            "installing" => (
+                format!(
+                    "Installing Oxide Beta{}",
+                    if version.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {version}")
+                    }
+                ),
+                "Putting the new app in place.".to_string(),
+            ),
+            _ => (
+                "Checking for updates".to_string(),
+                "Looking for the newest Oxide Beta release.".to_string(),
+            ),
+        };
+        panel = panel
+            .child(
+                div()
+                    .mt(px(2.0))
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text())
+                    .child(heading),
+            )
+            .child(
+                div()
+                    .text_size(px(12.5))
+                    .text_color(theme.dim())
+                    .child(detail),
+            );
+        if stage == "downloading" || stage == "verifying" {
+            let fraction = if total == 0 {
+                0.08
+            } else {
+                (received as f32 / total as f32).clamp(0.0, 1.0)
+            };
+            panel = panel.child(
+                div()
+                    .mt(px(4.0))
+                    .h(px(6.0))
+                    .w_full()
+                    .overflow_hidden()
+                    .rounded(px(3.0))
+                    .bg(theme.panel_3())
+                    .child(
+                        div()
+                            .h_full()
+                            .w(px((480.0 * fraction).max(6.0)))
+                            .rounded(px(3.0))
+                            .bg(theme.accent()),
+                    ),
+            );
+        }
+        let mut actions = div()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .gap(px(8.0))
+            .mt(px(12.0));
+        if matches!(stage, "checking" | "downloading" | "verifying") {
+            actions = actions.child(Button::new("Cancel").render(
+                "updates-cancel",
+                theme,
+                cx,
+                |root, _, cx| root.cancel_update(cx),
+            ));
+        }
+        return panel.child(actions);
+    }
+
     if root.checking_updates {
         return panel
             .child(
@@ -1025,6 +1122,71 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                     .flex()
                     .justify_end()
                     .mt(px(12.0))
+                    .child(close_button(theme, cx)),
+            );
+    }
+    if let Some(error) = root.update_failure.as_deref() {
+        let restart_failed = root.update_restart_failed;
+        let installable = root
+            .update_check
+            .as_ref()
+            .and_then(|check| check["installable"].as_bool())
+            .unwrap_or(false);
+        return panel
+            .child(
+                div()
+                    .mt(px(2.0))
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text())
+                    .child(if restart_failed {
+                        "Couldn’t restart Oxide"
+                    } else {
+                        "Couldn’t finish the update"
+                    }),
+            )
+            .child(
+                div()
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(theme.color("tool_error_bg"))
+                    .bg(theme.wash("tool_error_bg", 0.72))
+                    .text_size(px(11.5))
+                    .line_height(px(17.0))
+                    .text_color(theme.error())
+                    .child(error.to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .mt(px(12.0))
+                    .child(
+                        Button::new(if restart_failed {
+                            "Restart Again"
+                        } else {
+                            "Try Again"
+                        })
+                        .primary()
+                        .render(
+                            "updates-install-retry",
+                            theme,
+                            cx,
+                            move |root, _, cx| {
+                                if restart_failed {
+                                    root.restart_for_update(cx);
+                                } else if installable {
+                                    root.install_update(cx);
+                                } else {
+                                    root.download_update(cx);
+                                }
+                            },
+                        ),
+                    )
                     .child(close_button(theme, cx)),
             );
     }
@@ -1076,10 +1238,67 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                     )),
             );
     }
+    if let Some(result) = root.update_result.as_ref() {
+        let version = result["version"].as_str().unwrap_or("the new release");
+        let text = result["text"].as_str().unwrap_or_default();
+        let path = result["path"].as_str().unwrap_or_default();
+        let installed = result.get("pending").is_some();
+        let pending = result["pending"].as_bool().unwrap_or(false);
+        let heading = if !installed {
+            format!("Oxide Beta {version} is downloaded")
+        } else if pending {
+            format!("The Oxide Beta {version} installer is running")
+        } else {
+            format!("Oxide Beta {version} is ready")
+        };
+        panel = panel.child(
+            div()
+                .mt(px(2.0))
+                .text_size(px(15.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text())
+                .child(heading),
+        );
+        if !text.is_empty() {
+            panel = panel.child(
+                div()
+                    .text_size(px(12.5))
+                    .line_height(px(18.0))
+                    .text_color(theme.dim())
+                    .child(text.to_string()),
+            );
+        }
+        if !path.is_empty() {
+            panel = panel.child(
+                div()
+                    .text_size(px(11.5))
+                    .line_height(px(17.0))
+                    .text_color(theme.faint())
+                    .child(path.to_string()),
+            );
+        }
+        let mut actions = div()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .gap(px(8.0))
+            .mt(px(12.0));
+        if installed && !pending {
+            actions = actions.child(Button::new("Restart and Install").primary().render(
+                "updates-restart",
+                theme,
+                cx,
+                |root, _, cx| root.restart_for_update(cx),
+            ));
+        }
+        actions = actions.child(close_button(theme, cx));
+        return panel.child(actions);
+    }
     let Some(check) = root.update_check.as_ref() else {
         return panel.child(close_button(theme, cx));
     };
     let available = check["updateAvailable"].as_bool().unwrap_or(false);
+    let installable = check["installable"].as_bool().unwrap_or(false);
     let current = check["current"].as_str().unwrap_or("unknown");
     let latest = check["latest"].as_str().unwrap_or("unknown");
     let released = check["releasedAt"].as_str().unwrap_or_default();
@@ -1161,12 +1380,29 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
         .gap(px(8.0))
         .mt(px(12.0));
     if !release_url.is_empty() {
-        actions = actions.child(Button::new("Open Release Page").primary().render(
+        actions = actions.child(Button::new("Release Notes").render(
             "updates-release",
             theme,
             cx,
             move |_, _, cx| cx.open_url(&release_url),
         ));
+    }
+    if available && !asset.is_empty() {
+        actions = actions.child(if installable {
+            Button::new("Install Update").primary().render(
+                "updates-install",
+                theme,
+                cx,
+                |root, _, cx| root.install_update(cx),
+            )
+        } else {
+            Button::new("Download").primary().render(
+                "updates-download",
+                theme,
+                cx,
+                |root, _, cx| root.download_update(cx),
+            )
+        });
     }
     actions = actions.child(close_button(theme, cx));
     panel.child(actions)

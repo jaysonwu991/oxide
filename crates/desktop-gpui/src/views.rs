@@ -632,6 +632,14 @@ fn destination_leading_width(root: &Root) -> f32 {
 
 // ---------- rail ----------
 
+pub(crate) fn customize_destination(current: Rail, leaving_settings: bool) -> Rail {
+    if current == Rail::Customize && !leaving_settings {
+        Rail::Chats
+    } else {
+        Rail::Customize
+    }
+}
+
 pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
     let chats = root.rail == Rail::Chats && !matches!(root.overlay, Some(Overlay::Settings));
     let projects = root.rail == Rail::Projects && !matches!(root.overlay, Some(Overlay::Settings));
@@ -701,12 +709,9 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
             icon_button("rail-customize", Icon::Customize, 40.0, theme, customize)
                 .tooltip(tip("Customize", theme))
                 .on_click(cx.listener(|root, _, _, cx| {
-                    if root.rail == Rail::Customize {
-                        root.rail = Rail::Chats;
-                    } else {
-                        root.rail = Rail::Customize;
-                        root.overlay = None;
-                    }
+                    let settings = matches!(root.overlay, Some(Overlay::Settings));
+                    root.overlay = None;
+                    root.rail = customize_destination(root.rail, settings);
                     cx.notify();
                 })),
         )
@@ -928,7 +933,6 @@ pub fn sidebar(
         list = list.child(projects_header(theme, cx));
         let projects = root.projects.clone();
         let current_project = root.current_project_owner();
-        let hover_root = cx.entity().downgrade();
         for project in projects {
             let path = project.path.clone();
             let name = root.project_name(&path);
@@ -1061,7 +1065,6 @@ pub fn sidebar(
                                 move |root, _, window, cx| {
                                     cx.stop_propagation();
                                     root.inline_project_actions = None;
-                                    root.project_actions_preview = None;
                                     root.collapsed_projects.remove(&path_for_new);
                                     root.push_chat(
                                         window,
@@ -1088,14 +1091,11 @@ pub fn sidebar(
                                     cx.stop_propagation();
                                     let position = event.position();
                                     root.project_actions_anchor_y = Some(f32::from(position.y));
-                                    root.project_actions_anchor_id =
-                                        Some(project_id_for_menu.clone());
                                     if root.inline_project_actions.as_deref()
                                         == Some(project_id_for_menu.as_str())
                                     {
                                         root.inline_project_actions = None;
                                     } else {
-                                        root.project_actions_preview = None;
                                         root.inline_project_actions =
                                             Some(project_id_for_menu.clone());
                                         root.arm_project_actions_dismissal(cx);
@@ -1108,9 +1108,6 @@ pub fn sidebar(
                 .on_click(cx.listener(move |root, _, window, cx| {
                     root.select_project(window, path_for_select.clone(), cx);
                 }));
-            let hover_id = project.id.clone();
-            let hover_anchor_id = project.id.clone();
-            let hover_entity = hover_root.clone();
             let drag_value = ProjectDrag::new(project.id.clone(), project_name.clone());
             let drop_target = project.id.clone();
             let project_surface = div()
@@ -1127,22 +1124,7 @@ pub fn sidebar(
                 })
                 .on_drop(cx.listener(move |root, drag: &ProjectDrag, _, cx| {
                     root.reorder_project(drag.id.clone(), drop_target.clone(), cx)
-                }))
-                .on_hover(move |hovered, _, cx| {
-                    let _ = hover_entity.update(cx, |root, cx| {
-                        root.hover_project_actions(hover_id.clone(), *hovered, cx);
-                    });
-                })
-                .on_mouse_move(
-                    cx.listener(move |root, event: &gpui::MouseMoveEvent, _, _| {
-                        if root.project_actions_anchor_id.as_deref()
-                            != Some(hover_anchor_id.as_str())
-                        {
-                            root.project_actions_anchor_y = Some(f32::from(event.position.y));
-                            root.project_actions_anchor_id = Some(hover_anchor_id.clone());
-                        }
-                    }),
-                );
+                }));
             project_group = project_group.child(project_surface);
             if !collapsed && sessions.is_empty() {
                 project_group = project_group.child(
@@ -1618,7 +1600,6 @@ fn project_actions_panel(
                             cx,
                             move |root, window, cx| {
                                 root.inline_project_actions = None;
-                                root.project_actions_preview = None;
                                 root.collapsed_projects.remove(&path_for_new);
                                 root.push_chat(
                                     window,
@@ -1638,7 +1619,6 @@ fn project_actions_panel(
                     cx,
                     move |root, _, cx| {
                         root.inline_project_actions = None;
-                        root.project_actions_preview = None;
                         root.overlay = Some(Overlay::Confirm {
                             title: "Remove project".to_string(),
                             body: format!(
@@ -1657,11 +1637,7 @@ pub(crate) fn project_actions_floating(
     theme: &Theme,
     cx: &mut Context<Root>,
 ) -> impl IntoElement {
-    let id = root
-        .inline_project_actions
-        .clone()
-        .or_else(|| root.project_actions_preview.clone())
-        .unwrap_or_default();
+    let id = root.inline_project_actions.clone().unwrap_or_default();
     let project = root
         .projects
         .iter()
@@ -1670,23 +1646,15 @@ pub(crate) fn project_actions_floating(
     let fallback = root.project_actions_anchor_y.unwrap_or(70.0);
     let left = RAIL_WIDTH + root.sidebar_width + SIDEBAR_RESIZER_WIDTH + 8.0;
     let top = (fallback - 16.0).max(TOPBAR_HEIGHT + 8.0);
-    let hover_id = id.clone();
-    let hover_root = cx.entity().downgrade();
     let mut card = div()
         .id("project-actions-floating")
         .absolute()
         .left(px(left))
         .top(px(top))
         .w(px(320.0))
-        .on_hover(move |hovered, _, cx| {
-            let _ = hover_root.update(cx, |root, cx| {
-                root.hover_project_actions(hover_id.clone(), *hovered, cx);
-            });
-        })
         .on_mouse_down_out(cx.listener(|root, _, _, cx| {
             if root.project_actions_dismiss_armed {
                 root.inline_project_actions = None;
-                root.project_actions_preview = None;
                 cx.notify();
             }
         }));
@@ -3299,29 +3267,12 @@ fn model_effort_menu(
     theme: &Theme,
     cx: &mut Context<Root>,
 ) -> Stateful<gpui::Div> {
-    let data = root.models.clone();
-    let current_model = root.info["model"].as_str().unwrap_or("Model").to_string();
-    let current_effort = root.info["reasoning"]
-        .as_str()
-        .unwrap_or("auto")
-        .to_string();
-    let levels = root.info["reasoningLevels"]
-        .as_array()
-        .map(|levels| {
-            levels
-                .iter()
-                .filter_map(|level| level.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .filter(|levels| !levels.is_empty())
-        .unwrap_or_else(|| vec!["auto".to_string()]);
-
-    let mut panel = div()
+    let panel = div()
         .id("composer-model-menu")
         .absolute()
         .right_0()
         .bottom(px(38.0))
-        .w(px(420.0))
+        .w(px(310.0))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -3332,74 +3283,152 @@ fn model_effort_menu(
         .shadow_xl()
         .on_mouse_down_out(cx.listener(|root, _, _, cx| {
             root.model_menu_open = false;
+            root.model_menu_show_models = false;
             cx.notify();
-        }))
+        }));
+
+    if root.model_menu_show_models {
+        model_picker_page(panel, root, theme, cx)
+    } else {
+        model_summary_page(panel, root, theme, cx)
+    }
+}
+
+fn model_summary_page(
+    panel: Stateful<gpui::Div>,
+    root: &Root,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> Stateful<gpui::Div> {
+    let current_model = root.info["model"].as_str().unwrap_or("Model");
+    let model_label = model_display_name(current_model);
+    let current_effort = root.info["reasoning"]
+        .as_str()
+        .unwrap_or("auto")
+        .to_string();
+    let levels = reasoning_levels(root);
+    let show_effort = root.info["supportsReasoning"].as_bool().unwrap_or(false) && levels.len() > 1;
+
+    let model_row = div()
+        .id("composer-model-page")
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .h(px(36.0))
+        .px(px(12.0))
+        .rounded(px(8.0))
+        .bg(theme.panel_2())
+        .cursor_pointer()
+        .text_size(px(12.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text())
+        .hover(move |style| style.bg(theme.panel_3()))
+        .child(model_label)
+        .child(icons::icon(Icon::ChevronRight, 13.0, theme.faint()))
+        .on_click(cx.listener(|root, _, _, cx| {
+            root.model_menu_show_models = true;
+            cx.notify();
+        }));
+
+    let mut panel = panel.p(px(10.0));
+    if show_effort {
+        panel = panel
+            .child(
+                div()
+                    .flex()
+                    .justify_center()
+                    .pt(px(2.0))
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.accent())
+                    .child(capitalised(&current_effort)),
+            )
+            .child(model_row)
+            .child(effort_slider(theme, cx, &levels, &current_effort));
+    } else {
+        panel = panel.child(model_row);
+    }
+    panel
+}
+
+fn model_picker_page(
+    panel: Stateful<gpui::Div>,
+    root: &Root,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> Stateful<gpui::Div> {
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.0))
+        .h(px(40.0))
+        .px(px(8.0))
+        .border_b_1()
+        .border_color(theme.border())
         .child(
             div()
+                .id("composer-model-back")
                 .flex()
-                .flex_row()
                 .items_center()
-                .gap_2()
-                .px(px(12.0))
-                .py(px(9.0))
-                .border_b_1()
-                .border_color(theme.border())
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .gap(px(1.0))
-                        .child(
-                            div()
-                                .text_size(px(12.5))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.text())
-                                .child("Model & effort"),
-                        )
-                        .child(
-                            div()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(px(10.5))
-                                .text_color(theme.faint())
-                                .child(format!(
-                                    "{} · {}",
-                                    current_model,
-                                    capitalised(&current_effort)
-                                )),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("composer-model-refresh")
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .h(px(26.0))
-                        .px(px(8.0))
-                        .rounded(px(7.0))
-                        .cursor_pointer()
-                        .text_size(px(10.5))
-                        .text_color(theme.dim())
-                        .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
-                        .child("Refresh")
-                        .on_click(cx.listener(|root, _, _, cx| {
-                            let project = root.current_project().unwrap_or_default();
-                            root.call(
-                                "list_models",
-                                serde_json::json!({ "project": project, "refresh": true }),
-                                cx,
-                                |root, result, _| {
-                                    if let Ok(value) = result {
-                                        root.models = value;
-                                    }
-                                },
-                            );
-                        })),
-                ),
+                .justify_center()
+                .w(px(28.0))
+                .h(px(28.0))
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel_2()))
+                .child(icons::icon(Icon::Back, 15.0, theme.dim()))
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.model_menu_show_models = false;
+                    cx.notify();
+                })),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text())
+                .child("Models"),
+        )
+        .child(
+            div()
+                .id("composer-model-refresh")
+                .flex()
+                .items_center()
+                .justify_center()
+                .h(px(26.0))
+                .px(px(8.0))
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .text_size(px(10.5))
+                .text_color(theme.dim())
+                .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+                .child("Refresh")
+                .on_click(cx.listener(|root, _, _, cx| {
+                    let project = root.current_project().unwrap_or_default();
+                    root.call(
+                        "list_models",
+                        serde_json::json!({ "project": project, "refresh": true }),
+                        cx,
+                        |root, result, _| {
+                            if let Ok(value) = result {
+                                root.models = value;
+                            }
+                        },
+                    );
+                })),
         );
+    panel
+        .child(header)
+        .child(model_picker_body(root, theme, cx))
+}
+
+fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stateful<gpui::Div> {
+    let data = root.models.clone();
+    let current_model = root.info["model"].as_str().unwrap_or_default().to_string();
 
     let mut body = div()
         .id("composer-model-list")
@@ -3500,23 +3529,41 @@ fn model_effort_menu(
             );
         }
         for model in provider["models"].as_array().cloned().unwrap_or_default() {
-            let (label, detail) = match &model {
-                serde_json::Value::String(name) => (name.clone(), None),
+            let (id, label, detail) = match &model {
+                serde_json::Value::String(name) => (name.clone(), model_display_name(name), None),
                 other => (
                     other["id"]
                         .as_str()
                         .or_else(|| other["name"].as_str())
                         .unwrap_or_default()
                         .to_string(),
-                    other["name"].as_str().map(str::to_string),
+                    other["name"]
+                        .as_str()
+                        .map(model_display_name)
+                        .unwrap_or_else(|| {
+                            model_display_name(
+                                other["id"]
+                                    .as_str()
+                                    .or_else(|| other["name"].as_str())
+                                    .unwrap_or_default(),
+                            )
+                        }),
+                    other["id"].as_str().and_then(|id| {
+                        other["name"]
+                            .as_str()
+                            .filter(|name| *name != id)
+                            .map(|_| id.to_string())
+                    }),
                 ),
             };
-            let selected = active && label == current;
+            let selected = active && id == current_model;
             let provider_choice = provider_name.clone();
-            let model_choice = label.clone();
+            let model_choice = id.clone();
             body = body.child(
                 div()
-                    .id(SharedString::from(format!("composer-model-{label}")))
+                    .id(SharedString::from(format!(
+                        "composer-model-{provider_name}-{id}"
+                    )))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -3565,55 +3612,138 @@ fn model_effort_menu(
             );
         }
     }
-    panel = panel.child(body);
+    body
+}
 
-    let mut effort = div()
+fn effort_slider(
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    levels: &[String],
+    current: &str,
+) -> Stateful<gpui::Div> {
+    const TRACK_WIDTH: f32 = 290.0;
+    const KNOB_SIZE: f32 = 14.0;
+    let selected = effort_position(levels, current).unwrap_or_default();
+    let progress = if levels.len() > 1 {
+        selected as f32 / (levels.len() - 1) as f32
+    } else {
+        0.0
+    };
+    let knob_left = progress * (TRACK_WIDTH - KNOB_SIZE);
+    let mut hits = div()
+        .absolute()
+        .top(px(0.0))
+        .left_0()
+        .right_0()
+        .bottom_0()
         .flex()
-        .flex_row()
-        .gap(px(2.0))
-        .mx(px(8.0))
-        .mb(px(8.0))
-        .p(px(2.0))
-        .rounded(px(9.0))
-        .bg(theme.background());
+        .flex_row();
     for level in levels {
-        let selected = level.eq_ignore_ascii_case(&current_effort);
         let choice = level.clone();
-        effort = effort.child(
+        let label = capitalised(level);
+        let down_choice = level.clone();
+        let move_choice = level.clone();
+        hits = hits.child(
             div()
                 .id(SharedString::from(format!("composer-effort-{level}")))
-                .flex()
                 .flex_1()
-                .items_center()
-                .justify_center()
-                .h(px(28.0))
-                .rounded(px(7.0))
+                .h_full()
                 .cursor_pointer()
-                .bg(if selected {
-                    theme.accent()
-                } else {
-                    gpui::transparent_black()
-                })
-                .text_size(px(10.5))
-                .text_color(if selected {
-                    theme.background()
-                } else {
-                    theme.dim()
-                })
-                .hover(move |style| {
-                    if selected {
-                        style
-                    } else {
-                        style.bg(theme.panel_2()).text_color(theme.text())
-                    }
-                })
-                .child(capitalised(&level))
-                .on_click(
-                    cx.listener(move |root, _, _, cx| root.set_reasoning(choice.clone(), cx)),
+                .tooltip(tip(label, theme))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |root, _, _, cx| {
+                        root.effort_drag_level = Some(down_choice.clone());
+                        root.set_reasoning(choice.clone(), cx);
+                    }),
+                )
+                .on_mouse_move(
+                    cx.listener(move |root, event: &gpui::MouseMoveEvent, _, cx| {
+                        if event.dragging()
+                            && root.effort_drag_level.as_deref() != Some(move_choice.as_str())
+                        {
+                            root.effort_drag_level = Some(move_choice.clone());
+                            root.set_reasoning(move_choice.clone(), cx);
+                        }
+                    }),
                 ),
         );
     }
-    panel.child(effort)
+
+    div()
+        .id("composer-effort-slider")
+        .relative()
+        .w(px(TRACK_WIDTH))
+        .h(px(24.0))
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(10.0))
+                .h(px(4.0))
+                .rounded_full()
+                .bg(theme.panel_3()),
+        )
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(10.0))
+                .h(px(4.0))
+                .w(px(progress * TRACK_WIDTH))
+                .rounded_full()
+                .bg(theme.accent()),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(knob_left))
+                .top(px(5.0))
+                .w(px(KNOB_SIZE))
+                .h(px(KNOB_SIZE))
+                .rounded_full()
+                .bg(theme.text())
+                .border_2()
+                .border_color(theme.panel()),
+        )
+        .child(hits)
+}
+
+fn reasoning_levels(root: &Root) -> Vec<String> {
+    root.info["reasoningLevels"]
+        .as_array()
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|level| level.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .filter(|levels| !levels.is_empty())
+        .unwrap_or_else(|| vec!["auto".to_string()])
+}
+
+pub(crate) fn effort_position(levels: &[String], current: &str) -> Option<usize> {
+    levels
+        .iter()
+        .position(|level| level.eq_ignore_ascii_case(current))
+}
+
+pub(crate) fn model_display_name(model: &str) -> String {
+    model
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| match part.to_ascii_lowercase().as_str() {
+            "gpt" => "GPT".to_string(),
+            "deepseek" => "DeepSeek".to_string(),
+            "claude" => "Claude".to_string(),
+            "gemini" => "Gemini".to_string(),
+            "qwen" => "Qwen".to_string(),
+            "codex" => "Codex".to_string(),
+            _ => capitalised(part),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn composer_tools_menu(
@@ -4215,7 +4345,11 @@ fn composer(
     let mut model_controls = div().relative().flex().flex_row().gap_1().flex_none();
     model_controls = model_controls.child(setting_chip(
         ("chip-model", 1usize),
-        format!("{model} · {}", capitalised(&reasoning)),
+        format!(
+            "{} · {}",
+            model_display_name(&model),
+            capitalised(&reasoning)
+        ),
         theme,
         cx,
         |root, _, cx| root.open_model_menu(cx),

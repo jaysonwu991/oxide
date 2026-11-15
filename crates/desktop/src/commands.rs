@@ -22,7 +22,7 @@ use oxide_core::session::SessionLog;
 use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_core::update_notice;
-use oxide_core::updates::{self, Component};
+use oxide_core::updates::Component;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -1693,28 +1693,12 @@ pub async fn check_updates() -> CmdResult<Value> {
     serde_json::to_value(check).map_err(err)
 }
 
-/// Checks the beta GPUI release train. The beta does not replace itself in
-/// place, so the answer names the artifact to download and leaves installation
-/// to the reader rather than offering the stable app's in-place updater.
+/// Checks the beta GPUI release train and reports whether this copy of the beta
+/// can replace itself in place.
 pub async fn check_gpui_updates(current: String) -> CmdResult<Value> {
-    let platform = updates::platform().map_err(err)?;
-    let client = updates::client().map_err(err)?;
-    let repo = updates::repo();
-    let release = updates::latest(&client, &repo, Component::DesktopGpui, platform)
+    let check = update::check_component(Component::DesktopGpui, &current)
         .await
         .map_err(err)?;
-    let mut check = updates::Check::new(Component::DesktopGpui, &release, &current, false, &repo);
-    check.installation = "beta desktop app".to_string();
-    check.path = std::env::current_exe()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    check.advice = check.update_available.then(|| match check.asset.as_ref() {
-        Some(asset) => format!(
-            "Download {} from the beta release page and replace the installed app. This beta does not update itself in place.",
-            asset.name
-        ),
-        None => "This beta release has no build for this platform; see the release page.".to_string(),
-    });
     serde_json::to_value(check).map_err(err)
 }
 
@@ -1734,9 +1718,29 @@ pub async fn check_gpui_updates(current: String) -> CmdResult<Value> {
 /// every event carries it back, so the window can cancel an install it did not
 /// start by the same name.
 pub async fn install_update(state: &DesktopState, token: Option<String>) -> CmdResult<Value> {
+    install_component_update(state, Component::Desktop, update::current_version(), token).await
+}
+
+/// Installs the newest beta GPUI release from its own train. The beta binary
+/// supplies its version because this library is built once for both front-ends
+/// and reports the stable app's package version.
+pub async fn install_gpui_update(
+    state: &DesktopState,
+    current: String,
+    token: Option<String>,
+) -> CmdResult<Value> {
+    install_component_update(state, Component::DesktopGpui, &current, token).await
+}
+
+async fn install_component_update(
+    state: &DesktopState,
+    component: Component,
+    current: &str,
+    token: Option<String>,
+) -> CmdResult<Value> {
     let token = token.unwrap_or_else(update::new_token);
     let named = token.clone();
-    let answer = update::install_reporting(&token, move |progress| {
+    let answer = update::install_component_reporting(component, current, &token, move |progress| {
         state.announce_launch_update(
             "update-progress",
             json!({
@@ -1777,21 +1781,42 @@ pub async fn install_update(state: &DesktopState, token: Option<String>) -> CmdR
 /// install: nothing is put in place here, so there is no restart for a window
 /// that starts later to be offered.
 pub async fn download_update(state: &DesktopState, token: Option<String>) -> CmdResult<Value> {
+    download_component_update(state, Component::Desktop, update::current_version(), token).await
+}
+
+/// Downloads the newest beta GPUI installer into the reader's Downloads folder,
+/// for beta copies whose release is an archive rather than a bundle this app can
+/// replace in place.
+pub async fn download_gpui_update(
+    state: &DesktopState,
+    current: String,
+    token: Option<String>,
+) -> CmdResult<Value> {
+    download_component_update(state, Component::DesktopGpui, &current, token).await
+}
+
+async fn download_component_update(
+    state: &DesktopState,
+    component: Component,
+    current: &str,
+    token: Option<String>,
+) -> CmdResult<Value> {
     let token = token.unwrap_or_else(update::new_token);
     let named = token.clone();
-    let answer = update::download_reporting(&token, move |progress| {
-        let _ = state.events.emit(
-            "update-progress",
-            json!({
-                "stage": progress.stage,
-                "version": progress.version,
-                "received": progress.received,
-                "total": progress.total,
-                "token": named,
-            }),
-        );
-    })
-    .await;
+    let answer =
+        update::download_component_reporting(component, current, &token, move |progress| {
+            let _ = state.events.emit(
+                "update-progress",
+                json!({
+                    "stage": progress.stage,
+                    "version": progress.version,
+                    "received": progress.received,
+                    "total": progress.total,
+                    "token": named,
+                }),
+            );
+        })
+        .await;
     match answer {
         Ok(answer) => Ok(answer),
         Err(error) if update::was_cancelled(&error) => {
@@ -2308,9 +2333,25 @@ pub async fn dispatch(
         "install_update" => {
             command_value(install_update(&state, optional_arg(&args, "token")?).await)
         }
+        "install_gpui_update" => command_value(
+            install_gpui_update(
+                &state,
+                arg(&args, "current")?,
+                optional_arg(&args, "token")?,
+            )
+            .await,
+        ),
         "download_update" => {
             command_value(download_update(&state, optional_arg(&args, "token")?).await)
         }
+        "download_gpui_update" => command_value(
+            download_gpui_update(
+                &state,
+                arg(&args, "current")?,
+                optional_arg(&args, "token")?,
+            )
+            .await,
+        ),
         "cancel_update" => command_value(cancel_update(arg(&args, "token")?)),
         "launch_update" => command_value(launch_update(&state)),
         "restart_app" => command_value(restart_app(host, &state).await),

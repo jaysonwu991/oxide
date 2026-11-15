@@ -131,7 +131,14 @@ check("reserved permanent session deletion for the CLI", !arms.has("delete_sessi
 check(
   "kept no arm the window cannot perform",
   JSON.stringify(unused) ===
-    JSON.stringify(["add_project", "check_gpui_updates", "list_sessions", "rename_session"]),
+    JSON.stringify([
+      "add_project",
+      "check_gpui_updates",
+      "download_gpui_update",
+      "install_gpui_update",
+      "list_sessions",
+      "rename_session",
+    ]),
   unused.join(", "),
 );
 
