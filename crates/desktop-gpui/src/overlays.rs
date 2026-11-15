@@ -538,13 +538,21 @@ fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<
         ));
     }
 
-    let mut themes = segments(theme).flex_wrap().max_w(px(560.0));
-    for name in &root.theme_names {
+    let mut themes = div().flex().flex_row().flex_wrap().gap(px(10.0));
+    for name in root.theme_names.clone() {
         let choice = name.clone();
-        themes = themes.child(segment(
+        let preview = root.theme_previews.get(&name).cloned().unwrap_or_else(|| {
+            if theme_name == name {
+                theme.clone()
+            } else {
+                Theme::default()
+            }
+        });
+        themes = themes.child(theme_card(
             SharedString::from(format!("settings-theme-{name}")),
-            &capitalised(name),
-            theme_name == *name,
+            &capitalised(&name),
+            &preview,
+            theme_name == name,
             theme,
             cx,
             move |root, _, cx| root.set_theme(choice.clone(), cx),
@@ -847,6 +855,67 @@ fn segment(
         })
         .hover(move |style| style.bg(theme.panel_2()))
         .child(label.to_string())
+        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
+fn theme_card(
+    id: impl Into<gpui::ElementId>,
+    label: &str,
+    preview: &Theme,
+    active: bool,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<Div> {
+    let mut swatches = div()
+        .flex()
+        .flex_row()
+        .h(px(62.0))
+        .w_full()
+        .overflow_hidden()
+        .rounded(px(8.0));
+    for slot in ["background", "panel", "accent", "text", "success", "tool"] {
+        swatches = swatches.child(div().flex_1().h_full().bg(preview.color(slot)));
+    }
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .gap(px(7.0))
+        .w(px(142.0))
+        .p(px(7.0))
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(if active {
+            theme.accent()
+        } else {
+            theme.border()
+        })
+        .bg(if active {
+            theme.panel_3()
+        } else {
+            theme.panel_2()
+        })
+        .cursor_pointer()
+        .hover(move |style| style.border_color(theme.dim()))
+        .child(swatches)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .h(px(22.0))
+                .px(px(2.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if active { theme.text() } else { theme.dim() })
+                        .child(label.to_string()),
+                )
+                .children(active.then(|| icons::icon(Icon::Check, 13.0, theme.accent()))),
+        )
         .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
@@ -1354,6 +1423,7 @@ fn session_actions(
     );
     let pin_id = id.clone();
     let rename_id = id.clone();
+    let archive_id = id.clone();
     let rename_title = name.clone();
     panel = panel
         .child(Button::new("Rename").render(
@@ -1384,6 +1454,12 @@ fn session_actions(
                 move |root, _, cx| root.set_session_pinned(pin_id.clone(), !pinned, cx),
             ),
         )
+        .child(Button::new("Archive thread").render(
+            SharedString::from(format!("session-archive-action-{id}")),
+            theme,
+            cx,
+            move |root, _, cx| root.archive_session(archive_id.clone(), cx),
+        ))
         .child(
             div()
                 .flex()

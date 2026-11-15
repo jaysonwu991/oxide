@@ -70,7 +70,7 @@ and a machine with only Command Line Tools can still build the app.
 
 | Platform | Artifact |
 | --- | --- |
-| macOS arm64 / x64 | `Oxide-Beta-macos-<arch>.dmg` — `Oxide Beta.app` beside an `Applications` link, signed with the imported Developer ID identity and notarized when the App Store Connect key is configured, and signed ad-hoc when there is no identity |
+| macOS arm64 / x64 | `Oxide-Beta-macos-<arch>.dmg` — `Oxide Beta.app` beside an `Applications` link in Electron Desktop's Finder layout and drag direction, signed with the imported Developer ID identity and notarized when the App Store Connect key is configured, and signed ad-hoc when there is no identity |
 | Linux x64 / arm64 | `Oxide-Beta-linux-<arch>-Setup.tar.gz` — the binary, its icon, a desktop entry and the bundled plugins |
 | Windows x64 | `Oxide-Beta-win-<arch>-Setup.tar.gz` — the binary, its icon and the bundled plugins |
 
@@ -111,10 +111,10 @@ with the platform's traffic lights inside it, navigation, the open chats' tabs
 (or the thread's own folder and title while one is open) and a changes toggle; a
 56px rail; the 300px sidebar (draggable) with its brand row — where the search
 field takes the name's place when opened — New Chat, notifications and a project
-tree limited to the five newest threads per project, followed by compact
-Recents; the reading column with its transcript, the welcome page before a
-thread is in it, and the composer; and a content-sized project details panel
-docked to the right. The project details panel is open by default. Chat,
+tree limited to the five newest threads per project, followed by spaced Recents;
+the reading column with its transcript, the welcome page before a thread is in
+it, and the composer; and a content-sized project details panel docked to the
+right. The project details panel is open by default. Chat,
 Projects, Customize and Settings are destinations in
 one shell: each keeps the rail and topbar, while Projects uses a directory page
 and Customize and Settings use the stable window's two-column navigation. The
@@ -130,11 +130,13 @@ opens the first project's draft in memory: the welcome page's suggestions fill
 that composer instead of being sent.
 
 - **Projects and threads** — `list_projects`, `all_sessions` and
-  `session_messages`; a project row expands into its threads and shows whether
-  its folder still exists, its thread count and when it last ran. A thread runs
-  from a project's own `+`, a search result, or a row. Adding a project uses the
-  platform's folder picker (`App::prompt_for_paths`), the native counterpart of
-  the stable window's `pick_folder`; removing one asks first.
+  `session_messages`; each project row has a disclosure control, selects the
+  project when clicked, and reveals its compose and action controls on hover.
+  The actions control opens an inline project card with its path, thread counts,
+  new-thread, pin and remove actions. Thread rows reveal pin and archive controls
+  on hover; right-click opens the rename, pin and archive dialog. Adding a
+  project uses the platform's folder picker (`App::prompt_for_paths`), the native
+  counterpart of the stable window's `pick_folder`; removing one asks first.
 - **A turn** — the composer sends through `send_prompt` with the project, the
   thread, the attachments and the chosen thinking level, and the streamed
   `agent-event` packets paint the same cards the stable window paints: the user's
@@ -195,11 +197,12 @@ that composer instead of being sent.
   Back leaves Settings, Customize or Projects before it walks the open-chat
   history.
 - **Appearance and language** — `theme_colors`/`set_theme` read the same theme
-  files the CLI does. `language`/`set_language` read and write the shared
+  files the CLI does, previewing each theme's semantic colors in a selectable
+  card before it is applied. `language`/`set_language` read and write the shared
   language setting, and the catalog it answers with supplies the composer's
   placeholder; the window's other labels are English for now, so switching
-  language changes what the terminal and the stable window say before it
-  changes this window's own furniture.
+  language changes what the terminal and the stable window say before it changes
+  this window's own furniture.
 - **Preferences** — `read_prefs`/`write_prefs` for the send key, follow-up
   behaviour, sidebar visibility, predictions, notifications, what they announce,
   keep-awake and text scale; the sidebar's own visibility and width follow them.

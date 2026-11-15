@@ -215,6 +215,7 @@ pub struct Root {
     pub worktree_copy_changes: bool,
     pub show_details: bool,
     pub theme_names: Vec<String>,
+    pub theme_previews: HashMap<String, Theme>,
     pub current_theme: String,
     pub languages: Vec<Value>,
     pub language: String,
@@ -222,6 +223,8 @@ pub struct Root {
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
     pub expanded_projects: HashSet<String>,
+    pub collapsed_projects: HashSet<String>,
+    pub inline_project_actions: Option<String>,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
@@ -342,6 +345,7 @@ impl Root {
             worktree_copy_changes: false,
             show_details: true,
             theme_names: Vec::new(),
+            theme_previews: HashMap::from([("dark".to_string(), Theme::default())]),
             current_theme: "dark".to_string(),
             languages: Vec::new(),
             language: String::new(),
@@ -349,6 +353,8 @@ impl Root {
             sidebar_visible: true,
             sidebar_width: 300.0,
             expanded_projects: HashSet::new(),
+            collapsed_projects: HashSet::new(),
+            inline_project_actions: None,
             resizing: None,
             show_changes: false,
             subscriptions,
@@ -542,9 +548,9 @@ impl Root {
             "list_themes",
             json!({ "project": project }),
             cx,
-            |root, result, _| {
+            move |root, result, cx| {
                 if let Ok(value) = result {
-                    root.theme_names = value["names"]
+                    let names = value["names"]
                         .as_array()
                         .map(|names| {
                             names
@@ -553,6 +559,22 @@ impl Root {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    root.theme_names = names;
+                    for name in root.theme_names.clone() {
+                        let project = project.clone();
+                        root.call(
+                            "theme_colors",
+                            json!({ "project": project, "name": name }),
+                            cx,
+                            move |root, result, cx| {
+                                if let Ok(value) = result {
+                                    root.theme_previews
+                                        .insert(name.clone(), Theme::from_value(&value));
+                                    cx.notify();
+                                }
+                            },
+                        );
+                    }
                 }
             },
         );
@@ -571,6 +593,8 @@ impl Root {
             |root, result, _| {
                 if let Ok(value) = result {
                     root.theme = Theme::from_value(&value);
+                    root.theme_previews
+                        .insert(root.current_theme.clone(), root.theme.clone());
                 }
             },
         );
@@ -588,6 +612,8 @@ impl Root {
                 Ok(value) => {
                     root.theme = Theme::from_value(&value);
                     root.current_theme = root.theme.name.clone();
+                    root.theme_previews
+                        .insert(root.current_theme.clone(), root.theme.clone());
                     cx.notify();
                 }
                 Err(error) => root.toast(error, true, cx),
@@ -944,9 +970,15 @@ impl Root {
     }
 
     pub fn select_project(&mut self, window: &mut Window, project: String, cx: &mut Context<Self>) {
+        self.rail = Rail::Chats;
         self.overlay = None;
-        let title = self.project_name(&project);
-        self.push_chat(window, project, None, title, cx);
+        self.inline_project_actions = None;
+        if self.current_project_owner().as_deref() == Some(project.as_str()) {
+            self.focus_composer(window, cx);
+            cx.notify();
+            return;
+        }
+        self.push_chat(window, project, None, "New chat".to_string(), cx);
     }
 
     pub fn create_worktree(&mut self, cx: &mut Context<Self>) {
@@ -1239,10 +1271,17 @@ impl Root {
         if let Some(project) = self.projects.iter().find(|project| {
             self.sessions_of(&project.path)
                 .iter()
+                .any(|row| row.id == session.id)
+        }) {
+            self.collapsed_projects.remove(&project.path);
+            if self
+                .sessions_of(&project.path)
+                .iter()
                 .position(|row| row.id == session.id)
                 .is_some_and(|position| position >= 5)
-        }) {
-            self.expanded_projects.insert(project.path.clone());
+            {
+                self.expanded_projects.insert(project.path.clone());
+            }
         }
         if let Some(index) = self
             .chats
@@ -1643,6 +1682,7 @@ impl Root {
 
     pub fn remove_project(&mut self, id: String, cx: &mut Context<Self>) {
         self.overlay = None;
+        self.inline_project_actions = None;
         self.call(
             "remove_project",
             json!({ "id": id }),
@@ -1659,6 +1699,27 @@ impl Root {
         self.call(
             "set_session_pinned",
             json!({ "id": id, "pinned": pinned }),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => {
+                    root.sessions = value
+                        .as_array()
+                        .map(|sessions| {
+                            sessions.iter().filter_map(SessionRow::from_value).collect()
+                        })
+                        .unwrap_or_default();
+                    cx.notify();
+                }
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    pub fn archive_session(&mut self, id: String, cx: &mut Context<Self>) {
+        self.overlay = None;
+        self.call(
+            "archive_session",
+            json!({ "id": id }),
             cx,
             |root, result, cx| match result {
                 Ok(value) => {
@@ -1703,6 +1764,7 @@ impl Root {
 
     pub fn set_project_pinned(&mut self, id: String, pinned: bool, cx: &mut Context<Self>) {
         self.overlay = None;
+        self.inline_project_actions = None;
         self.call(
             "set_project_pinned",
             json!({ "id": id, "pinned": pinned }),
@@ -2034,14 +2096,6 @@ impl Root {
             }
         }
         ordered
-    }
-
-    pub fn sidebar_shortcuts(&self) -> HashMap<String, usize> {
-        self.sidebar_sessions()
-            .into_iter()
-            .enumerate()
-            .map(|(index, session)| (session.id, index + 1))
-            .collect()
     }
 
     pub fn open_overlay(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
