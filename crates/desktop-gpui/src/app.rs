@@ -251,6 +251,8 @@ pub struct Root {
     pub collapsed_projects: HashSet<String>,
     pub inline_project_actions: Option<String>,
     pub project_actions_preview: Option<String>,
+    pub project_actions_anchor_y: Option<f32>,
+    project_actions_generation: u64,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
@@ -419,6 +421,8 @@ impl Root {
             collapsed_projects: HashSet::new(),
             inline_project_actions: None,
             project_actions_preview: None,
+            project_actions_anchor_y: None,
+            project_actions_generation: 0,
             resizing: None,
             show_changes: false,
             update_check: None,
@@ -2204,6 +2208,37 @@ impl Root {
         );
     }
 
+    pub fn hover_project_actions(&mut self, id: String, hovered: bool, cx: &mut Context<Self>) {
+        self.project_actions_generation = self.project_actions_generation.wrapping_add(1);
+        let generation = self.project_actions_generation;
+        if hovered {
+            if self.inline_project_actions.is_none()
+                && self.project_actions_preview.as_deref() != Some(id.as_str())
+            {
+                self.project_actions_preview = Some(id);
+                cx.notify();
+            }
+            return;
+        }
+        if self.project_actions_preview.as_deref() != Some(id.as_str()) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(120))
+                .await;
+            let _ = this.update(cx, |root, cx| {
+                if root.project_actions_generation == generation
+                    && root.inline_project_actions.is_none()
+                {
+                    root.project_actions_preview = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     pub fn undo_turn(&mut self, cx: &mut Context<Self>) {
         let index = self.active;
         let Some(chat) = self.chats.get(index) else {
@@ -2820,6 +2855,13 @@ impl Render for Root {
             body = body.child(views::main(self, &theme, scale, window, cx));
         }
         shell = shell.child(body);
+        if self.sidebar_visible
+            && self.rail == Rail::Chats
+            && self.overlay.is_none()
+            && (self.inline_project_actions.is_some() || self.project_actions_preview.is_some())
+        {
+            shell = shell.child(views::project_actions_floating(self, &theme, cx));
+        }
         if !matches!(self.overlay, Some(Overlay::Settings)) {
             shell = shell.child(overlays::layer(self, &theme, scale, window, cx));
         }

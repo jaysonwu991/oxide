@@ -132,8 +132,8 @@ that composer instead of being sent.
 - **Projects and threads** — `list_projects`, `all_sessions` and
   `session_messages`; each project row has a disclosure control, selects the
   project when clicked, and reveals its compose and action controls on hover.
-  Hovering the row previews the same inline project card Codex Desktop shows;
-  the actions control pins the card open, and the card carries the path, thread
+  Hovering the row previews the project card beside it; the actions control pins
+  the card open, and the card carries the path, thread
   counts, new-thread, pin and remove actions. Thread rows reveal pin and archive
   controls on hover; right-click opens the rename, pin and archive dialog.
   Creating a project uses the same name-and-source-folders sheet as the Electron
@@ -158,11 +158,12 @@ that composer instead of being sent.
   a context ring beside the composer controls. Its top row names the project and
   the branch `git_info` reports (and leaves the branch out when the folder is not
   a repository); its footer carries the attach and tools controls, the approvals
-  dialog, the model and thinking chips, and the round send/stop button. The
+  dialog, one combined model-and-thinking chip, and the round send/stop
+  button. The
   three-dot tools control opens Electron's compact menu above the composer with
   Connect a provider, Project access, Agents and Keyboard shortcuts; it does not
   dim the conversation or replace the composer with a centered dialog. The two
-  chips open one composer-anchored popover: the available models sit above a
+  chip opens one composer-anchored popover: the available models sit above a
   segmented reasoning-effort control, without dimming or replacing the
   conversation. `Stop`
   cancels the run through

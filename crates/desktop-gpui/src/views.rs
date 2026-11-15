@@ -950,16 +950,11 @@ pub fn sidebar(
             let selected = current_project.as_deref() == Some(path.as_str());
             let path_for_new = path.clone();
             let path_for_select = path.clone();
-            let path_for_remove = path.clone();
             let path_for_toggle = path.clone();
-            let project_id = project.id.clone();
-            let project_id_for_menu = project_id.clone();
+            let project_id_for_menu = project.id.clone();
             let project_name = name.clone();
             let inline_actions =
                 root.inline_project_actions.as_deref() == Some(project.id.as_str());
-            let preview_actions = root.inline_project_actions.is_none()
-                && root.project_actions_preview.as_deref() == Some(project.id.as_str());
-            let show_actions = inline_actions || preview_actions;
             let group = SharedString::from(format!("project-row-{}", project.id));
             let new_tooltip = format!("New chat in {name}");
             let group_for_new = group.clone();
@@ -1089,8 +1084,11 @@ pub fn sidebar(
                             )
                             .tooltip(tip("Project actions", theme))
                             .on_click(cx.listener(
-                                move |root, _, _window, cx| {
+                                move |root, event: &ClickEvent, _window, cx| {
                                     cx.stop_propagation();
+                                    if let Some(position) = event.mouse_position() {
+                                        root.project_actions_anchor_y = Some(f32::from(position.y));
+                                    }
                                     root.inline_project_actions =
                                         if root.inline_project_actions.as_deref()
                                             == Some(project_id_for_menu.as_str())
@@ -1112,7 +1110,7 @@ pub fn sidebar(
             let hover_entity = hover_root.clone();
             let drag_value = ProjectDrag::new(project.id.clone(), project_name.clone());
             let drop_target = project.id.clone();
-            let mut project_surface = div()
+            let project_surface = div()
                 .id(SharedString::from(format!(
                     "project-surface-{}",
                     project.id
@@ -1129,42 +1127,16 @@ pub fn sidebar(
                 }))
                 .on_hover(move |hovered, _, cx| {
                     let _ = hover_entity.update(cx, |root, cx| {
-                        if root.inline_project_actions.is_some() {
-                            return;
-                        }
-                        let changed = if *hovered {
-                            if root.project_actions_preview.as_deref() == Some(hover_id.as_str()) {
-                                false
-                            } else {
-                                root.project_actions_preview = Some(hover_id.clone());
-                                true
-                            }
-                        } else if root.project_actions_preview.as_deref() == Some(hover_id.as_str())
-                        {
-                            root.project_actions_preview = None;
-                            true
-                        } else {
-                            false
-                        };
-                        if changed {
-                            cx.notify();
-                        }
+                        root.hover_project_actions(hover_id.clone(), *hovered, cx);
                     });
-                });
-            if show_actions {
-                project_surface = project_surface.child(project_actions_inline(
-                    InlineProjectActions {
-                        id: project_id.clone(),
-                        path: path_for_remove.clone(),
-                        name: project_name.clone(),
-                        pinned,
-                        session_count: root.sessions_of(&path).len(),
-                        active: selected,
-                    },
-                    theme,
-                    cx,
-                ));
-            }
+                })
+                .on_mouse_move(
+                    cx.listener(move |root, event: &gpui::MouseMoveEvent, _, _| {
+                        if root.project_actions_preview.is_none() {
+                            root.project_actions_anchor_y = Some(f32::from(event.position.y));
+                        }
+                    }),
+                );
             project_group = project_group.child(project_surface);
             if !collapsed && sessions.is_empty() {
                 project_group = project_group.child(
@@ -1540,7 +1512,7 @@ struct InlineProjectActions {
     active: bool,
 }
 
-fn project_actions_inline(
+fn project_actions_panel(
     project: InlineProjectActions,
     theme: &Theme,
     cx: &mut Context<Root>,
@@ -1564,13 +1536,13 @@ fn project_actions_inline(
     };
     let summary = format!("{chats} · {} active", usize::from(active));
     div()
-        .mx(px(10.0))
-        .mb(px(6.0))
+        .w_full()
         .p(px(10.0))
-        .rounded(px(10.0))
+        .rounded(px(12.0))
         .border_1()
         .border_color(theme.border())
         .bg(theme.panel())
+        .shadow_xl()
         .child(
             div()
                 .flex()
@@ -1672,6 +1644,55 @@ fn project_actions_inline(
                     },
                 )),
         )
+}
+
+pub(crate) fn project_actions_floating(
+    root: &mut Root,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let id = root
+        .inline_project_actions
+        .clone()
+        .or_else(|| root.project_actions_preview.clone())
+        .unwrap_or_default();
+    let project = root
+        .projects
+        .iter()
+        .find(|project| project.id == id)
+        .cloned();
+    let fallback = root.project_actions_anchor_y.unwrap_or(70.0);
+    let left = RAIL_WIDTH + root.sidebar_width + SIDEBAR_RESIZER_WIDTH + 8.0;
+    let top = (fallback - 16.0).max(TOPBAR_HEIGHT + 8.0);
+    let hover_id = id.clone();
+    let hover_root = cx.entity().downgrade();
+    let mut card = div()
+        .id("project-actions-floating")
+        .absolute()
+        .left(px(left))
+        .top(px(top))
+        .w(px(320.0))
+        .on_hover(move |hovered, _, cx| {
+            let _ = hover_root.update(cx, |root, cx| {
+                root.hover_project_actions(hover_id.clone(), *hovered, cx);
+            });
+        });
+    if let Some(project) = project {
+        let active = root.current_project_owner().as_deref() == Some(project.path.as_str());
+        card = card.child(project_actions_panel(
+            InlineProjectActions {
+                id: project.id,
+                path: project.path.clone(),
+                name: root.project_name(&project.path),
+                pinned: project.pinned,
+                session_count: root.sessions_of(&project.path).len(),
+                active,
+            },
+            theme,
+            cx,
+        ));
+    }
+    card
 }
 
 #[derive(Clone, Copy)]
@@ -4170,21 +4191,13 @@ fn composer(
         .child(div().flex_1());
 
     let mut model_controls = div().relative().flex().flex_row().gap_1().flex_none();
-    model_controls = model_controls
-        .child(setting_chip(
-            ("chip-model", 1usize),
-            model.clone(),
-            theme,
-            cx,
-            |root, _, cx| root.open_model_menu(cx),
-        ))
-        .child(setting_chip(
-            ("chip-reasoning", 2usize),
-            capitalised(&reasoning),
-            theme,
-            cx,
-            |root, _, cx| root.open_model_menu(cx),
-        ));
+    model_controls = model_controls.child(setting_chip(
+        ("chip-model", 1usize),
+        format!("{model} · {}", capitalised(&reasoning)),
+        theme,
+        cx,
+        |root, _, cx| root.open_model_menu(cx),
+    ));
     if root.model_menu_open {
         model_controls = model_controls.child(model_effort_menu(root, theme, cx));
     }
