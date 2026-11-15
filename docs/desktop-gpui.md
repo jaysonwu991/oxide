@@ -136,7 +136,9 @@ that composer instead of being sent.
   new-thread, pin and remove actions. Thread rows reveal pin and archive controls
   on hover; right-click opens the rename, pin and archive dialog. Adding a
   project uses the platform's folder picker (`App::prompt_for_paths`), the native
-  counterpart of the stable window's `pick_folder`; removing one asks first.
+  counterpart of the stable window's `pick_folder`. Adding one opens a draft in
+  the new folder and reads its `project_info`, so an unanswered project-trust
+  decision is shown immediately; removing one asks first.
 - **A turn** — the composer sends through `send_prompt` with the project, the
   thread, the attachments and the chosen thinking level, and the streamed
   `agent-event` packets paint the same cards the stable window paints: the user's
@@ -156,6 +158,13 @@ that composer instead of being sent.
   stable window attach, under the same size limit. The composer lists
   `list_commands` rows after `/` and calls `at_suggestions` for an `@path` under
   the caret; choosing either completes the token in place.
+- **Composer** — the editor starts at Codex's two-line height, grows to a
+  capped scrolling surface, and keeps the caret in view. Markdown renders in
+  place while the source stays editable: heading markers and emphasis
+  delimiters are hidden, list and task markers become glyphs, inline code is
+  tinted, and quote lines keep their bar. Selection maps between rendered and
+  source text, and the field supports undo/redo, word/line navigation,
+  double-click word selection and triple-click line selection.
 - **Approvals and questions** — `approval-request` and `question-request` are
   answered in a dialog and inline on the card they belong to, through
   `resolve_approval` / `resolve_question` and the shared brokers, so the terminal
@@ -168,8 +177,10 @@ that composer instead of being sent.
   catalog with the model in use marked, and the thinking chip cycles the levels
   the active model advertises.
 - **Trust** — `project_info.trust` gates a project's own skills, plugins, MCP
-  servers and hooks exactly as the terminal does, with the banner and the
-  dialog writing through `set_project_trust`.
+  servers and hooks exactly as the terminal does. A project that still needs a
+  decision opens the trust dialog when its info arrives, including directly
+  after the folder is added; the dialog lists the gated resources and both
+  decisions write through the shared `set_project_trust`.
 - **Pinning** — a thread's right-click menu pins it through
   `set_session_pinned`, and a project's `⋯` menu pins the project through
   `set_project_pinned` or removes it.
@@ -267,7 +278,8 @@ and planned, and the beta does not pretend otherwise:
 
 - `cargo test` in `crates/desktop-gpui`: the markdown block and inline parsers,
   the transcript model (a streamed answer becoming one card, a tool card
-  keeping its call and result together, the one-line summary of a call), and
+  keeping its call and result together, the one-line summary of a call), the
+  composer's input rules, new-project selection and nested trust state, and
   every glyph in `src/icons.rs` — each drawing parses and rasterises to ink at
   the size the window paints it.
 - `cargo clippy --all-targets -- -D warnings` in the crate.

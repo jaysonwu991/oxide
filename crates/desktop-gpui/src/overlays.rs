@@ -1355,16 +1355,56 @@ fn shortcuts(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
 
 fn trust(root: &mut Root, theme: &Theme, project: String, cx: &mut Context<Root>) -> gpui::Div {
     let info = root.info.clone();
-    let trusted = info["trust"].as_bool().unwrap_or(false);
+    let trusted = info["trust"]["trusted"].as_bool().unwrap_or(false);
+    let required = info["trust"]["required"].as_bool().unwrap_or(false);
+    let resources = info["trust"]["resources"]
+        .as_array()
+        .map(|resources| {
+            resources
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let mut panel = dialog(theme, "Project access", 480.0).child(
         div()
             .text_size(px(12.5))
             .line_height(px(19.0))
             .text_color(theme.dim())
             .child(format!(
-                "{project}\n\nA trusted project loads its own skills, plugins, MCP servers and hooks. Its tools can already read any path this process can, so trust is about the project's resources, not about file access — the same gate the terminal and the Electron window use."
+                "{project}\n\n{}\n\nA trusted project loads its own skills, plugins, MCP servers and hooks. Its tools can already read any path this process can, so trust is about the project's resources, not about file access — the same gate the terminal and the Electron window use.",
+                if trusted {
+                    "Project resources are trusted."
+                } else if required {
+                    "This folder has project resources that can reshape the agent."
+                } else {
+                    "This folder does not currently contain project resources that require trust."
+                }
             )),
     );
+    if !resources.is_empty() {
+        panel = panel.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.faint())
+                        .child("GATED RESOURCES"),
+                )
+                .children(resources.into_iter().map(|resource| {
+                    div()
+                        .font_family("Menlo")
+                        .text_size(px(11.0))
+                        .text_color(theme.dim())
+                        .child(resource)
+                })),
+        );
+    }
     if let Some(agents) = info["agents"].as_array() {
         if !agents.is_empty() {
             let mut rows = div().flex().flex_col().gap_1();
@@ -1380,32 +1420,35 @@ fn trust(root: &mut Root, theme: &Theme, project: String, cx: &mut Context<Root>
             panel = panel.child(rows);
         }
     }
-    let path = project.clone();
-    panel = panel
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_2()
-                .child(
-                    Button::new(if trusted {
-                        "Stop trusting"
-                    } else {
-                        "Trust project"
-                    })
-                    .primary()
-                    .render("trust-toggle", theme, cx, move |root, _, cx| {
-                        root.set_trust(path.clone(), !trusted, cx)
-                    }),
-                )
-                .child(
-                    Button::new("Cancel").render("trust-cancel", theme, cx, |root, _, cx| {
-                        root.overlay = None;
-                        cx.notify();
-                    }),
-                ),
-        )
-        .child(close_button(theme, cx));
+    let allow_path = project.clone();
+    let deny_path = project.clone();
+    let mut actions = div().flex().flex_row().gap_2().child(
+        Button::new(if trusted {
+            "Stop trusting"
+        } else {
+            "Trust project"
+        })
+        .primary()
+        .render("trust-toggle", theme, cx, move |root, _, cx| {
+            root.set_trust(allow_path.clone(), !trusted, cx)
+        }),
+    );
+    if !trusted {
+        actions = actions.child(Button::new("Don't trust").render(
+            "trust-deny",
+            theme,
+            cx,
+            move |root, _, cx| root.set_trust(deny_path.clone(), false, cx),
+        ));
+    }
+    actions =
+        actions.child(
+            Button::new("Cancel").render("trust-cancel", theme, cx, |root, _, cx| {
+                root.overlay = None;
+                cx.notify();
+            }),
+        );
+    panel = panel.child(actions).child(close_button(theme, cx));
     panel
 }
 
