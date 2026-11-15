@@ -96,11 +96,13 @@ pub enum Overlay {
     About,
     Updates,
     Help,
+    CommandMenu,
     Mcp,
     Agents,
     Shortcuts,
     Trust {
         project: String,
+        onboarding: bool,
     },
     Approval {
         chat: usize,
@@ -133,7 +135,6 @@ pub enum Overlay {
         project: String,
         name: String,
     },
-    ComposerTools,
     Projects,
     RenameSession {
         project: String,
@@ -198,10 +199,13 @@ pub struct Root {
     pub editors: HashMap<u64, Entity<Editor>>,
     pending_focus: Option<u64>,
     pub search: Entity<Editor>,
+    pub command_query: Entity<Editor>,
     pub worktree_name: Entity<Editor>,
     pub worktree_base: Entity<Editor>,
     pub worktree_branch: Entity<Editor>,
     pub session_name: Entity<Editor>,
+    pub project_name: Entity<Editor>,
+    pub new_project_folders: Vec<String>,
     pub query: String,
     pub activities_open: bool,
     /// Whether the sidebar is showing the search field in place of its brand row,
@@ -217,6 +221,7 @@ pub struct Root {
     pub info: Value,
     pub models: Value,
     pub model_menu_open: bool,
+    pub composer_tools_open: bool,
     pub approvals: Vec<String>,
     pub commands: Vec<Value>,
     pub at_answer: Value,
@@ -245,6 +250,12 @@ pub struct Root {
     pub expanded_projects: HashSet<String>,
     pub collapsed_projects: HashSet<String>,
     pub inline_project_actions: Option<String>,
+    pub project_actions_preview: Option<String>,
+    pub project_actions_anchor_y: Option<f32>,
+    pub project_actions_anchor_id: Option<String>,
+    project_actions_generation: u64,
+    pub(crate) project_actions_dismiss_armed: bool,
+    pub(crate) composer_tools_dismiss_armed: bool,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
@@ -265,6 +276,17 @@ impl Root {
             let theme = Theme::default();
             Editor::new(
                 "Search chats",
+                theme.text(),
+                theme.faint(),
+                theme.accent(),
+                theme.wash("accent", 0.25),
+                cx,
+            )
+        });
+        let command_query = cx.new(|cx| {
+            let theme = Theme::default();
+            Editor::new(
+                "Search commands",
                 theme.text(),
                 theme.faint(),
                 theme.accent(),
@@ -316,6 +338,17 @@ impl Root {
                 cx,
             )
         });
+        let project_name = cx.new(|cx| {
+            let theme = Theme::default();
+            Editor::new(
+                "Project name",
+                theme.text(),
+                theme.faint(),
+                theme.accent(),
+                theme.wash("accent", 0.25),
+                cx,
+            )
+        });
 
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(&search, |root, _editor, _event, cx| {
@@ -324,6 +357,9 @@ impl Root {
                 root.query = query;
                 root.search_sessions(cx);
             }
+            cx.notify();
+        }));
+        subscriptions.push(cx.subscribe(&command_query, |_root, _editor, _event, cx| {
             cx.notify();
         }));
 
@@ -341,10 +377,13 @@ impl Root {
             editors: HashMap::new(),
             pending_focus: None,
             search,
+            command_query,
             worktree_name,
             worktree_base,
             worktree_branch,
             session_name,
+            project_name,
+            new_project_folders: Vec::new(),
             query: String::new(),
             activities_open: false,
             searching: false,
@@ -358,6 +397,7 @@ impl Root {
             info: Value::Null,
             models: Value::Null,
             model_menu_open: false,
+            composer_tools_open: false,
             approvals: Vec::new(),
             commands: Vec::new(),
             at_answer: Value::Null,
@@ -383,6 +423,12 @@ impl Root {
             expanded_projects: HashSet::new(),
             collapsed_projects: HashSet::new(),
             inline_project_actions: None,
+            project_actions_preview: None,
+            project_actions_anchor_y: None,
+            project_actions_anchor_id: None,
+            project_actions_generation: 0,
+            project_actions_dismiss_armed: false,
+            composer_tools_dismiss_armed: false,
             resizing: None,
             show_changes: false,
             update_check: None,
@@ -862,6 +908,7 @@ impl Root {
                         root.model_menu_open = false;
                         root.overlay = Some(Overlay::Trust {
                             project: expected.clone(),
+                            onboarding: false,
                         });
                     }
                     cx.notify();
@@ -899,6 +946,7 @@ impl Root {
 
     pub fn open_model_menu(&mut self, cx: &mut Context<Self>) {
         self.overlay = None;
+        self.composer_tools_open = false;
         self.model_menu_open = true;
         self.load_models(cx);
         cx.notify();
@@ -1148,6 +1196,7 @@ impl Root {
         self.rail = Rail::Chats;
         self.overlay = None;
         self.inline_project_actions = None;
+        self.project_actions_preview = None;
         if self.current_project_owner().as_deref() == Some(project.as_str()) {
             self.focus_composer(window, cx);
             cx.notify();
@@ -1345,11 +1394,22 @@ impl Root {
 
     pub fn new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project) = self.new_chat_project() else {
-            self.overlay = Some(Overlay::NewProject);
-            cx.notify();
+            self.open_new_project(window, cx);
             return;
         };
         self.push_chat(window, project, None, "New chat".to_string(), cx);
+    }
+
+    pub fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.project_name.read(cx).focus_handle(cx);
+        self.open_overlay(Overlay::NewProject, cx);
+        window.focus(&focus);
+    }
+
+    pub fn open_command_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.command_query.read(cx).focus_handle(cx);
+        self.open_overlay(Overlay::CommandMenu, cx);
+        window.focus(&focus);
     }
 
     pub fn push_chat(
@@ -1382,6 +1442,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.model_menu_open = false;
+        self.composer_tools_open = false;
         let id = self.next_chat;
         self.next_chat += 1;
         let mut chat = Chat::new(project.clone(), title);
@@ -1782,7 +1843,13 @@ impl Root {
                     self.clear_active_editor(cx);
                     return true;
                 };
-                self.open_overlay(Overlay::Trust { project }, cx);
+                self.open_overlay(
+                    Overlay::Trust {
+                        project,
+                        onboarding: false,
+                    },
+                    cx,
+                );
             }
             "reasoning" if args.is_empty() => {
                 self.open_model_menu(cx);
@@ -1946,7 +2013,7 @@ impl Root {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some(SharedString::from("Add a project")),
+            prompt: Some(SharedString::from("Add a source folder")),
         });
         cx.spawn(async move |this, cx| {
             let result = paths.await.unwrap_or_else(|_| Ok(None));
@@ -1954,27 +2021,18 @@ impl Root {
                 Ok(Some(paths)) => {
                     if let Some(path) = paths.into_iter().next() {
                         let path = path.to_string_lossy().to_string();
-                        let selected_path = path.clone();
-                        root.call(
-                            "add_project",
-                            json!({ "path": path }),
-                            cx,
-                            move |root, result, cx| match result {
-                                Ok(value) => {
-                                    root.projects = crate::model::projects(&value["projects"]);
-                                    let project =
-                                        added_project_path(&value, &root.projects, selected_path);
-                                    root.refresh_sessions(cx);
-                                    root.push_chat_in_memory(
-                                        project,
-                                        None,
-                                        "New chat".to_string(),
-                                        cx,
-                                    );
-                                }
-                                Err(error) => root.toast(error, true, cx),
-                            },
-                        );
+                        if !root.new_project_folders.contains(&path) {
+                            root.new_project_folders.push(path.clone());
+                        }
+                        if root.project_name.read(cx).text().trim().is_empty() {
+                            let fallback = std::path::Path::new(&path)
+                                .file_name()
+                                .map(|name| name.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            root.project_name
+                                .update(cx, |editor, cx| editor.set_text(fallback, cx));
+                        }
+                        cx.notify();
                     }
                 }
                 Ok(None) => {}
@@ -1988,9 +2046,46 @@ impl Root {
         .detach();
     }
 
+    pub fn create_project(&mut self, cx: &mut Context<Self>) {
+        let name = self.project_name.read(cx).text().trim().to_string();
+        if self.new_project_folders.is_empty() {
+            self.toast("Add at least one source folder", true, cx);
+            return;
+        }
+        if name.is_empty() {
+            self.toast("Project name cannot be empty", true, cx);
+            return;
+        }
+        let folders = self.new_project_folders.clone();
+        self.call(
+            "create_project",
+            json!({ "name": name, "folders": folders }),
+            cx,
+            move |root, result, cx| match result {
+                Ok(value) => {
+                    root.projects = crate::model::projects(&value["projects"]);
+                    let first_folder = root
+                        .new_project_folders
+                        .first()
+                        .cloned()
+                        .unwrap_or_default();
+                    let project = added_project_path(&value, &root.projects, first_folder);
+                    root.new_project_folders.clear();
+                    root.project_name.update(cx, |editor, cx| editor.clear(cx));
+                    root.overlay = None;
+                    root.refresh_sessions(cx);
+                    root.push_chat_in_memory(project.clone(), None, "New chat".to_string(), cx);
+                    root.prompt_for_added_project(project, cx);
+                }
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
     pub fn remove_project(&mut self, id: String, cx: &mut Context<Self>) {
         self.overlay = None;
         self.inline_project_actions = None;
+        self.project_actions_preview = None;
         self.call(
             "remove_project",
             json!({ "id": id }),
@@ -2073,6 +2168,7 @@ impl Root {
     pub fn set_project_pinned(&mut self, id: String, pinned: bool, cx: &mut Context<Self>) {
         self.overlay = None;
         self.inline_project_actions = None;
+        self.project_actions_preview = None;
         self.call(
             "set_project_pinned",
             json!({ "id": id, "pinned": pinned }),
@@ -2085,6 +2181,91 @@ impl Root {
                 Err(error) => root.toast(error, true, cx),
             },
         );
+    }
+
+    pub fn reorder_project(&mut self, dragged: String, target: String, cx: &mut Context<Self>) {
+        if dragged == target {
+            return;
+        }
+        let mut ids = self
+            .projects
+            .iter()
+            .map(|project| project.id.clone())
+            .collect::<Vec<_>>();
+        let Some(position) = ids.iter().position(|id| id == &dragged) else {
+            return;
+        };
+        ids.remove(position);
+        let Some(target_position) = ids.iter().position(|id| id == &target) else {
+            return;
+        };
+        ids.insert(target_position + 1, dragged);
+        self.call(
+            "reorder_projects",
+            json!({ "ids": ids }),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => {
+                    root.projects = crate::model::projects(&value);
+                    cx.notify();
+                }
+                Err(error) => root.toast(format!("Could not reorder projects: {error}"), true, cx),
+            },
+        );
+    }
+
+    pub fn hover_project_actions(&mut self, id: String, hovered: bool, cx: &mut Context<Self>) {
+        self.project_actions_generation = self.project_actions_generation.wrapping_add(1);
+        let generation = self.project_actions_generation;
+        if hovered {
+            self.project_actions_dismiss_armed = true;
+            if self.inline_project_actions.is_none()
+                && self.project_actions_preview.as_deref() != Some(id.as_str())
+            {
+                self.project_actions_preview = Some(id);
+                cx.notify();
+            }
+            return;
+        }
+        if self.project_actions_preview.as_deref() != Some(id.as_str()) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(120))
+                .await;
+            let _ = this.update(cx, |root, cx| {
+                if root.project_actions_generation == generation
+                    && root.inline_project_actions.is_none()
+                {
+                    root.project_actions_preview = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn arm_project_actions_dismissal(&mut self, cx: &mut Context<Self>) {
+        self.project_actions_dismiss_armed = false;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(40))
+                .await;
+            let _ = this.update(cx, |root, _| root.project_actions_dismiss_armed = true);
+        })
+        .detach();
+    }
+
+    pub fn arm_composer_tools_dismissal(&mut self, cx: &mut Context<Self>) {
+        self.composer_tools_dismiss_armed = false;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(40))
+                .await;
+            let _ = this.update(cx, |root, _| root.composer_tools_dismiss_armed = true);
+        })
+        .detach();
     }
 
     pub fn undo_turn(&mut self, cx: &mut Context<Self>) {
@@ -2182,6 +2363,30 @@ impl Root {
                     root.info = info;
                     root.overlay = None;
                     root.toast("Project access updated", false, cx);
+                }
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    fn prompt_for_added_project(&mut self, project: String, cx: &mut Context<Self>) {
+        let expected = project.clone();
+        self.call(
+            "project_info",
+            json!({ "project": project }),
+            cx,
+            move |root, result, cx| match result {
+                Ok(value) => {
+                    if root.current_project().as_deref() != Some(expected.as_str()) {
+                        return;
+                    }
+                    root.info = value;
+                    root.model_menu_open = false;
+                    root.overlay = Some(Overlay::Trust {
+                        project: expected.clone(),
+                        onboarding: true,
+                    });
+                    cx.notify();
                 }
                 Err(error) => root.toast(error, true, cx),
             },
@@ -2408,20 +2613,38 @@ impl Root {
 
     pub fn open_overlay(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         self.model_menu_open = false;
+        self.composer_tools_open = false;
         match &overlay {
             Overlay::Help => self.load_commands(cx),
+            Overlay::CommandMenu => {
+                self.command_query.update(cx, |editor, cx| editor.clear(cx));
+            }
             Overlay::Mcp => self.load_sources(cx),
             Overlay::Agents => self.load_project_info(cx),
             Overlay::Settings => self.load_project_commands(cx),
-            Overlay::Trust { project } => {
+            Overlay::NewProject => {
+                self.new_project_folders.clear();
+                self.project_name.update(cx, |editor, cx| editor.clear(cx));
+            }
+            Overlay::Trust {
+                project,
+                onboarding,
+            } => {
                 let project = project.clone();
+                let onboarding = *onboarding;
                 self.call(
                     "project_info",
                     json!({ "project": project }),
                     cx,
-                    |root, result, _| {
+                    move |root, result, _| {
                         if let Ok(value) = result {
                             root.info = value;
+                            if onboarding {
+                                root.overlay = Some(Overlay::Trust {
+                                    project,
+                                    onboarding: true,
+                                });
+                            }
                         }
                     },
                 );
@@ -2618,8 +2841,18 @@ impl Render for Root {
             }))
             .on_action(cx.listener(|_, _: &QuitApp, _window, cx| cx.quit()))
             .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
-                if this.activities_open {
+                if matches!(
+                    this.overlay,
+                    Some(Overlay::Trust {
+                        onboarding: true,
+                        ..
+                    })
+                ) {
+                } else if this.activities_open {
                     this.activities_open = false;
+                    cx.notify();
+                } else if this.composer_tools_open {
+                    this.composer_tools_open = false;
                     cx.notify();
                 } else if this.model_menu_open {
                     this.model_menu_open = false;
@@ -2651,6 +2884,13 @@ impl Render for Root {
             body = body.child(views::main(self, &theme, scale, window, cx));
         }
         shell = shell.child(body);
+        if self.sidebar_visible
+            && self.rail == Rail::Chats
+            && self.overlay.is_none()
+            && (self.inline_project_actions.is_some() || self.project_actions_preview.is_some())
+        {
+            shell = shell.child(views::project_actions_floating(self, &theme, cx));
+        }
         if !matches!(self.overlay, Some(Overlay::Settings)) {
             shell = shell.child(overlays::layer(self, &theme, scale, window, cx));
         }

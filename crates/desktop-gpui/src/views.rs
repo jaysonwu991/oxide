@@ -14,16 +14,66 @@ use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, point, px, ClickEvent, Context, Focusable, Font, FontStyle, FontWeight,
-    MouseButton, PathBuilder, Pixels, Render, SharedString, Stateful, StrikethroughStyle,
+    MouseButton, PathBuilder, Pixels, Point, Render, SharedString, Stateful, StrikethroughStyle,
     StyledText, TextRun, UnderlineStyle, Window, WindowControlArea,
 };
 
 // ---------- shared pieces ----------
 
 const RAIL_WIDTH: f32 = 56.0;
-const TOPBAR_HEIGHT: f32 = 46.0;
+const TOPBAR_HEIGHT: f32 = 50.0;
 const SIDEBAR_RESIZER_WIDTH: f32 = 7.0;
 pub(crate) const SETTINGS_NAVIGATION_WIDTH: f32 = 232.0;
+
+#[derive(Clone)]
+struct ProjectDrag {
+    id: String,
+    name: String,
+    position: Point<Pixels>,
+}
+
+impl ProjectDrag {
+    fn new(id: String, name: String) -> Self {
+        Self {
+            id,
+            name,
+            position: Point::default(),
+        }
+    }
+
+    fn at(mut self, position: Point<Pixels>) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+impl Render for ProjectDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<'_, Self>) -> impl IntoElement {
+        div()
+            .pl(px(f32::from(self.position.x) - 70.0))
+            .pt(px(f32::from(self.position.y) - 16.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .w(px(180.0))
+                    .h(px(32.0))
+                    .px_2()
+                    .rounded(px(8.0))
+                    .bg(gpui::black().opacity(0.82))
+                    .shadow_lg()
+                    .child(icons::icon(Icon::Folder, 14.0, gpui::white()))
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .text_color(gpui::white())
+                            .child(self.name.clone()),
+                    ),
+            )
+    }
+}
 
 /// A square icon control: the window's own buttons in the topbar, the rail, a
 /// card's header and a row's trailing actions. `box_size` is the target the
@@ -54,7 +104,15 @@ pub(crate) fn icon_button(
             gpui::transparent_black()
         })
         .hover(move |style| style.bg(theme.panel_2()))
-        .child(icons::icon(mark, box_size * 0.6, color))
+        .child(icons::icon(
+            mark,
+            if box_size >= 38.0 {
+                20.0
+            } else {
+                box_size * 0.6
+            },
+            color,
+        ))
 }
 
 fn navigation_button(
@@ -586,48 +644,84 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
         .flex_none()
         .w(px(RAIL_WIDTH))
         .h_full()
-        .py(px(9.0))
-        .px(px(4.0))
-        .gap(px(7.0))
+        .py(px(12.0))
+        .px(px(8.0))
+        .gap(px(5.0))
         .bg(theme.sidebar())
         .border_r_1()
         .border_color(theme.border())
         .child(
             icon_button("rail-home", Icon::Home, 40.0, theme, chats)
                 .tooltip(tip("Chats", theme))
-                .on_click(cx.listener(|root, _, _, cx| {
+                .on_click(cx.listener(|root, _, window, cx| {
                     root.rail = Rail::Chats;
                     root.overlay = None;
-                    cx.notify();
+                    root.new_chat(window, cx);
                 })),
         )
         .child(
             icon_button("rail-projects", Icon::Folder, 40.0, theme, projects)
                 .tooltip(tip("Projects", theme))
                 .on_click(cx.listener(|root, _, _, cx| {
-                    root.rail = Rail::Projects;
+                    root.rail = if root.rail == Rail::Projects {
+                        Rail::Chats
+                    } else {
+                        Rail::Projects
+                    };
                     root.overlay = None;
                     cx.notify();
                 })),
         )
         .child(
+            icon_button("rail-more", Icon::More, 40.0, theme, false)
+                .tooltip(tip("Command menu", theme))
+                .on_click(cx.listener(|root, _, window, cx| root.open_command_menu(window, cx))),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(20.0))
+                .h(px(1.0))
+                .my(px(5.0))
+                .bg(theme.border()),
+        )
+        .child(
             icon_button("rail-worktrees", Icon::Worktree, 40.0, theme, false)
                 .tooltip(tip("Git worktrees", theme))
-                .on_click(cx.listener(|root, _, _, cx| root.open_worktrees(cx))),
+                .on_click(cx.listener(|root, _, _, cx| {
+                    if matches!(root.overlay, Some(Overlay::Worktrees)) {
+                        root.overlay = None;
+                        cx.notify();
+                    } else {
+                        root.open_worktrees(cx);
+                    }
+                })),
         )
-        .child(div().flex_1())
         .child(
             icon_button("rail-customize", Icon::Customize, 40.0, theme, customize)
                 .tooltip(tip("Customize", theme))
                 .on_click(cx.listener(|root, _, _, cx| {
-                    root.rail = Rail::Customize;
+                    if root.rail == Rail::Customize {
+                        root.rail = Rail::Chats;
+                    } else {
+                        root.rail = Rail::Customize;
+                        root.overlay = None;
+                    }
                     cx.notify();
                 })),
         )
+        .child(div().flex_1())
         .child(
             icon_button("rail-settings", Icon::Settings, 40.0, theme, settings)
                 .tooltip(tip("Settings \u{00b7} \u{2318},", theme))
-                .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Settings, cx))),
+                .on_click(cx.listener(|root, _, _, cx| {
+                    if matches!(root.overlay, Some(Overlay::Settings)) {
+                        root.overlay = None;
+                        cx.notify();
+                    } else {
+                        root.open_overlay(Overlay::Settings, cx);
+                    }
+                })),
         )
 }
 
@@ -660,10 +754,8 @@ pub fn sidebar(
         .flex_row()
         .items_center()
         .gap(px(2.0))
-        .h(px(46.0))
-        .px(px(10.0))
-        .border_b_1()
-        .border_color(theme.border());
+        .flex_none()
+        .min_h(px(32.0));
     if searching {
         top = top.child(
             div()
@@ -734,31 +826,39 @@ pub fn sidebar(
                     .on_click(cx.listener(|root, _, window, cx| root.open_search(window, cx))),
             );
     }
-    column = column.child(top);
-
     column = column.child(
-        div().px(px(10.0)).pt(px(4.0)).pb(px(10.0)).child(
-            div()
-                .id("sidebar-new-chat")
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(7.0))
-                .h(px(34.0))
-                .px(px(8.0))
-                .rounded(px(8.0))
-                .cursor_pointer()
-                .hover(move |style| style.bg(theme.panel()))
-                .child(icons::icon(Icon::Pencil, 16.0, theme.dim()))
-                .child(
-                    div()
-                        .text_size(px(13.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text())
-                        .child("New Chat"),
-                )
-                .on_click(cx.listener(|root, _, window, cx| root.new_chat(window, cx))),
-        ),
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(7.0))
+            .px(px(14.0))
+            .pt(px(17.0))
+            .pb(px(11.0))
+            .border_b_1()
+            .border_color(theme.border())
+            .child(top)
+            .child(
+                div()
+                    .id("sidebar-new-chat")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(7.0))
+                    .h(px(34.0))
+                    .px(px(9.0))
+                    .rounded(px(8.0))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(theme.panel()))
+                    .child(icons::icon(Icon::Pencil, 16.0, theme.dim()))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text())
+                            .child("New Chat"),
+                    )
+                    .on_click(cx.listener(|root, _, window, cx| root.new_chat(window, cx))),
+            ),
     );
 
     let mut list = div()
@@ -828,6 +928,7 @@ pub fn sidebar(
         list = list.child(projects_header(theme, cx));
         let projects = root.projects.clone();
         let current_project = root.current_project_owner();
+        let hover_root = cx.entity().downgrade();
         for project in projects {
             let path = project.path.clone();
             let name = root.project_name(&path);
@@ -849,17 +950,15 @@ pub fn sidebar(
             let selected = current_project.as_deref() == Some(path.as_str());
             let path_for_new = path.clone();
             let path_for_select = path.clone();
-            let path_for_remove = path.clone();
             let path_for_toggle = path.clone();
-            let project_id = project.id.clone();
-            let project_id_for_menu = project_id.clone();
+            let project_id_for_menu = project.id.clone();
             let project_name = name.clone();
             let inline_actions =
                 root.inline_project_actions.as_deref() == Some(project.id.as_str());
             let group = SharedString::from(format!("project-row-{}", project.id));
             let new_tooltip = format!("New chat in {name}");
             let group_for_new = group.clone();
-            let mut project_group = div().flex().flex_col().gap(px(2.0)).mb(px(10.0));
+            let mut project_group = div().flex().flex_col().mb(px(6.0));
             let header = div()
                 .id(SharedString::from(format!("project-{path}")))
                 .group(group)
@@ -962,6 +1061,7 @@ pub fn sidebar(
                                 move |root, _, window, cx| {
                                     cx.stop_propagation();
                                     root.inline_project_actions = None;
+                                    root.project_actions_preview = None;
                                     root.collapsed_projects.remove(&path_for_new);
                                     root.push_chat(
                                         window,
@@ -984,16 +1084,22 @@ pub fn sidebar(
                             )
                             .tooltip(tip("Project actions", theme))
                             .on_click(cx.listener(
-                                move |root, _, _window, cx| {
+                                move |root, event: &ClickEvent, _window, cx| {
                                     cx.stop_propagation();
-                                    root.inline_project_actions =
-                                        if root.inline_project_actions.as_deref()
-                                            == Some(project_id_for_menu.as_str())
-                                        {
-                                            None
-                                        } else {
-                                            Some(project_id_for_menu.clone())
-                                        };
+                                    let position = event.position();
+                                    root.project_actions_anchor_y = Some(f32::from(position.y));
+                                    root.project_actions_anchor_id =
+                                        Some(project_id_for_menu.clone());
+                                    if root.inline_project_actions.as_deref()
+                                        == Some(project_id_for_menu.as_str())
+                                    {
+                                        root.inline_project_actions = None;
+                                    } else {
+                                        root.project_actions_preview = None;
+                                        root.inline_project_actions =
+                                            Some(project_id_for_menu.clone());
+                                        root.arm_project_actions_dismissal(cx);
+                                    }
                                     cx.notify();
                                 },
                             )),
@@ -1002,21 +1108,42 @@ pub fn sidebar(
                 .on_click(cx.listener(move |root, _, window, cx| {
                     root.select_project(window, path_for_select.clone(), cx);
                 }));
-            project_group = project_group.child(header);
-            if inline_actions {
-                project_group = project_group.child(project_actions_inline(
-                    InlineProjectActions {
-                        id: project_id.clone(),
-                        path: path_for_remove.clone(),
-                        name: project_name.clone(),
-                        pinned,
-                        session_count: root.sessions_of(&path).len(),
-                        active: selected,
-                    },
-                    theme,
-                    cx,
-                ));
-            }
+            let hover_id = project.id.clone();
+            let hover_anchor_id = project.id.clone();
+            let hover_entity = hover_root.clone();
+            let drag_value = ProjectDrag::new(project.id.clone(), project_name.clone());
+            let drop_target = project.id.clone();
+            let project_surface = div()
+                .id(SharedString::from(format!(
+                    "project-surface-{}",
+                    project.id
+                )))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(header)
+                .on_drag(drag_value, |drag: &ProjectDrag, position, _, cx| {
+                    cx.new(|_| drag.clone().at(position))
+                })
+                .on_drop(cx.listener(move |root, drag: &ProjectDrag, _, cx| {
+                    root.reorder_project(drag.id.clone(), drop_target.clone(), cx)
+                }))
+                .on_hover(move |hovered, _, cx| {
+                    let _ = hover_entity.update(cx, |root, cx| {
+                        root.hover_project_actions(hover_id.clone(), *hovered, cx);
+                    });
+                })
+                .on_mouse_move(
+                    cx.listener(move |root, event: &gpui::MouseMoveEvent, _, _| {
+                        if root.project_actions_anchor_id.as_deref()
+                            != Some(hover_anchor_id.as_str())
+                        {
+                            root.project_actions_anchor_y = Some(f32::from(event.position.y));
+                            root.project_actions_anchor_id = Some(hover_anchor_id.clone());
+                        }
+                    }),
+                );
+            project_group = project_group.child(project_surface);
             if !collapsed && sessions.is_empty() {
                 project_group = project_group.child(
                     div()
@@ -1364,9 +1491,9 @@ fn projects_header(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
         .flex()
         .flex_row()
         .items_center()
-        .h(px(32.0))
-        .px(px(10.0))
-        .pt(px(4.0))
+        .px(px(16.0))
+        .pt(px(14.0))
+        .pb(px(8.0))
         .child(
             div()
                 .flex_1()
@@ -1378,7 +1505,7 @@ fn projects_header(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
         .child(
             icon_button("sidebar-add-project", Icon::Plus, 22.0, theme, false)
                 .tooltip(tip("New project", theme))
-                .on_click(cx.listener(|root, _, _, cx| root.add_project(cx))),
+                .on_click(cx.listener(|root, _, window, cx| root.open_new_project(window, cx))),
         )
 }
 
@@ -1391,7 +1518,7 @@ struct InlineProjectActions {
     active: bool,
 }
 
-fn project_actions_inline(
+fn project_actions_panel(
     project: InlineProjectActions,
     theme: &Theme,
     cx: &mut Context<Root>,
@@ -1415,13 +1542,13 @@ fn project_actions_inline(
     };
     let summary = format!("{chats} · {} active", usize::from(active));
     div()
-        .mx(px(10.0))
-        .mb(px(6.0))
+        .w_full()
         .p(px(10.0))
-        .rounded(px(10.0))
+        .rounded(px(12.0))
         .border_1()
         .border_color(theme.border())
         .bg(theme.panel())
+        .shadow_xl()
         .child(
             div()
                 .flex()
@@ -1491,6 +1618,7 @@ fn project_actions_inline(
                             cx,
                             move |root, window, cx| {
                                 root.inline_project_actions = None;
+                                root.project_actions_preview = None;
                                 root.collapsed_projects.remove(&path_for_new);
                                 root.push_chat(
                                     window,
@@ -1510,6 +1638,7 @@ fn project_actions_inline(
                     cx,
                     move |root, _, cx| {
                         root.inline_project_actions = None;
+                        root.project_actions_preview = None;
                         root.overlay = Some(Overlay::Confirm {
                             title: "Remove project".to_string(),
                             body: format!(
@@ -1521,6 +1650,62 @@ fn project_actions_inline(
                     },
                 )),
         )
+}
+
+pub(crate) fn project_actions_floating(
+    root: &mut Root,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let id = root
+        .inline_project_actions
+        .clone()
+        .or_else(|| root.project_actions_preview.clone())
+        .unwrap_or_default();
+    let project = root
+        .projects
+        .iter()
+        .find(|project| project.id == id)
+        .cloned();
+    let fallback = root.project_actions_anchor_y.unwrap_or(70.0);
+    let left = RAIL_WIDTH + root.sidebar_width + SIDEBAR_RESIZER_WIDTH + 8.0;
+    let top = (fallback - 16.0).max(TOPBAR_HEIGHT + 8.0);
+    let hover_id = id.clone();
+    let hover_root = cx.entity().downgrade();
+    let mut card = div()
+        .id("project-actions-floating")
+        .absolute()
+        .left(px(left))
+        .top(px(top))
+        .w(px(320.0))
+        .on_hover(move |hovered, _, cx| {
+            let _ = hover_root.update(cx, |root, cx| {
+                root.hover_project_actions(hover_id.clone(), *hovered, cx);
+            });
+        })
+        .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+            if root.project_actions_dismiss_armed {
+                root.inline_project_actions = None;
+                root.project_actions_preview = None;
+                cx.notify();
+            }
+        }));
+    if let Some(project) = project {
+        let active = root.current_project_owner().as_deref() == Some(project.path.as_str());
+        card = card.child(project_actions_panel(
+            InlineProjectActions {
+                id: project.id,
+                path: project.path.clone(),
+                name: root.project_name(&project.path),
+                pinned: project.pinned,
+                session_count: root.sessions_of(&project.path).len(),
+                active,
+            },
+            theme,
+            cx,
+        ));
+    }
+    card
 }
 
 #[derive(Clone, Copy)]
@@ -2132,6 +2317,7 @@ fn conversation(
                         root.open_overlay(
                             Overlay::Trust {
                                 project: path.clone(),
+                                onboarding: false,
                             },
                             cx,
                         )
@@ -2243,7 +2429,7 @@ fn empty_state(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                         "empty-add",
                         theme,
                         cx,
-                        |root, _, cx| root.add_project(cx),
+                        |root, window, cx| root.open_new_project(window, cx),
                     ),
                 ));
         }
@@ -3430,6 +3616,121 @@ fn model_effort_menu(
     panel.child(effort)
 }
 
+fn composer_tools_menu(
+    root: &mut Root,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> Stateful<gpui::Div> {
+    let project = root.current_project().unwrap_or_default();
+    div()
+        .id("composer-tools-menu")
+        .absolute()
+        .left_0()
+        .bottom(px(36.0))
+        .w(px(220.0))
+        .flex()
+        .flex_col()
+        .p(px(6.0))
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(theme.border())
+        .bg(theme.panel())
+        .shadow_xl()
+        .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+            if root.composer_tools_dismiss_armed {
+                root.composer_tools_open = false;
+                cx.notify();
+            }
+        }))
+        .child(composer_tool_item(
+            "composer-tool-connect",
+            Icon::Globe,
+            "Connect a provider",
+            theme,
+            cx,
+            |root, _, cx| {
+                root.composer_tools_open = false;
+                root.open_overlay(
+                    Overlay::Connect {
+                        provider: "a provider".to_string(),
+                    },
+                    cx,
+                );
+            },
+        ))
+        .child(composer_tool_item(
+            "composer-tool-project-access",
+            Icon::Lock,
+            "Project access",
+            theme,
+            cx,
+            move |root, _, cx| {
+                root.composer_tools_open = false;
+                if !project.is_empty() {
+                    root.open_overlay(
+                        Overlay::Trust {
+                            project: project.clone(),
+                            onboarding: false,
+                        },
+                        cx,
+                    );
+                }
+            },
+        ))
+        .child(composer_tool_item(
+            "composer-tool-agents",
+            Icon::Chat,
+            "Agents",
+            theme,
+            cx,
+            |root, _, cx| {
+                root.composer_tools_open = false;
+                root.open_overlay(Overlay::Agents, cx);
+            },
+        ))
+        .child(composer_tool_item(
+            "composer-tool-shortcuts",
+            Icon::Keyboard,
+            "Keyboard shortcuts",
+            theme,
+            cx,
+            |root, _, cx| {
+                root.composer_tools_open = false;
+                root.open_overlay(Overlay::Shortcuts, cx);
+            },
+        ))
+}
+
+fn composer_tool_item(
+    id: &'static str,
+    mark: Icon,
+    label: &'static str,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(9.0))
+        .min_h(px(34.0))
+        .px(px(10.0))
+        .py(px(6.0))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.panel_2()))
+        .child(icons::icon(mark, 14.0, theme.dim()))
+        .child(
+            div()
+                .text_size(px(12.5))
+                .text_color(theme.text())
+                .child(label),
+        )
+        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
 fn composer(
     root: &mut Root,
     theme: &Theme,
@@ -3873,13 +4174,31 @@ fn composer(
             .tooltip(tip("Attach a file", theme))
             .on_click(cx.listener(|root, _, _, cx| root.attach_files(cx))),
         )
-        .child(
-            icon_button(("composer-tools", 1usize), Icon::More, 30.0, theme, false)
+        .child({
+            let tools_open = root.composer_tools_open;
+            let mut tools = div().relative().child(
+                icon_button(
+                    ("composer-tools", 1usize),
+                    Icon::More,
+                    30.0,
+                    theme,
+                    tools_open,
+                )
                 .tooltip(tip("More tools", theme))
-                .on_click(
-                    cx.listener(|root, _, _, cx| root.open_overlay(Overlay::ComposerTools, cx)),
-                ),
-        )
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.composer_tools_open = !root.composer_tools_open;
+                    root.model_menu_open = false;
+                    if root.composer_tools_open {
+                        root.arm_composer_tools_dismissal(cx);
+                    }
+                    cx.notify();
+                })),
+            );
+            if tools_open {
+                tools = tools.child(composer_tools_menu(root, theme, cx));
+            }
+            tools
+        })
         .child(
             icon_button(
                 ("composer-approvals", 2usize),
@@ -3894,21 +4213,13 @@ fn composer(
         .child(div().flex_1());
 
     let mut model_controls = div().relative().flex().flex_row().gap_1().flex_none();
-    model_controls = model_controls
-        .child(setting_chip(
-            ("chip-model", 1usize),
-            model.clone(),
-            theme,
-            cx,
-            |root, _, cx| root.open_model_menu(cx),
-        ))
-        .child(setting_chip(
-            ("chip-reasoning", 2usize),
-            capitalised(&reasoning),
-            theme,
-            cx,
-            |root, _, cx| root.open_model_menu(cx),
-        ));
+    model_controls = model_controls.child(setting_chip(
+        ("chip-model", 1usize),
+        format!("{model} · {}", capitalised(&reasoning)),
+        theme,
+        cx,
+        |root, _, cx| root.open_model_menu(cx),
+    ));
     if root.model_menu_open {
         model_controls = model_controls.child(model_effort_menu(root, theme, cx));
     }
@@ -4342,7 +4653,7 @@ pub fn projects_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
                     "projects-empty-add",
                     theme,
                     cx,
-                    |root, _, cx| root.add_project(cx),
+                    |root, window, cx| root.open_new_project(window, cx),
                 )),
         );
     }
@@ -4531,7 +4842,7 @@ pub fn projects_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
                             "projects-create",
                             theme,
                             cx,
-                            |root, _, cx| root.add_project(cx),
+                            |root, window, cx| root.open_new_project(window, cx),
                         )),
                 )
                 .child(

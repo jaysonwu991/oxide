@@ -285,9 +285,8 @@ impl DesktopManager {
             self.registry = before;
             return Err(error);
         }
-        let trust_root = oxide_core::worktree::Worktrees::trust_root(Path::new(id));
         if let Ok(mut store) = TrustStore::load() {
-            if store.forget(&trust_root) {
+            if forget_project_trust(&mut store, Path::new(id)) {
                 let _ = store.save();
             }
         }
@@ -575,6 +574,10 @@ impl DesktopManager {
         });
         views
     }
+}
+
+fn forget_project_trust(store: &mut TrustStore, project: &Path) -> bool {
+    store.forget(&oxide_core::worktree::Worktrees::trust_root(project))
 }
 
 fn set_membership(values: &mut Vec<String>, id: &str, present: bool) {
@@ -1088,6 +1091,20 @@ mod tests {
         assert!(manager.remove_project(&project.id).unwrap());
         assert!(manager.registered().is_empty());
         assert!(!manager.remove_project("nothing").unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn removing_a_project_forgets_its_saved_trust() {
+        let dir = std::env::temp_dir().join(format!("oxide_proj_rm_trust_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut trust = TrustStore::default();
+        trust.set(&dir, true);
+
+        assert!(forget_project_trust(&mut trust, &dir));
+        assert_eq!(trust.decision(&dir), None);
+        assert!(!forget_project_trust(&mut trust, &dir));
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
