@@ -248,6 +248,7 @@ fn field_editor(placeholder: &'static str, cx: &mut App) -> Entity<Editor> {
             theme.wash("accent", 0.25),
             cx,
         )
+        .single_line()
     })
 }
 
@@ -403,6 +404,7 @@ impl Root {
                 theme.wash("accent", 0.25),
                 cx,
             )
+            .single_line()
         });
         let command_query = cx.new(|cx| {
             let theme = Theme::default();
@@ -414,6 +416,7 @@ impl Root {
                 theme.wash("accent", 0.25),
                 cx,
             )
+            .single_line()
         });
         let worktree_name = cx.new(|cx| {
             let theme = Theme::default();
@@ -425,6 +428,7 @@ impl Root {
                 theme.wash("accent", 0.25),
                 cx,
             )
+            .single_line()
         });
         let worktree_base = cx.new(|cx| {
             let theme = Theme::default();
@@ -436,6 +440,7 @@ impl Root {
                 theme.wash("accent", 0.25),
                 cx,
             )
+            .single_line()
         });
         let worktree_branch = cx.new(|cx| {
             let theme = Theme::default();
@@ -447,6 +452,7 @@ impl Root {
                 theme.wash("accent", 0.25),
                 cx,
             )
+            .single_line()
         });
         let session_name = cx.new(|cx| {
             let theme = Theme::default();
@@ -458,6 +464,7 @@ impl Root {
                 theme.wash("accent", 0.25),
                 cx,
             )
+            .single_line()
         });
         let project_name = cx.new(|cx| {
             let theme = Theme::default();
@@ -469,6 +476,7 @@ impl Root {
                 theme.wash("accent", 0.25),
                 cx,
             )
+            .single_line()
         });
         let plugin_query = field_editor("Search plugins", cx);
         let marketplace_source = field_editor("Marketplace URL or owner/repo", cx);
@@ -1248,6 +1256,7 @@ impl Root {
 
     pub fn open_model_menu(&mut self, cx: &mut Context<Self>) {
         self.overlay = None;
+        self.rail = Rail::Chats;
         self.composer_tools_open = false;
         self.model_menu_open = true;
         self.model_menu_show_models = false;
@@ -1579,6 +1588,7 @@ impl Root {
     }
 
     pub fn load_plugins(&mut self, cx: &mut Context<Self>) {
+        self.plugin_catalog = Value::Null;
         self.plugin_message = None;
         self.call(
             "plugin_catalog",
@@ -3099,6 +3109,7 @@ impl Root {
         let Some(project) = self.chats.get(self.active).map(|chat| chat.project.clone()) else {
             return;
         };
+        self.rail = Rail::Chats;
         let card = self
             .changes
             .as_ref()

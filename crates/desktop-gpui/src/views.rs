@@ -14,8 +14,8 @@ use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, percentage, point, px, Animation, AnimationExt as _, ClickEvent, Context,
-    Focusable, Font, FontStyle, FontWeight, MouseButton, PathBuilder, Pixels, Point, Render,
-    SharedString, Stateful, StrikethroughStyle, StyledText, TextRun, Transformation,
+    Focusable, Font, FontStyle, FontWeight, KeyDownEvent, MouseButton, PathBuilder, Pixels, Point,
+    Render, SharedString, Stateful, StrikethroughStyle, StyledText, TextRun, Transformation,
     UnderlineStyle, Window, WindowControlArea,
 };
 use serde_json::Value;
@@ -4228,6 +4228,17 @@ fn composer(
         } else {
             "Composer"
         })
+        .on_key_down(cx.listener(|root, event: &KeyDownEvent, _window, cx| {
+            let stroke = &event.keystroke;
+            if stroke.key == "enter"
+                && stroke.modifiers.platform
+                && !stroke.modifiers.shift
+                && root.prefs["send_key"].as_str() != Some("mod-enter")
+            {
+                cx.stop_propagation();
+                root.open_repository_changes(cx);
+            }
+        }))
         .on_action(cx.listener(|root, _: &crate::app::Send, window, cx| root.send(window, cx)))
         .on_action(cx.listener(|root, _: &crate::app::Stop, _window, cx| root.stop(cx)))
         .on_action(
@@ -6076,6 +6087,7 @@ pub fn customize_page(
         .map(|project| project.display_path.clone())
         .unwrap_or_else(|| "No project selected".to_string());
     let tab = root.customize_tab;
+    let catalog_loading = tab == CustomizeTab::Plugins && root.plugin_catalog.is_null();
     let (title, subtitle) = match tab {
         CustomizeTab::Plugins => (
             "Plugins",
@@ -6125,12 +6137,12 @@ pub fn customize_page(
                         .text_color(theme.dim())
                         .child(subtitle),
                 )
-                .child(
+                .children(catalog_loading.then(|| {
                     div()
                         .text_size(px(12.0))
                         .text_color(theme.faint())
-                        .child(format!("Loading from {project}")),
-                ),
+                        .child(format!("Loading plugins from {project}"))
+                })),
         );
 
     match tab {
@@ -6184,6 +6196,15 @@ pub fn customize_page(
                                         }
                                     },
                                 )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|root, _, window, cx| {
+                                        window.focus(
+                                            &root.marketplace_source.read(cx).focus_handle(cx),
+                                            cx,
+                                        );
+                                    }),
+                                )
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -6200,6 +6221,7 @@ pub fn customize_page(
                                     div()
                                         .flex_1()
                                         .min_w(px(0.0))
+                                        .h_full()
                                         .child(root.plugin_query.clone()),
                                 ),
                         )
@@ -6243,6 +6265,15 @@ pub fn customize_page(
                                         }
                                     },
                                 )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|root, _, window, cx| {
+                                        window.focus(
+                                            &root.plugin_query.read(cx).focus_handle(cx),
+                                            cx,
+                                        );
+                                    }),
+                                )
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -6259,6 +6290,7 @@ pub fn customize_page(
                                     div()
                                         .flex_1()
                                         .min_w(px(0.0))
+                                        .h_full()
                                         .child(root.marketplace_source.clone()),
                                 ),
                         )
