@@ -110,7 +110,7 @@ The layout mirrors the stable window: a 46px topbar that the window drags by,
 with the platform's traffic lights inside it, navigation, the open chats' tabs
 (or the thread's own folder and title while one is open) and a changes toggle; a
 56px rail; the 300px sidebar (draggable) with its brand row — where the search
-field takes the name's place when opened — New Chat, notifications and a project
+field takes the name's place when opened — New Chat, Activities and a project
 tree limited to the five newest threads per project, followed by spaced Recents;
 the reading column with its transcript, the welcome page before a thread is in
 it, and the composer; and a content-sized project details panel docked to the
@@ -139,6 +139,11 @@ that composer instead of being sent.
   counterpart of the stable window's `pick_folder`. Adding one opens a draft in
   the new folder and reads its `project_info`, so an unanswered project-trust
   decision is shown immediately; removing one asks first.
+- **Activities** — the pulse control beside Search toggles the project tree for
+  the activity feed, as Codex Desktop does. Priority lists waiting approvals,
+  questions and running chats; Recent lists the newest stored threads. Opening
+  a row leaves the feed in place, the control carries a dot while a turn runs,
+  and Escape or the control returns to the project tree.
 - **A turn** — the composer sends through `send_prompt` with the project, the
   thread, the attachments and the chosen thinking level, and the streamed
   `agent-event` packets paint the same cards the stable window paints: the user's
@@ -147,7 +152,10 @@ that composer instead of being sent.
   a context ring beside the composer controls. Its top row names the project and
   the branch `git_info` reports (and leaves the branch out when the folder is not
   a repository); its footer carries the attach and tools controls, the approvals
-  dialog, the model and thinking chips and the round send/stop button. `Stop`
+  dialog, the model and thinking chips, and the round send/stop button. The two
+  chips open one composer-anchored popover: the available models sit above a
+  segmented reasoning-effort control, without dimming or replacing the
+  conversation. `Stop`
   cancels the run through
   `cancel_run`. A message typed while a turn is running is steered into it
   through `steer_run` (queued for the turn's end unless `follow_up` is `steer`,
@@ -157,7 +165,11 @@ that composer instead of being sent.
   attachment rules accept — the same images, PDFs and text the terminal and the
   stable window attach, under the same size limit. The composer lists
   `list_commands` rows after `/` and calls `at_suggestions` for an `@path` under
-  the caret; choosing either completes the token in place.
+  the caret. Choosing an `@path` completes the token in place. A bare built-in
+  slash command runs its GPUI surface — `/model`, `/agent`, `/reasoning`,
+  `/permissions`, `/trust`, `/mcp` and `/help` open their picker or listing —
+  while configured commands, skills and argument forms such as `/mcp list`
+  remain prompts for the shared runner.
 - **Composer** — the editor starts at Codex's two-line height, grows to a
   capped scrolling surface, and keeps the caret in view. Markdown renders in
   place while the source stays editable: heading markers and emphasis
@@ -204,7 +216,7 @@ that composer instead of being sent.
   state (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
 - **Menus and keys** — the macOS menu bar carries the app's own menu, File,
   Edit, View, Window and Help menus over the same actions as the shortcuts
-  (⌘N/⌘T, ⌘W, ⌘B, ⌘J, ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git
+  (⌘N/⌘T, ⌘W, ⌘B, ⌘⇧A for Activities, ⌘J, ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git
   worktrees, ⌘+ / ⌘− / ⌘0 for text size, ⌘1–⌘9 for the sidebar's chats, ⌘[ /
   ⌘], Esc to close a dialog, ⌘Q). The application menu has About, Check for
   Updates, Settings, Hide and Quit; the update dialog checks the
@@ -235,7 +247,7 @@ or values to announce. That is a limit of the framework, not something this
 front-end can paper over.
 
 What the window does offer: the keyboard shortcuts in the next section — Esc
-closes whatever dialog is open, ⌘, opens settings, and ⌘N, ⌘W, ⌘B, ⌘⏎, ⌘⇧M, ⌘⇧G,
+closes whatever dialog is open, ⌘, opens settings, and ⌘N, ⌘W, ⌘B, ⌘⇧A, ⌘⏎, ⌘⇧M, ⌘⇧G,
 ⌘[ and ⌘] do the work their tooltips name — a composer that is a real text
 editor with a caret, selection and the usual editing keys, and mouse affordances
 that say what they do: every icon-only control carries a hover label from

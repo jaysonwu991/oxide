@@ -37,7 +37,9 @@ pub fn layer(
         Overlay::Settings => settings_page(root, theme, cx),
         Overlay::About => about_dialog(theme, cx),
         Overlay::Updates => update_dialog(root, theme, cx),
-        Overlay::Models => models(root, theme, cx),
+        Overlay::Help => command_help(root, theme, cx),
+        Overlay::Mcp => mcp_servers(root, theme, cx),
+        Overlay::Agents => agents_picker(root, theme, cx),
         Overlay::Shortcuts => shortcuts(theme, cx),
         Overlay::Trust { project } => trust(root, theme, project, cx),
         Overlay::Approval { chat, id } => approval(root, theme, chat, id, cx),
@@ -975,9 +977,17 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
         return panel
             .child(
                 div()
+                    .mt(px(2.0))
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text())
+                    .child("Checking for updates"),
+            )
+            .child(
+                div()
                     .text_size(px(13.0))
                     .text_color(theme.dim())
-                    .child("Checking the beta release channel…"),
+                    .child("Looking for the newest Oxide Beta release."),
             )
             .child(
                 div()
@@ -991,13 +1001,33 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
         return panel
             .child(
                 div()
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .bg(theme.color("tool_error_bg"))
+                    .mt(px(2.0))
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text())
+                    .child("Couldn’t check for updates"),
+            )
+            .child(
+                div()
                     .text_size(px(12.5))
+                    .line_height(px(18.0))
+                    .text_color(theme.dim())
+                    .child(
+                        "The beta release information couldn’t be loaded. Try again in a moment.",
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(theme.color("tool_error_bg"))
+                    .bg(theme.wash("tool_error_bg", 0.72))
+                    .text_size(px(11.5))
+                    .line_height(px(17.0))
                     .text_color(theme.error())
-                    .child(format!("Could not check for updates: {error}")),
+                    .child(error.to_string()),
             )
             .child(
                 div()
@@ -1006,13 +1036,13 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                     .justify_end()
                     .gap(px(8.0))
                     .mt(px(12.0))
-                    .child(Button::new("Try Again").render(
+                    .child(close_button(theme, cx))
+                    .child(Button::new("Try Again").primary().render(
                         "updates-retry",
                         theme,
                         cx,
                         |root, _, cx| root.check_for_updates(cx),
-                    ))
-                    .child(close_button(theme, cx)),
+                    )),
             );
     }
     let Some(check) = root.update_check.as_ref() else {
@@ -1160,143 +1190,260 @@ fn switch(
 
 // ---------- models ----------
 
-fn models(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    let data = root.models.clone();
-    let mut panel = dialog(theme, "Models", 560.0);
-    let mut body = div()
-        .id("models-body")
-        .flex()
-        .flex_col()
-        .gap_1()
-        .max_h(px(460.0))
-        .overflow_y_scroll();
-
-    if let Some(error) = data["error"].as_str() {
-        body = body.child(
+fn command_help(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let commands = root.commands.clone();
+    let mut panel = dialog(theme, "Slash commands", 620.0).child(
+        div()
+            .text_size(px(12.5))
+            .line_height(px(19.0))
+            .text_color(theme.dim())
+            .child(
+                "Commands run by Oxide Beta, plus the commands and skills this project makes available.",
+            ),
+    );
+    if commands.is_empty() {
+        panel = panel.child(
             div()
+                .p_3()
+                .rounded(px(9.0))
+                .bg(theme.panel_2())
                 .text_size(px(12.5))
-                .text_color(theme.error())
-                .child(error.to_string()),
+                .text_color(theme.faint())
+                .child("No commands are available for this project."),
         );
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(px(11.5))
-                        .text_color(theme.dim())
-                        .child(
-                            "Connect a provider with `oxide connect` in the terminal, then reopen this list.",
-                        ),
-                )
-                .child(Button::new("How connecting works").render(
-                    "models-connect",
-                    theme,
-                    cx,
-                    |root, _, cx| {
-                        root.open_overlay(
-                            Overlay::Connect {
-                                provider: "a provider".to_string(),
-                            },
-                            cx,
-                        )
-                    },
-                )),
-        );
-    }
-
-    let providers = data["providers"].as_array().cloned().unwrap_or_default();
-    for provider in providers {
-        let name = provider["provider"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let current = provider["current"].as_str().unwrap_or_default().to_string();
-        let active = provider["active"].as_bool().unwrap_or(false);
-        body = body.child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .pt_2()
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if active { theme.accent() } else { theme.text() })
-                        .child(name.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(theme.faint())
-                        .child(current.clone()),
-                ),
-        );
-        if let Some(error) = provider["error"].as_str() {
-            body = body.child(
+    } else {
+        let mut list = div()
+            .id("command-help-list")
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .max_h(px(440.0))
+            .overflow_y_scroll();
+        for command in commands {
+            let name = command["name"].as_str().unwrap_or_default().to_string();
+            let description = command["description"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let arguments = command["arguments"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            list = list.child(
                 div()
-                    .text_size(px(11.0))
-                    .text_color(theme.error())
-                    .child(error.to_string()),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .min_h(px(36.0))
+                    .px_2()
+                    .rounded(px(7.0))
+                    .hover({
+                        let theme = theme.clone();
+                        move |style| style.bg(theme.panel_2())
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(130.0))
+                            .font_family("Menlo")
+                            .text_size(px(12.0))
+                            .text_color(theme.text())
+                            .child(format!("/{name}")),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .text_size(px(11.5))
+                            .text_color(theme.dim())
+                            .child(description),
+                    )
+                    .children((!arguments.is_empty()).then(|| {
+                        div()
+                            .flex_none()
+                            .text_size(px(10.5))
+                            .text_color(theme.faint())
+                            .child(arguments)
+                    })),
             );
         }
-        for model in provider["models"].as_array().cloned().unwrap_or_default() {
-            let (label, detail) = match &model {
-                Value::String(name) => (name.clone(), None),
-                other => (
-                    other["id"]
-                        .as_str()
-                        .or_else(|| other["name"].as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    other["name"].as_str().map(str::to_string),
-                ),
-            };
-            let selected = label == current && active;
-            let provider_name = name.clone();
-            let model_name = label.clone();
-            body = body.child(selectable(
-                SharedString::from(format!("model-{label}")),
-                label,
-                detail,
-                selected,
-                theme,
-                cx,
-                move |root, _, cx| root.set_model(provider_name.clone(), model_name.clone(), cx),
-            ));
-        }
+        panel = panel.child(list);
     }
-
-    panel = panel.child(body);
-    panel = panel.child(
+    panel.child(
         div()
             .flex()
             .flex_row()
-            .justify_between()
-            .items_center()
-            .gap_2()
-            .child(
-                Button::new("Refresh").render("models-refresh", theme, cx, |root, _, cx| {
-                    let project = root.current_project().unwrap_or_default();
-                    root.call(
-                        "list_models",
-                        json!({ "project": project, "refresh": true }),
-                        cx,
-                        |root, result, _| {
-                            if let Ok(value) = result {
-                                root.models = value;
-                            }
-                        },
-                    )
-                }),
-            )
+            .justify_end()
             .child(close_button(theme, cx)),
+    )
+}
+
+fn mcp_servers(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let servers = root.sources.clone();
+    let mut panel = dialog(theme, "MCP servers", 580.0).child(
+        div()
+            .text_size(px(12.5))
+            .line_height(px(19.0))
+            .text_color(theme.dim())
+            .child("The MCP servers this project loads and their connection status."),
     );
-    panel
+    if servers.is_empty() {
+        panel = panel.child(
+            div()
+                .p_3()
+                .rounded(px(9.0))
+                .bg(theme.panel_2())
+                .text_size(px(12.5))
+                .text_color(theme.faint())
+                .child("No MCP servers are configured for this project."),
+        );
+    } else {
+        let mut list = div()
+            .id("mcp-server-list")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .max_h(px(430.0))
+            .overflow_y_scroll();
+        for server in servers {
+            let name = server["name"].as_str().unwrap_or_default().to_string();
+            let detail = server["detail"].as_str().unwrap_or_default().to_string();
+            let transport = server["transport"].as_str().unwrap_or_default();
+            let source = server["source"].as_str().unwrap_or_default();
+            let tools = server["tools"].as_u64().unwrap_or(0);
+            let status = server["status"].as_str().unwrap_or("Ready").to_string();
+            let state = server["state"].as_str().unwrap_or_default();
+            let enabled = server["enabled"].as_bool().unwrap_or(true);
+            let status = if !enabled { "Off".to_string() } else { status };
+            let color = if state == "connected" {
+                theme.success()
+            } else if !enabled || state == "disabled" {
+                theme.faint()
+            } else {
+                theme.tool()
+            };
+            let facts = [transport, source]
+                .into_iter()
+                .filter(|fact| !fact.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.0))
+                    .px_2()
+                    .py(px(8.0))
+                    .rounded(px(9.0))
+                    .bg(theme.panel_2())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(icons::icon(Icon::Globe, 14.0, theme.faint()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text())
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(11.0))
+                                    .text_color(color)
+                                    .child(status),
+                            ),
+                    )
+                    .children((!detail.is_empty()).then(|| {
+                        div()
+                            .ml(px(22.0))
+                            .font_family("Menlo")
+                            .text_size(px(10.5))
+                            .text_color(theme.dim())
+                            .child(detail)
+                    }))
+                    .children((!facts.is_empty() || tools > 0).then(|| {
+                        let mut facts = facts;
+                        if tools > 0 {
+                            if !facts.is_empty() {
+                                facts.push_str(" · ");
+                            }
+                            facts.push_str(&format!(
+                                "{tools} tool{}",
+                                if tools == 1 { "" } else { "s" }
+                            ));
+                        }
+                        div()
+                            .ml(px(22.0))
+                            .text_size(px(10.5))
+                            .text_color(theme.faint())
+                            .child(facts)
+                    })),
+            );
+        }
+        panel = panel.child(list);
+    }
+    panel.child(
+        div()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .child(close_button(theme, cx)),
+    )
+}
+
+fn agents_picker(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let current = root
+        .chats
+        .get(root.active)
+        .and_then(|chat| chat.agent.clone());
+    let agents = root.info["agents"].as_array().cloned().unwrap_or_default();
+    let panel = dialog(theme, "Agent", 500.0).child(
+        div()
+            .text_size(px(12.5))
+            .line_height(px(19.0))
+            .text_color(theme.dim())
+            .child("Choose the default agent for this chat."),
+    );
+    let mut list = div().flex().flex_col().gap_1();
+    list = list.child(selectable(
+        "agent-default",
+        "Default agent".to_string(),
+        Some("Use the project's normal instructions.".to_string()),
+        current.is_none(),
+        theme,
+        cx,
+        |root, _, cx| root.set_agent(None, cx),
+    ));
+    for agent in agents {
+        let name = agent["name"].as_str().unwrap_or("Agent").to_string();
+        let description = agent["description"].as_str().map(str::to_string);
+        let selected = current.as_deref() == Some(name.as_str());
+        let choice = name.clone();
+        list = list.child(selectable(
+            SharedString::from(format!("agent-{name}")),
+            name,
+            description,
+            selected,
+            theme,
+            cx,
+            move |root, _, cx| root.set_agent(Some(choice.clone()), cx),
+        ));
+    }
+    panel.child(list).child(
+        div()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .child(close_button(theme, cx)),
+    )
 }
 
 // ---------- shortcuts ----------
@@ -1306,6 +1453,7 @@ fn shortcuts(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
         ("New chat", "⌘N"),
         ("Close chat", "⌘W"),
         ("Show or hide the sidebar", "⌘B"),
+        ("Activities", "⌘⇧A"),
         ("Settings", "⌘,"),
         ("Changes pane", "⌘⏎"),
         ("Model picker", "⌘⇧M"),
