@@ -9,7 +9,7 @@
 use crate::app::{Button, ChangeScope, ConfirmAction, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
-use crate::model::{EditedFile, Entry, Status};
+use crate::model::{Attachment, EditedFile, Entry, Status};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
@@ -167,6 +167,63 @@ pub(crate) fn pill(text: impl Into<String>, theme: &Theme, accent: bool) -> gpui
         .text_size(px(10.0))
         .font_weight(FontWeight::MEDIUM)
         .child(text.into())
+}
+
+fn attachment_thumbnail(
+    id: impl Into<gpui::ElementId>,
+    attachment: &Attachment,
+    size: f32,
+    radius: f32,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> Stateful<gpui::Div> {
+    let image = attachment.image.clone();
+    let clickable = image.is_some();
+    let preview_image = image.clone();
+    let preview_name = attachment.name.clone();
+    div()
+        .id(id)
+        .relative()
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .overflow_hidden()
+        .rounded(px(radius))
+        .bg(theme.panel_3())
+        .cursor(if clickable {
+            gpui::CursorStyle::PointingHand
+        } else {
+            gpui::CursorStyle::Arrow
+        })
+        .children(image.map(|image| {
+            gpui::img(image)
+                .size_full()
+                .object_fit(gpui::ObjectFit::Cover)
+                .cursor(gpui::CursorStyle::PointingHand)
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    let Some(image) = preview_image.clone() else {
+                        return;
+                    };
+                    root.overlay = Some(Overlay::ImagePreview {
+                        name: preview_name.clone(),
+                        image,
+                    });
+                    cx.notify();
+                }))
+        }))
+        .children((!clickable).then(|| {
+            icons::icon(
+                if attachment.data_url.starts_with("data:image") {
+                    Icon::Image
+                } else {
+                    Icon::File
+                },
+                18.0,
+                theme.faint(),
+            )
+        }))
 }
 
 /// The runs a markdown span paints with.
@@ -2736,7 +2793,7 @@ fn compact_tool_output(output: &str) -> (String, bool) {
 fn entry_view(
     entry: &Entry,
     chat: usize,
-    _position: usize,
+    position: usize,
     theme: &Theme,
     width: f32,
     window: &mut Window,
@@ -2752,20 +2809,34 @@ fn entry_view(
                 .py(px(11.0))
                 .rounded(px(18.0))
                 .bg(theme.panel_2())
-                .max_w(px(676.0))
-                .child(
+                .max_w(px(676.0));
+            if !text.is_empty() {
+                card = card.child(
                     div()
                         .text_size(px(13.5))
                         .line_height(px(21.0))
                         .text_color(theme.text())
                         .child(text.clone()),
                 );
+            }
             if !attachments.is_empty() {
                 card = card.child(
-                    div().flex().flex_row().gap_1().children(
+                    div().flex().flex_row().flex_wrap().gap(px(6.0)).children(
                         attachments
                             .iter()
-                            .map(|name| pill(name.clone(), theme, false)),
+                            .enumerate()
+                            .map(|(attachment_position, attachment)| {
+                                attachment_thumbnail(
+                                    SharedString::from(format!(
+                                        "message-attachment-{chat}-{position}-{attachment_position}"
+                                    )),
+                                    attachment,
+                                    96.0,
+                                    8.0,
+                                    theme,
+                                    cx,
+                                )
+                            }),
                     ),
                 );
             }
@@ -4096,39 +4167,57 @@ fn composer(
                     .enumerate()
                     .map(|(position, attachment)| {
                         let name = attachment.name.clone();
-                        let image = attachment.data_url.starts_with("data:image");
                         div()
                             .id(("attachment", position))
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap_1()
-                            .h(px(26.0))
-                            .px(px(6.0))
-                            .rounded(px(7.0))
-                            .bg(theme.panel_3())
+                            .h(px(54.0))
+                            .max_w(px(220.0))
+                            .p(px(4.0))
+                            .pr(px(5.0))
+                            .rounded(px(10.0))
+                            .border_1()
+                            .border_color(theme.border())
+                            .bg(theme.panel_2())
                             .text_size(px(11.5))
                             .text_color(theme.dim())
-                            .cursor_pointer()
-                            .child(icons::icon(
-                                if image { Icon::Image } else { Icon::File },
-                                14.0,
-                                theme.faint(),
+                            .child(attachment_thumbnail(
+                                SharedString::from(format!(
+                                    "composer-attachment-preview-{position}"
+                                )),
+                                attachment,
+                                44.0,
+                                7.0,
+                                theme,
+                                cx,
                             ))
                             .child(
                                 div()
-                                    .max_w(px(220.0))
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .max_w(px(130.0))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .child(name),
                             )
-                            .child(icons::icon(Icon::Close, 11.0, theme.faint()))
-                            .on_click(cx.listener(move |root, _, _window, cx| {
-                                if let Some(chat) = root.chats.get_mut(index) {
-                                    chat.attachments.remove(position);
-                                }
-                                cx.notify();
-                            }))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("attachment-remove-{position}")))
+                                    .flex_none()
+                                    .p(px(2.0))
+                                    .rounded(px(5.0))
+                                    .cursor_pointer()
+                                    .hover(move |style| style.bg(theme.panel_3()))
+                                    .child(icons::icon(Icon::Close, 11.0, theme.faint()))
+                                    .on_click(cx.listener(move |root, _, _window, cx| {
+                                        if let Some(chat) = root.chats.get_mut(index) {
+                                            chat.attachments.remove(position);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
                     }),
             ),
         );

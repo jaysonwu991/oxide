@@ -47,6 +47,7 @@ pub fn layer(
     let panel = match overlay.clone() {
         Overlay::Settings => settings_page(root, theme, cx),
         Overlay::About => about_dialog(theme, cx),
+        Overlay::ImagePreview { name, image } => image_preview(theme, name, image, cx),
         Overlay::Updates => update_dialog(root, theme, cx),
         Overlay::Help => command_help(root, theme, cx),
         Overlay::CommandMenu => command_menu(root, theme, cx),
@@ -114,6 +115,24 @@ pub fn layer(
 }
 
 fn dialog(theme: &Theme, title: &str, width: f32) -> gpui::Div {
+    dialog_frame(theme, title, width, None)
+}
+
+fn dialog_with_close(theme: &Theme, title: &str, width: f32, cx: &mut Context<Root>) -> gpui::Div {
+    dialog_frame(
+        theme,
+        title,
+        width,
+        Some(close_button(theme, cx).into_any_element()),
+    )
+}
+
+fn dialog_frame(
+    theme: &Theme,
+    title: &str,
+    width: f32,
+    close: Option<gpui::AnyElement>,
+) -> gpui::Div {
     div()
         .relative()
         .flex()
@@ -128,19 +147,25 @@ fn dialog(theme: &Theme, title: &str, width: f32) -> gpui::Div {
         .rounded(px(12.0))
         .shadow_xl()
         .child(
-            div().flex().flex_row().items_center().pr(px(30.0)).child(
-                div()
-                    .flex_1()
-                    .text_size(px(16.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text())
-                    .child(title.to_string()),
-            ),
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(16.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(title.to_string()),
+                )
+                .children(close),
         )
-}
-
-fn dialog_with_close(theme: &Theme, title: &str, width: f32, cx: &mut Context<Root>) -> gpui::Div {
-    dialog(theme, title, width).child(close_button(theme, cx))
 }
 
 /// The way out of a dialog, in words as well as in the glyph: a bare `\u{00d7}`
@@ -151,10 +176,8 @@ fn close_button(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
     div()
         .id("overlay-close")
         .group(group.clone())
-        .absolute()
-        .top(px(12.0))
-        .right(px(12.0))
         .flex()
+        .flex_none()
         .items_center()
         .justify_center()
         .w(px(26.0))
@@ -966,7 +989,7 @@ fn theme_card(
 }
 
 fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    dialog(theme, "About Oxide Beta", 430.0)
+    dialog_with_close(theme, "About Oxide Beta", 430.0, cx)
         .child(
             div()
                 .flex()
@@ -1004,13 +1027,31 @@ fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
                     "The native GPUI desktop renderer, sharing configuration, sessions, approvals and tools with Oxide for Desktop and the terminal.",
                 ),
         )
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .mt(px(8.0))
-                .child(close_button(theme, cx)),
-        )
+}
+
+fn image_preview(
+    theme: &Theme,
+    name: String,
+    image: std::sync::Arc<gpui::Image>,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    dialog_with_close(theme, &name, 900.0, cx).child(
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w_full()
+            .h(px(600.0))
+            .overflow_hidden()
+            .rounded(px(9.0))
+            .bg(theme.background())
+            .child(
+                gpui::img(image)
+                    .w_full()
+                    .h_full()
+                    .object_fit(gpui::ObjectFit::Contain),
+            ),
+    )
 }
 
 fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
@@ -1596,7 +1637,7 @@ fn run_command_menu_action(
 
 fn command_help(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let commands = root.commands.clone();
-    let mut panel = dialog(theme, "Slash commands", 620.0).child(
+    let mut panel = dialog_with_close(theme, "Slash commands", 620.0, cx).child(
         div()
             .text_size(px(12.5))
             .line_height(px(19.0))
@@ -1674,18 +1715,12 @@ fn command_help(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
         }
         panel = panel.child(list);
     }
-    panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(close_button(theme, cx)),
-    )
+    panel
 }
 
 fn mcp_servers(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let servers = root.sources.clone();
-    let mut panel = dialog(theme, "MCP servers", 580.0).child(
+    let mut panel = dialog_with_close(theme, "MCP servers", 580.0, cx).child(
         div()
             .text_size(px(12.5))
             .line_height(px(19.0))
@@ -1794,13 +1829,7 @@ fn mcp_servers(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div 
         }
         panel = panel.child(list);
     }
-    panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(close_button(theme, cx)),
-    )
+    panel
 }
 
 fn agents_picker(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
@@ -1809,7 +1838,7 @@ fn agents_picker(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
         .get(root.active)
         .and_then(|chat| chat.agent.clone());
     let agents = root.info["agents"].as_array().cloned().unwrap_or_default();
-    let panel = dialog(theme, "Agent", 500.0).child(
+    let panel = dialog_with_close(theme, "Agent", 500.0, cx).child(
         div()
             .text_size(px(12.5))
             .line_height(px(19.0))
@@ -1841,13 +1870,7 @@ fn agents_picker(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
             move |root, _, cx| root.set_agent(Some(choice.clone()), cx),
         ));
     }
-    panel.child(list).child(
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(close_button(theme, cx)),
-    )
+    panel.child(list)
 }
 
 // ---------- shortcuts ----------
@@ -1868,7 +1891,7 @@ fn shortcuts(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
         ("New line", "⇧⏎"),
         ("Close a dialog", "Esc"),
     ];
-    let mut panel = dialog(theme, "Keyboard shortcuts", 420.0);
+    let mut panel = dialog_with_close(theme, "Keyboard shortcuts", 420.0, cx);
     let mut body = div().flex().flex_col().gap_1();
     for (label, keys) in rows {
         body = body.child(
@@ -1893,13 +1916,6 @@ fn shortcuts(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
         );
     }
     panel = panel.child(body);
-    panel = panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(close_button(theme, cx)),
-    );
     panel
 }
 
@@ -1925,7 +1941,12 @@ fn trust(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let mut panel = dialog(theme, "Project access", 480.0).child(
+    let mut panel = if onboarding {
+        dialog(theme, "Project access", 480.0)
+    } else {
+        dialog_with_close(theme, "Project access", 480.0, cx)
+    }
+    .child(
         div()
             .text_size(px(12.5))
             .line_height(px(19.0))
@@ -2013,9 +2034,6 @@ fn trust(
         ));
     }
     panel = panel.child(actions);
-    if !onboarding {
-        panel = panel.child(close_button(theme, cx));
-    }
     panel
 }
 
@@ -2116,7 +2134,7 @@ fn question(
         .unwrap_or("A question")
         .to_string();
 
-    let mut panel = dialog(theme, &header, 560.0);
+    let mut panel = dialog_with_close(theme, &header, 560.0, cx);
     let mut body = div()
         .id("question-body")
         .flex()
@@ -2189,15 +2207,14 @@ fn question(
         div()
             .flex()
             .flex_row()
-            .justify_between()
+            .justify_start()
             .items_center()
             .child(Button::new("Dismiss").render(
                 "question-dismiss",
                 theme,
                 cx,
                 move |root, _, cx| root.resolve_question(id, json!([]), cx),
-            ))
-            .child(close_button(theme, cx)),
+            )),
     );
     panel
 }
@@ -2217,7 +2234,7 @@ fn session_actions(
     } else {
         title.clone()
     };
-    let mut panel = dialog(theme, &name, 460.0).child(
+    let mut panel = dialog_with_close(theme, &name, 460.0, cx).child(
         div()
             .text_size(px(11.5))
             .text_color(theme.faint())
@@ -2261,14 +2278,7 @@ fn session_actions(
             theme,
             cx,
             move |root, _, cx| root.archive_session(archive_id.clone(), cx),
-        ))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .child(close_button(theme, cx)),
-        );
+        ));
     panel
 }
 
@@ -2280,7 +2290,7 @@ fn project_actions(
     pinned: bool,
     cx: &mut Context<Root>,
 ) -> gpui::Div {
-    let mut panel = dialog(theme, &name, 520.0).child(
+    let mut panel = dialog_with_close(theme, &name, 520.0, cx).child(
         div()
             .text_size(px(11.5))
             .text_color(theme.faint())
@@ -2312,14 +2322,7 @@ fn project_actions(
                 });
                 cx.notify();
             },
-        ))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .child(close_button(theme, cx)),
-        );
+        ));
     panel
 }
 
@@ -2333,24 +2336,18 @@ fn rename_session(
 ) -> gpui::Div {
     let project_for_save = project.clone();
     let id_for_save = id.clone();
-    dialog(theme, "Rename chat", 440.0)
+    dialog_with_close(theme, "Rename chat", 440.0, cx)
         .child(editor_field(root.session_name.clone(), theme))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .gap_2()
-                .child(close_button(theme, cx))
-                .child(Button::new("Save").primary().render(
-                    "rename-session-save",
-                    theme,
-                    cx,
-                    move |root, _, cx| {
-                        root.rename_session(project_for_save.clone(), id_for_save.clone(), cx)
-                    },
-                )),
-        )
+        .child(div().flex().flex_row().justify_end().gap_2().child(
+            Button::new("Save").primary().render(
+                "rename-session-save",
+                theme,
+                cx,
+                move |root, _, cx| {
+                    root.rename_session(project_for_save.clone(), id_for_save.clone(), cx)
+                },
+            ),
+        ))
 }
 
 // ---------- worktrees ----------
@@ -2365,7 +2362,7 @@ fn worktrees(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
         .get(root.active)
         .is_some_and(|chat| chat.session.is_some());
     let on_worktree = root.current_worktree().is_some();
-    let mut panel = dialog(theme, "Git worktrees", 620.0).child(
+    let mut panel = dialog_with_close(theme, "Git worktrees", 620.0, cx).child(
         div()
             .text_size(px(12.5))
             .line_height(px(19.0))
@@ -2555,9 +2552,7 @@ fn worktrees(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                     theme,
                     cx,
                     |root, _, cx| root.load_worktrees(cx),
-                ))
-                .child(div().flex_1())
-                .child(close_button(theme, cx)),
+                )),
         );
     panel
 }
@@ -2651,7 +2646,7 @@ fn worktree_branch(
     let label = format!("Create a branch in {name}");
     let project_for_create = project.clone();
     let name_for_create = name.clone();
-    dialog(theme, &label, 460.0)
+    dialog_with_close(theme, &label, 460.0, cx)
         .child(
             div()
                 .text_size(px(12.5))
@@ -2659,32 +2654,26 @@ fn worktree_branch(
                 .child("The worktree switches to this branch."),
         )
         .child(editor_field(root.worktree_branch.clone(), theme))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .gap_2()
-                .child(close_button(theme, cx))
-                .child(Button::new("Create branch").primary().render(
-                    "worktree-branch-create",
-                    theme,
-                    cx,
-                    move |root, _, cx| {
-                        root.create_worktree_branch(
-                            project_for_create.clone(),
-                            name_for_create.clone(),
-                            cx,
-                        )
-                    },
-                )),
-        )
+        .child(div().flex().flex_row().justify_end().gap_2().child(
+            Button::new("Create branch").primary().render(
+                "worktree-branch-create",
+                theme,
+                cx,
+                move |root, _, cx| {
+                    root.create_worktree_branch(
+                        project_for_create.clone(),
+                        name_for_create.clone(),
+                        cx,
+                    )
+                },
+            ),
+        ))
 }
 
 fn projects(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let projects = root.projects.clone();
     let current = root.current_project_owner();
-    let mut panel = dialog(theme, "Projects", 480.0).child(
+    let mut panel = dialog_with_close(theme, "Projects", 480.0, cx).child(
         div()
             .text_size(px(12.5))
             .text_color(theme.dim())
@@ -2752,21 +2741,14 @@ fn projects(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
         );
     }
     panel = panel.child(list);
-    panel = panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(Button::new("Add project").render(
-                "composer-projects-add",
-                theme,
-                cx,
-                |root, window, cx| root.open_new_project(window, cx),
-            ))
-            .child(div().flex_1())
-            .child(close_button(theme, cx)),
-    );
+    panel = panel.child(div().flex().flex_row().items_center().gap_2().child(
+        Button::new("Add project").render(
+            "composer-projects-add",
+            theme,
+            cx,
+            |root, window, cx| root.open_new_project(window, cx),
+        ),
+    ));
     panel
 }
 
@@ -2777,7 +2759,7 @@ fn projects(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
 /// read, and clearing it puts every call back behind a prompt.
 fn approvals(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let tools = root.approvals.clone();
-    let mut panel = dialog(theme, "Tool approvals", 470.0).child(
+    let mut panel = dialog_with_close(theme, "Tool approvals", 470.0, cx).child(
         div()
             .text_size(px(12.5))
             .line_height(px(19.0))
@@ -2831,13 +2813,7 @@ fn approvals(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                 |root, _, cx| root.clear_approvals(cx),
             ));
     }
-    panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .child(close_button(theme, cx)),
-    )
+    panel
 }
 
 // ---------- confirmations ----------
@@ -2891,23 +2867,15 @@ fn confirm(
 // ---------- connect ----------
 
 fn connect(theme: &Theme, provider: String, cx: &mut Context<Root>) -> gpui::Div {
-    dialog(theme, "Connect a provider", 500.0)
-        .child(
-            div()
-                .text_size(px(12.5))
-                .line_height(px(19.0))
-                .text_color(theme.dim())
-                .child(format!(
-                    "{provider} has no stored credential. Run `oxide connect {provider}` in a terminal — the desktop app and the CLI share `auth.json`, so the key appears here on the next refresh."
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .child(close_button(theme, cx)),
-        )
+    dialog_with_close(theme, "Connect a provider", 500.0, cx).child(
+        div()
+            .text_size(px(12.5))
+            .line_height(px(19.0))
+            .text_color(theme.dim())
+            .child(format!(
+                "{provider} has no stored credential. Run `oxide connect {provider}` in a terminal — the desktop app and the CLI share `auth.json`, so the key appears here on the next refresh."
+            )),
+    )
 }
 
 // ---------- new project ----------

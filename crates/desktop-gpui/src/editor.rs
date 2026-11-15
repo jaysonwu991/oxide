@@ -10,11 +10,11 @@
 
 use gpui::prelude::*;
 use gpui::{
-    actions, canvas, div, fill, point, px, size, transparent_black, App, Bounds, ClipboardItem,
-    Context, ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
-    FontStyle, FontWeight, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, TextAlign, TextRun,
-    UTF16Selection, Window,
+    actions, canvas, div, fill, point, px, size, transparent_black, App, Bounds, ClipboardEntry,
+    ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, Font, FontStyle, FontWeight, ImageFormat, KeyBinding, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    SharedString, TextAlign, TextRun, UTF16Selection, Window,
 };
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -103,6 +103,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 #[derive(Clone, Debug)]
 pub enum EditorEvent {
     Changed,
+    AttachmentPasted { name: String, data_url: String },
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -628,7 +629,19 @@ impl Editor {
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        // Read through the shared media reader first, so a Finder copy attaches
+        // the copied file rather than the icon the pasteboard also carries.
+        if let Some((name, data_url)) = oxide_core::media::clipboard_media() {
+            cx.emit(EditorEvent::AttachmentPasted { name, data_url });
+            return;
+        }
+
+        let clipboard = cx.read_from_clipboard();
+        if let Some((name, data_url)) = clipboard.as_ref().and_then(clipboard_image_attachment) {
+            cx.emit(EditorEvent::AttachmentPasted { name, data_url });
+            return;
+        }
+        if let Some(text) = clipboard.and_then(|item| item.text()) {
             self.insert(&text, cx);
         }
     }
@@ -1422,6 +1435,30 @@ impl Render for Editor {
     }
 }
 
+fn clipboard_image_attachment(item: &ClipboardItem) -> Option<(String, String)> {
+    let image = item.entries().iter().find_map(|entry| match entry {
+        ClipboardEntry::Image(image) => Some(image),
+        ClipboardEntry::String(_) => None,
+    })?;
+    let extension = match image.format {
+        ImageFormat::Png => "png",
+        ImageFormat::Jpeg => "jpg",
+        ImageFormat::Webp => "webp",
+        ImageFormat::Gif => "gif",
+        ImageFormat::Svg => "svg",
+        ImageFormat::Bmp => "bmp",
+        ImageFormat::Tiff => "tiff",
+    };
+    Some((
+        format!("pasted-image.{extension}"),
+        format!(
+            "data:{};base64,{}",
+            image.format.mime_type(),
+            oxide_core::media::base64_encode(&image.bytes)
+        ),
+    ))
+}
+
 fn line_marker(text: &str) -> (usize, RunStyle, RunStyle) {
     let indent = text.len() - text.trim_start().len();
     let trimmed = &text[indent..];
@@ -1558,7 +1595,11 @@ fn continuation_prefix(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{continuation_prefix, line_marker, marker_content_start, RunStyle};
+    use super::{
+        clipboard_image_attachment, continuation_prefix, line_marker, marker_content_start,
+        RunStyle,
+    };
+    use gpui::{ClipboardItem, Image, ImageFormat};
 
     #[test]
     fn composer_markers_keep_the_source_but_style_the_text() {
@@ -1589,5 +1630,16 @@ mod tests {
         assert_eq!(marker_content_start("### "), Some(4));
         assert_eq!(marker_content_start("- [x] done"), Some(6));
         assert_eq!(marker_content_start("plain"), None);
+    }
+
+    #[test]
+    fn a_clipboard_picture_becomes_an_image_data_url() {
+        let item = ClipboardItem::new_image(&Image::from_bytes(
+            ImageFormat::Png,
+            b"\x89PNG\r\n\x1a\n".to_vec(),
+        ));
+        let (name, data_url) = clipboard_image_attachment(&item).unwrap();
+        assert_eq!(name, "pasted-image.png");
+        assert_eq!(data_url, "data:image/png;base64,iVBORw0KGgo=");
     }
 }
