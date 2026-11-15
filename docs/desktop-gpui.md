@@ -188,8 +188,9 @@ that composer instead of being sent.
 - **Project details** — the topbar's details toggle opens the right-hand column
   from `repository_changes`, `git_info` and `mcp_servers`: the project and its
   actions, `View changes` with the tree's totals, the repository's branch (or
-  `Local checkout`), and the sources the thread can reach with their state
-  (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
+  `Local checkout`), the repository's pull request for the current branch when
+  `pull_requests` finds one, and the sources the thread can reach with their
+  state (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
 - **Menus and keys** — the macOS menu bar carries the app's own menu, File,
   Edit, View, Window and Help menus over the same actions as the shortcuts
   (⌘N/⌘T, ⌘W, ⌘B, ⌘J, ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git

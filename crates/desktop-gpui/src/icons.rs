@@ -95,6 +95,12 @@ const GLYPHS: &[(&str, &str)] = &[
         glyph!(r##"<path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z"/>"##),
     ),
     (
+        "pull-request",
+        glyph!(
+            r##"<circle cx="6" cy="5" r="2.4"/><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="19" r="2.4"/><path d="M6 7.4v9.2M18 16.6v-8a2 2 0 0 0-2-2H8"/>"##
+        ),
+    ),
+    (
         "archive",
         glyph!(r##"<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6"/>"##),
     ),
@@ -185,6 +191,7 @@ pub enum Icon {
     Customize,
     Chat,
     Pin,
+    PullRequest,
     Archive,
     ChevronDown,
     ChevronRight,
@@ -221,6 +228,7 @@ impl Icon {
             Icon::Customize => "icons/customize.svg",
             Icon::Chat => "icons/chat.svg",
             Icon::Pin => "icons/pin.svg",
+            Icon::PullRequest => "icons/pull-request.svg",
             Icon::Archive => "icons/archive.svg",
             Icon::ChevronDown => "icons/chevron-down.svg",
             Icon::ChevronRight => "icons/chevron-right.svg",

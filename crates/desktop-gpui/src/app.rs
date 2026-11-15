@@ -221,6 +221,8 @@ pub struct Root {
     pub branch: Option<String>,
     /// The MCP servers this project loads, as the details pane lists them.
     pub sources: Vec<Value>,
+    pub pulls: Vec<Value>,
+    pub pulls_error: Option<String>,
     pub worktrees: Vec<Worktree>,
     pub worktrees_error: Option<String>,
     pub worktree_detached: bool,
@@ -354,6 +356,8 @@ impl Root {
             at_generation: 0,
             branch: None,
             sources: Vec::new(),
+            pulls: Vec::new(),
+            pulls_error: None,
             worktrees: Vec::new(),
             worktrees_error: None,
             worktree_detached: true,
@@ -825,6 +829,7 @@ impl Root {
                 }
             },
         );
+        self.load_pulls(cx);
     }
 
     pub fn load_models(&mut self, cx: &mut Context<Self>) {
@@ -907,6 +912,29 @@ impl Root {
                 if let Ok(value) = result {
                     root.sources = value.as_array().cloned().unwrap_or_default();
                     cx.notify();
+                }
+            },
+        );
+    }
+
+    pub fn load_pulls(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            self.pulls.clear();
+            self.pulls_error = None;
+            return;
+        };
+        self.call(
+            "pull_requests",
+            json!({ "project": project }),
+            cx,
+            |root, result, _cx| match result {
+                Ok(value) => {
+                    root.pulls = value.as_array().cloned().unwrap_or_default();
+                    root.pulls_error = None;
+                }
+                Err(error) => {
+                    root.pulls.clear();
+                    root.pulls_error = Some(error);
                 }
             },
         );

@@ -1412,6 +1412,24 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
     let project = root.selected_project().cloned();
     let branch = root.branch.clone();
     let sources = root.sources.clone();
+    let pull = root
+        .pulls
+        .iter()
+        .find(|pull| {
+            pull["head"].as_str() == branch.as_deref()
+                && pull["state"]
+                    .as_str()
+                    .is_some_and(|state| state.eq_ignore_ascii_case("open"))
+        })
+        .or_else(|| {
+            root.pulls.iter().find(|pull| {
+                pull["state"]
+                    .as_str()
+                    .is_some_and(|state| state.eq_ignore_ascii_case("open"))
+            })
+        })
+        .or_else(|| root.pulls.first())
+        .cloned();
     let totals = root
         .chats
         .get(root.active)
@@ -1429,8 +1447,8 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         .min_w(px(0.0))
         .min_h(px(0.0))
         .overflow_y_scroll()
-        .gap_1()
-        .px(px(14.0))
+        .gap(px(2.0))
+        .px(px(16.0))
         .py(px(12.0))
         .rounded(px(12.0))
         .bg(theme.panel())
@@ -1446,8 +1464,10 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
             .flex()
             .flex_row()
             .items_center()
-            .h(px(30.0))
-            .px_2()
+            .h(px(34.0))
+            .px(px(4.0))
+            .border_b_1()
+            .border_color(theme.border())
             .child(
                 div()
                     .flex_1()
@@ -1477,7 +1497,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
     panel = panel.child(detail_row(
         "details-changes",
         Icon::Changes,
-        "View changes",
+        "Changes",
         if files > 0 {
             Some(vec![
                 (format!("+{added}"), theme.success()),
@@ -1515,15 +1535,41 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         },
     ));
 
-    panel = panel.child(div().h(px(12.0)));
+    if let Some(pull) = pull {
+        let number = pull["number"].as_u64().unwrap_or(0);
+        let state = pull["state"].as_str().unwrap_or_default();
+        let url = pull["url"].as_str().unwrap_or_default().to_string();
+        if number > 0 && !url.is_empty() {
+            let color = if state.eq_ignore_ascii_case("open") {
+                theme.success()
+            } else if state.eq_ignore_ascii_case("merged") {
+                theme.color("pull_merged")
+            } else {
+                theme.error()
+            };
+            panel = panel.child(detail_row(
+                "details-pull",
+                Icon::PullRequest,
+                "Pull request",
+                Some(vec![(format!("PR #{number}"), color)]),
+                theme,
+                cx,
+                move |_, _, cx| cx.open_url(&url),
+            ));
+        }
+    }
+
+    panel = panel.child(div().h(px(8.0)));
 
     panel = panel.child(
         div()
             .flex()
             .flex_row()
             .items_center()
-            .h(px(26.0))
-            .px_2()
+            .h(px(30.0))
+            .px(px(4.0))
+            .border_t_1()
+            .border_color(theme.border())
             .child(
                 div()
                     .flex_1()
@@ -1579,8 +1625,8 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .h(px(28.0))
-                    .px_2()
+                    .h(px(32.0))
+                    .px(px(4.0))
                     .rounded(px(7.0))
                     .child(icons::icon(Icon::Globe, 14.0, theme.faint()))
                     .child(
@@ -1611,13 +1657,13 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
             .flex_row()
             .items_center()
             .gap_2()
-            .h(px(28.0))
-            .px_2()
+            .h(px(32.0))
+            .px(px(4.0))
             .rounded(px(7.0))
             .cursor_pointer()
             .text_size(px(12.0))
             .text_color(theme.dim())
-            .hover(move |style| style.bg(theme.panel()).text_color(theme.text()))
+            .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
             .child("View all")
             .on_click(cx.listener(|root, _, _, cx| {
                 root.rail = Rail::Customize;
@@ -1629,7 +1675,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
     div()
         .flex()
         .flex_none()
-        .w(px(296.0))
+        .w(px(312.0))
         .min_h(px(0.0))
         .p(px(8.0))
         .bg(theme.background())
@@ -1651,14 +1697,14 @@ fn detail_row(
         .flex_row()
         .items_center()
         .gap_2()
-        .h(px(30.0))
-        .px_2()
-        .rounded(px(7.0))
+        .h(px(36.0))
+        .px(px(4.0))
+        .rounded(px(8.0))
         .cursor_pointer()
         .text_size(px(12.5))
         .text_color(theme.dim())
-        .hover(move |style| style.bg(theme.panel()).text_color(theme.text()))
-        .child(icons::icon(mark, 15.0, theme.faint()))
+        .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+        .child(icons::icon(mark, 16.0, theme.faint()))
         .child(div().flex_1().child(label.to_string()));
     if let Some(values) = trailing {
         for (value, color) in values {
