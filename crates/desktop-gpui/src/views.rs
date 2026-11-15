@@ -1086,9 +1086,10 @@ pub fn sidebar(
                             .on_click(cx.listener(
                                 move |root, event: &ClickEvent, _window, cx| {
                                     cx.stop_propagation();
-                                    if let Some(position) = event.mouse_position() {
-                                        root.project_actions_anchor_y = Some(f32::from(position.y));
-                                    }
+                                    let position = event.position();
+                                    root.project_actions_anchor_y = Some(f32::from(position.y));
+                                    root.project_actions_anchor_id =
+                                        Some(project_id_for_menu.clone());
                                     if root.inline_project_actions.as_deref()
                                         == Some(project_id_for_menu.as_str())
                                     {
@@ -1108,6 +1109,7 @@ pub fn sidebar(
                     root.select_project(window, path_for_select.clone(), cx);
                 }));
             let hover_id = project.id.clone();
+            let hover_anchor_id = project.id.clone();
             let hover_entity = hover_root.clone();
             let drag_value = ProjectDrag::new(project.id.clone(), project_name.clone());
             let drop_target = project.id.clone();
@@ -1133,8 +1135,11 @@ pub fn sidebar(
                 })
                 .on_mouse_move(
                     cx.listener(move |root, event: &gpui::MouseMoveEvent, _, _| {
-                        if root.project_actions_preview.is_none() {
+                        if root.project_actions_anchor_id.as_deref()
+                            != Some(hover_anchor_id.as_str())
+                        {
                             root.project_actions_anchor_y = Some(f32::from(event.position.y));
+                            root.project_actions_anchor_id = Some(hover_anchor_id.clone());
                         }
                     }),
                 );
