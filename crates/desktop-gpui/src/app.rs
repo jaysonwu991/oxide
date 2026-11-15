@@ -253,6 +253,8 @@ pub struct Root {
     pub project_actions_preview: Option<String>,
     pub project_actions_anchor_y: Option<f32>,
     project_actions_generation: u64,
+    pub(crate) project_actions_dismiss_armed: bool,
+    pub(crate) composer_tools_dismiss_armed: bool,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
@@ -423,6 +425,8 @@ impl Root {
             project_actions_preview: None,
             project_actions_anchor_y: None,
             project_actions_generation: 0,
+            project_actions_dismiss_armed: false,
+            composer_tools_dismiss_armed: false,
             resizing: None,
             show_changes: false,
             update_check: None,
@@ -2212,6 +2216,7 @@ impl Root {
         self.project_actions_generation = self.project_actions_generation.wrapping_add(1);
         let generation = self.project_actions_generation;
         if hovered {
+            self.project_actions_dismiss_armed = true;
             if self.inline_project_actions.is_none()
                 && self.project_actions_preview.as_deref() != Some(id.as_str())
             {
@@ -2235,6 +2240,28 @@ impl Root {
                     cx.notify();
                 }
             });
+        })
+        .detach();
+    }
+
+    pub fn arm_project_actions_dismissal(&mut self, cx: &mut Context<Self>) {
+        self.project_actions_dismiss_armed = false;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(40))
+                .await;
+            let _ = this.update(cx, |root, _| root.project_actions_dismiss_armed = true);
+        })
+        .detach();
+    }
+
+    pub fn arm_composer_tools_dismissal(&mut self, cx: &mut Context<Self>) {
+        self.composer_tools_dismiss_armed = false;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(40))
+                .await;
+            let _ = this.update(cx, |root, _| root.composer_tools_dismiss_armed = true);
         })
         .detach();
     }

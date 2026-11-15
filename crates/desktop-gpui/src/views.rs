@@ -1089,15 +1089,16 @@ pub fn sidebar(
                                     if let Some(position) = event.mouse_position() {
                                         root.project_actions_anchor_y = Some(f32::from(position.y));
                                     }
-                                    root.inline_project_actions =
-                                        if root.inline_project_actions.as_deref()
-                                            == Some(project_id_for_menu.as_str())
-                                        {
-                                            None
-                                        } else {
-                                            root.project_actions_preview = None;
-                                            Some(project_id_for_menu.clone())
-                                        };
+                                    if root.inline_project_actions.as_deref()
+                                        == Some(project_id_for_menu.as_str())
+                                    {
+                                        root.inline_project_actions = None;
+                                    } else {
+                                        root.project_actions_preview = None;
+                                        root.inline_project_actions =
+                                            Some(project_id_for_menu.clone());
+                                        root.arm_project_actions_dismissal(cx);
+                                    }
                                     cx.notify();
                                 },
                             )),
@@ -1676,7 +1677,14 @@ pub(crate) fn project_actions_floating(
             let _ = hover_root.update(cx, |root, cx| {
                 root.hover_project_actions(hover_id.clone(), *hovered, cx);
             });
-        });
+        })
+        .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+            if root.project_actions_dismiss_armed {
+                root.inline_project_actions = None;
+                root.project_actions_preview = None;
+                cx.notify();
+            }
+        }));
     if let Some(project) = project {
         let active = root.current_project_owner().as_deref() == Some(project.path.as_str());
         card = card.child(project_actions_panel(
@@ -3623,6 +3631,12 @@ fn composer_tools_menu(
         .border_color(theme.border())
         .bg(theme.panel())
         .shadow_xl()
+        .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+            if root.composer_tools_dismiss_armed {
+                root.composer_tools_open = false;
+                cx.notify();
+            }
+        }))
         .child(composer_tool_item(
             "composer-tool-connect",
             Icon::Globe,
@@ -4169,6 +4183,9 @@ fn composer(
                 .on_click(cx.listener(|root, _, _, cx| {
                     root.composer_tools_open = !root.composer_tools_open;
                     root.model_menu_open = false;
+                    if root.composer_tools_open {
+                        root.arm_composer_tools_dismissal(cx);
+                    }
                     cx.notify();
                 })),
             );

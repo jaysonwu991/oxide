@@ -89,13 +89,33 @@ pub fn layer(
         }
     };
 
-    scrim = scrim.child(panel);
+    let dismissible = !matches!(
+        &overlay,
+        Overlay::Settings
+            | Overlay::Approval { .. }
+            | Overlay::Question { .. }
+            | Overlay::Trust { .. }
+    );
+    if dismissible {
+        scrim = scrim.child(
+            div()
+                .id("overlay-dismiss-outside")
+                .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+                    root.overlay = None;
+                    cx.notify();
+                }))
+                .child(panel),
+        );
+    } else {
+        scrim = scrim.child(panel);
+    }
     let _ = window;
     scrim
 }
 
 fn dialog(theme: &Theme, title: &str, width: f32) -> gpui::Div {
     div()
+        .relative()
         .flex()
         .flex_col()
         .gap_3()
@@ -108,7 +128,7 @@ fn dialog(theme: &Theme, title: &str, width: f32) -> gpui::Div {
         .rounded(px(12.0))
         .shadow_xl()
         .child(
-            div().flex().flex_row().items_center().child(
+            div().flex().flex_row().items_center().pr(px(30.0)).child(
                 div()
                     .flex_1()
                     .text_size(px(16.0))
@@ -125,23 +145,20 @@ fn dialog(theme: &Theme, title: &str, width: f32) -> gpui::Div {
 fn close_button(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
     div()
         .id("overlay-close")
+        .absolute()
+        .top(px(12.0))
+        .right(px(12.0))
         .flex()
-        .flex_row()
         .items_center()
-        .gap(px(6.0))
-        .h(px(30.0))
-        .px(px(10.0))
-        .rounded(px(7.0))
+        .justify_center()
+        .w(px(26.0))
+        .h(px(26.0))
+        .rounded(px(6.0))
         .cursor_pointer()
-        .border_1()
-        .border_color(theme.border())
-        .bg(theme.panel_2())
-        .text_size(px(12.0))
-        .text_color(theme.text())
-        .hover(move |style| style.bg(theme.panel_3()))
+        .bg(gpui::transparent_black())
+        .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
         .tooltip(crate::views::tip("Close \u{00b7} Esc", theme))
         .child(icons::icon(Icon::Close, 14.0, theme.dim()))
-        .child("Close")
         .on_click(cx.listener(|root, _, _, cx| {
             root.overlay = None;
             cx.notify();
