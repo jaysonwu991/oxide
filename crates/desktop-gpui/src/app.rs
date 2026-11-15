@@ -10,7 +10,9 @@
 
 use crate::editor::{self, Editor};
 use crate::engine::Engine;
-use crate::model::{Attachment, Chat, Entry, ProjectRow, QueuedMessage, SessionRow};
+use crate::model::{
+    Attachment, Chat, EditedCard, EditedFile, Entry, ProjectRow, QueuedMessage, SessionRow,
+};
 use crate::overlays;
 use crate::theme::Theme;
 use crate::views;
@@ -87,6 +89,50 @@ pub enum SettingsTab {
     General,
     Appearance,
     Notifications,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeScope {
+    Turn,
+    Repository,
+}
+
+#[derive(Clone)]
+pub struct ChangeReview {
+    pub project: String,
+    pub scope: ChangeScope,
+    pub unified: bool,
+    pub files: Vec<EditedFile>,
+    pub turn_files: Vec<EditedFile>,
+    pub turn_baseline: Option<String>,
+    pub added: usize,
+    pub removed: usize,
+    pub open_files: HashSet<String>,
+    pub expanded: HashSet<String>,
+    pub sides: HashMap<String, Value>,
+    pub loading: HashSet<String>,
+    pub errors: HashMap<String, String>,
+}
+
+impl ChangeReview {
+    fn new(project: String, scope: ChangeScope, card: &EditedCard) -> Self {
+        let first = card.files.first().map(|file| file.path.clone());
+        Self {
+            project,
+            scope,
+            unified: false,
+            files: card.files.clone(),
+            turn_files: card.files.clone(),
+            turn_baseline: card.baseline.clone(),
+            added: card.added,
+            removed: card.removed,
+            open_files: first.into_iter().collect(),
+            expanded: HashSet::new(),
+            sides: HashMap::new(),
+            loading: HashSet::new(),
+            errors: HashMap::new(),
+        }
+    }
 }
 
 /// What is drawn over the window.
@@ -258,6 +304,9 @@ pub struct Root {
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
+    pub changes_width: f32,
+    pub changes_resizing: Option<(f32, f32)>,
+    pub change_review: Option<ChangeReview>,
     pub update_check: Option<Value>,
     pub update_error: Option<String>,
     pub checking_updates: bool,
@@ -435,6 +484,9 @@ impl Root {
             composer_tools_dismiss_armed: false,
             resizing: None,
             show_changes: false,
+            changes_width: 430.0,
+            changes_resizing: None,
+            change_review: None,
             update_check: None,
             update_error: None,
             checking_updates: false,
@@ -1482,6 +1534,8 @@ impl Root {
     pub fn toggle_details(&mut self, cx: &mut Context<Self>) {
         self.show_details = !self.show_details;
         if self.show_details {
+            self.show_changes = false;
+            self.change_review = None;
             let index = self.active;
             self.refresh_repository(index, cx);
             self.load_sources(cx);
@@ -1516,6 +1570,15 @@ impl Root {
     }
 
     pub fn new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let reusable = self.chats.get(self.active).and_then(|chat| {
+            let editor = self.editors.get(&chat.id)?;
+            can_reuse_new_chat(chat, editor.read(cx).text()).then_some(editor.clone())
+        });
+        if let Some(editor) = reusable {
+            window.focus(&editor.read(cx).focus_handle(cx));
+            cx.notify();
+            return;
+        }
         let Some(project) = self.new_chat_project() else {
             self.open_new_project(window, cx);
             return;
@@ -1799,13 +1862,32 @@ impl Root {
             "repository_changes",
             json!({ "project": project }),
             cx,
-            move |root, result, _| {
+            move |root, result, cx| {
                 if let Ok(value) = result {
                     if let Some(chat) = root.chats.get_mut(index) {
                         chat.changes = Some(value.clone());
                     }
                     if index == root.active {
+                        let mut first = None;
+                        if let Some(card) = EditedCard::from_value(&value) {
+                            if let Some(review) = root.change_review.as_mut() {
+                                if review.scope == ChangeScope::Repository {
+                                    review.files = card.files;
+                                    review.added = card.added;
+                                    review.removed = card.removed;
+                                    if review.open_files.is_empty() {
+                                        first = review.files.first().map(|file| file.path.clone());
+                                        if let Some(path) = first.as_ref() {
+                                            review.open_files.insert(path.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         root.changes = Some(value);
+                        if let Some(path) = first {
+                            root.request_change_sides(path, cx);
+                        }
                     }
                 }
             },
@@ -2359,6 +2441,220 @@ impl Root {
         .detach();
     }
 
+    pub fn open_repository_changes(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.chats.get(self.active).map(|chat| chat.project.clone()) else {
+            return;
+        };
+        let card = self
+            .changes
+            .as_ref()
+            .and_then(EditedCard::from_value)
+            .unwrap_or_else(|| EditedCard {
+                project: project.clone(),
+                baseline: None,
+                after: None,
+                files: Vec::new(),
+                added: 0,
+                removed: 0,
+                latest: false,
+                undone: false,
+            });
+        self.open_change_review(project, ChangeScope::Repository, card, None, cx);
+        self.refresh_repository(self.active, cx);
+    }
+
+    pub fn open_turn_changes(
+        &mut self,
+        card: &EditedCard,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let project = if card.project.is_empty() {
+            self.chats
+                .get(self.active)
+                .map(|chat| chat.project.clone())
+                .unwrap_or_default()
+        } else {
+            card.project.clone()
+        };
+        self.open_change_review(project, ChangeScope::Turn, card.clone(), path, cx);
+    }
+
+    fn open_change_review(
+        &mut self,
+        project: String,
+        scope: ChangeScope,
+        card: EditedCard,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut review = ChangeReview::new(project, scope, &card);
+        if let Some(path) = path {
+            review.open_files.clear();
+            review.open_files.insert(path);
+        }
+        let first = review.open_files.iter().next().cloned();
+        self.change_review = Some(review);
+        self.show_changes = true;
+        self.show_details = false;
+        if let Some(path) = first {
+            self.request_change_sides(path, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn set_change_scope(&mut self, scope: ChangeScope, cx: &mut Context<Self>) {
+        if self
+            .change_review
+            .as_ref()
+            .is_none_or(|review| review.scope == scope)
+        {
+            return;
+        }
+        match scope {
+            ChangeScope::Turn => {
+                let Some(review) = self.change_review.as_mut() else {
+                    return;
+                };
+                review.files = review.turn_files.clone();
+                review.sides.clear();
+                review.errors.clear();
+                review.loading.clear();
+                review.scope = ChangeScope::Turn;
+            }
+            ChangeScope::Repository => {
+                let Some(card) = self.changes.as_ref().and_then(EditedCard::from_value) else {
+                    return;
+                };
+                let Some(review) = self.change_review.as_mut() else {
+                    return;
+                };
+                review.files = card.files.clone();
+                review.added = card.added;
+                review.removed = card.removed;
+                review.sides.clear();
+                review.errors.clear();
+                review.loading.clear();
+                review.scope = ChangeScope::Repository;
+            }
+        }
+        if !self.change_review.as_ref().is_some_and(|review| {
+            review
+                .files
+                .iter()
+                .any(|file| review.open_files.contains(&file.path))
+        }) {
+            if let Some(review) = self.change_review.as_mut() {
+                review.open_files.clear();
+                if let Some(first) = review.files.first() {
+                    review.open_files.insert(first.path.clone());
+                }
+            }
+        }
+        if let Some(path) = self
+            .change_review
+            .as_ref()
+            .and_then(|review| review.open_files.iter().next().cloned())
+        {
+            self.request_change_sides(path, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn toggle_change_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(review) = self.change_review.as_mut() else {
+            return;
+        };
+        if !review.open_files.remove(&path) {
+            review.open_files.insert(path.clone());
+            self.request_change_sides(path, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn toggle_change_layout(&mut self, cx: &mut Context<Self>) {
+        if let Some(review) = self.change_review.as_mut() {
+            review.unified = !review.unified;
+            cx.notify();
+        }
+    }
+
+    pub fn expand_change_context(&mut self, path: String, start: usize, cx: &mut Context<Self>) {
+        if let Some(review) = self.change_review.as_mut() {
+            review.expanded.insert(format!("{path}:{start}"));
+            cx.notify();
+        }
+    }
+
+    pub fn refresh_change_review(&mut self, cx: &mut Context<Self>) {
+        if let Some(review) = self.change_review.as_mut() {
+            review.sides.clear();
+            review.errors.clear();
+            review.loading.clear();
+            if review.scope == ChangeScope::Repository {
+                if let Some(card) = self.changes.as_ref().and_then(EditedCard::from_value) {
+                    review.files = card.files;
+                    review.added = card.added;
+                    review.removed = card.removed;
+                }
+            }
+        }
+        let paths = self
+            .change_review
+            .as_ref()
+            .map(|review| review.open_files.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if let Some(review) = self.change_review.as_ref() {
+            if review.scope == ChangeScope::Repository {
+                self.refresh_repository(self.active, cx);
+            }
+        }
+        for path in paths {
+            self.request_change_sides(path, cx);
+        }
+        cx.notify();
+    }
+
+    fn request_change_sides(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(review) = self.change_review.as_mut() else {
+            return;
+        };
+        if review.sides.contains_key(&path) || review.loading.contains(&path) {
+            return;
+        }
+        review.loading.insert(path.clone());
+        let project = review.project.clone();
+        let baseline = (review.scope == ChangeScope::Turn)
+            .then(|| review.turn_baseline.clone())
+            .flatten();
+        let (command, args) = if let Some(baseline) = baseline {
+            (
+                "change_sides",
+                json!({ "project": project, "baseline": baseline, "path": path }),
+            )
+        } else {
+            (
+                "repository_sides",
+                json!({ "project": project, "path": path }),
+            )
+        };
+        self.call(command, args, cx, move |root, result, _| {
+            let Some(review) = root.change_review.as_mut() else {
+                return;
+            };
+            review.loading.remove(&path);
+            match result {
+                Ok(value) => {
+                    review.sides.insert(path.clone(), value);
+                    review.errors.remove(&path);
+                }
+                Err(error) => {
+                    review.errors.insert(path.clone(), error);
+                }
+            }
+        });
+    }
+
     pub fn undo_turn(&mut self, cx: &mut Context<Self>) {
         let index = self.active;
         let Some(chat) = self.chats.get(index) else {
@@ -2860,15 +3156,19 @@ impl Render for Root {
             .text_color(theme.text())
             .text_size(px(13.5 * scale))
             .font_family(".SystemUIFont")
-            .cursor(if self.resizing.is_some() {
-                gpui::CursorStyle::ResizeLeftRight
-            } else {
-                gpui::CursorStyle::Arrow
-            })
+            .cursor(
+                if self.resizing.is_some() || self.changes_resizing.is_some() {
+                    gpui::CursorStyle::ResizeLeftRight
+                } else {
+                    gpui::CursorStyle::Arrow
+                },
+            )
             .key_context("Root")
             .on_mouse_move(cx.listener(|this, event, window, cx| {
                 if this.resizing.is_some() {
                     this.handle_sidebar_drag(event, window, cx);
+                } else if this.changes_resizing.is_some() {
+                    this.handle_changes_drag(event, window, cx);
                 }
             }))
             .on_mouse_up(
@@ -2876,6 +3176,7 @@ impl Render for Root {
                 cx.listener(|this, _, _, cx| {
                     this.effort_drag_level = None;
                     this.end_sidebar_drag(cx);
+                    this.end_changes_drag(cx);
                 }),
             )
             .on_action(cx.listener(|this, _: &NewChat, window, cx| this.new_chat(window, cx)))
@@ -2889,10 +3190,7 @@ impl Render for Root {
                 this.save_prefs(json!({ "sidebar_visible": visible }), cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &ToggleDetails, _window, cx| {
-                this.show_details = !this.show_details;
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &ToggleDetails, _window, cx| this.toggle_details(cx)))
             .on_action(
                 cx.listener(|this, _: &ToggleActivities, _window, cx| this.toggle_activities(cx)),
             )
@@ -2922,12 +3220,13 @@ impl Render for Root {
             .on_action(cx.listener(|_, _: &MinimizeWindow, window, _cx| window.minimize_window()))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _cx| window.remove_window()))
             .on_action(cx.listener(|this, _: &ToggleChanges, _window, cx| {
-                this.show_changes = !this.show_changes;
                 if this.show_changes {
-                    let index = this.active;
-                    this.refresh_repository(index, cx);
+                    this.show_changes = false;
+                    this.change_review = None;
+                    cx.notify();
+                } else {
+                    this.open_repository_changes(cx);
                 }
-                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenModels, _window, cx| this.toggle_model_menu(cx)))
             .on_action(cx.listener(|this, _: &OpenWorktrees, _window, cx| this.open_worktrees(cx)))
@@ -3022,7 +3321,7 @@ impl Render for Root {
         if !matches!(self.overlay, Some(Overlay::Settings)) {
             shell = shell.child(overlays::layer(self, &theme, scale, window, cx));
         }
-        if self.resizing.is_some() {
+        if self.resizing.is_some() || self.changes_resizing.is_some() {
             shell = shell.child(
                 div()
                     .absolute()
@@ -3120,6 +3419,36 @@ impl Root {
         self.resizing = None;
         cx.notify();
     }
+
+    pub fn begin_changes_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        self.changes_resizing = Some((f32::from(event.position.x), self.changes_width));
+        cx.notify();
+    }
+
+    pub fn handle_changes_drag(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((origin, start_width)) = self.changes_resizing {
+            let viewport = f32::from(window.viewport_size().width);
+            self.changes_width = resized_changes_width(
+                viewport,
+                self.sidebar_visible,
+                self.sidebar_width,
+                origin,
+                f32::from(event.position.x),
+                start_width,
+            );
+            cx.notify();
+        }
+    }
+
+    pub fn end_changes_drag(&mut self, cx: &mut Context<Self>) {
+        self.changes_resizing = None;
+        cx.notify();
+    }
 }
 
 fn clamp_sidebar_width(viewport: f32, width: f32) -> f32 {
@@ -3127,6 +3456,23 @@ fn clamp_sidebar_width(viewport: f32, width: f32) -> f32 {
     const MIN_READING_WIDTH: f32 = 475.0;
     let available = (viewport - MIN_READING_WIDTH).max(MIN_SIDEBAR_WIDTH);
     width.clamp(MIN_SIDEBAR_WIDTH, available)
+}
+
+fn resized_changes_width(
+    viewport: f32,
+    sidebar_visible: bool,
+    sidebar_width: f32,
+    origin: f32,
+    current: f32,
+    start_width: f32,
+) -> f32 {
+    let sidebar = if sidebar_visible {
+        sidebar_width + 7.0
+    } else {
+        0.0
+    };
+    let max_width = (viewport - 56.0 - sidebar - 420.0).max(340.0);
+    (start_width + origin - current).clamp(320.0, max_width)
 }
 
 fn slash_command(text: &str) -> Option<(&str, &str)> {
@@ -3144,9 +3490,22 @@ fn performs_slash_command(name: &str, args: &str) -> bool {
     }
 }
 
+fn can_reuse_new_chat(chat: &Chat, composer_text: &str) -> bool {
+    chat.session.is_none()
+        && chat.entries.is_empty()
+        && !chat.running()
+        && chat.attachments.is_empty()
+        && chat.queued.is_empty()
+        && composer_text.trim().is_empty()
+}
+
 #[cfg(test)]
 mod sidebar_resize_tests {
-    use super::{clamp_sidebar_width, performs_slash_command, slash_command, Rail};
+    use super::{
+        can_reuse_new_chat, clamp_sidebar_width, performs_slash_command, resized_changes_width,
+        slash_command, Rail,
+    };
+    use crate::model::Chat;
     use crate::views::{customize_destination, effort_position, model_display_name};
 
     #[test]
@@ -3155,6 +3514,22 @@ mod sidebar_resize_tests {
         assert_eq!(clamp_sidebar_width(1280.0, 120.0), 160.0);
         assert_eq!(clamp_sidebar_width(1280.0, 900.0), 805.0);
         assert_eq!(clamp_sidebar_width(320.0, 280.0), 160.0);
+    }
+
+    #[test]
+    fn changes_resize_tracks_the_divider_and_preserves_the_reading_column() {
+        assert_eq!(
+            resized_changes_width(1728.0, true, 300.0, 1280.0, 1180.0, 430.0),
+            530.0
+        );
+        assert_eq!(
+            resized_changes_width(1728.0, true, 300.0, 1280.0, 1500.0, 430.0),
+            320.0
+        );
+        assert_eq!(
+            resized_changes_width(1100.0, true, 300.0, 900.0, 700.0, 430.0),
+            340.0
+        );
     }
 
     #[test]
@@ -3208,6 +3583,18 @@ mod sidebar_resize_tests {
             "DeepSeek V4.1 Flash"
         );
         assert_eq!(model_display_name("gpt-5"), "GPT 5");
+    }
+
+    #[test]
+    fn a_blank_new_chat_is_reused_instead_of_opening_a_duplicate_tab() {
+        let chat = Chat::new("/tmp/project".to_string(), "New chat".to_string());
+        assert!(can_reuse_new_chat(&chat, "   "));
+
+        let mut composed = Chat::new("/tmp/project".to_string(), "New chat".to_string());
+        assert!(!can_reuse_new_chat(&composed, "Explain this"));
+
+        composed.session = Some("saved-thread".to_string());
+        assert!(!can_reuse_new_chat(&composed, ""));
     }
 }
 
