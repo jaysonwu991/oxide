@@ -130,7 +130,8 @@ const unused = [...arms].filter((name) => !performed.has(name)).sort();
 check("reserved permanent session deletion for the CLI", !arms.has("delete_session"));
 check(
   "kept no arm the window cannot perform",
-  JSON.stringify(unused) === JSON.stringify(["add_project", "list_sessions", "rename_session"]),
+  JSON.stringify(unused) ===
+    JSON.stringify(["add_project", "check_gpui_updates", "list_sessions", "rename_session"]),
   unused.join(", "),
 );
 
