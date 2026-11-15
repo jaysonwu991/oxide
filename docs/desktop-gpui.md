@@ -172,10 +172,13 @@ that composer instead of being sent.
   `cancel_run`. A message typed while a turn is running is steered into it
   through `steer_run` (queued for the turn's end unless `follow_up` is `steer`,
   the same preference the stable window reads), and the queued or steering rows
-  stay above the editor until the turn consumes them. Attachments are picked from disk
-  with the native file prompt and sent as the data URLs the core's own
-  attachment rules accept — the same images, PDFs and text the terminal and the
-  stable window attach, under the same size limit. The composer lists
+  stay above the editor until the turn consumes them. Attachments are picked
+  from disk or pasted from the system clipboard and sent as the data URLs the
+  core's own attachment rules accept — the same images, PDFs and text the
+  terminal and the stable window attach, under the same size and count limits.
+  Image attachments show a thumbnail in the composer, a larger preview in the
+  sent message, and open in a full-size viewer when clicked. An attachment can
+  be sent without text. The composer lists
   `list_commands` rows after `/` and calls `at_suggestions` for an `@path` under
   the caret. Choosing an `@path` completes the token in place. A bare built-in
   slash command runs its GPUI surface — `/model`, `/agent`, `/reasoning`,

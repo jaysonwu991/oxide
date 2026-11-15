@@ -8,7 +8,7 @@
 //! diffs, models, themes, prefs — is read from the commands in
 //! `oxide_desktop::commands`, which is why both windows behave the same way.
 
-use crate::editor::{self, Editor};
+use crate::editor::{self, Editor, EditorEvent};
 use crate::engine::Engine;
 use crate::model::{
     Attachment, Chat, EditedCard, EditedFile, Entry, ProjectRow, QueuedMessage, SessionRow,
@@ -27,6 +27,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
 
 actions!(
     shortcuts,
@@ -140,6 +142,10 @@ impl ChangeReview {
 pub enum Overlay {
     Settings,
     About,
+    ImagePreview {
+        name: String,
+        image: std::sync::Arc<gpui::Image>,
+    },
     Updates,
     Help,
     CommandMenu,
@@ -1649,12 +1655,26 @@ impl Root {
             )
         });
         self.subscriptions
-            .push(cx.subscribe(&editor, move |root, editor, _event, cx| {
-                let (text, caret) = {
-                    let editor = editor.read(cx);
-                    (editor.text().to_string(), editor.cursor_utf16())
-                };
-                root.refresh_at_suggestions(id, text, caret, cx);
+            .push(cx.subscribe(&editor, move |root, editor, event, cx| {
+                if let EditorEvent::AttachmentPasted { name, data_url } = event {
+                    let result = root
+                        .chats
+                        .iter_mut()
+                        .find(|chat| chat.id == id)
+                        .map(|chat| {
+                            add_attachment(chat, Attachment::new(name.clone(), data_url.clone()))
+                        })
+                        .unwrap_or(Ok(()));
+                    if let Err(error) = result {
+                        root.toast(error, true, cx);
+                    }
+                } else {
+                    let (text, caret) = {
+                        let editor = editor.read(cx);
+                        (editor.text().to_string(), editor.cursor_utf16())
+                    };
+                    root.refresh_at_suggestions(id, text, caret, cx);
+                }
                 cx.notify();
             }));
 
@@ -1903,10 +1923,14 @@ impl Root {
             return;
         };
         let prompt = editor.read(cx).text().trim().to_string();
-        if prompt.is_empty() {
+        let has_attachments = self
+            .chats
+            .get(index)
+            .is_some_and(|chat| !chat.attachments.is_empty());
+        if !composer_has_content(&prompt, has_attachments) {
             return;
         }
-        if self.run_slash_command(&prompt, window, cx) {
+        if !prompt.is_empty() && self.run_slash_command(&prompt, window, cx) {
             return;
         }
         self.model_menu_open = false;
@@ -1916,13 +1940,9 @@ impl Root {
         if let Some(run) = chat.run {
             let follow_up = self.prefs["follow_up"].as_str() != Some("steer");
             let queue = chat.attachments.clone();
-            let names = queue
-                .iter()
-                .map(|item| item.name.clone())
-                .collect::<Vec<_>>();
             chat.queued.push(QueuedMessage {
                 text: prompt.clone(),
-                attachments: names,
+                attachments: queue.clone(),
                 follow_up,
             });
             chat.attachments.clear();
@@ -1972,15 +1992,11 @@ impl Root {
             .iter()
             .map(|attachment| json!({ "dataUrl": attachment.data_url, "name": attachment.name }))
             .collect();
-        let names: Vec<String> = chat
-            .attachments
-            .iter()
-            .map(|attachment| attachment.name.clone())
-            .collect();
+        let history_attachments = chat.attachments.clone();
 
         chat.entries.push(Entry::User {
             text: prompt.clone(),
-            attachments: names,
+            attachments: history_attachments,
         });
         chat.attachments.clear();
         chat.scroll_to_end = true;
@@ -2724,7 +2740,11 @@ impl Root {
                     match attachment_from_path(&path) {
                         Ok(Some(attachment)) => {
                             if let Some(chat) = root.chats.get_mut(index) {
-                                chat.attachments.push(attachment);
+                                if let Err(error) = add_attachment(chat, attachment) {
+                                    if refused.is_empty() {
+                                        refused.push(error);
+                                    }
+                                }
                             }
                         }
                         Ok(None) => {}
@@ -3116,13 +3136,34 @@ fn attachment_from_path(path: &std::path::Path) -> Result<Option<Attachment>, St
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| path.display().to_string());
-    Ok(Some(Attachment {
+    Ok(Some(Attachment::new(
         name,
-        data_url: format!(
+        format!(
             "data:{mime};base64,{}",
             oxide_core::media::base64_encode(&bytes)
         ),
-    }))
+    )))
+}
+
+fn add_attachment(chat: &mut Chat, attachment: Attachment) -> Result<(), String> {
+    if chat
+        .attachments
+        .iter()
+        .any(|current| current.data_url == attachment.data_url)
+    {
+        return Ok(());
+    }
+    if chat.attachments.len() >= MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(format!(
+            "At most {MAX_ATTACHMENTS_PER_MESSAGE} attachments per message"
+        ));
+    }
+    chat.attachments.push(attachment);
+    Ok(())
+}
+
+fn composer_has_content(prompt: &str, has_attachments: bool) -> bool {
+    !prompt.trim().is_empty() || has_attachments
 }
 
 impl Render for Root {
@@ -3502,10 +3543,10 @@ fn can_reuse_new_chat(chat: &Chat, composer_text: &str) -> bool {
 #[cfg(test)]
 mod sidebar_resize_tests {
     use super::{
-        can_reuse_new_chat, clamp_sidebar_width, performs_slash_command, resized_changes_width,
-        slash_command, Rail,
+        add_attachment, can_reuse_new_chat, clamp_sidebar_width, composer_has_content,
+        performs_slash_command, resized_changes_width, slash_command, Rail,
     };
-    use crate::model::Chat;
+    use crate::model::{Attachment, Chat};
     use crate::views::{customize_destination, effort_position, model_display_name};
 
     #[test]
@@ -3595,6 +3636,46 @@ mod sidebar_resize_tests {
 
         composed.session = Some("saved-thread".to_string());
         assert!(!can_reuse_new_chat(&composed, ""));
+    }
+
+    #[test]
+    fn attachments_deduplicate_and_keep_the_composer_limit() {
+        let mut chat = Chat::new("/tmp/project".to_string(), "New chat".to_string());
+        for index in 0..8 {
+            add_attachment(
+                &mut chat,
+                Attachment::new(
+                    format!("image-{index}.png"),
+                    format!("data:image/png;base64,{index}"),
+                ),
+            )
+            .unwrap();
+        }
+        add_attachment(
+            &mut chat,
+            Attachment::new(
+                "again.png".to_string(),
+                "data:image/png;base64,0".to_string(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(chat.attachments.len(), 8);
+        assert!(add_attachment(
+            &mut chat,
+            Attachment::new(
+                "ninth.png".to_string(),
+                "data:image/png;base64,ninth".to_string(),
+            ),
+        )
+        .unwrap_err()
+        .contains("At most 8"));
+    }
+
+    #[test]
+    fn an_attachment_can_start_a_turn_without_text() {
+        assert!(composer_has_content("", true));
+        assert!(!composer_has_content("  \n ", false));
+        assert!(composer_has_content("Describe this", false));
     }
 }
 

@@ -6,7 +6,9 @@
 //! here is the page's model read in Rust.
 
 use crate::markdown::{self, Block};
+use gpui::{Image, ImageFormat};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// A number the engine wrote, under the name the Rust struct serialises it with.
 /// The snapshots the page's own bridge answers with used camelCase for a few of
@@ -218,7 +220,7 @@ impl Usage {
 pub enum Entry {
     User {
         text: String,
-        attachments: Vec<String>,
+        attachments: Vec<Attachment>,
     },
     Assistant {
         text: String,
@@ -257,12 +259,24 @@ impl Entry {
 pub struct Attachment {
     pub name: String,
     pub data_url: String,
+    pub image: Option<Arc<Image>>,
+}
+
+impl Attachment {
+    pub fn new(name: String, data_url: String) -> Self {
+        let image = image_from_data_url(&data_url);
+        Self {
+            name,
+            data_url,
+            image,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct QueuedMessage {
     pub text: String,
-    pub attachments: Vec<String>,
+    pub attachments: Vec<Attachment>,
     pub follow_up: bool,
 }
 
@@ -542,7 +556,12 @@ impl Chat {
                             .map(|items| {
                                 items
                                     .iter()
-                                    .filter_map(|item| item["name"].as_str().map(str::to_string))
+                                    .filter_map(|item| {
+                                        Some(Attachment::new(
+                                            item["name"].as_str()?.to_string(),
+                                            item["dataUrl"].as_str()?.to_string(),
+                                        ))
+                                    })
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -598,6 +617,17 @@ impl Chat {
         self.loading = false;
         self.scroll_to_end = true;
     }
+}
+
+fn image_from_data_url(data_url: &str) -> Option<Arc<Image>> {
+    let (meta, payload) = data_url.strip_prefix("data:")?.split_once(',')?;
+    let mime = meta.split(';').next()?;
+    if !meta.split(';').any(|part| part == "base64") {
+        return None;
+    }
+    let format = ImageFormat::from_mime_type(mime)?;
+    let bytes = oxide_core::media::base64_decode(payload)?;
+    Some(Arc::new(Image::from_bytes(format, bytes)))
 }
 
 /// A tool card's one-line summary: the command, path or query a call names.
@@ -729,5 +759,30 @@ mod tests {
         assert!(projects(&json!([])).is_empty());
         assert!(projects(&json!({ "projects": [], "added": "id" })).is_empty());
         assert!(projects(&json!(null)).is_empty());
+    }
+
+    #[test]
+    fn a_stored_image_attachment_keeps_its_preview_data() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.load(&json!({
+            "messages": [{
+                "role": "user",
+                "content": "",
+                "attachments": [{
+                    "name": "shot.png",
+                    "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zb4kAAAAASUVORK5CYII="
+                }]
+            }]
+        }));
+        match &chat.entries[0] {
+            Entry::User {
+                text, attachments, ..
+            } => {
+                assert!(text.is_empty());
+                assert_eq!(attachments[0].name, "shot.png");
+                assert!(attachments[0].image.is_some());
+            }
+            other => panic!("expected a user message, got {other:?}"),
+        }
     }
 }
