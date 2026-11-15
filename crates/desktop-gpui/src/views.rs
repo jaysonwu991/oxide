@@ -6,17 +6,21 @@
 //! and its composer, and the changes a turn left behind — from the same state
 //! `crate::app::Root` keeps.
 
-use crate::app::{Button, ConfirmAction, CustomizeTab, Overlay, Rail, Root};
+use crate::app::{Button, ChangeScope, ConfirmAction, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
-use crate::model::{Entry, Status};
+use crate::model::{EditedFile, Entry, Status};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, point, px, ClickEvent, Context, Focusable, Font, FontStyle, FontWeight,
-    MouseButton, PathBuilder, Pixels, Point, Render, SharedString, Stateful, StrikethroughStyle,
-    StyledText, TextRun, UnderlineStyle, Window, WindowControlArea,
+    canvas, div, percentage, point, px, Animation, AnimationExt as _, ClickEvent, Context,
+    Focusable, Font, FontStyle, FontWeight, MouseButton, PathBuilder, Pixels, Point, Render,
+    SharedString, Stateful, StrikethroughStyle, StyledText, TextRun, Transformation,
+    UnderlineStyle, Window, WindowControlArea,
 };
+use serde_json::Value;
+use std::collections::HashSet;
+use std::time::Duration;
 
 // ---------- shared pieces ----------
 
@@ -594,12 +598,13 @@ pub fn topbar(
             theme,
         ))
         .on_click(cx.listener(|root, _, _, cx| {
-            root.show_changes = !root.show_changes;
             if root.show_changes {
-                let index = root.active;
-                root.refresh_repository(index, cx);
+                root.show_changes = false;
+                root.change_review = None;
+                cx.notify();
+            } else {
+                root.open_repository_changes(cx);
             }
-            cx.notify();
         }));
     let details = icon_button(
         "details-toggle",
@@ -897,6 +902,10 @@ pub fn sidebar(
                 .chats
                 .iter()
                 .any(|chat| chat.session.as_deref() == Some(id.as_str()));
+            let running = root
+                .chats
+                .iter()
+                .any(|chat| chat.session.as_deref() == Some(id.as_str()) && chat.running());
             let when = if session.preview.is_empty() {
                 relative_time(session.modified_at)
             } else {
@@ -917,6 +926,7 @@ pub fn sidebar(
                     pinned: session.pinned,
                     worktree: session.worktree.is_some(),
                     active,
+                    running,
                     indent: 12.0,
                     show_actions: true,
                 },
@@ -1147,6 +1157,10 @@ pub fn sidebar(
                         .chats
                         .iter()
                         .any(|chat| chat.session.as_ref() == Some(&id));
+                    let running = root
+                        .chats
+                        .iter()
+                        .any(|chat| chat.session.as_ref() == Some(&id) && chat.running());
                     project_group = project_group.child(session_row(
                         &session,
                         "",
@@ -1155,6 +1169,7 @@ pub fn sidebar(
                             pinned,
                             worktree: session.worktree.is_some(),
                             active,
+                            running,
                             indent: 24.0,
                             show_actions: true,
                         },
@@ -1170,7 +1185,7 @@ pub fn sidebar(
                     ));
                 }
             }
-            if !collapsed && hidden_sessions > 0 && !root.expanded_projects.contains(&path) {
+            if !collapsed && (hidden_sessions > 0 || expanded) {
                 let path_for_expand = path.clone();
                 project_group = project_group.child(
                     div()
@@ -1185,9 +1200,11 @@ pub fn sidebar(
                         .text_size(px(12.5))
                         .text_color(theme.faint())
                         .hover(move |style| style.bg(theme.panel()).text_color(theme.text()))
-                        .child("Show more")
+                        .child(if expanded { "Show less" } else { "Show more" })
                         .on_click(cx.listener(move |root, _, _, cx| {
-                            root.expanded_projects.insert(path_for_expand.clone());
+                            if !root.expanded_projects.remove(&path_for_expand) {
+                                root.expanded_projects.insert(path_for_expand.clone());
+                            }
                             cx.notify();
                         })),
                 );
@@ -1207,6 +1224,10 @@ pub fn sidebar(
                     .chats
                     .iter()
                     .any(|chat| chat.session.as_ref() == Some(&id));
+                let running = root
+                    .chats
+                    .iter()
+                    .any(|chat| chat.session.as_ref() == Some(&id) && chat.running());
                 recent_rows = recent_rows.child(session_row(
                     &session,
                     "",
@@ -1215,6 +1236,7 @@ pub fn sidebar(
                         pinned: session.pinned,
                         worktree: session.worktree.is_some(),
                         active,
+                        running,
                         indent: 8.0,
                         show_actions: true,
                     },
@@ -1681,8 +1703,17 @@ struct SessionFlags {
     pinned: bool,
     worktree: bool,
     active: bool,
+    running: bool,
     indent: f32,
     show_actions: bool,
+}
+
+fn session_spinner(id: &str, theme: &Theme) -> impl IntoElement {
+    icons::icon(Icon::Spinner, 12.0, theme.accent()).with_animation(
+        SharedString::from(format!("session-spinner-{id}")),
+        Animation::new(Duration::from_millis(760)).repeat(),
+        |icon, delta| icon.with_transformation(Transformation::rotate(percentage(delta))),
+    )
 }
 
 fn session_row(
@@ -1698,6 +1729,7 @@ fn session_row(
         pinned,
         worktree,
         active,
+        running,
         indent,
         show_actions,
     } = flags;
@@ -1759,6 +1791,7 @@ fn session_row(
                 .child(meta)
         }))
         .children(worktree.then(|| icons::icon(Icon::Branch, 12.0, theme.accent())))
+        .children(running.then(|| session_spinner(&id, theme)))
         .children(show_actions.then(|| {
             div()
                 .absolute()
@@ -1967,12 +2000,13 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         theme,
         cx,
         |root, _, cx| {
-            root.show_changes = !root.show_changes;
-            let index = root.active;
             if root.show_changes {
-                root.refresh_repository(index, cx);
+                root.show_changes = false;
+                root.change_review = None;
+                cx.notify();
+            } else {
+                root.open_repository_changes(cx);
             }
-            cx.notify();
         },
     ));
 
@@ -2199,6 +2233,7 @@ pub fn main(
         column = column.child(details(root, theme, cx));
     }
     if root.show_changes {
+        column = column.child(changes_resizer(root, theme, cx));
         column = column.child(changes_panel(root, theme, cx));
     }
     column
@@ -2242,7 +2277,11 @@ fn conversation(
             0.0
         };
     let trailing = (if root.show_details { 312.0 } else { 0.0 })
-        + (if root.show_changes { 380.0 } else { 0.0 });
+        + (if root.show_changes {
+            root.changes_width + 5.0
+        } else {
+            0.0
+        });
     let reading_width =
         (f32::from(window.viewport_size().width) - leading - trailing - 44.0).clamp(280.0, 740.0);
 
@@ -2541,6 +2580,7 @@ fn edited_card(
                 .on_click(cx.listener(|root, _, _, cx| root.undo_turn(cx))),
         );
     }
+    let review_card = card.clone();
     head = head.child(
         div()
             .id(("edited-view", chat))
@@ -2558,11 +2598,8 @@ fn edited_card(
             .text_color(theme.text())
             .hover(move |style| style.bg(theme.panel_3()))
             .child("View changes")
-            .on_click(cx.listener(|root, _, _, cx| {
-                root.show_changes = true;
-                let index = root.active;
-                root.refresh_repository(index, cx);
-                cx.notify();
+            .on_click(cx.listener(move |root, _, _, cx| {
+                root.open_turn_changes(&review_card, None, cx);
             })),
     );
 
@@ -2577,14 +2614,24 @@ fn edited_card(
         .bg(theme.panel())
         .child(head);
 
-    let shown = card.files.len().min(6);
+    let shown = card.files.len().min(3);
     for file in card.files.iter().take(shown) {
+        let file_path = file.path.clone();
+        let review_card = card.clone();
         block = block.child(
             div()
+                .id(SharedString::from(format!(
+                    "edited-file-{chat}-{file_path}"
+                )))
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_2()
+                .h(px(28.0))
+                .px_1()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel_2()))
                 .child(
                     div()
                         .flex_none()
@@ -2617,15 +2664,31 @@ fn edited_card(
                         .text_size(px(11.0))
                         .text_color(theme.error())
                         .child(format!("\u{2212}{}", file.removed)),
-                ),
+                )
+                .child(icons::icon(Icon::ChevronRight, 11.0, theme.faint()))
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    root.open_turn_changes(&review_card, Some(file_path.clone()), cx);
+                })),
         );
     }
     if card.files.len() > shown {
+        let review_card = card.clone();
         block = block.child(
             div()
+                .id(("edited-more", chat))
+                .flex()
+                .items_center()
+                .h(px(26.0))
+                .px_1()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel_2()))
                 .text_size(px(11.5))
                 .text_color(theme.faint())
-                .child(format!("and {} more", card.files.len() - shown)),
+                .child(format!("Show {} more files", card.files.len() - shown))
+                .on_click(cx.listener(move |root, _, _, cx| {
+                    root.open_turn_changes(&review_card, None, cx);
+                })),
         );
     }
     block
@@ -3281,6 +3344,7 @@ fn model_effort_menu(
         .border_color(theme.border())
         .bg(theme.panel())
         .shadow_xl()
+        .occlude()
         .on_mouse_down_out(cx.listener(|root, _, _, cx| {
             root.model_menu_open = false;
             root.model_menu_show_models = false;
@@ -3325,8 +3389,12 @@ fn model_summary_page(
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text())
         .hover(move |style| style.bg(theme.panel_3()))
-        .child(model_label)
-        .child(icons::icon(Icon::ChevronRight, 13.0, theme.faint()))
+        .child(div().cursor_pointer().child(model_label))
+        .child(
+            div()
+                .cursor_pointer()
+                .child(icons::icon(Icon::ChevronRight, 13.0, theme.faint())),
+        )
         .on_click(cx.listener(|root, _, _, cx| {
             root.model_menu_show_models = true;
             cx.notify();
@@ -3622,7 +3690,9 @@ fn effort_slider(
     current: &str,
 ) -> Stateful<gpui::Div> {
     const TRACK_WIDTH: f32 = 290.0;
-    const KNOB_SIZE: f32 = 14.0;
+    const TRACK_HEIGHT: f32 = 10.0;
+    const SLIDER_HEIGHT: f32 = 32.0;
+    const KNOB_SIZE: f32 = 26.0;
     let selected = effort_position(levels, current).unwrap_or_default();
     let progress = if levels.len() > 1 {
         selected as f32 / (levels.len() - 1) as f32
@@ -3674,14 +3744,14 @@ fn effort_slider(
         .id("composer-effort-slider")
         .relative()
         .w(px(TRACK_WIDTH))
-        .h(px(24.0))
+        .h(px(SLIDER_HEIGHT))
         .child(
             div()
                 .absolute()
                 .left_0()
                 .right_0()
-                .top(px(10.0))
-                .h(px(4.0))
+                .top(px((SLIDER_HEIGHT - TRACK_HEIGHT) / 2.0))
+                .h(px(TRACK_HEIGHT))
                 .rounded_full()
                 .bg(theme.panel_3()),
         )
@@ -3689,8 +3759,8 @@ fn effort_slider(
             div()
                 .absolute()
                 .left_0()
-                .top(px(10.0))
-                .h(px(4.0))
+                .top(px((SLIDER_HEIGHT - TRACK_HEIGHT) / 2.0))
+                .h(px(TRACK_HEIGHT))
                 .w(px(progress * TRACK_WIDTH))
                 .rounded_full()
                 .bg(theme.accent()),
@@ -3699,7 +3769,7 @@ fn effort_slider(
             div()
                 .absolute()
                 .left(px(knob_left))
-                .top(px(5.0))
+                .top(px((SLIDER_HEIGHT - KNOB_SIZE) / 2.0))
                 .w(px(KNOB_SIZE))
                 .h(px(KNOB_SIZE))
                 .rounded_full()
@@ -4584,23 +4654,73 @@ fn setting_chip(
 
 // ---------- changes ----------
 
+fn changes_resizer(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
+    let _ = root;
+    div()
+        .id("changes-resizer")
+        .flex_none()
+        .w(px(5.0))
+        .h_full()
+        .cursor(gpui::CursorStyle::ResizeLeftRight)
+        .bg(theme.panel())
+        .border_l_1()
+        .border_color(theme.border())
+        .hover(move |style| style.bg(theme.panel_3()))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|root, event, _, cx| root.begin_changes_drag(event, cx)),
+        )
+        .on_mouse_move(
+            cx.listener(|root, event, window, cx| root.handle_changes_drag(event, window, cx)),
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|root, _, _, cx| root.end_changes_drag(cx)),
+        )
+}
+
 fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
-    let changes = root.changes.clone();
-    let message = root.chats.get(root.active).and_then(|chat| {
-        chat.changes.as_ref().map(|changes| {
-            (
-                changes["files"].as_array().map(Vec::len).unwrap_or(0),
-                changes["added"].as_u64().unwrap_or(0),
-                changes["removed"].as_u64().unwrap_or(0),
-            )
-        })
-    });
+    let review = root.change_review.clone();
+    let scope = review
+        .as_ref()
+        .map(|review| review.scope)
+        .unwrap_or(ChangeScope::Repository);
+    let files = review
+        .as_ref()
+        .map(|review| review.files.clone())
+        .unwrap_or_default();
+    let added = review.as_ref().map(|review| review.added).unwrap_or(0);
+    let removed = review.as_ref().map(|review| review.removed).unwrap_or(0);
+    let unified = review.as_ref().is_some_and(|review| review.unified);
+    let open_files = review
+        .as_ref()
+        .map(|review| review.open_files.clone())
+        .unwrap_or_default();
+    let expanded = review
+        .as_ref()
+        .map(|review| review.expanded.clone())
+        .unwrap_or_default();
+    let sides = review
+        .as_ref()
+        .map(|review| review.sides.clone())
+        .unwrap_or_default();
+    let loading = review
+        .as_ref()
+        .map(|review| review.loading.clone())
+        .unwrap_or_default();
+    let errors = review
+        .as_ref()
+        .map(|review| review.errors.clone())
+        .unwrap_or_default();
+    let has_turn = review
+        .as_ref()
+        .is_some_and(|review| !review.turn_files.is_empty());
 
     let mut column = div()
         .flex()
         .flex_col()
         .flex_none()
-        .w(px(380.0))
+        .w(px(root.changes_width))
         .h_full()
         .bg(theme.panel())
         .border_l_1()
@@ -4617,31 +4737,51 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
         .border_color(theme.border())
         .child(
             div()
+                .flex_1()
                 .text_size(px(12.5))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("Changes"),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(10.5))
+                .text_color(theme.faint())
+                .child(format!("{} files", files.len())),
+        )
+        .child(change_scope_button(
+            "changes-scope-turn",
+            "Last turn",
+            scope == ChangeScope::Turn,
+            has_turn,
+            theme,
+            cx,
+            |root, cx| root.set_change_scope(ChangeScope::Turn, cx),
+        ))
+        .child(change_scope_button(
+            "changes-scope-repository",
+            "Uncommitted",
+            scope == ChangeScope::Repository,
+            true,
+            theme,
+            cx,
+            |root, cx| root.set_change_scope(ChangeScope::Repository, cx),
+        ))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(11.0))
+                .text_color(theme.success())
+                .child(format!("+{added}")),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(11.0))
+                .text_color(theme.error())
+                .child(format!("\u{2212}{removed}")),
         );
-    if let Some((files, added, removed)) = message {
-        header = header
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(theme.dim())
-                    .child(format!("{files} files")),
-            )
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(theme.success())
-                    .child(format!("+{added}")),
-            )
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(theme.error())
-                    .child(format!("-{removed}")),
-            );
-    }
+
     if root
         .chats
         .get(root.active)
@@ -4654,14 +4794,42 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
                     .render("changes-undo", theme, cx, |root, _, cx| root.undo_turn(cx)),
             );
     }
-    header = header.child(div().flex_1()).child(
-        icon_button("changes-close", Icon::Close, 26.0, theme, false).on_click(cx.listener(
-            |root, _, _, cx| {
-                root.show_changes = false;
-                cx.notify();
-            },
-        )),
-    );
+    header = header
+        .child(
+            div()
+                .id("changes-layout")
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_none()
+                .h(px(26.0))
+                .px_2()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .text_size(px(10.5))
+                .text_color(theme.dim())
+                .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
+                .child(if unified {
+                    "Split diff"
+                } else {
+                    "Unified diff"
+                })
+                .on_click(cx.listener(|root, _, _, cx| root.toggle_change_layout(cx))),
+        )
+        .child(
+            icon_button("changes-refresh", Icon::Activity, 26.0, theme, false)
+                .tooltip(tip("Refresh changes", theme))
+                .on_click(cx.listener(|root, _, _, cx| root.refresh_change_review(cx))),
+        )
+        .child(
+            icon_button("changes-close", Icon::Close, 26.0, theme, false).on_click(cx.listener(
+                |root, _, _, cx| {
+                    root.show_changes = false;
+                    root.change_review = None;
+                    cx.notify();
+                },
+            )),
+        );
     column = column.child(header);
 
     let mut body = div()
@@ -4674,86 +4842,347 @@ fn changes_panel(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl
         .p_2()
         .gap_2();
 
-    match changes {
-        Some(value) => {
-            let files = value["files"].as_array().cloned().unwrap_or_default();
-            if files.is_empty() {
-                body = body.child(
+    if files.is_empty() {
+        body = body.child(
+            div()
+                .p_2()
+                .text_size(px(12.0))
+                .text_color(theme.faint())
+                .child("No changes."),
+        );
+    }
+    for file in files {
+        let path = file.path.clone();
+        let open = open_files.contains(&path);
+        let mut card =
+            div()
+                .flex()
+                .flex_col()
+                .rounded(px(8.0))
+                .bg(theme.background())
+                .border_1()
+                .border_color(theme.border())
+                .overflow_hidden()
+                .child(
                     div()
-                        .p_2()
-                        .text_size(px(12.0))
-                        .text_color(theme.faint())
-                        .child("No uncommitted changes"),
+                        .id(SharedString::from(format!("change-file-{path}")))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .min_h(px(38.0))
+                        .px_2()
+                        .cursor_pointer()
+                        .bg(if open {
+                            theme.panel_2()
+                        } else {
+                            theme.background()
+                        })
+                        .hover(move |style| style.bg(theme.panel_2()))
+                        .child(change_status_badge(&file.status, theme))
+                        .child(change_path_label(&path, theme))
+                        .children((!file.binary).then(|| {
+                            div()
+                                .flex_none()
+                                .text_size(px(10.5))
+                                .text_color(theme.success())
+                                .child(format!("+{}", file.added))
+                        }))
+                        .children((!file.binary).then(|| {
+                            div()
+                                .flex_none()
+                                .text_size(px(10.5))
+                                .text_color(theme.error())
+                                .child(format!("\u{2212}{}", file.removed))
+                        }))
+                        .child(icons::icon(
+                            if open {
+                                Icon::ChevronDown
+                            } else {
+                                Icon::ChevronRight
+                            },
+                            12.0,
+                            theme.faint(),
+                        ))
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            root.toggle_change_file(path.clone(), cx)
+                        })),
                 );
-            }
-            for file in files {
-                let path = file["path"].as_str().unwrap_or_default().to_string();
-                let added = file["added"].as_u64().unwrap_or(0);
-                let removed = file["removed"].as_u64().unwrap_or(0);
-                let diff = file["diff"].as_str().unwrap_or_default().to_string();
-                let binary = file["binary"].as_bool().unwrap_or(false);
-                let mut card = div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_2()
-                    .rounded(px(8.0))
-                    .bg(theme.background())
-                    .border_1()
-                    .border_color(theme.border())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_size(px(11.5))
-                                    .child(path),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(theme.success())
-                                    .child(format!("+{added}")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(theme.error())
-                                    .child(format!("-{removed}")),
-                            ),
-                    );
-                if binary {
-                    card = card.child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(theme.faint())
-                            .child("binary file"),
-                    );
-                } else if !diff.is_empty() {
-                    card = card.child(diff_block(&diff, theme));
-                }
-                body = body.child(card);
+        if open {
+            if loading.contains(&file.path) {
+                card = card.child(change_note("Reading the change…", theme));
+            } else if let Some(error) = errors.get(&file.path) {
+                card = card.child(change_note(error, theme));
+            } else if let Some(lines) = sides.get(&file.path) {
+                card = card.child(change_review_diff(
+                    &file, lines, unified, &expanded, theme, cx,
+                ));
+            } else if !file.diff.is_empty() {
+                card = card.child(diff_block(&file.diff, theme));
+            } else {
+                card = card.child(change_note("Reading the change…", theme));
             }
         }
-        None => {
-            body = body.child(
-                div()
-                    .p_2()
-                    .text_size(px(12.0))
-                    .text_color(theme.faint())
-                    .child("Reading the work tree…"),
-            );
-        }
+        body = body.child(card);
+    }
+    if review.is_none() {
+        body = body.child(
+            div()
+                .p_2()
+                .text_size(px(12.0))
+                .text_color(theme.faint())
+                .child("Open Changes from the composer."),
+        );
     }
 
     column.child(body)
+}
+
+fn change_scope_button(
+    id: &'static str,
+    label: &'static str,
+    active: bool,
+    enabled: bool,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Context<Root>) + 'static,
+) -> Stateful<gpui::Div> {
+    let mut button = div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_none()
+        .h(px(26.0))
+        .px_2()
+        .rounded(px(6.0))
+        .text_size(px(10.5))
+        .text_color(if active { theme.text() } else { theme.dim() })
+        .bg(if active {
+            theme.panel_3()
+        } else {
+            gpui::transparent_black()
+        });
+    if enabled {
+        button = button
+            .cursor_pointer()
+            .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+            .on_click(cx.listener(move |root, _, _, cx| on_click(root, cx)));
+    } else {
+        button = button.opacity(0.45);
+    }
+    button.child(label)
+}
+
+fn change_status_badge(status: &str, theme: &Theme) -> gpui::Div {
+    let color = match status {
+        "added" => theme.success(),
+        "deleted" => theme.error(),
+        _ => theme.accent(),
+    };
+    div()
+        .flex_none()
+        .text_size(px(10.5))
+        .font_family("Menlo")
+        .text_color(color)
+        .child(status_letter(status))
+}
+
+fn change_path_label(path: &str, theme: &Theme) -> gpui::Div {
+    let slash = path
+        .rfind(['/', '\\'])
+        .map(|position| position + 1)
+        .unwrap_or(0);
+    div()
+        .flex()
+        .flex_row()
+        .flex_1()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_size(px(11.5))
+        .child(
+            div()
+                .flex_none()
+                .text_color(theme.faint())
+                .child(path[..slash].to_string()),
+        )
+        .child(
+            div()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .text_color(theme.text())
+                .child(path[slash..].to_string()),
+        )
+}
+
+fn change_note(text: &str, theme: &Theme) -> gpui::Div {
+    div()
+        .w_full()
+        .px_2()
+        .py(px(10.0))
+        .text_size(px(11.0))
+        .text_color(theme.faint())
+        .child(text.to_string())
+}
+
+fn change_review_diff(
+    file: &EditedFile,
+    sides: &Value,
+    unified: bool,
+    expanded: &HashSet<String>,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    if sides["binary"].as_bool().unwrap_or(false) {
+        return div()
+            .id(SharedString::from(format!("change-diff-{}", file.path)))
+            .w_full()
+            .child(change_note("Binary file — no text diff.", theme));
+    }
+    if sides["omitted"].as_bool().unwrap_or(false) {
+        return div()
+            .id(SharedString::from(format!("change-diff-{}", file.path)))
+            .w_full()
+            .child(change_note("File too large to diff line by line.", theme));
+    }
+    let lines = sides["lines"].as_array().cloned().unwrap_or_default();
+    if lines.is_empty() {
+        return div()
+            .id(SharedString::from(format!("change-diff-{}", file.path)))
+            .w_full()
+            .child(change_note("No textual changes.", theme));
+    }
+    let longest = lines
+        .iter()
+        .filter_map(|line| line["text"].as_str())
+        .map(|text| text.chars().count())
+        .max()
+        .unwrap_or(0) as f32;
+    let content_width = if unified {
+        (longest * 6.8 + 100.0).max(720.0)
+    } else {
+        ((longest * 6.8 + 100.0) * 2.0).max(920.0)
+    };
+
+    let mut column = div()
+        .flex()
+        .flex_col()
+        .w(px(content_width))
+        .font_family("Menlo")
+        .text_size(px(10.5))
+        .line_height(px(17.0))
+        .border_t_1()
+        .border_color(theme.border());
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index]["kind"].as_str() != Some("context") {
+            column = column.child(change_diff_row(&lines[index], unified, theme));
+            index += 1;
+            continue;
+        }
+        let mut end = index;
+        while end < lines.len() && lines[end]["kind"].as_str() == Some("context") {
+            end += 1;
+        }
+        let key = format!("{}:{index}", file.path);
+        if expanded.contains(&key) || end - index <= 7 {
+            for line in &lines[index..end] {
+                column = column.child(change_diff_row(line, unified, theme));
+            }
+        } else {
+            for line in &lines[index..index + 3] {
+                column = column.child(change_diff_row(line, unified, theme));
+            }
+            let hidden = end - index - 6;
+            let path = file.path.clone();
+            let start = index;
+            column = column.child(
+                div()
+                    .id(SharedString::from(format!("change-context-{key}")))
+                    .flex()
+                    .items_center()
+                    .h(px(24.0))
+                    .px_2()
+                    .cursor_pointer()
+                    .bg(theme.panel())
+                    .text_size(px(10.5))
+                    .text_color(theme.faint())
+                    .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+                    .child(format!("{hidden} unmodified lines"))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        root.expand_change_context(path.clone(), start, cx)
+                    })),
+            );
+            for line in &lines[end - 3..end] {
+                column = column.child(change_diff_row(line, unified, theme));
+            }
+        }
+        index = end;
+    }
+    div()
+        .id(SharedString::from(format!("change-diff-{}", file.path)))
+        .w_full()
+        .overflow_scroll()
+        .child(column)
+}
+
+fn change_diff_row(line: &Value, unified: bool, theme: &Theme) -> gpui::Div {
+    let kind = line["kind"].as_str().unwrap_or("context");
+    let old = line["old"].as_u64().map(|number| number.to_string());
+    let new = line["new"].as_u64().map(|number| number.to_string());
+    let text = line["text"].as_str().unwrap_or_default();
+    let (background, color) = match kind {
+        "add" => (theme.wash("success", 0.12), theme.success()),
+        "remove" => (theme.wash("error", 0.12), theme.error()),
+        _ => (gpui::transparent_black(), theme.dim()),
+    };
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .min_h(px(17.0))
+        .bg(background);
+    if unified {
+        row = row
+            .child(change_line_number(old.as_deref(), theme))
+            .child(change_line_number(new.as_deref(), theme))
+            .child(change_line_text(text, color));
+    } else {
+        row = row
+            .child(change_line_number(old.as_deref(), theme))
+            .child(change_line_text(
+                if kind == "add" { "" } else { text },
+                color,
+            ))
+            .child(change_line_number(new.as_deref(), theme))
+            .child(change_line_text(
+                if kind == "remove" { "" } else { text },
+                color,
+            ));
+    }
+    row
+}
+
+fn change_line_number(number: Option<&str>, theme: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .w(px(32.0))
+        .pr_1()
+        .text_size(px(10.0))
+        .text_color(theme.faint())
+        .child(number.unwrap_or_default().to_string())
+}
+
+fn change_line_text(text: &str, color: gpui::Hsla) -> gpui::Div {
+    div()
+        .flex_1()
+        .min_w(px(0.0))
+        .whitespace_nowrap()
+        .pr(px(6.0))
+        .text_color(color)
+        .child(text.to_string())
 }
 
 // ---------- projects ----------

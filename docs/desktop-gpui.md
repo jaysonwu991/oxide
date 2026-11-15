@@ -214,12 +214,15 @@ that composer instead of being sent.
   uncommitted changes into a new checkout, create its branch later, and hand its
   session between the two.
 - **Changes** — `repository_changes` lists a thread's uncommitted files with
-  counts and their diff previews in the docked pane, and `Undo` in its header
-  restores the turn through `undo_turn` and the shared snapshot repository (the
-  same restore the terminal's `changes undo` and the VS Code panel run). Every
-  turn that changed files leaves an **Edited N files**
-  card in the transcript — the count, the totals, the files it touched, `Undo`
-  for the newest turn and `View changes`.
+  counts, and the docked pane reviews either the newest turn or the working
+  tree. A file expands into the aligned two sides from `change_sides` or
+  `repository_sides`; the pane switches between split and unified layouts,
+  folds long unchanged runs, refreshes the repository, and keeps each open file
+  in place while another expands. `Undo` restores the newest turn through
+  `undo_turn` and the shared snapshot repository (the same restore the terminal's
+  `changes undo` and the VS Code panel run). Every turn that changed files
+  leaves an **Edited N files** card in the transcript — the count, the totals,
+  the files it touched, `Undo` for the newest turn, and `View changes`.
 - **Project details** — the topbar's details toggle opens the right-hand column
   from `repository_changes`, `git_info` and `mcp_servers`: the project and its
   actions, `View changes` with the tree's totals, the repository's branch (or
@@ -297,8 +300,7 @@ and planned, and the beta does not pretend otherwise:
 - the Customize surface (browsing, installing and enabling plugins, skills and
   MCP servers) — the rail's Customize page shows what is configured and the
   settings that act on it, but not the marketplace;
-- the in-place review of a turn's diff (two-sided file restyle and hunk
-  staging), which needs the staging actions wired;
+- hunk-level staging and opening a reviewed file in the file viewer;
 - the provider Connect dialog (the model picker says how to connect, and the
   stored credential is read on refresh);
 - the composer's inline predictions;

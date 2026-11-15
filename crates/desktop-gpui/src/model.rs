@@ -141,12 +141,17 @@ pub struct EditedFile {
     pub added: usize,
     pub removed: usize,
     pub status: String,
+    pub binary: bool,
+    pub diff: String,
 }
 
 /// What a turn changed, kept in the transcript next to the answer that changed
 /// it: the page's own card, with the totals and the undo the baseline allows.
 #[derive(Clone, Debug)]
 pub struct EditedCard {
+    pub project: String,
+    pub baseline: Option<String>,
+    pub after: Option<String>,
     pub files: Vec<EditedFile>,
     pub added: usize,
     pub removed: usize,
@@ -162,6 +167,9 @@ impl EditedCard {
             return None;
         }
         Some(Self {
+            project: String::new(),
+            baseline: None,
+            after: None,
             files: files
                 .iter()
                 .map(|file| EditedFile {
@@ -169,6 +177,8 @@ impl EditedCard {
                     added: file["added"].as_u64().unwrap_or(0) as usize,
                     removed: file["removed"].as_u64().unwrap_or(0) as usize,
                     status: file["status"].as_str().unwrap_or_default().to_string(),
+                    binary: file["binary"].as_bool().unwrap_or(false),
+                    diff: file["diff"].as_str().unwrap_or_default().to_string(),
                 })
                 .collect(),
             added: changes["added"].as_u64().unwrap_or(0) as usize,
@@ -366,6 +376,10 @@ impl Chat {
         let Some(card) = EditedCard::from_value(&payload["changes"]) else {
             return;
         };
+        let mut card = card;
+        card.project = self.project.clone();
+        card.baseline = payload["baseline"].as_str().map(str::to_string);
+        card.after = payload["after"].as_str().map(str::to_string);
         for entry in self.entries.iter_mut() {
             if let Entry::Edited(existing) = entry {
                 existing.latest = false;
@@ -621,10 +635,12 @@ mod tests {
     fn a_turn_change_listing_becomes_a_card() {
         let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
         chat.record_turn(&json!({
+            "baseline": "before-turn",
+            "after": "after-turn",
             "changes": {
                 "files": [
-                    { "path": "src/main.rs", "status": "modified", "added": 12, "removed": 3 },
-                    { "path": "src/new.rs", "status": "added", "added": 40, "removed": 0 }
+                    { "path": "src/main.rs", "status": "modified", "added": 12, "removed": 3, "binary": false, "diff": "+changed" },
+                    { "path": "asset.bin", "status": "added", "added": 0, "removed": 0, "binary": true, "diff": "" }
                 ],
                 "added": 52,
                 "removed": 3
@@ -635,6 +651,11 @@ mod tests {
                 assert_eq!(card.files.len(), 2);
                 assert_eq!(card.added, 52);
                 assert_eq!(card.removed, 3);
+                assert_eq!(card.project, "/tmp");
+                assert_eq!(card.baseline.as_deref(), Some("before-turn"));
+                assert_eq!(card.after.as_deref(), Some("after-turn"));
+                assert_eq!(card.files[0].diff, "+changed");
+                assert!(card.files[1].binary);
                 assert!(card.latest);
             }
             other => panic!("expected an edited card, got {other:?}"),

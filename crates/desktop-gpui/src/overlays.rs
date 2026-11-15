@@ -139,12 +139,18 @@ fn dialog(theme: &Theme, title: &str, width: f32) -> gpui::Div {
         )
 }
 
+fn dialog_with_close(theme: &Theme, title: &str, width: f32, cx: &mut Context<Root>) -> gpui::Div {
+    dialog(theme, title, width).child(close_button(theme, cx))
+}
+
 /// The way out of a dialog, in words as well as in the glyph: a bare `\u{00d7}`
 /// asks a reader to know what it does, and the same control answers one keystroke
 /// away as well.
 fn close_button(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
+    let group = SharedString::from("overlay-close-button");
     div()
         .id("overlay-close")
+        .group(group.clone())
         .absolute()
         .top(px(12.0))
         .right(px(12.0))
@@ -158,7 +164,12 @@ fn close_button(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
         .bg(gpui::transparent_black())
         .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
         .tooltip(crate::views::tip("Close \u{00b7} Esc", theme))
-        .child(icons::icon(Icon::Close, 14.0, theme.dim()))
+        .child(
+            div()
+                .opacity(0.72)
+                .group_hover(group, |style| style.opacity(1.0))
+                .child(icons::icon(Icon::Close, 14.0, theme.dim())),
+        )
         .on_click(cx.listener(|root, _, _, cx| {
             root.overlay = None;
             cx.notify();
@@ -1003,7 +1014,11 @@ fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
 }
 
 fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    let mut panel = dialog(theme, "Updates", 560.0);
+    let mut panel = if root.updating_update {
+        dialog(theme, "Updates", 560.0)
+    } else {
+        dialog_with_close(theme, "Updates", 560.0, cx)
+    };
 
     if root.updating_update {
         let progress = root.update_progress.clone().unwrap_or_else(|| json!({}));
@@ -1116,13 +1131,6 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                     .text_size(px(13.0))
                     .text_color(theme.dim())
                     .child("Looking for the newest Oxide Beta release."),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .mt(px(12.0))
-                    .child(close_button(theme, cx)),
             );
     }
     if let Some(error) = root.update_failure.as_deref() {
@@ -1186,8 +1194,7 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                                 }
                             },
                         ),
-                    )
-                    .child(close_button(theme, cx)),
+                    ),
             );
     }
     if let Some(error) = root.update_error.as_deref() {
@@ -1229,7 +1236,6 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                     .justify_end()
                     .gap(px(8.0))
                     .mt(px(12.0))
-                    .child(close_button(theme, cx))
                     .child(Button::new("Try Again").primary().render(
                         "updates-retry",
                         theme,
@@ -1291,11 +1297,10 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                 |root, _, cx| root.restart_for_update(cx),
             ));
         }
-        actions = actions.child(close_button(theme, cx));
         return panel.child(actions);
     }
     let Some(check) = root.update_check.as_ref() else {
-        return panel.child(close_button(theme, cx));
+        return panel;
     };
     let available = check["updateAvailable"].as_bool().unwrap_or(false);
     let installable = check["installable"].as_bool().unwrap_or(false);
@@ -1404,7 +1409,6 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
             )
         });
     }
-    actions = actions.child(close_button(theme, cx));
     panel.child(actions)
 }
 
