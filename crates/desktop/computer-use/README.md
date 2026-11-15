@@ -81,10 +81,13 @@ proxy death and process cleanup. It requires a running windowed app for the read
 never requests OS grants or sends input to another app. Close other instances of the tested
 bundle first. The Desktop regressions are in `check-app.mjs` and `check-shell.mjs`.
 
-This is not complete Codex parity. The underlying server still uses foreground
-keyboard/pointer input, and only returns a screenshot when a tool asks for one.
-A helper bundle does not implement input isolation, continuous screen streaming,
-a settings pane for the server's per-app approvals, a system-wide cursor overlay,
-automatic unlock, or a built-in browser. Native permission prompts, actual capture/input,
-helper-crash recovery, install/update paths and notarization still need end-to-end
-validation. See [the parity review](../../../docs/oxide-reins-parity.md).
+This is not complete Codex parity. Pointer input still moves the real cursor;
+keyboard input can use `background: true` to post to one process without
+activating it. `get_app_state` returns the current app-window screenshot by
+default, while `computer-use://screen` is pulled by the client rather than
+streamed on a timer. Oxide Desktop's Computer Use dialog provides per-app
+approval controls and the last captured screenshot; a system-wide cursor
+overlay, automatic unlock/display covering, and a built-in browser remain
+client features. Native permission prompts, actual capture/input,
+helper-crash recovery, install/update paths and notarization still need
+end-to-end validation. See [the parity review](../../../docs/oxide-reins-parity.md).

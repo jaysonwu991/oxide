@@ -1,4 +1,4 @@
-# Computer Use parity review — the window, the helper and the runtime
+# Computer Use parity review — GPUI Desktop, the helper and the runtime
 
 Target: the user-visible behavior in the supplied screenshots and the
 [official Computer Use documentation](https://learn.chatgpt.com/docs/computer-use),
@@ -32,12 +32,12 @@ later sessions now included in this review.
 | Behavior | Current implementation / verification | Remaining work |
 | --- | --- | --- |
 | Distinct computer-use activity | Mouse glyph in tool cards and topbar; active styling only while computer tools run. | No global screen cursor overlay. |
-| Preview beside chat | Last returned screenshot in the details dock, plus a dialog available in compact windows. Text-only calls preserve the image and its original app label. The runtime publishes `computer-use://screen`, which captures on read and reports `notifications/resources/updated` after any call that could have changed the screen, so a pane can stay current without a tool call. | Snapshots are explicitly labeled, the resource is pulled rather than pushed on a timer, and the window does not use it yet. |
+| Preview beside chat | GPUI keeps the last returned screenshot in the details dock and in its Computer Use dialog. Text-only calls preserve the image and its original app label. The runtime publishes `computer-use://screen`, which captures on read and reports `notifications/resources/updated` after any call that could have changed the screen, so a pane can stay current without a tool call. | Snapshots are explicitly labeled and the resource is pulled rather than pushed on a timer. |
 | Independent chats | Per-thread activity, snapshot, stop state; background updates cannot paint into the visible chat. Covered by Desktop behavior checks. | Separate helper instances do not isolate input: they share one desktop, and only `background` keyboard delivery avoids taking focus. |
 | Stop / takeover | Desktop cancels the visible turn through existing `cancel_run`; helper menu terminates its MCP runtime. EOF and proxy-death cleanup tested. The runtime now yields to a person's keyboard or pointer input during a paced drag or a long `type_text`, releases what it holds and reports `user takeover`. | A synchronous AX call or a single click is not arbitrated, and the window has no separate control for it. Already completed clicks/writes cannot be undone. |
 | Separate native app | `dev.oxide.computer-use`, native menu-bar cursor, LaunchServices launch, private local IPC, bundled MCP runtime. Native handshake and observed helper ancestry tested. | Opt-in development build, not installed automatically or included in the release installer. |
 | OS permissions | Native permission diagnostics and user-initiated request menu. MCP reports the helper as its host with both grants missing, while the existing Oxide session reported its own grants. | User must grant helper access. Actual System Settings entries, granted capture and input need live validation. |
-| Per-app approvals and settings | The runtime decides per app — allow, deny, approve one call, or a default for an app nobody decided about — and pins an approval to the app's bundle identity, which a changed identity fails. Decisions are re-read on every call, so one made in a terminal reaches a running server. The hosting bundle is refused by default (`apps self-automation allow` lifts it). Shared Oxide tool approvals remain a separate gate. | No settings UI in the window: decisions are made with `oxide-reins apps allow\|grant-once\|deny\|revoke\|policy\|self-automation`. |
+| Per-app approvals and settings | The runtime decides per app — allow, deny, approve one call, or a default for an app nobody decided about — and pins an approval to the app's bundle identity, which a changed identity fails. Decisions are re-read on every call, so one made in a terminal reaches a running server. The hosting bundle is refused by default (`apps self-automation allow` lifts it). GPUI exposes the app list, always-allow, allow-once, block, revoke and fallback controls through `computer_use_policy`; shared Oxide tool approvals remain a separate gate. | Live visual QA opened the dialog against the configured server and listed app decisions; changing those decisions was intentionally left to the user. |
 | Background macOS use | Existing AXPress/AXValue paths avoid foreground input for supported controls, and `type_text`/`press_key` with `background: true` deliver keys to one process through `CGEventPostToPid` without activating it. | Pointer events still move the real cursor, and an app that keeps its own key focus can ignore delivered keys — the reply asks for verification. Whether each app honours this is unverified. |
 | Signed distribution | Build script can sign the helper and explicit runtime with a supplied identity. Ad-hoc bundle built and signature verified locally. The runtime writes an install marker beside its binary and `doctor --json` reports that marker, its build, its target and whether it is a debug or release binary; its CI builds both Mac architectures. | Notarization, an installer/update path, and a stable identity through updates. |
 | Browser, app selection and lock behavior | Existing MCP discovery and native app tools. | Built-in browser, native `@App` selection/settings, automatic unlock/cover displays/local-input relock are not implemented. |
@@ -72,14 +72,12 @@ Build/connect instructions and the repeatable read-only smoke check live in
 
 ## Where the runtime side is recorded
 
-The server's half of this list is tracked against the runtime that implements it,
-in oxide-reins PRs [#3](https://github.com/jaysonwu991/oxide-reins/pull/3) and
-[#4](https://github.com/jaysonwu991/oxide-reins/pull/4) and the `docs/parity.md`
-they add: per follow-up, what the runtime now does, what belongs to the client,
-and what is still unverified. The rows above that name the runtime follow that
-record.
+The server's half of this list is tracked against the runtime that implements it
+in the [oxide-computer-use repository](https://github.com/jaysonwu991/oxide-computer-use):
+per follow-up, what the runtime now does, what belongs to the client, and what
+is still unverified. The rows above that name the runtime follow that record.
 
-The runtime also gained `oxide-reins verify`, which exercises each native path
+The runtime also gained `oxide-computer-use verify`, which exercises each native path
 behind these rows — the accessibility tree, a capture, a bundle identity, the
 takeover tap, background typing — and reports `ok`, `MISSING` or `skipped` with
 the evidence, exiting nonzero on a gap. Every "unverified" above is one command

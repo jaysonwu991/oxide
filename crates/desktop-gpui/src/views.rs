@@ -681,6 +681,20 @@ pub fn topbar(
                 root.open_repository_changes(cx);
             }
         }));
+    let computer_use_active = root
+        .chats
+        .get(root.active)
+        .and_then(|chat| chat.computer_use())
+        .is_some_and(|activity| activity.running);
+    let computer_use = icon_button(
+        "topbar-computer-use",
+        Icon::Pointer,
+        30.0,
+        theme,
+        computer_use_active,
+    )
+    .tooltip(tip("Computer use", theme))
+    .on_click(cx.listener(|root, _, _, cx| root.open_computer_use(cx)));
     let details = icon_button(
         "details-toggle",
         Icon::Details,
@@ -693,6 +707,7 @@ pub fn topbar(
     content = content
         .child(new_chat)
         .child(changes)
+        .child(computer_use)
         .child(details)
         .child(div().flex_none().w(px(4.0)));
     row.child(content)
@@ -2181,6 +2196,134 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         }
     }
 
+    if let Some(activity) = root
+        .chats
+        .get(root.active)
+        .and_then(|chat| chat.computer_use())
+    {
+        let status = if activity.stopped {
+            "Stopped"
+        } else if activity.failed {
+            "Action failed"
+        } else if activity.running {
+            "Using computer"
+        } else {
+            "Finished"
+        };
+        let action = [activity.app.clone(), Some(activity.action.clone())]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let mut card = div()
+            .id("details-computer-use")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .mt_2()
+            .p_2()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(if activity.failed {
+                theme.error()
+            } else if activity.running {
+                theme.accent()
+            } else {
+                theme.border()
+            })
+            .bg(theme.panel_2())
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(icons::icon(
+                        Icon::Pointer,
+                        15.0,
+                        if activity.running {
+                            theme.accent()
+                        } else if activity.failed {
+                            theme.error()
+                        } else {
+                            theme.faint()
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text())
+                            .child("Computer Use"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(if activity.failed {
+                                theme.error()
+                            } else if activity.running {
+                                theme.accent()
+                            } else {
+                                theme.faint()
+                            })
+                            .child(status),
+                    ),
+            )
+            .children((!action.is_empty()).then(|| {
+                div()
+                    .text_size(px(10.5))
+                    .text_color(theme.dim())
+                    .child(action)
+            }))
+            .children(activity.image.as_ref().and_then(|image| {
+                image.image.clone().map(|preview| {
+                    let data_url = image.data_url.clone();
+                    let name = activity
+                        .image_app
+                        .clone()
+                        .unwrap_or_else(|| image.name.clone());
+                    div()
+                        .id("details-computer-use-preview")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w_full()
+                        .max_h(px(190.0))
+                        .overflow_hidden()
+                        .rounded(px(7.0))
+                        .bg(theme.background())
+                        .cursor_pointer()
+                        .child(gpui::img(preview).w_full().max_h(px(190.0)))
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            if let Some(image) = crate::model::image_from_data_url(&data_url) {
+                                root.overlay = Some(Overlay::ImagePreview {
+                                    name: name.clone(),
+                                    image,
+                                });
+                                cx.notify();
+                            }
+                        }))
+                })
+            }))
+            .child(div().text_size(px(10.5)).text_color(theme.faint()).child(
+                if activity.image.is_some() {
+                    "Last captured screenshot"
+                } else {
+                    "No screenshot captured yet"
+                },
+            ));
+        if activity.running {
+            card = card.child(Button::new("Stop task").danger().render(
+                "details-computer-use-stop",
+                theme,
+                cx,
+                |root, _, cx| root.stop(cx),
+            ));
+        }
+        panel = panel.child(card);
+    }
+
     panel = panel.child(div().h(px(8.0)));
 
     panel = panel.child(
@@ -2868,6 +3011,9 @@ fn status_letter(status: &str) -> &'static str {
 }
 
 fn tool_label(name: &str) -> &str {
+    if crate::model::is_computer_tool(name) {
+        return "Computer Use";
+    }
     match name {
         "tool" | "" => "Tool result",
         "bash" => "Command",
@@ -3057,6 +3203,7 @@ fn entry_view(
                 )
         }
         Entry::Tool(card) => {
+            let computer_use = crate::model::is_computer_tool(&card.name);
             let (color, state) = match card.status {
                 Status::Pending => (theme.faint(), "Queued"),
                 Status::Running => (theme.accent(), "Running"),
@@ -3076,6 +3223,8 @@ fn entry_view(
                 .border_1()
                 .border_color(if card.status == Status::Failed {
                     theme.error()
+                } else if computer_use && card.status == Status::Running {
+                    theme.accent()
                 } else {
                     theme.border()
                 })
@@ -3102,7 +3251,19 @@ fn entry_view(
                             .h(px(22.0))
                             .rounded(px(6.0))
                             .bg(theme.panel_2())
-                            .child(icons::icon(Icon::More, 13.0, theme.faint())),
+                            .child(icons::icon(
+                                if computer_use {
+                                    Icon::Pointer
+                                } else {
+                                    Icon::More
+                                },
+                                13.0,
+                                if computer_use {
+                                    theme.accent()
+                                } else {
+                                    theme.faint()
+                                },
+                            )),
                     )
                     .child(
                         div()
@@ -3170,6 +3331,20 @@ fn entry_view(
                 if let Some(text) = diff["text"].as_str().or_else(|| diff.as_str()) {
                     block = block.child(diff_block(text, theme));
                 }
+            }
+            if !card.media.is_empty() {
+                block = block.child(div().flex().flex_row().flex_wrap().gap_2().children(
+                    card.media.iter().enumerate().map(|(position, attachment)| {
+                        attachment_thumbnail(
+                            SharedString::from(format!("tool-attachment-{}-{position}", card.id)),
+                            attachment,
+                            180.0,
+                            9.0,
+                            theme,
+                            cx,
+                        )
+                    }),
+                ));
             }
             block
         }

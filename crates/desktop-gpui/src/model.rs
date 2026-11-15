@@ -8,6 +8,7 @@
 use crate::markdown::{self, Block};
 use gpui::{Image, ImageFormat};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// A number the engine wrote, under the name the Rust struct serialises it with.
@@ -115,9 +116,11 @@ pub struct ToolCard {
     pub id: u64,
     pub name: String,
     pub detail: String,
+    pub app: Option<String>,
     pub status: Status,
     pub output: String,
     pub diff: Option<Value>,
+    pub media: Vec<Attachment>,
 }
 
 #[derive(Clone, Debug)]
@@ -274,6 +277,71 @@ impl Attachment {
 }
 
 #[derive(Clone, Debug)]
+pub struct ComputerUseActivity {
+    pub app: Option<String>,
+    pub action: String,
+    pub running: bool,
+    pub stopped: bool,
+    pub failed: bool,
+    pub image: Option<Attachment>,
+    pub image_app: Option<String>,
+}
+
+/// Whether a tool belongs to an Oxide or Codex Computer Use server. MCP tool
+/// names are server-qualified, and a project may use either the standalone
+/// `computer-use` registration or Oxide's `oxide-computer-use` one.
+pub fn is_computer_tool(name: &str) -> bool {
+    let Some((server, tool)) = name.rsplit_once("__") else {
+        return false;
+    };
+    !tool.is_empty()
+        && (server == "computer-use"
+            || server == "computer_use"
+            || server.ends_with("-computer-use")
+            || server.ends_with("_computer_use"))
+}
+
+fn computer_action(name: &str) -> String {
+    name.rsplit_once("__")
+        .map(|(_, action)| action.replace('_', " "))
+        .unwrap_or_else(|| name.replace('_', " "))
+}
+
+fn argument(value: &Value) -> Value {
+    if value.is_object() {
+        value.clone()
+    } else {
+        value
+            .as_str()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or(Value::Null)
+    }
+}
+
+fn tool_attachments(value: &Value) -> Vec<Attachment> {
+    value["attachments"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let data_url = item["dataUrl"]
+                        .as_str()
+                        .or_else(|| item["data_url"].as_str())?;
+                    if !data_url.starts_with("data:image/") {
+                        return None;
+                    }
+                    Some(Attachment::new(
+                        item["name"].as_str().unwrap_or("Tool image").to_string(),
+                        data_url.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Debug)]
 pub struct QueuedMessage {
     pub text: String,
     pub attachments: Vec<Attachment>,
@@ -287,6 +355,7 @@ pub struct Chat {
     pub title: String,
     pub entries: Vec<Entry>,
     pub run: Option<u64>,
+    pub stop_requested: bool,
     /// A turn was asked for and its id has not come back yet. The engine's
     /// `agent-start` and `agent-event` packets can arrive before `send_prompt`
     /// answers, so the chat claims the first run the stream names.
@@ -317,6 +386,7 @@ impl Chat {
             title,
             entries: Vec::new(),
             run: None,
+            stop_requested: false,
             awaiting_run: false,
             reasoning: None,
             agent: None,
@@ -338,6 +408,49 @@ impl Chat {
 
     pub fn running(&self) -> bool {
         self.run.is_some() || self.awaiting_run
+    }
+
+    /// The latest Computer Use call and the latest screenshot any Computer Use
+    /// call in this conversation returned. An accessibility-only result keeps
+    /// the earlier picture, matching Codex's persistent preview.
+    pub fn computer_use(&self) -> Option<ComputerUseActivity> {
+        let mut latest = None;
+        let mut image = None;
+        for entry in self.entries.iter().rev() {
+            let Entry::Tool(card) = entry else {
+                continue;
+            };
+            if !is_computer_tool(&card.name) {
+                continue;
+            }
+            if image.is_none() {
+                if let Some(attachment) = card.media.last() {
+                    image = Some((attachment.clone(), card.app.clone()));
+                }
+            }
+            if latest.is_none() {
+                latest = Some((
+                    card.app.clone(),
+                    computer_action(&card.name),
+                    card.status == Status::Running,
+                    card.status == Status::Failed,
+                ));
+            }
+            if image.is_some() && latest.is_some() {
+                break;
+            }
+        }
+        let (app, action, running, failed) = latest?;
+        let (image, image_app) = image.map_or((None, None), |(image, app)| (Some(image), app));
+        Some(ComputerUseActivity {
+            app,
+            action,
+            running: running && self.running(),
+            stopped: self.stop_requested && !self.running(),
+            failed,
+            image,
+            image_app,
+        })
     }
 
     /// Appends text to the answer at the end of the conversation, opening one
@@ -451,15 +564,18 @@ impl Chat {
             }
             "tool_call" => {
                 let name = payload["toolName"].as_str().unwrap_or_default().to_string();
-                let detail = describe_call(&name, &payload["arguments"]);
+                let args = argument(&payload["arguments"]);
+                let detail = describe_call(&name, &args);
                 let id = self.entries.len() as u64;
                 self.entries.push(Entry::Tool(ToolCard {
                     id,
                     name,
                     detail,
+                    app: args["app"].as_str().map(str::to_string),
                     status: Status::Running,
                     output: String::new(),
                     diff: None,
+                    media: Vec::new(),
                 }));
             }
             "tool_execution_update" => {
@@ -478,6 +594,7 @@ impl Chat {
                     }
                     card.status = if failed { Status::Failed } else { Status::Done };
                     card.diff = payload.get("diff").cloned();
+                    card.media = tool_attachments(payload);
                 }
             }
             "usage" => {
@@ -546,6 +663,14 @@ impl Chat {
     pub fn load(&mut self, value: &Value) {
         self.entries.clear();
         if let Some(messages) = value["messages"].as_array() {
+            let results = messages
+                .iter()
+                .filter(|message| message["role"].as_str() == Some("tool"))
+                .filter_map(|message| {
+                    Some((message["toolCallId"].as_str()?.to_string(), message.clone()))
+                })
+                .collect::<HashMap<_, _>>();
+            let mut restored = HashSet::new();
             for message in messages {
                 let role = message["role"].as_str().unwrap_or_default();
                 let text = message["content"].as_str().unwrap_or_default().to_string();
@@ -578,31 +703,55 @@ impl Chat {
                         if let Some(calls) = message["toolCalls"].as_array() {
                             for call in calls {
                                 let name = call["name"].as_str().unwrap_or_default().to_string();
-                                let args = call["arguments"]
+                                let args = argument(&call["arguments"]);
+                                let result = call["id"]
                                     .as_str()
-                                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                                    .and_then(|id| results.get(id))
+                                    .cloned()
                                     .unwrap_or(Value::Null);
+                                if let Some(id) = call["id"].as_str() {
+                                    if results.contains_key(id) {
+                                        restored.insert(id.to_string());
+                                    }
+                                }
+                                let output =
+                                    result["content"].as_str().unwrap_or_default().to_string();
+                                let failed = output.starts_with("error:");
                                 self.entries.push(Entry::Tool(ToolCard {
                                     id: self.entries.len() as u64,
                                     detail: describe_call(&name, &args),
                                     name,
-                                    status: Status::Done,
-                                    output: String::new(),
+                                    app: args["app"].as_str().map(str::to_string),
+                                    status: if failed { Status::Failed } else { Status::Done },
+                                    output: output
+                                        .strip_prefix("error:")
+                                        .unwrap_or(&output)
+                                        .trim()
+                                        .to_string(),
                                     diff: None,
+                                    media: tool_attachments(&result),
                                 }));
                             }
                         }
                     }
                     "tool" => {
+                        if message["toolCallId"]
+                            .as_str()
+                            .is_some_and(|id| restored.contains(id))
+                        {
+                            continue;
+                        }
                         let output = text.clone();
                         let id = self.entries.len() as u64;
                         self.entries.push(Entry::Tool(ToolCard {
                             id,
                             name: "tool".to_string(),
                             detail: String::new(),
+                            app: None,
                             status: Status::Done,
                             output,
                             diff: None,
+                            media: tool_attachments(message),
                         }));
                     }
                     _ => {}
@@ -660,6 +809,87 @@ pub fn describe_call(_name: &str, args: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zb4kAAAAASUVORK5CYII=";
+
+    #[test]
+    fn computer_tool_names_are_server_qualified() {
+        assert!(is_computer_tool("computer-use__click"));
+        assert!(is_computer_tool("oxide-computer-use__get_app_state"));
+        assert!(is_computer_tool("computer_use__screenshot"));
+        assert!(!is_computer_tool("other__computer-use"));
+        assert!(!is_computer_tool("computer-use"));
+    }
+
+    #[test]
+    fn computer_use_keeps_the_last_screenshot_through_ax_only_results() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.run = Some(7);
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "oxide-computer-use__click",
+            "arguments": { "app": "Edge" },
+        }));
+        let running = chat.computer_use().unwrap();
+        assert!(running.running);
+        assert_eq!(running.app.as_deref(), Some("Edge"));
+        assert_eq!(running.action, "click");
+
+        chat.apply(&json!({
+            "type": "tool_execution_end",
+            "toolName": "oxide-computer-use__click",
+            "result": "Clicked",
+            "isError": false,
+            "attachments": [{ "name": "Edge", "dataUrl": PNG }],
+        }));
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "oxide-computer-use__get_app_state",
+            "arguments": { "app": "Finder" },
+        }));
+        chat.apply(&json!({
+            "type": "tool_execution_end",
+            "toolName": "oxide-computer-use__get_app_state",
+            "result": "Accessibility tree",
+            "isError": false,
+            "attachments": [],
+        }));
+
+        let activity = chat.computer_use().unwrap();
+        assert!(!activity.running);
+        assert_eq!(activity.app.as_deref(), Some("Finder"));
+        assert_eq!(activity.action, "get app state");
+        assert_eq!(activity.image_app.as_deref(), Some("Edge"));
+        assert_eq!(activity.image.unwrap().data_url, PNG);
+    }
+
+    #[test]
+    fn stored_tool_results_keep_their_call_and_image() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.load(&json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "toolCalls": [{
+                        "id": "shot",
+                        "name": "computer-use__screenshot",
+                        "arguments": "{\"app\":\"Edge\"}"
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "toolCallId": "shot",
+                    "content": "Captured screenshot",
+                    "attachments": [{ "name": "Edge", "dataUrl": PNG }]
+                }
+            ]
+        }));
+        assert_eq!(chat.entries.len(), 1);
+        let activity = chat.computer_use().unwrap();
+        assert_eq!(activity.action, "screenshot");
+        assert_eq!(activity.image.unwrap().data_url, PNG);
+    }
 
     #[test]
     fn a_turn_change_listing_becomes_a_card() {
