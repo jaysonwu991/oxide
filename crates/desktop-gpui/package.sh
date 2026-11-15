@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Packages Oxide for Desktop (Beta) for the machine that runs it.
+# Packages Oxide for Desktop for the machine that runs it.
 #
 # The Electron app hands both of its halves to electron-builder. This front-end
 # is one native binary, so this script is what turns it into the thing people
 # install: a `.app` in a `.dmg` on macOS, and a `.tar.gz` bundle — binary, icon
 # and desktop entry — on Linux and Windows. The names it writes are the ones
-# `.github/workflows/desktop-gpui.yml` uploads and the ones a release carries;
-# they are deliberately distinct from the stable app's so the two installers can
-# sit side by side.
+# `.github/workflows/desktop-gpui.yml` uploads and the ones the GPUI updater
+# resolves. Electron remains available as a fallback from its own versioned
+# releases.
 #
 # Signing and notarization happen when the corresponding secrets are configured,
-# exactly as they do for the stable app: an imported Developer ID identity is
+# exactly as they do for the Electron fallback: an imported Developer ID identity is
 # used to sign the bundle (hardened runtime, timestamped) and the Apple API key,
 # when present, notarizes it and staples the ticket.
 #
@@ -72,8 +72,8 @@ case "$(uname -s)" in
     ;;
 esac
 
-app_name="Oxide Beta"
-bundle_id="dev.oxide.desktop.beta"
+app_name="Oxide"
+bundle_id="dev.oxide.desktop"
 plugins="$here/../desktop/plugins"
 
 if [ "$platform" = "macos" ]; then
@@ -145,8 +145,8 @@ PLIST
   if [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ]; then
     echo "notarizing"
     temp_work="$(mktemp -d)"
-    ditto -c -k --keepParent "$app" "$temp_work/OxideBeta.zip"
-    xcrun notarytool submit "$temp_work/OxideBeta.zip" \
+    ditto -c -k --keepParent "$app" "$temp_work/Oxide.zip"
+    xcrun notarytool submit "$temp_work/Oxide.zip" \
       --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait
     xcrun stapler staple "$app"
     rm -rf "$temp_work"
@@ -158,8 +158,8 @@ PLIST
   # .DS_Store, so the image is staged read-write and only compressed after the
   # layout has been written. The trap keeps a failed Finder step from leaving a
   # mounted volume behind on a release runner.
-  # This is electron-builder's default DMG background: Electron Desktop uses
-  # the same asset, so both installers keep the same drag arrow.
+  # This is electron-builder's default DMG background, retained for visual
+  # continuity with the Electron fallback.
   background="$here/assets/dmg-background.tiff"
   if [ ! -f "$background" ]; then
     echo "error: $background is missing" >&2
@@ -167,7 +167,7 @@ PLIST
   fi
   dmg_work="$(mktemp -d "$artifact_dir/dmg-work.XXXXXX")"
   stage_dmg="$dmg_work/stage"
-  rw_dmg="$dmg_work/Oxide Beta-rw.dmg"
+  rw_dmg="$dmg_work/Oxide-rw.dmg"
   mount_dir="$dmg_work/mount"
   volume_name="$app_name $version-$arch"
   attached=0
@@ -230,7 +230,7 @@ APPLESCRIPT
   hdiutil detach "$mount_dir" >/dev/null
   attached=0
 
-  dmg="$artifact_dir/Oxide-Beta-macos-$arch.dmg"
+  dmg="$artifact_dir/Oxide-macos-$arch.dmg"
   rm -f "$dmg"
   hdiutil convert "$rw_dmg" -ov -format UDZO \
     -imagekey zlib-level=9 -o "$dmg" >/dev/null
@@ -248,10 +248,10 @@ stage="$artifact_dir/stage"
 mkdir -p "$stage"
 if [ "$platform" = "win" ]; then
   binary="target/release/oxide-desktop-gpui.exe"
-  package="$artifact_dir/Oxide-Beta-win-$arch-Setup.tar.gz"
+  package="$artifact_dir/Oxide-win-$arch-Setup.tar.gz"
 else
   binary="target/release/oxide-desktop-gpui"
-  package="$artifact_dir/Oxide-Beta-linux-$arch-Setup.tar.gz"
+  package="$artifact_dir/Oxide-linux-$arch-Setup.tar.gz"
 fi
 if [ ! -f "$binary" ]; then
   echo "error: $binary was not built" >&2
@@ -259,16 +259,16 @@ if [ ! -f "$binary" ]; then
 fi
 if [ "$platform" = "win" ]; then
   cp "$binary" "$stage/oxide-desktop-gpui.exe"
-  cp "$here/../desktop/icons/icon.ico" "$stage/oxide-beta.ico"
+  cp "$here/../desktop/icons/icon.ico" "$stage/oxide.ico"
 else
   cp "$binary" "$stage/oxide-desktop-gpui"
-  cp "$here/../desktop/icons/icon.png" "$stage/oxide-beta.png"
-  cat > "$stage/oxide-beta.desktop" <<DESKTOP
+  cp "$here/../desktop/icons/icon.png" "$stage/oxide.png"
+  cat > "$stage/oxide.desktop" <<DESKTOP
 [Desktop Entry]
-Name=Oxide Beta
-Comment=An AI coding agent (beta GPUI front-end)
+Name=Oxide
+Comment=An AI coding agent
 Exec=oxide-desktop-gpui
-Icon=oxide-beta
+Icon=oxide
 Terminal=false
 Type=Application
 Categories=Development;
@@ -278,14 +278,14 @@ if [ -d "$plugins" ]; then
   cp -R "$plugins" "$stage/plugins"
 fi
 cat > "$stage/README.txt" <<README
-Oxide for Desktop (Beta) $version
+Oxide for Desktop $version
 
-This is the beta GPUI front-end. It reads the same configuration, sessions and
-approvals as the terminal and the stable desktop app — run it beside them.
+This is the native GPUI desktop app. It reads the same configuration, sessions
+and approvals as the terminal and editor integrations.
 
 Unpack this folder somewhere it can stay and run oxide-desktop-gpui.
 The folder's plugins/ directory is installed into the shared plugin store at
-launch, exactly as the stable app's bundled plugins are.
+launch, exactly as the Electron fallback's bundled plugins are.
 README
 
 tar -czf "$package" -C "$stage" .

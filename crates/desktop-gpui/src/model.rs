@@ -740,7 +740,7 @@ mod tests {
             "id": "ce4b20dcbe82236f",
             "message_count": 469,
             "modified_at": 1794657550u64,
-            "name": "Align GPUI beta window with Electron desktop",
+            "name": "Align GPUI window with the Electron fallback",
             "path": "sessions/1a99b86e8b6de1c6/1794656133745_ce4b20dcbe82236f.jsonl",
             "pinned": false,
             "preview": "The gap is so large between GPUI desktop and Electron desktop"
@@ -748,7 +748,7 @@ mod tests {
         .expect("a session row");
         assert_eq!(
             session.title,
-            "Align GPUI beta window with Electron desktop"
+            "Align GPUI window with the Electron fallback"
         );
         assert_eq!(session.project, "/Users/jayson/Projects/oxide");
         assert_eq!(session.modified_at, 1_794_657_550);

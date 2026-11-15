@@ -1,5 +1,5 @@
-# Release Drafter configuration for the beta (GPUI) desktop app. It drafts the
-# next beta release on every push to `main`, alongside the CLI draft
+# Release Drafter configuration for the primary (GPUI) desktop app. It drafts
+# the next native desktop release on every push to `main`, alongside the CLI draft
 # (`release-drafter.cli.yml`), the stable desktop draft
 # (`release-drafter.desktop.yml`) and the VS Code extension draft
 # (`release-drafter.vscode.yml`); all four are run by
@@ -20,7 +20,7 @@
 # The categories, replacers, and change templates are shared with the CLI,
 # stable desktop and VS Code configs; keep the four files in sync.
 
-name-template: 'Oxide Desktop Beta v$RESOLVED_VERSION'
+name-template: 'Oxide Desktop v$RESOLVED_VERSION'
 tag-template: 'desktop-gpui-v$RESOLVED_VERSION'
 tag-prefix: 'desktop-gpui-v'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
@@ -136,11 +136,11 @@ template: |
   Download the installer for your platform from the assets below. The app is
   built for Apple Silicon, Intel and 64-bit Windows and Linux.
 
-  - **macOS, Apple Silicon** — `Oxide-Beta-macos-arm64.dmg`
-  - **macOS, Intel** — `Oxide-Beta-macos-x64.dmg`
-  - **Windows x64** — `Oxide-Beta-win-x64-Setup.tar.gz`
-  - **Linux x64** — `Oxide-Beta-linux-x64-Setup.tar.gz`
-  - **Linux arm64** — `Oxide-Beta-linux-arm64-Setup.tar.gz`
+  - **macOS, Apple Silicon** — `Oxide-macos-arm64.dmg`
+  - **macOS, Intel** — `Oxide-macos-x64.dmg`
+  - **Windows x64** — `Oxide-win-x64-Setup.tar.gz`
+  - **Linux x64** — `Oxide-linux-x64-Setup.tar.gz`
+  - **Linux arm64** — `Oxide-linux-arm64-Setup.tar.gz`
 
   On macOS the app is notarized only when this release was built with both an
   Apple Developer certificate and an App Store Connect key configured; a build
@@ -150,20 +150,20 @@ template: |
   flag and open it again:
 
   ```sh
-  xattr -dr com.apple.quarantine "/Applications/Oxide Beta.app"
+  xattr -dr com.apple.quarantine "/Applications/Oxide.app"
   ```
 
-  The macOS beta keeps itself current: **Check for Updates…** in the app menu
+  The macOS app keeps itself current: **Check for Updates…** in the app menu
   downloads and verifies the newest `desktop-gpui-v` disk image, replaces the
-  installed **Oxide Beta** app, and offers to restart into it. Other packages
-  download the verified beta installer to your Downloads folder so you can
+  installed **Oxide** app, and offers to restart into it. Other packages
+  download the verified installer to your Downloads folder so you can
   unpack it the same way as the first install. The CLI is released separately:
   its binaries, install scripts, and notes live on the
   [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
 
   ## Full Changelog
 
-  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...desktop-v$RESOLVED_VERSION
+  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...desktop-gpui-v$RESOLVED_VERSION
 
   ## New Contributors
 

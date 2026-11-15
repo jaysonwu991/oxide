@@ -1,5 +1,5 @@
-# Release Drafter configuration for the desktop app. It drafts the next desktop
-# release on every push to `main`, alongside the CLI draft
+# Release Drafter configuration for the Electron desktop fallback. It drafts the
+# next versioned fallback release on every push to `main`, alongside the CLI draft
 # (`release-drafter.cli.yml`) and the VS Code extension draft
 # (`release-drafter.vscode.yml`); all three are run by
 # .github/workflows/release-drafter.yml.

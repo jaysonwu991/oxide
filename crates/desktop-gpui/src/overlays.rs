@@ -288,7 +288,7 @@ fn selectable(
 
 /// The settings sheet: the page's own two columns — the sections down the left,
 /// the active section's fields in a card on the right. Everything it writes goes
-/// through `save_prefs`, so the terminal and the stable window see the same
+/// through `save_prefs`, so the terminal and the Electron fallback see the same
 /// values.
 pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let tab = root.settings_tab;
@@ -694,7 +694,7 @@ fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<
     vec![
         field_tall(
             "Theme",
-            "The palette the window, the terminal and the stable app all read.",
+            "The palette the window, the terminal and the Electron fallback all read.",
             theme,
             themes,
         ),
@@ -1089,7 +1089,7 @@ fn theme_card(
 }
 
 fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    dialog_with_close(theme, "About Oxide Beta", 430.0, cx)
+    dialog_with_close(theme, "About Oxide", 430.0, cx)
         .child(
             div()
                 .flex()
@@ -1107,7 +1107,7 @@ fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
                                 .text_size(px(17.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text())
-                                .child("Oxide Desktop Beta"),
+                                .child("Oxide for Desktop"),
                         )
                         .child(
                             div()
@@ -1124,7 +1124,7 @@ fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
                 .line_height(px(18.0))
                 .text_color(theme.dim())
                 .child(
-                    "The native GPUI desktop renderer, sharing configuration, sessions, approvals and tools with Oxide for Desktop and the terminal.",
+                    "The native GPUI desktop renderer, sharing configuration, sessions, approvals and tools with the terminal, editor and Electron fallback.",
                 ),
         )
 }
@@ -1175,7 +1175,7 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                 "The verified installer is being downloaded.".to_string(),
             ),
             "downloading" => (
-                format!("Downloading Oxide Beta {version}"),
+                format!("Downloading Oxide {version}"),
                 if total > 0 {
                     format!("{transfer:.1} of {size:.1} MB")
                 } else {
@@ -1188,7 +1188,7 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
             ),
             "installing" => (
                 format!(
-                    "Installing Oxide Beta{}",
+                    "Installing Oxide{}",
                     if version.is_empty() {
                         String::new()
                     } else {
@@ -1199,7 +1199,7 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
             ),
             _ => (
                 "Checking for updates".to_string(),
-                "Looking for the newest Oxide Beta release.".to_string(),
+                "Looking for the newest Oxide release.".to_string(),
             ),
         };
         panel = panel
@@ -1271,7 +1271,7 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                 div()
                     .text_size(px(13.0))
                     .text_color(theme.dim())
-                    .child("Looking for the newest Oxide Beta release."),
+                    .child("Looking for the newest Oxide release."),
             );
     }
     if let Some(error) = root.update_failure.as_deref() {
@@ -1353,9 +1353,7 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                     .text_size(px(12.5))
                     .line_height(px(18.0))
                     .text_color(theme.dim())
-                    .child(
-                        "The beta release information couldn’t be loaded. Try again in a moment.",
-                    ),
+                    .child("The release information couldn’t be loaded. Try again in a moment."),
             )
             .child(
                 div()
@@ -1392,11 +1390,11 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
         let installed = result.get("pending").is_some();
         let pending = result["pending"].as_bool().unwrap_or(false);
         let heading = if !installed {
-            format!("Oxide Beta {version} is downloaded")
+            format!("Oxide {version} is downloaded")
         } else if pending {
-            format!("The Oxide Beta {version} installer is running")
+            format!("The Oxide {version} installer is running")
         } else {
-            format!("Oxide Beta {version} is ready")
+            format!("Oxide {version} is ready")
         };
         panel = panel.child(
             div()
@@ -1460,9 +1458,9 @@ fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text())
                 .child(if available {
-                    format!("Oxide Beta {latest} is available")
+                    format!("Oxide {latest} is available")
                 } else {
-                    "Oxide Beta is up to date".to_string()
+                    "Oxide is up to date".to_string()
                 }),
         )
         .child(
@@ -1783,7 +1781,7 @@ fn command_help(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
             .line_height(px(19.0))
             .text_color(theme.dim())
             .child(
-                "Commands run by Oxide Beta, plus the commands and skills this project makes available.",
+                "Commands run by Oxide, plus the commands and skills this project makes available.",
             ),
     );
     if commands.is_empty() {

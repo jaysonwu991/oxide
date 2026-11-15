@@ -808,16 +808,14 @@ const aliases = [
   ...readme.matchAll(/releases\/download\/(desktop|extension)-latest\/([^)\s]+)/g),
 ];
 const workflows = {
-  desktop: text(`${root}.github/workflows/desktop.yml`),
+  desktop: text(`${root}.github/workflows/desktop-gpui.yml`),
   extension: text(`${root}.github/workflows/vscode.yml`),
 };
 check(
   "linked `README.md` at installers the alias releases really carry",
   aliases.length > 0 &&
     aliases.every(([, tag, name]) => workflows[tag] && coreUpdates.includes(`"${name}"`)) &&
-    Object.entries(workflows).every(([tag, workflow]) =>
-      workflow.includes(`alias_tag=${tag}-latest`),
-    ),
+    Object.entries(workflows).every(([tag, workflow]) => workflow.includes(`${tag}-latest`)),
   aliases.map(([, tag, name]) => `${tag}:${name}`).join(", "),
 );
 // A target list and the names are two halves of one release: a name for an

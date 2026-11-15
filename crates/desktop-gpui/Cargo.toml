@@ -3,13 +3,14 @@ name = "oxide-desktop-gpui"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "Oxide for Desktop (Beta): the GPUI front-end"
+description = "Oxide for Desktop: the native GPUI front-end"
 
-# This package is the GPUI front-end: one native process that draws the whole
-# window and shares the desktop engine (`oxide-desktop`'s library half) with the
-# Electron app, so both front-ends read and write the same configuration,
-# session store and approvals. Like `crates/desktop`, it owns its own workspace
-# so its dependency graph and lock file stay out of the core workspace's build.
+# This package is the primary GPUI front-end: one native process that draws the
+# whole window and shares the desktop engine (`oxide-desktop`'s library half)
+# with the Electron fallback, so both front-ends read and write the same
+# configuration, session store and approvals. Like `crates/desktop`, it owns its
+# own workspace so its dependency graph and lock file stay out of the core
+# workspace's build.
 [workspace]
 
 [dependencies]

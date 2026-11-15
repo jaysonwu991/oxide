@@ -1,12 +1,11 @@
-name: Desktop Beta (GPUI)
+name: Desktop (GPUI)
 
-# Builds Oxide for Desktop (Beta) — the GPUI front-end in
-# `crates/desktop-gpui` — for macOS x64 and arm64, Linux x64 and arm64, and
-# Windows, and hands the installers it produced to the release job. It is the
-# same shape as `desktop.yml`: the same five hosts, the same independent
-# `desktop-gpui-v*` tag train, the same signing and notarization secrets, the
-# same release and permanent alias. Only the packaging differs, because this
-# front-end is one native binary rather than Electron plus a harness.
+# Builds Oxide for Desktop, the primary GPUI front-end in
+# `crates/desktop-gpui`, for macOS x64 and arm64, Linux x64 and arm64, and
+# Windows, and hands the installers it produced to the release job. The
+# `desktop-gpui-v*` train remains the internal transition tag; its stable-name
+# artifacts feed the public `desktop-latest` alias. Electron remains available
+# from versioned `desktop-v*` releases as the fallback.
 #
 # Every architecture builds on its own host, so the binary carries the
 # architecture it is named after, including on Intel Macs.
@@ -215,26 +214,35 @@ jobs:
           set -euo pipefail
           if ! gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft \
-              --title "Oxide Desktop Beta ${GITHUB_REF_NAME#desktop-gpui-}" --generate-notes
+              --title "Oxide Desktop ${GITHUB_REF_NAME#desktop-gpui-}" --generate-notes
           fi
           find release-assets -type f -print0 \
             | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
           gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
 
-      # The beta's own permanent address, beside the stable app's
-      # `desktop-latest`: a pre-release so `/releases/latest` keeps pointing at a
-      # versioned release.
-      - name: Refresh the desktop-gpui-latest alias
+      # The public installer address now points at GPUI. Keep the legacy alias
+      # during the transition so links already handed out continue to resolve.
+      - name: Refresh the desktop aliases
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          alias_tag=desktop-gpui-latest
-          if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
-              --title "Oxide Desktop Beta installers" \
-              --notes "The newest beta (GPUI) desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-gpui-v*\` release is the one that names a version."
-          fi
-          find release-assets -type f -print0 \
-            | xargs -0 gh release upload "$alias_tag" --repo "${GITHUB_REPOSITORY}" --clobber
+          for alias_tag in desktop-latest desktop-gpui-latest; do
+            if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
+                --title "Oxide Desktop installers" \
+                --notes "The newest desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-gpui-v*\` release is the one that names a version."
+            else
+              gh release edit "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
+                --title "Oxide Desktop installers"
+            fi
+            gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" \
+              --json assets --jq '.assets[].name' \
+              | while IFS= read -r asset; do
+                  gh release delete-asset "$alias_tag" "$asset" \
+                    --repo "${GITHUB_REPOSITORY}" --yes
+                done
+            find release-assets -type f -print0 \
+              | xargs -0 gh release upload "$alias_tag" --repo "${GITHUB_REPOSITORY}" --clobber
+          done

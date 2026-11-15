@@ -11,21 +11,19 @@
 
 # Oxide
 
-A native Rust AI coding agent with a terminal UI, an Electron desktop app, and a
-VS Code extension. Oxide streams from OpenAI-compatible and Anthropic models,
-runs a tool-using agent loop against your project, and understands its own
-`.oxide/` configuration layout out of the box, with Claude Code configuration
-support for compatibility.
+A native Rust AI coding agent with a terminal UI, a GPUI desktop app, an Electron
+desktop fallback, and a VS Code extension. Oxide streams from
+OpenAI-compatible and Anthropic models, runs a tool-using agent loop against
+your project, and understands its own `.oxide/` configuration layout out of the
+box, with Claude Code configuration support for compatibility.
 
 ## Highlights
 
-- **Three front-ends, one core** — a ratatui terminal UI, an Electron desktop
-  app (`crates/desktop`) whose window drives the same Rust engine, and a VS Code
-  extension (`editors/vscode`), all sharing the same configuration, sessions,
-  trust decisions, and MCP servers. All three draw the interface in British
-  English or Simplified Chinese from one shared setting. A fourth, **beta**
-  window (`crates/desktop-gpui`) draws the same desktop app natively with GPUI
-  over the same engine and stores.
+- **One core, several front-ends** — a ratatui terminal UI, the primary native
+  GPUI desktop app (`crates/desktop-gpui`), an Electron fallback
+  (`crates/desktop`) during the desktop migration, and a VS Code extension
+  (`editors/vscode`), all sharing the same configuration, sessions, trust
+  decisions, and MCP servers.
 - **Providers** — 35 built-in providers behind one table: every OpenAI-compatible
   endpoint (OpenAI, DeepSeek, Groq, Mistral, xAI, OpenRouter, Z.AI/GLM, …), the
   Anthropic Messages API, Gemini and Vertex AI, Amazon Bedrock, Azure OpenAI,
@@ -87,9 +85,9 @@ replaced on every publish, so the links themselves never change; the versioned
 | --- | --- | --- |
 | Desktop | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-arm64.dmg) |
 | Desktop | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-x64.dmg) |
-| Desktop | Windows x64 | [Oxide-win-x64-Setup.exe](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.exe) |
-| Desktop | Linux x64 | [Oxide-linux-x86_64-Setup.AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x86_64-Setup.AppImage) · [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
-| Desktop | Linux arm64 | [Oxide-linux-arm64-Setup.AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.AppImage) · [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
+| Desktop | Windows x64 | [Oxide-win-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.tar.gz) |
+| Desktop | Linux x64 | [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
+| Desktop | Linux arm64 | [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
 | VS Code | any | [oxide-vscode.vsix](https://github.com/jaysonwu991/oxide/releases/download/extension-latest/oxide-vscode.vsix) |
 
 On macOS, an app that was not notarized — a build made without both the
@@ -147,46 +145,37 @@ Keyboard shortcuts, the transcript layout, and copy behavior are in
 
 ## Desktop app
 
-The `oxide-desktop` package (`crates/desktop`) is an [Electron](https://electronjs.org)
-front-end for the same `oxide-core` agent, with the window written in TypeScript
-and the engine it talks to the same Rust harness the terminal runs. It shares the
-CLI's configuration (`config.json`,
-`auth.json`, `settings.json`) and its session store, and adds a multi-project
-sidebar: any folder can be added, every project you have run the CLI in is
-discovered from its sessions, and each project lists its own threads alongside a
-cross-repo view of recent ones. Chat runs the same agent loop through
-`oxide-core`, streaming text, tool calls, and token usage over the window's own
-bridge to the engine beside it.
+`crates/desktop-gpui` is the primary desktop app: the same agent drawn with
+[GPUI](https://gpui.rs) in one native process. It links the desktop engine
+in-process (`oxide_desktop::commands::dispatch`), so it reads and writes the same
+projects, sessions, approvals, configuration, themes and language as the
+terminal and editor integration. It manages multiple projects and their threads
+from one window, with streamed turns, reviews, worktrees, terminals, plugins,
+MCP servers and AccessKit accessibility.
 
-The package is its own workspace (`exclude`d from the root one) with its own pnpm
-tree, so it is built from its own directory:
-
-```sh
-cd crates/desktop && pnpm install && pnpm start
-```
-
-Prebuilt installers are in [Installers](#installers). See
-[docs/desktop.md](docs/desktop.md) for the layout, approvals, change cards,
-shortcuts, signing, and packaging.
-
-### Desktop app (Beta, GPUI)
-
-`crates/desktop-gpui` is a second, **beta** desktop window: the same app drawn
-with [GPUI](https://gpui.rs) instead of a webview, in one native process. It
-links the desktop engine in-process (`oxide_desktop::commands::dispatch`), so it
-reads and writes the same projects, sessions, approvals, configuration, themes
-and language as the stable window and the terminal, and can be installed beside
-them. It is marked beta in its window title, its bundle identifier
-(`dev.oxide.desktop.beta`) and its installers (`Oxide-Beta-*`), and releases
-from its own `desktop-gpui-v*` train.
+The package is its own Cargo workspace:
 
 ```sh
 cd crates/desktop-gpui && cargo run
 ```
 
-See [docs/desktop-gpui.md](docs/desktop-gpui.md) for the beta's complete desktop
-surface, AccessKit accessibility tree, and how it is packaged, signed and
-released.
+Prebuilt installers are in [Installers](#installers). See
+[docs/desktop-gpui.md](docs/desktop-gpui.md) for the complete surface,
+accessibility, signing and packaging.
+
+### Electron fallback
+
+`crates/desktop` remains the [Electron](https://electronjs.org) fallback while
+the native installers finish their transition. It drives the same Rust engine
+through the existing JSON bridge and shares the same stores. Versioned
+`desktop-v*` releases remain available; Electron no longer owns the permanent
+installer links.
+
+```sh
+cd crates/desktop && pnpm install && pnpm start
+```
+
+See [docs/desktop.md](docs/desktop.md) for the fallback window and its packaging.
 
 ## VS Code extension
 
@@ -223,7 +212,8 @@ setting tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 | [docs/ecosystem.md](docs/ecosystem.md) | The `.oxide/` layout, Claude Code compatibility, built-in slash commands. |
 | [docs/tools.md](docs/tools.md) | Tool parameters, behavior, output caps, concurrency. |
 | [docs/cli.md](docs/cli.md) | Task-by-task guide: MCP servers, subagents, commands, skills, plugins, permissions, reasoning, attachments, notifications. |
-| [docs/desktop.md](docs/desktop.md) | Desktop app architecture, interface, packaging, signing. |
+| [docs/desktop-gpui.md](docs/desktop-gpui.md) | Primary native desktop app. |
+| [docs/desktop.md](docs/desktop.md) | Electron fallback architecture, interface, packaging, signing. |
 | [docs/vscode.md](docs/vscode.md) | VS Code extension architecture, protocol, testing. |
 | [docs/comparison.md](docs/comparison.md) | Oxide next to Claude Code, Codex, Pi Coding Agent, and OpenCode. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Architecture notes, conventions, releases. |
