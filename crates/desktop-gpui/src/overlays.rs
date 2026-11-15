@@ -44,6 +44,7 @@ pub fn layer(
         Overlay::SessionActions { .. } => "Chat actions".to_string(),
         Overlay::ProjectActions { .. } => "Project actions".to_string(),
         Overlay::Approvals => "Tool approvals".to_string(),
+        Overlay::ComputerUse => "Computer use".to_string(),
         Overlay::Worktrees => "Git worktrees".to_string(),
         Overlay::WorktreeBranch { .. } => "Create branch".to_string(),
         Overlay::Projects => "Projects".to_string(),
@@ -112,6 +113,7 @@ pub fn layer(
             pinned,
         } => project_actions(theme, id, path, name, pinned, cx),
         Overlay::Approvals => approvals(root, theme, cx),
+        Overlay::ComputerUse => computer_use(root, theme, cx),
         Overlay::Worktrees => worktrees(root, theme, cx),
         Overlay::WorktreeBranch { project, name } => {
             worktree_branch(root, theme, project, name, cx)
@@ -1630,6 +1632,7 @@ fn command_menu(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui:
         ("customize", "Customize plugins and integrations…", ""),
         ("worktrees", "Git worktrees…", "⌘⇧G"),
         ("model", "Choose a model…", "⌘⇧M"),
+        ("computer-use", "Computer use…", ""),
         ("permissions", "Tool approvals…", ""),
         ("mcps", "MCP servers…", ""),
         ("settings", "Settings…", "⌘,"),
@@ -1764,6 +1767,7 @@ fn run_command_menu_action(
         }
         "worktrees" => root.open_worktrees(cx),
         "model" => root.open_model_menu(cx),
+        "computer-use" => root.open_computer_use(cx),
         "permissions" => root.open_overlay(Overlay::Approvals, cx),
         "mcps" => root.open_overlay(Overlay::Mcp, cx),
         "settings" => root.open_overlay(Overlay::Settings, cx),
@@ -2989,6 +2993,383 @@ fn approvals(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
     panel
 }
 
+// ---------- computer use ----------
+
+fn computer_use(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let chat = root.chats.get(root.active);
+    let activity = chat.and_then(|chat| chat.computer_use());
+    let can_stop = chat.is_some_and(|chat| chat.running())
+        && activity.as_ref().is_some_and(|activity| activity.running);
+    let policy = root.computer_use_policy.clone();
+    let mut panel = dialog_with_close(theme, "Computer use", 620.0, cx).child(
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded(px(10.0))
+            .bg(theme.panel_2())
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(icons::icon(Icon::Pointer, 16.0, theme.accent()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text())
+                            .child(if let Some(activity) = &activity {
+                                if activity.stopped {
+                                    "Stopped"
+                                } else if activity.failed {
+                                    "Action failed"
+                                } else if activity.running {
+                                    "Using computer"
+                                } else {
+                                    "Finished"
+                                }
+                            } else {
+                                "No active Computer Use session"
+                            }),
+                    )
+                    .children(activity.as_ref().map(|activity| {
+                        div()
+                            .flex_none()
+                            .text_size(px(11.0))
+                            .text_color(theme.faint())
+                            .child(
+                                [activity.app.clone(), Some(activity.action.clone())]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                            )
+                    })),
+            )
+            .children(activity.as_ref().and_then(|activity| {
+                activity.image.as_ref().map(|image| {
+                    let data_url = image.data_url.clone();
+                    let name = activity
+                        .image_app
+                        .clone()
+                        .unwrap_or_else(|| image.name.clone());
+                    let preview_image = image.image.clone();
+                    div()
+                        .id("computer-use-preview")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w_full()
+                        .max_h(px(190.0))
+                        .overflow_hidden()
+                        .rounded(px(8.0))
+                        .bg(theme.background())
+                        .cursor_pointer()
+                        .children(preview_image.map(|image| {
+                            gpui::img(image)
+                                .w_full()
+                                .max_h(px(190.0))
+                        }))
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            if let Some(image) =
+                                crate::model::image_from_data_url(&data_url)
+                            {
+                                root.overlay = Some(Overlay::ImagePreview {
+                                    name: name.clone(),
+                                    image,
+                                });
+                                cx.notify();
+                            }
+                        }))
+                })
+            }))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(theme.faint())
+                    .child(activity.as_ref().and_then(|activity| activity.image.as_ref()).map_or(
+                        "No screenshot captured yet. Accessibility actions do not always return an image.",
+                        |_| "Last captured screenshot",
+                    )),
+            )
+            .children(can_stop.then(|| {
+                Button::new("Stop task").danger().render(
+                    "computer-use-stop",
+                    theme,
+                    cx,
+                    |root, _, cx| root.stop(cx),
+                )
+            })),
+    );
+
+    panel = panel.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text())
+                    .child("App access"),
+            )
+            .child(div().text_size(px(11.0)).text_color(theme.faint()).child(
+                if policy.server.is_empty() {
+                    "No server".to_string()
+                } else {
+                    policy.server.clone()
+                },
+            )),
+    );
+
+    if policy.loading {
+        panel = panel.child(
+            div()
+                .p_3()
+                .text_size(px(12.0))
+                .text_color(theme.faint())
+                .child("Loading app access…"),
+        );
+        return panel;
+    }
+    if let Some(error) = policy.error {
+        panel = panel.child(
+            div()
+                .p_3()
+                .rounded(px(9.0))
+                .bg(theme.color("tool_error_bg"))
+                .text_size(px(12.0))
+                .text_color(theme.error())
+                .child(error),
+        );
+        return panel;
+    }
+
+    let default = policy.value["default"]
+        .as_str()
+        .unwrap_or("allow")
+        .to_string();
+    panel = panel.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(12.0))
+                    .text_color(theme.dim())
+                    .child("For apps nobody has decided about"),
+            )
+            .child(
+                Button::new(if default == "deny" {
+                    "Block by default"
+                } else {
+                    "Allow by default"
+                })
+                .render("computer-use-default", theme, cx, move |root, _, cx| {
+                    let mode = if default == "deny" { "allow" } else { "deny" };
+                    root.change_computer_use_policy(
+                        "set_default".to_string(),
+                        None,
+                        Some(mode.to_string()),
+                        cx,
+                    );
+                }),
+            ),
+    );
+
+    let mut apps = policy.value["apps"].as_array().cloned().unwrap_or_default();
+    apps.sort_by(|left, right| {
+        right["isRunning"]
+            .as_bool()
+            .unwrap_or(false)
+            .cmp(&left["isRunning"].as_bool().unwrap_or(false))
+            .then_with(|| {
+                app_name(left)
+                    .to_ascii_lowercase()
+                    .cmp(&app_name(right).to_ascii_lowercase())
+            })
+    });
+
+    if apps.is_empty() {
+        panel = panel.child(
+            div()
+                .p_3()
+                .rounded(px(9.0))
+                .bg(theme.panel_2())
+                .text_size(px(12.0))
+                .text_color(theme.faint())
+                .child("No apps found."),
+        );
+        return panel;
+    }
+
+    let mut list = div()
+        .id("computer-use-apps")
+        .flex()
+        .flex_col()
+        .max_h(px(220.0))
+        .overflow_y_scroll()
+        .border_1()
+        .border_color(theme.border())
+        .rounded(px(9.0));
+    for (index, app) in apps.into_iter().enumerate() {
+        let id = app["id"].as_str().unwrap_or_default().to_string();
+        let name = app_name(&app);
+        let status = computer_policy_status(&app, &policy.value);
+        let app_id = id.clone();
+        list = list.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .min_h(px(48.0))
+                .px_2()
+                .py_1()
+                .border_b_1()
+                .border_color(theme.border())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(12.0))
+                                .text_color(theme.text())
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(10.5))
+                                .text_color(theme.faint())
+                                .child(format!("{status} · {id}")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_1()
+                        .child(Button::new("Allow").render(
+                            ("computer-use-allow", index),
+                            theme,
+                            cx,
+                            {
+                                let id = app_id.clone();
+                                move |root, _, cx| {
+                                    root.change_computer_use_policy(
+                                        "allow".to_string(),
+                                        Some(id.clone()),
+                                        None,
+                                        cx,
+                                    )
+                                }
+                            },
+                        ))
+                        .child(Button::new("Once").render(
+                            ("computer-use-once", index),
+                            theme,
+                            cx,
+                            {
+                                let id = app_id.clone();
+                                move |root, _, cx| {
+                                    root.change_computer_use_policy(
+                                        "grant_once".to_string(),
+                                        Some(id.clone()),
+                                        None,
+                                        cx,
+                                    )
+                                }
+                            },
+                        ))
+                        .child(Button::new("Block").danger().render(
+                            ("computer-use-deny", index),
+                            theme,
+                            cx,
+                            {
+                                let id = app_id.clone();
+                                move |root, _, cx| {
+                                    root.change_computer_use_policy(
+                                        "deny".to_string(),
+                                        Some(id.clone()),
+                                        None,
+                                        cx,
+                                    )
+                                }
+                            },
+                        ))
+                        .child(Button::new("Revoke").render(
+                            ("computer-use-revoke", index),
+                            theme,
+                            cx,
+                            move |root, _, cx| {
+                                root.change_computer_use_policy(
+                                    "revoke".to_string(),
+                                    Some(app_id.clone()),
+                                    None,
+                                    cx,
+                                )
+                            },
+                        )),
+                ),
+        );
+    }
+    panel.child(list)
+}
+
+fn app_name(app: &Value) -> String {
+    app["displayName"]
+        .as_str()
+        .or_else(|| app["id"].as_str())
+        .unwrap_or("App")
+        .to_string()
+}
+
+fn computer_policy_status(app: &Value, policy: &Value) -> &'static str {
+    if app["policy"].as_str() == Some("[approved for one call]") {
+        return "Allowed once";
+    }
+    if app["policy"].as_str() == Some("[blocked by app policy]") {
+        return "Blocked";
+    }
+    let name = app["displayName"].as_str().unwrap_or_default();
+    let id = app["id"].as_str().unwrap_or_default();
+    let named = |key: &str| {
+        policy[key].as_array().is_some_and(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|value| value.eq_ignore_ascii_case(name) || value.eq_ignore_ascii_case(id))
+        })
+    };
+    if named("denied") {
+        "Blocked"
+    } else if named("allowed") {
+        "Always allowed"
+    } else if app["isRunning"].as_bool().unwrap_or(false) {
+        "Running"
+    } else {
+        "Not running"
+    }
+}
+
 // ---------- confirmations ----------
 
 fn confirm(
@@ -3552,4 +3933,36 @@ fn new_project(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::
                     .text_size(px(13.5)),
             ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::computer_policy_status;
+    use serde_json::json;
+
+    #[test]
+    fn computer_use_settings_name_the_same_decisions_as_the_runtime() {
+        let app = json!({
+            "id": "com.microsoft.edgemac",
+            "displayName": "Microsoft Edge",
+            "isRunning": true
+        });
+        let once = json!({ "oneTime": "Microsoft Edge" });
+        assert_eq!(
+            computer_policy_status(
+                &json!({ "id": "com.microsoft.edgemac", "policy": "[approved for one call]" }),
+                &once
+            ),
+            "Allowed once"
+        );
+        assert_eq!(
+            computer_policy_status(&app, &json!({ "allowed": ["Microsoft Edge"] })),
+            "Always allowed"
+        );
+        assert_eq!(
+            computer_policy_status(&app, &json!({ "denied": ["com.microsoft.edgemac"] })),
+            "Blocked"
+        );
+        assert_eq!(computer_policy_status(&app, &json!({})), "Running");
+    }
 }
