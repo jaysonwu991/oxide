@@ -29,17 +29,25 @@ const SUPPORTED_PLATFORMS: &str = "macos-arm64, macos-x64, linux-x64, linux-arm6
 pub enum Component {
     Cli,
     Desktop,
+    #[serde(rename = "desktop-gpui")]
+    DesktopGpui,
     Extension,
 }
 
 impl Component {
-    pub const ALL: [Component; 3] = [Component::Cli, Component::Desktop, Component::Extension];
+    pub const ALL: [Component; 4] = [
+        Component::Cli,
+        Component::Desktop,
+        Component::DesktopGpui,
+        Component::Extension,
+    ];
 
     /// The `--component` spelling, plus the names a front-end may call itself.
     pub fn parse(text: &str) -> Option<Self> {
         match text.trim().to_ascii_lowercase().as_str() {
             "cli" | "command-line" => Some(Self::Cli),
             "desktop" | "app" => Some(Self::Desktop),
+            "desktop-gpui" | "desktop-beta" | "gpui" => Some(Self::DesktopGpui),
             "extension" | "vscode" | "vs-code" | "editor" => Some(Self::Extension),
             _ => None,
         }
@@ -49,6 +57,7 @@ impl Component {
         match self {
             Self::Cli => "cli",
             Self::Desktop => "desktop",
+            Self::DesktopGpui => "desktop-gpui",
             Self::Extension => "extension",
         }
     }
@@ -58,6 +67,7 @@ impl Component {
         match self {
             Self::Cli => "the oxide CLI",
             Self::Desktop => "the Oxide desktop app",
+            Self::DesktopGpui => "the Oxide desktop beta",
             Self::Extension => "the Oxide extension for VS Code",
         }
     }
@@ -74,6 +84,10 @@ impl Component {
         let version = match self {
             Self::Cli => tag.strip_prefix("cli-").unwrap_or(tag),
             Self::Desktop => match tag.strip_prefix("desktop-") {
+                Some(rest) if !rest.starts_with("gpui-") => rest,
+                _ => return false,
+            },
+            Self::DesktopGpui => match tag.strip_prefix("desktop-gpui-") {
                 Some(rest) => rest,
                 None => return false,
             },
@@ -94,6 +108,7 @@ impl Component {
         match self {
             Self::Cli => format!("v{version}"),
             Self::Desktop => format!("desktop-v{version}"),
+            Self::DesktopGpui => format!("desktop-gpui-v{version}"),
             Self::Extension => format!("extension-v{version}"),
         }
     }
@@ -102,7 +117,7 @@ impl Component {
     /// (`desktop-v1.2.3`), the bare tag (`v1.2.3`) or a version on its own.
     pub fn normalize_tag(self, requested: &str) -> Result<String> {
         let trimmed = requested.trim();
-        let without_component = ["cli-", "desktop-", "extension-"]
+        let without_component = ["cli-", "desktop-gpui-", "desktop-", "extension-"]
             .iter()
             .find_map(|prefix| trimmed.strip_prefix(prefix))
             .unwrap_or(trimmed);
@@ -165,6 +180,14 @@ impl Component {
                 "win-x64" => vec!["Oxide-win-x64-Setup.exe".to_string()],
                 _ => Vec::new(),
             },
+            Self::DesktopGpui => match platform {
+                "macos-arm64" => vec!["Oxide-Beta-macos-arm64.dmg".to_string()],
+                "macos-x64" => vec!["Oxide-Beta-macos-x64.dmg".to_string()],
+                "linux-x64" => vec!["Oxide-Beta-linux-x64-Setup.tar.gz".to_string()],
+                "linux-arm64" => vec!["Oxide-Beta-linux-arm64-Setup.tar.gz".to_string()],
+                "win-x64" => vec!["Oxide-Beta-win-x64-Setup.tar.gz".to_string()],
+                _ => Vec::new(),
+            },
             Self::Extension => vec!["oxide-vscode.vsix".to_string()],
         }
     }
@@ -192,6 +215,14 @@ impl Component {
                     format!("Oxide-{version}-linux-arm64-Setup.tar.gz"),
                 ],
                 "win-x64" => vec![format!("Oxide-{version}-win-x64-Setup.exe")],
+                _ => Vec::new(),
+            },
+            Self::DesktopGpui => match platform {
+                "macos-arm64" => vec![format!("Oxide-Beta-{version}-macos-arm64.dmg")],
+                "macos-x64" => vec![format!("Oxide-Beta-{version}-macos-x64.dmg")],
+                "linux-x64" => vec![format!("Oxide-Beta-{version}-linux-x64-Setup.tar.gz")],
+                "linux-arm64" => vec![format!("Oxide-Beta-{version}-linux-arm64-Setup.tar.gz")],
+                "win-x64" => vec![format!("Oxide-Beta-{version}-win-x64-Setup.tar.gz")],
                 _ => Vec::new(),
             },
             Self::Extension => vec![format!("oxide-vscode-{version}.vsix")],
@@ -939,12 +970,14 @@ mod tests {
         assert!(Component::Cli.owns_tag("v0.34.0"));
         assert!(Component::Cli.owns_tag("cli-v0.34.0"));
         assert!(Component::Desktop.owns_tag("desktop-v0.34.0"));
+        assert!(Component::DesktopGpui.owns_tag("desktop-gpui-v0.34.0"));
         assert!(Component::Extension.owns_tag("extension-v0.34.0"));
         // A release of another component is not this one's, and neither is a
         // tag that names no version.
         assert!(!Component::Cli.owns_tag("desktop-v0.34.0"));
         assert!(!Component::Cli.owns_tag("extension-v0.34.0"));
         assert!(!Component::Desktop.owns_tag("v0.34.0"));
+        assert!(!Component::Desktop.owns_tag("desktop-gpui-v0.34.0"));
         assert!(!Component::Extension.owns_tag("desktop-v0.34.0"));
         assert!(!Component::Desktop.owns_tag("desktop-nightly"));
         assert!(!Component::Cli.owns_tag("vnext"));
@@ -977,6 +1010,12 @@ mod tests {
             "desktop-v0.34.0"
         );
         assert_eq!(
+            Component::DesktopGpui
+                .normalize_tag("desktop-gpui-v0.34.0")
+                .unwrap(),
+            "desktop-gpui-v0.34.0"
+        );
+        assert_eq!(
             Component::Extension
                 .normalize_tag("extension-v0.34.0")
                 .unwrap(),
@@ -991,6 +1030,11 @@ mod tests {
     fn components_are_named_the_way_a_front_end_names_itself() {
         assert_eq!(Component::parse("cli"), Some(Component::Cli));
         assert_eq!(Component::parse("desktop"), Some(Component::Desktop));
+        assert_eq!(
+            Component::parse("desktop-gpui"),
+            Some(Component::DesktopGpui)
+        );
+        assert_eq!(Component::parse("gpui"), Some(Component::DesktopGpui));
         assert_eq!(Component::parse(" Desktop "), Some(Component::Desktop));
         assert_eq!(Component::parse("extension"), Some(Component::Extension));
         assert_eq!(Component::parse("vscode"), Some(Component::Extension));
@@ -999,6 +1043,7 @@ mod tests {
         // needs no platform for.
         assert!(Component::Cli.platform_specific());
         assert!(Component::Desktop.platform_specific());
+        assert!(Component::DesktopGpui.platform_specific());
         assert!(!Component::Extension.platform_specific());
     }
 
@@ -1063,6 +1108,17 @@ mod tests {
         assert_eq!(
             desktop.page_url("jaysonwu991/oxide"),
             "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0"
+        );
+        let gpui = Release::new(
+            Component::DesktopGpui,
+            "desktop-gpui-v0.34.0",
+            None,
+            "macos-arm64",
+        );
+        assert_eq!(gpui.asset, "Oxide-Beta-macos-arm64.dmg");
+        assert_eq!(
+            gpui.url("jaysonwu991/oxide"),
+            "https://github.com/jaysonwu991/oxide/releases/download/desktop-gpui-v0.34.0/Oxide-Beta-macos-arm64.dmg"
         );
         for (platform, asset) in [
             ("macos-x64", "Oxide-macos-x64.dmg"),

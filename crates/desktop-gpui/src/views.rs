@@ -6,7 +6,7 @@
 //! and its composer, and the changes a turn left behind — from the same state
 //! `crate::app::Root` keeps.
 
-use crate::app::{Button, CustomizeTab, Overlay, Rail, Root};
+use crate::app::{Button, ConfirmAction, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
 use crate::model::{Entry, Status};
@@ -573,8 +573,6 @@ pub fn sidebar(
     let search = root.search.clone();
     let height = px(scale * 20.0).max(px(20.0));
     let searching = root.searching;
-    let shortcuts = root.sidebar_shortcuts();
-
     let mut column = div()
         .flex()
         .flex_col()
@@ -588,9 +586,9 @@ pub fn sidebar(
         .flex()
         .flex_row()
         .items_center()
-        .gap_1()
+        .gap(px(2.0))
         .h(px(46.0))
-        .px(px(8.0))
+        .px(px(10.0))
         .border_b_1()
         .border_color(theme.border());
     if searching {
@@ -625,9 +623,9 @@ pub fn sidebar(
                     .items_center()
                     .gap_1()
                     .flex_1()
-                    .px_2()
+                    .px(px(6.0))
                     .cursor_pointer()
-                    .text_size(px(17.0))
+                    .text_size(px(16.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text())
                     .child("Oxide")
@@ -655,7 +653,7 @@ pub fn sidebar(
     column = column.child(top);
 
     column = column.child(
-        div().px(px(8.0)).pb(px(6.0)).child(
+        div().px(px(10.0)).pt(px(4.0)).pb(px(10.0)).child(
             div()
                 .id("sidebar-new-chat")
                 .flex()
@@ -663,15 +661,15 @@ pub fn sidebar(
                 .items_center()
                 .gap(px(7.0))
                 .h(px(34.0))
-                .px_2()
-                .rounded(px(6.0))
+                .px(px(8.0))
+                .rounded(px(8.0))
                 .cursor_pointer()
                 .hover(move |style| style.bg(theme.panel()))
                 .child(icons::icon(Icon::Pencil, 16.0, theme.dim()))
                 .child(
                     div()
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(px(13.5))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text())
                         .child("New Chat"),
                 )
@@ -688,7 +686,7 @@ pub fn sidebar(
         .overflow_y_scroll()
         .px(px(4.0))
         .pb(px(14.0))
-        .gap(px(1.0));
+        .gap(px(0.0));
 
     if !root.query.trim().is_empty() {
         let results = root.results.clone();
@@ -721,7 +719,7 @@ pub fn sidebar(
                     .collect()
             };
             list = list.child(session_row(
-                &session.title,
+                &session,
                 &when,
                 None,
                 SessionFlags {
@@ -729,6 +727,7 @@ pub fn sidebar(
                     worktree: session.worktree.is_some(),
                     active,
                     indent: 12.0,
+                    show_actions: true,
                 },
                 theme,
                 cx,
@@ -752,35 +751,86 @@ pub fn sidebar(
                 .cloned()
                 .collect::<Vec<_>>();
             let expanded = root.expanded_projects.contains(&path);
+            let collapsed = root.collapsed_projects.contains(&path);
             let hidden_sessions = sessions.len().saturating_sub(5);
-            if !expanded {
+            if collapsed {
+                sessions.clear();
+            } else if !expanded {
                 sessions.truncate(5);
             }
             let missing = !project.exists;
             let pinned = project.pinned;
             let selected = current_project.as_deref() == Some(path.as_str());
             let path_for_new = path.clone();
+            let path_for_select = path.clone();
             let path_for_remove = path.clone();
+            let path_for_toggle = path.clone();
             let project_id = project.id.clone();
+            let project_id_for_menu = project_id.clone();
             let project_name = name.clone();
+            let inline_actions =
+                root.inline_project_actions.as_deref() == Some(project.id.as_str());
+            let group = SharedString::from(format!("project-row-{}", project.id));
+            let new_tooltip = format!("New chat in {name}");
+            let group_for_new = group.clone();
+            let mut project_group = div().flex().flex_col().gap(px(2.0)).mb(px(10.0));
             let header = div()
                 .id(SharedString::from(format!("project-{path}")))
+                .group(group)
+                .relative()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap_1()
-                .h(px(30.0))
-                .px_2()
+                .gap(px(6.0))
+                .h(px(32.0))
+                .px(px(8.0))
                 .rounded(px(8.0))
+                .cursor_pointer()
                 .hover(move |style| style.bg(theme.panel()))
-                .child(icons::icon(Icon::Folder, 15.0, theme.dim()))
+                .tooltip(tip(path.clone(), theme))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("project-toggle-{path}")))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_none()
+                        .w(px(16.0))
+                        .h(px(24.0))
+                        .rounded(px(5.0))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(theme.panel_2()))
+                        .child(icons::icon(
+                            if collapsed {
+                                Icon::ChevronRight
+                            } else {
+                                Icon::ChevronDown
+                            },
+                            12.0,
+                            theme.faint(),
+                        ))
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            cx.stop_propagation();
+                            if root.collapsed_projects.contains(&path_for_toggle) {
+                                root.collapsed_projects.remove(&path_for_toggle);
+                            } else {
+                                root.collapsed_projects.insert(path_for_toggle.clone());
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(icons::icon(
+                    Icon::Folder,
+                    15.0,
+                    if missing { theme.error() } else { theme.dim() },
+                ))
                 .child(
                     div()
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(px(13.0))
+                        .text_size(px(13.5))
                         .font_weight(if selected {
                             FontWeight::MEDIUM
                         } else {
@@ -793,111 +843,151 @@ pub fn sidebar(
                 .children(missing.then(|| {
                     div()
                         .flex_none()
-                        .text_size(px(10.5))
-                        .text_color(theme.error())
-                        .child("missing")
+                        .w(px(5.0))
+                        .h(px(5.0))
+                        .rounded_full()
+                        .bg(theme.error())
                 }))
                 .child(
-                    icon_button(
-                        SharedString::from(format!("project-new-{path}")),
-                        Icon::Plus,
-                        20.0,
-                        theme,
-                        false,
-                    )
-                    .tooltip(tip("New chat in this project", theme))
-                    .on_click(cx.listener(move |root, _, window, cx| {
-                        cx.stop_propagation();
-                        root.push_chat(
-                            window,
-                            path_for_new.clone(),
-                            None,
-                            "New chat".to_string(),
-                            cx,
-                        );
-                        root.focus_composer(window, cx);
-                    })),
-                )
-                .child(
-                    icon_button(
-                        SharedString::from(format!("project-remove-{path}")),
-                        Icon::More,
-                        20.0,
-                        theme,
-                        false,
-                    )
-                    .tooltip(tip("Pin or remove this project", theme))
-                    .on_click(cx.listener(move |root, _, _window, cx| {
-                        cx.stop_propagation();
-                        let pinned = root
-                            .projects
-                            .iter()
-                            .find(|project| project.id == project_id)
-                            .map(|project| project.pinned)
-                            .unwrap_or(false);
-                        root.overlay = Some(Overlay::ProjectActions {
-                            id: project_id.clone(),
-                            path: path_for_remove.clone(),
-                            name: project_name.clone(),
-                            pinned,
-                        });
-                        cx.notify();
-                    })),
-                );
-            list = list.child(header);
-            if sessions.is_empty() {
-                list = list.child(
                     div()
-                        .pl(px(40.0))
-                        .pr_2()
-                        .pb_1()
+                        .absolute()
+                        .top(px(0.0))
+                        .right(px(2.0))
+                        .bottom(px(0.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(0.0))
+                        .px(px(1.0))
+                        .rounded(px(7.0))
+                        .bg(theme.panel())
+                        .opacity(0.0)
+                        .group_hover(group_for_new, move |style| style.opacity(1.0))
+                        .child(
+                            icon_button(
+                                SharedString::from(format!("project-new-{path}")),
+                                Icon::Pencil,
+                                20.0,
+                                theme,
+                                inline_actions,
+                            )
+                            .tooltip(tip(new_tooltip, theme))
+                            .on_click(cx.listener(
+                                move |root, _, window, cx| {
+                                    cx.stop_propagation();
+                                    root.inline_project_actions = None;
+                                    root.collapsed_projects.remove(&path_for_new);
+                                    root.push_chat(
+                                        window,
+                                        path_for_new.clone(),
+                                        None,
+                                        "New chat".to_string(),
+                                        cx,
+                                    );
+                                    root.focus_composer(window, cx);
+                                },
+                            )),
+                        )
+                        .child(
+                            icon_button(
+                                SharedString::from(format!("project-remove-{path}")),
+                                Icon::More,
+                                20.0,
+                                theme,
+                                false,
+                            )
+                            .tooltip(tip("Project actions", theme))
+                            .on_click(cx.listener(
+                                move |root, _, _window, cx| {
+                                    cx.stop_propagation();
+                                    root.inline_project_actions =
+                                        if root.inline_project_actions.as_deref()
+                                            == Some(project_id_for_menu.as_str())
+                                        {
+                                            None
+                                        } else {
+                                            Some(project_id_for_menu.clone())
+                                        };
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                )
+                .on_click(cx.listener(move |root, _, window, cx| {
+                    root.select_project(window, path_for_select.clone(), cx);
+                }));
+            project_group = project_group.child(header);
+            if inline_actions {
+                project_group = project_group.child(project_actions_inline(
+                    InlineProjectActions {
+                        id: project_id.clone(),
+                        path: path_for_remove.clone(),
+                        name: project_name.clone(),
+                        pinned,
+                        session_count: root.sessions_of(&path).len(),
+                        active: selected,
+                    },
+                    theme,
+                    cx,
+                ));
+            }
+            if !collapsed && sessions.is_empty() {
+                project_group = project_group.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .h(px(30.0))
+                        .pl(px(44.0))
+                        .pr(px(8.0))
                         .text_size(px(12.0))
                         .text_color(theme.faint())
                         .child("No chats"),
                 );
             }
-            for session in sessions {
-                let id = session.id.clone();
-                let title = session.title.clone();
-                let shortcut = shortcuts.get(&id).copied();
-                let pinned = session.pinned;
-                let active = root
-                    .chats
-                    .iter()
-                    .any(|chat| chat.session.as_ref() == Some(&id));
-                list = list.child(session_row(
-                    &title,
-                    "",
-                    shortcut,
-                    SessionFlags {
-                        pinned,
-                        worktree: session.worktree.is_some(),
-                        active,
-                        indent: 24.0,
-                    },
-                    theme,
-                    cx,
-                    move |root, window, cx| {
-                        if let Some(found) = root.sessions.iter().find(|row| row.id == id).cloned()
-                        {
-                            root.open_session(window, found, cx);
-                        }
-                    },
-                ));
+            if !collapsed {
+                for session in sessions {
+                    let id = session.id.clone();
+                    let pinned = session.pinned;
+                    let active = root
+                        .chats
+                        .iter()
+                        .any(|chat| chat.session.as_ref() == Some(&id));
+                    project_group = project_group.child(session_row(
+                        &session,
+                        "",
+                        None,
+                        SessionFlags {
+                            pinned,
+                            worktree: session.worktree.is_some(),
+                            active,
+                            indent: 24.0,
+                            show_actions: true,
+                        },
+                        theme,
+                        cx,
+                        move |root, window, cx| {
+                            if let Some(found) =
+                                root.sessions.iter().find(|row| row.id == id).cloned()
+                            {
+                                root.open_session(window, found, cx);
+                            }
+                        },
+                    ));
+                }
             }
-            if hidden_sessions > 0 && !root.expanded_projects.contains(&path) {
+            if !collapsed && hidden_sessions > 0 && !root.expanded_projects.contains(&path) {
                 let path_for_expand = path.clone();
-                list = list.child(
+                project_group = project_group.child(
                     div()
                         .id(SharedString::from(format!("project-more-{path}")))
                         .flex()
                         .items_center()
                         .h(px(30.0))
                         .pl(px(24.0))
-                        .pr_2()
+                        .pr(px(8.0))
                         .rounded(px(7.0))
                         .cursor_pointer()
-                        .text_size(px(12.0))
+                        .text_size(px(12.5))
                         .text_color(theme.faint())
                         .hover(move |style| style.bg(theme.panel()).text_color(theme.text()))
                         .child("Show more")
@@ -907,6 +997,7 @@ pub fn sidebar(
                         })),
                 );
             }
+            list = list.child(project_group);
         }
 
         let mut recents = root.sessions.clone();
@@ -914,23 +1005,23 @@ pub fn sidebar(
         recents.truncate(5);
         if !recents.is_empty() {
             list = list.child(section("Recents", theme));
+            let mut recent_rows = div().flex().flex_col().gap(px(4.0));
             for session in recents {
                 let id = session.id.clone();
-                let title = session.title.clone();
-                let shortcut = shortcuts.get(&id).copied();
                 let active = root
                     .chats
                     .iter()
                     .any(|chat| chat.session.as_ref() == Some(&id));
-                list = list.child(session_row(
-                    &title,
+                recent_rows = recent_rows.child(session_row(
+                    &session,
                     "",
-                    shortcut,
+                    None,
                     SessionFlags {
                         pinned: session.pinned,
                         worktree: session.worktree.is_some(),
                         active,
-                        indent: 12.0,
+                        indent: 8.0,
+                        show_actions: true,
                     },
                     theme,
                     cx,
@@ -942,6 +1033,7 @@ pub fn sidebar(
                     },
                 ));
             }
+            list = list.child(recent_rows);
         }
     }
 
@@ -951,12 +1043,12 @@ pub fn sidebar(
 
 fn section(title: &'static str, theme: &Theme) -> gpui::Div {
     div()
-        .px_2()
-        .pt_2()
-        .pb_1()
-        .text_size(px(11.0))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.faint())
+        .px(px(10.0))
+        .pt(px(14.0))
+        .pb(px(6.0))
+        .text_size(px(12.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.dim())
         .child(title)
 }
 
@@ -967,20 +1059,162 @@ fn projects_header(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
         .flex()
         .flex_row()
         .items_center()
-        .h(px(28.0))
-        .px_2()
-        .pt_1()
+        .h(px(32.0))
+        .px(px(10.0))
+        .pt(px(4.0))
         .child(
             div()
                 .flex_1()
-                .text_size(px(11.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.faint())
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.dim())
                 .child("Projects"),
         )
         .child(
             icon_button("sidebar-add-project", Icon::Plus, 22.0, theme, false)
+                .tooltip(tip("New project", theme))
                 .on_click(cx.listener(|root, _, _, cx| root.add_project(cx))),
+        )
+}
+
+struct InlineProjectActions {
+    id: String,
+    path: String,
+    name: String,
+    pinned: bool,
+    session_count: usize,
+    active: bool,
+}
+
+fn project_actions_inline(
+    project: InlineProjectActions,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let InlineProjectActions {
+        id,
+        path,
+        name,
+        pinned,
+        session_count,
+        active,
+    } = project;
+    let path_for_new = path.clone();
+    let path_for_remove = path.clone();
+    let id_for_pin = id.clone();
+    let id_for_remove = id.clone();
+    let chats = match session_count {
+        0 => "No chats".to_string(),
+        1 => "1 chat".to_string(),
+        count => format!("{count} chats"),
+    };
+    let summary = format!("{chats} · {} active", usize::from(active));
+    div()
+        .mx(px(10.0))
+        .mb(px(6.0))
+        .p(px(10.0))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(theme.border())
+        .bg(theme.panel())
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(icons::icon(Icon::Folder, 15.0, theme.dim()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text())
+                        .child(name),
+                )
+                .child(
+                    icon_button(
+                        SharedString::from(format!("project-inline-pin-{id}")),
+                        Icon::Pin,
+                        24.0,
+                        theme,
+                        pinned,
+                    )
+                    .tooltip(tip(
+                        if pinned {
+                            "Unpin project"
+                        } else {
+                            "Pin project"
+                        },
+                        theme,
+                    ))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        root.set_project_pinned(id_for_pin.clone(), !pinned, cx);
+                    })),
+                ),
+        )
+        .child(
+            div()
+                .mt(px(4.0))
+                .text_size(px(11.5))
+                .text_color(theme.dim())
+                .child(summary),
+        )
+        .child(
+            div()
+                .mt(px(5.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(11.5))
+                .text_color(theme.faint())
+                .child(path),
+        )
+        .child(
+            div()
+                .mt(px(9.0))
+                .flex()
+                .flex_row()
+                .gap(px(6.0))
+                .child(
+                    Button::new("New chat")
+                        .render(
+                            SharedString::from(format!("project-inline-new-{id}")),
+                            theme,
+                            cx,
+                            move |root, window, cx| {
+                                root.inline_project_actions = None;
+                                root.collapsed_projects.remove(&path_for_new);
+                                root.push_chat(
+                                    window,
+                                    path_for_new.clone(),
+                                    None,
+                                    "New chat".to_string(),
+                                    cx,
+                                );
+                                root.focus_composer(window, cx);
+                            },
+                        )
+                        .flex_1(),
+                )
+                .child(Button::new("Remove").danger().render(
+                    SharedString::from(format!("project-inline-remove-{id}")),
+                    theme,
+                    cx,
+                    move |root, _, cx| {
+                        root.inline_project_actions = None;
+                        root.overlay = Some(Overlay::Confirm {
+                            title: "Remove project".to_string(),
+                            body: format!(
+                                "Remove {path_for_remove} from the sidebar? The folder and its chats stay on disk."
+                            ),
+                            action: ConfirmAction::RemoveProject(id_for_remove.clone()),
+                        });
+                        cx.notify();
+                    },
+                )),
         )
 }
 
@@ -990,10 +1224,11 @@ struct SessionFlags {
     worktree: bool,
     active: bool,
     indent: f32,
+    show_actions: bool,
 }
 
 fn session_row(
-    title: &str,
+    session: &crate::model::SessionRow,
     when: &str,
     shortcut: Option<usize>,
     flags: SessionFlags,
@@ -1006,20 +1241,32 @@ fn session_row(
         worktree,
         active,
         indent,
+        show_actions,
     } = flags;
-    let title = title.to_string();
+    let id = session.id.clone();
+    let title = session.title.clone();
+    let project = session.project.clone();
+    let pinned_value = session.pinned;
     let when = when.to_string();
-    let title_for_more = title.clone();
-    let title_for_menu = title.clone();
+    let group = SharedString::from(format!("session-row-{id}"));
+    let group_for_actions = group.clone();
+    let pin_id = id.clone();
+    let archive_id = id.clone();
+    let menu_id = id.clone();
+    let menu_title = title.clone();
+    let menu_project = project.clone();
+    let meta = shortcut.map(shortcut_label).unwrap_or(when.clone());
     div()
-        .id(SharedString::from(format!("session-{title}")))
+        .id(SharedString::from(format!("session-{id}")))
+        .group(group)
+        .relative()
         .flex()
         .flex_row()
         .items_center()
-        .gap_2()
-        .h(px(30.0))
+        .gap(px(6.0))
+        .h(px(32.0))
         .pl(px(indent))
-        .pr_2()
+        .pr(px(8.0))
         .rounded(px(8.0))
         .cursor_pointer()
         .bg(if active {
@@ -1036,66 +1283,86 @@ fn session_row(
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_size(px(12.5))
+                .font_weight(if active {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
                 .text_color(if active { theme.text() } else { theme.dim() })
                 .child(title.clone()),
         )
-        .child(
+        .children((!meta.is_empty()).then(|| {
             div()
                 .flex_none()
+                .overflow_hidden()
+                .whitespace_nowrap()
                 .text_size(px(10.5))
                 .text_color(theme.faint())
-                .child(
-                    shortcut
-                        .map(shortcut_label)
-                        .unwrap_or_else(|| when.to_string()),
-                ),
-        )
+                .child(meta)
+        }))
         .children(worktree.then(|| icons::icon(Icon::Branch, 12.0, theme.accent())))
-        .children(shortcut.is_none().then(|| {
-            icon_button(
-                SharedString::from(format!("session-more-{}", title_for_more)),
-                Icon::More,
-                22.0,
-                theme,
-                false,
-            )
-            .tooltip(tip("Chat actions", theme))
-            .on_click(cx.listener(move |root, _, _, cx| {
-                cx.stop_propagation();
-                let Some(session) = root
-                    .sessions
-                    .iter()
-                    .find(|row| row.title == title_for_more)
-                    .cloned()
-                else {
-                    return;
-                };
-                root.overlay = Some(Overlay::SessionActions {
-                    id: session.id,
-                    title: session.title,
-                    project: session.project,
-                    pinned: session.pinned,
-                });
-                cx.notify();
-            }))
+        .children(show_actions.then(|| {
+            div()
+                .absolute()
+                .top(px(0.0))
+                .right(px(2.0))
+                .bottom(px(0.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_end()
+                .gap(px(0.0))
+                .w(px(48.0))
+                .px(px(1.0))
+                .rounded(px(7.0))
+                .bg(theme.panel())
+                .opacity(0.0)
+                .group_hover(group_for_actions, move |style| style.opacity(1.0))
+                .child(
+                    icon_button(
+                        SharedString::from(format!("session-pin-{id}")),
+                        Icon::Pin,
+                        20.0,
+                        theme,
+                        pinned_value,
+                    )
+                    .tooltip(tip(
+                        if pinned_value {
+                            "Unpin thread"
+                        } else {
+                            "Pin thread"
+                        },
+                        theme,
+                    ))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        cx.stop_propagation();
+                        root.set_session_pinned(pin_id.clone(), !pinned_value, cx);
+                    })),
+                )
+                .child(
+                    icon_button(
+                        SharedString::from(format!("session-archive-{id}")),
+                        Icon::Archive,
+                        20.0,
+                        theme,
+                        false,
+                    )
+                    .tooltip(tip("Archive thread", theme))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        cx.stop_propagation();
+                        root.archive_session(archive_id.clone(), cx);
+                    })),
+                )
         }))
         .on_click(cx.listener(move |root, _, window, cx| open(root, window, cx)))
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |root, _, _, cx| {
-                let Some(session) = root
-                    .sessions
-                    .iter()
-                    .find(|row| row.title == title_for_menu)
-                    .cloned()
-                else {
-                    return;
-                };
                 root.overlay = Some(Overlay::SessionActions {
-                    id: session.id,
-                    title: session.title,
-                    project: session.project,
-                    pinned: session.pinned,
+                    id: menu_id.clone(),
+                    title: menu_title.clone(),
+                    project: menu_project.clone(),
+                    pinned: pinned_value,
                 });
                 cx.notify();
             }),
@@ -1145,6 +1412,24 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
     let project = root.selected_project().cloned();
     let branch = root.branch.clone();
     let sources = root.sources.clone();
+    let pull = root
+        .pulls
+        .iter()
+        .find(|pull| {
+            pull["head"].as_str() == branch.as_deref()
+                && pull["state"]
+                    .as_str()
+                    .is_some_and(|state| state.eq_ignore_ascii_case("open"))
+        })
+        .or_else(|| {
+            root.pulls.iter().find(|pull| {
+                pull["state"]
+                    .as_str()
+                    .is_some_and(|state| state.eq_ignore_ascii_case("open"))
+            })
+        })
+        .or_else(|| root.pulls.first())
+        .cloned();
     let totals = root
         .chats
         .get(root.active)
@@ -1162,8 +1447,8 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         .min_w(px(0.0))
         .min_h(px(0.0))
         .overflow_y_scroll()
-        .gap_1()
-        .px(px(14.0))
+        .gap(px(2.0))
+        .px(px(16.0))
         .py(px(12.0))
         .rounded(px(12.0))
         .bg(theme.panel())
@@ -1179,8 +1464,10 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
             .flex()
             .flex_row()
             .items_center()
-            .h(px(30.0))
-            .px_2()
+            .h(px(34.0))
+            .px(px(4.0))
+            .border_b_1()
+            .border_color(theme.border())
             .child(
                 div()
                     .flex_1()
@@ -1210,7 +1497,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
     panel = panel.child(detail_row(
         "details-changes",
         Icon::Changes,
-        "View changes",
+        "Changes",
         if files > 0 {
             Some(vec![
                 (format!("+{added}"), theme.success()),
@@ -1248,15 +1535,41 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         },
     ));
 
-    panel = panel.child(div().h(px(12.0)));
+    if let Some(pull) = pull {
+        let number = pull["number"].as_u64().unwrap_or(0);
+        let state = pull["state"].as_str().unwrap_or_default();
+        let url = pull["url"].as_str().unwrap_or_default().to_string();
+        if number > 0 && !url.is_empty() {
+            let color = if state.eq_ignore_ascii_case("open") {
+                theme.success()
+            } else if state.eq_ignore_ascii_case("merged") {
+                theme.color("pull_merged")
+            } else {
+                theme.error()
+            };
+            panel = panel.child(detail_row(
+                "details-pull",
+                Icon::PullRequest,
+                "Pull request",
+                Some(vec![(format!("PR #{number}"), color)]),
+                theme,
+                cx,
+                move |_, _, cx| cx.open_url(&url),
+            ));
+        }
+    }
+
+    panel = panel.child(div().h(px(8.0)));
 
     panel = panel.child(
         div()
             .flex()
             .flex_row()
             .items_center()
-            .h(px(26.0))
-            .px_2()
+            .h(px(30.0))
+            .px(px(4.0))
+            .border_t_1()
+            .border_color(theme.border())
             .child(
                 div()
                     .flex_1()
@@ -1312,8 +1625,8 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .h(px(28.0))
-                    .px_2()
+                    .h(px(32.0))
+                    .px(px(4.0))
                     .rounded(px(7.0))
                     .child(icons::icon(Icon::Globe, 14.0, theme.faint()))
                     .child(
@@ -1344,13 +1657,13 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
             .flex_row()
             .items_center()
             .gap_2()
-            .h(px(28.0))
-            .px_2()
+            .h(px(32.0))
+            .px(px(4.0))
             .rounded(px(7.0))
             .cursor_pointer()
             .text_size(px(12.0))
             .text_color(theme.dim())
-            .hover(move |style| style.bg(theme.panel()).text_color(theme.text()))
+            .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
             .child("View all")
             .on_click(cx.listener(|root, _, _, cx| {
                 root.rail = Rail::Customize;
@@ -1362,7 +1675,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
     div()
         .flex()
         .flex_none()
-        .w(px(296.0))
+        .w(px(312.0))
         .min_h(px(0.0))
         .p(px(8.0))
         .bg(theme.background())
@@ -1384,14 +1697,14 @@ fn detail_row(
         .flex_row()
         .items_center()
         .gap_2()
-        .h(px(30.0))
-        .px_2()
-        .rounded(px(7.0))
+        .h(px(36.0))
+        .px(px(4.0))
+        .rounded(px(8.0))
         .cursor_pointer()
         .text_size(px(12.5))
         .text_color(theme.dim())
-        .hover(move |style| style.bg(theme.panel()).text_color(theme.text()))
-        .child(icons::icon(mark, 15.0, theme.faint()))
+        .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+        .child(icons::icon(mark, 16.0, theme.faint()))
         .child(div().flex_1().child(label.to_string()));
     if let Some(values) = trailing {
         for (value, color) in values {

@@ -154,18 +154,88 @@ PLIST
     echo "no notarization credentials; skipping notarization"
   fi
 
-  # The image carries the app and a link to Applications: dragging one onto
-  # the other is the install, and a reader who never leaves the read-only
-  # volume ends up running the app out of the mount instead.
-  stage_dmg="$artifact_dir/dmg"
-  rm -rf "$stage_dmg"
-  mkdir -p "$stage_dmg"
+  # Finder saves the icon positions and background in the image's own
+  # .DS_Store, so the image is staged read-write and only compressed after the
+  # layout has been written. The trap keeps a failed Finder step from leaving a
+  # mounted volume behind on a release runner.
+  # This is electron-builder's default DMG background: Electron Desktop uses
+  # the same asset, so both installers keep the same drag arrow.
+  background="$here/assets/dmg-background.tiff"
+  if [ ! -f "$background" ]; then
+    echo "error: $background is missing" >&2
+    exit 1
+  fi
+  dmg_work="$(mktemp -d "$artifact_dir/dmg-work.XXXXXX")"
+  stage_dmg="$dmg_work/stage"
+  rw_dmg="$dmg_work/Oxide Beta-rw.dmg"
+  mount_dir="$dmg_work/mount"
+  volume_name="$app_name $version-$arch"
+  attached=0
+  cleanup_dmg() {
+    if [ "$attached" = "1" ]; then
+      hdiutil detach "$mount_dir" -force >/dev/null 2>&1 || true
+    fi
+    rm -rf "$dmg_work"
+  }
+  trap cleanup_dmg EXIT
+
+  mkdir -p "$stage_dmg/.background"
   cp -R "$app" "$stage_dmg/"
   ln -s /Applications "$stage_dmg/Applications"
+  cp "$background" "$stage_dmg/.background/dmg-background.tiff"
+
+  hdiutil create -volname "$volume_name" -srcfolder "$stage_dmg" \
+    -ov -format UDRW -fs HFS+ "$rw_dmg" >/dev/null
+  mkdir -p "$mount_dir"
+  hdiutil attach "$rw_dmg" -mountpoint "$mount_dir" \
+    -readwrite -noverify -noautoopen >/dev/null
+  attached=1
+
+  osascript - "$mount_dir" "$app_name" <<'APPLESCRIPT'
+on run argv
+  set mountPath to item 1 of argv
+  set appName to item 2 of argv
+  set imageFolder to POSIX file mountPath as alias
+  set backgroundFile to POSIX file (mountPath & "/.background/dmg-background.tiff") as alias
+  tell application "Finder"
+    open imageFolder
+    set imageWindow to container window of imageFolder
+    set current view of imageWindow to icon view
+    set toolbar visible of imageWindow to false
+    set statusbar visible of imageWindow to false
+    set pathbar visible of imageWindow to false
+    set sidebar width of imageWindow to 0
+    set the bounds of imageWindow to {100, 100, 640, 480}
+    set viewOptions to the icon view options of imageWindow
+    set arrangement of viewOptions to not arranged
+    set icon size of viewOptions to 80
+    set text size of viewOptions to 12
+    set background picture of viewOptions to backgroundFile
+    set position of item (appName & ".app") of imageWindow to {130, 220}
+    set position of item "Applications" of imageWindow to {410, 220}
+    close imageWindow
+    open imageFolder
+    update imageFolder without registering applications
+    delay 1
+    close container window of imageFolder
+  end tell
+end run
+APPLESCRIPT
+
+  cp "$here/../desktop/icons/icon.icns" "$mount_dir/.VolumeIcon.icns"
+  if command -v SetFile >/dev/null 2>&1; then
+    SetFile -a C "$mount_dir"
+  fi
+  sync
+  hdiutil detach "$mount_dir" >/dev/null
+  attached=0
+
   dmg="$artifact_dir/Oxide-Beta-macos-$arch.dmg"
   rm -f "$dmg"
-  hdiutil create -volname "$app_name" -srcfolder "$stage_dmg" -ov -format UDZO "$dmg" >/dev/null
-  rm -rf "$stage_dmg"
+  hdiutil convert "$rw_dmg" -ov -format UDZO \
+    -imagekey zlib-level=9 -o "$dmg" >/dev/null
+  cleanup_dmg
+  trap - EXIT
   echo "wrote $dmg"
   if [ -z "$identity" ]; then
     echo "note: this build is not notarized, so a downloaded copy needs one"

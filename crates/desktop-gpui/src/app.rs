@@ -32,10 +32,20 @@ actions!(
         NewChat,
         CloseChat,
         ToggleSidebar,
+        ToggleDetails,
         OpenSettings,
         ToggleChanges,
         OpenModels,
         OpenWorktrees,
+        AboutApp,
+        CheckForUpdates,
+        HideApp,
+        IncreaseTextSize,
+        DecreaseTextSize,
+        ResetTextSize,
+        ToggleFullscreen,
+        MinimizeWindow,
+        CloseWindow,
         Back,
         Forward,
         DismissOverlay,
@@ -82,6 +92,8 @@ pub enum SettingsTab {
 #[derive(Clone)]
 pub enum Overlay {
     Settings,
+    About,
+    Updates,
     Models,
     Shortcuts,
     Trust {
@@ -209,12 +221,15 @@ pub struct Root {
     pub branch: Option<String>,
     /// The MCP servers this project loads, as the details pane lists them.
     pub sources: Vec<Value>,
+    pub pulls: Vec<Value>,
+    pub pulls_error: Option<String>,
     pub worktrees: Vec<Worktree>,
     pub worktrees_error: Option<String>,
     pub worktree_detached: bool,
     pub worktree_copy_changes: bool,
     pub show_details: bool,
     pub theme_names: Vec<String>,
+    pub theme_previews: HashMap<String, Theme>,
     pub current_theme: String,
     pub languages: Vec<Value>,
     pub language: String,
@@ -222,9 +237,14 @@ pub struct Root {
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
     pub expanded_projects: HashSet<String>,
+    pub collapsed_projects: HashSet<String>,
+    pub inline_project_actions: Option<String>,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
+    pub update_check: Option<Value>,
+    pub update_error: Option<String>,
+    pub checking_updates: bool,
     pub subscriptions: Vec<Subscription>,
 }
 
@@ -336,12 +356,15 @@ impl Root {
             at_generation: 0,
             branch: None,
             sources: Vec::new(),
+            pulls: Vec::new(),
+            pulls_error: None,
             worktrees: Vec::new(),
             worktrees_error: None,
             worktree_detached: true,
             worktree_copy_changes: false,
             show_details: true,
             theme_names: Vec::new(),
+            theme_previews: HashMap::from([("dark".to_string(), Theme::default())]),
             current_theme: "dark".to_string(),
             languages: Vec::new(),
             language: String::new(),
@@ -349,8 +372,13 @@ impl Root {
             sidebar_visible: true,
             sidebar_width: 300.0,
             expanded_projects: HashSet::new(),
+            collapsed_projects: HashSet::new(),
+            inline_project_actions: None,
             resizing: None,
             show_changes: false,
+            update_check: None,
+            update_error: None,
+            checking_updates: false,
             subscriptions,
         };
 
@@ -379,15 +407,28 @@ impl Root {
 
     pub fn bind_keys(cx: &mut App) {
         let mut bindings = editor::key_bindings();
+        bindings.push(KeyBinding::new("cmd-t", NewChat, Some("Root")));
         bindings.push(KeyBinding::new("cmd-n", NewChat, Some("Root")));
         bindings.push(KeyBinding::new("cmd-w", CloseChat, Some("Root")));
         bindings.push(KeyBinding::new("cmd-b", ToggleSidebar, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-j", ToggleDetails, Some("Root")));
         bindings.push(KeyBinding::new("cmd-,", OpenSettings, Some("Root")));
         bindings.push(KeyBinding::new("cmd-enter", ToggleChanges, Some("Root")));
         bindings.push(KeyBinding::new("cmd-shift-m", OpenModels, Some("Root")));
         bindings.push(KeyBinding::new("cmd-shift-g", OpenWorktrees, Some("Root")));
         bindings.push(KeyBinding::new("cmd-[", Back, Some("Root")));
         bindings.push(KeyBinding::new("cmd-]", Forward, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-h", HideApp, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-+", IncreaseTextSize, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-=", IncreaseTextSize, Some("Root")));
+        bindings.push(KeyBinding::new("cmd--", DecreaseTextSize, Some("Root")));
+        bindings.push(KeyBinding::new("cmd-0", ResetTextSize, Some("Root")));
+        bindings.push(KeyBinding::new(
+            "ctrl-cmd-f",
+            ToggleFullscreen,
+            Some("Root"),
+        ));
+        bindings.push(KeyBinding::new("cmd-shift-w", CloseWindow, Some("Root")));
         bindings.push(KeyBinding::new("escape", DismissOverlay, Some("Root")));
         bindings.push(KeyBinding::new("cmd-q", QuitApp, Some("Root")));
         bindings.push(KeyBinding::new("cmd-1", SwitchToSession1, Some("Root")));
@@ -411,12 +452,17 @@ impl Root {
 
     /// The window's menu bar, the way the stable app's Electron menu is built.
     pub fn install_menus(cx: &mut App) {
-        use gpui::{Menu, MenuItem};
+        use gpui::{Menu, MenuItem, OsAction};
         cx.set_menus(vec![
             Menu {
                 name: "Oxide Beta".into(),
                 items: vec![
-                    MenuItem::action("About Oxide Beta", ShowShortcuts),
+                    MenuItem::action("About Oxide Beta", AboutApp),
+                    MenuItem::separator(),
+                    MenuItem::action("Check for Updates…", CheckForUpdates),
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
+                    MenuItem::action("Hide Oxide Beta", HideApp),
                     MenuItem::separator(),
                     MenuItem::action("Quit Oxide Beta", QuitApp),
                 ],
@@ -429,20 +475,43 @@ impl Root {
                 ],
             },
             Menu {
+                name: "Edit".into(),
+                items: vec![
+                    MenuItem::os_action("Cut", editor::Cut, OsAction::Cut),
+                    MenuItem::os_action("Copy", editor::Copy, OsAction::Copy),
+                    MenuItem::os_action("Paste", editor::Paste, OsAction::Paste),
+                    MenuItem::os_action("Select All", editor::SelectAll, OsAction::SelectAll),
+                ],
+            },
+            Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action("Show or Hide Details", ToggleDetails),
                     MenuItem::action("Show or Hide the Sidebar", ToggleSidebar),
                     MenuItem::action("Changes", ToggleChanges),
                     MenuItem::action("Model Picker", OpenModels),
                     MenuItem::action("Git Worktrees", OpenWorktrees),
+                    MenuItem::separator(),
+                    MenuItem::action("Larger Text", IncreaseTextSize),
+                    MenuItem::action("Smaller Text", DecreaseTextSize),
+                    MenuItem::action("Actual Size", ResetTextSize),
+                    MenuItem::separator(),
+                    MenuItem::action("Back", Back),
+                    MenuItem::action("Forward", Forward),
+                    MenuItem::separator(),
+                    MenuItem::action("Toggle Full Screen", ToggleFullscreen),
                 ],
             },
             Menu {
                 name: "Window".into(),
                 items: vec![
-                    MenuItem::action("Settings", OpenSettings),
-                    MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
+                    MenuItem::action("Minimize", MinimizeWindow),
+                    MenuItem::action("Close Window", CloseWindow),
                 ],
+            },
+            Menu {
+                name: "Help".into(),
+                items: vec![MenuItem::action("Keyboard Shortcuts", ShowShortcuts)],
             },
         ]);
     }
@@ -542,9 +611,9 @@ impl Root {
             "list_themes",
             json!({ "project": project }),
             cx,
-            |root, result, _| {
+            move |root, result, cx| {
                 if let Ok(value) = result {
-                    root.theme_names = value["names"]
+                    let names = value["names"]
                         .as_array()
                         .map(|names| {
                             names
@@ -553,6 +622,22 @@ impl Root {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    root.theme_names = names;
+                    for name in root.theme_names.clone() {
+                        let project = project.clone();
+                        root.call(
+                            "theme_colors",
+                            json!({ "project": project, "name": name }),
+                            cx,
+                            move |root, result, cx| {
+                                if let Ok(value) = result {
+                                    root.theme_previews
+                                        .insert(name.clone(), Theme::from_value(&value));
+                                    cx.notify();
+                                }
+                            },
+                        );
+                    }
                 }
             },
         );
@@ -571,6 +656,8 @@ impl Root {
             |root, result, _| {
                 if let Ok(value) = result {
                     root.theme = Theme::from_value(&value);
+                    root.theme_previews
+                        .insert(root.current_theme.clone(), root.theme.clone());
                 }
             },
         );
@@ -588,11 +675,45 @@ impl Root {
                 Ok(value) => {
                     root.theme = Theme::from_value(&value);
                     root.current_theme = root.theme.name.clone();
+                    root.theme_previews
+                        .insert(root.current_theme.clone(), root.theme.clone());
                     cx.notify();
                 }
                 Err(error) => root.toast(error, true, cx),
             },
         );
+    }
+
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        self.overlay = Some(Overlay::Updates);
+        self.update_check = None;
+        self.update_error = None;
+        self.checking_updates = true;
+        self.call(
+            "check_gpui_updates",
+            json!({ "current": env!("CARGO_PKG_VERSION") }),
+            cx,
+            |root, result, cx| {
+                root.checking_updates = false;
+                match result {
+                    Ok(value) => root.update_check = Some(value),
+                    Err(error) => root.update_error = Some(error),
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
+    }
+
+    fn set_text_scale(&mut self, scale: f64, cx: &mut Context<Self>) {
+        self.save_prefs(json!({ "font_scale": scale.clamp(0.7, 1.6) }), cx);
+        cx.notify();
+    }
+
+    fn adjust_text_scale(&mut self, delta: f64, cx: &mut Context<Self>) {
+        let current = self.prefs["font_scale"].as_f64().unwrap_or(1.0);
+        let stepped = ((current * 10.0).round() / 10.0 + delta).clamp(0.7, 1.6);
+        self.set_text_scale((stepped * 10.0).round() / 10.0, cx);
     }
 
     pub fn set_language(&mut self, tag: String, cx: &mut Context<Self>) {
@@ -708,6 +829,7 @@ impl Root {
                 }
             },
         );
+        self.load_pulls(cx);
     }
 
     pub fn load_models(&mut self, cx: &mut Context<Self>) {
@@ -790,6 +912,29 @@ impl Root {
                 if let Ok(value) = result {
                     root.sources = value.as_array().cloned().unwrap_or_default();
                     cx.notify();
+                }
+            },
+        );
+    }
+
+    pub fn load_pulls(&mut self, cx: &mut Context<Self>) {
+        let Some(project) = self.current_project() else {
+            self.pulls.clear();
+            self.pulls_error = None;
+            return;
+        };
+        self.call(
+            "pull_requests",
+            json!({ "project": project }),
+            cx,
+            |root, result, _cx| match result {
+                Ok(value) => {
+                    root.pulls = value.as_array().cloned().unwrap_or_default();
+                    root.pulls_error = None;
+                }
+                Err(error) => {
+                    root.pulls.clear();
+                    root.pulls_error = Some(error);
                 }
             },
         );
@@ -944,9 +1089,15 @@ impl Root {
     }
 
     pub fn select_project(&mut self, window: &mut Window, project: String, cx: &mut Context<Self>) {
+        self.rail = Rail::Chats;
         self.overlay = None;
-        let title = self.project_name(&project);
-        self.push_chat(window, project, None, title, cx);
+        self.inline_project_actions = None;
+        if self.current_project_owner().as_deref() == Some(project.as_str()) {
+            self.focus_composer(window, cx);
+            cx.notify();
+            return;
+        }
+        self.push_chat(window, project, None, "New chat".to_string(), cx);
     }
 
     pub fn create_worktree(&mut self, cx: &mut Context<Self>) {
@@ -1239,10 +1390,17 @@ impl Root {
         if let Some(project) = self.projects.iter().find(|project| {
             self.sessions_of(&project.path)
                 .iter()
+                .any(|row| row.id == session.id)
+        }) {
+            self.collapsed_projects.remove(&project.path);
+            if self
+                .sessions_of(&project.path)
+                .iter()
                 .position(|row| row.id == session.id)
                 .is_some_and(|position| position >= 5)
-        }) {
-            self.expanded_projects.insert(project.path.clone());
+            {
+                self.expanded_projects.insert(project.path.clone());
+            }
         }
         if let Some(index) = self
             .chats
@@ -1643,6 +1801,7 @@ impl Root {
 
     pub fn remove_project(&mut self, id: String, cx: &mut Context<Self>) {
         self.overlay = None;
+        self.inline_project_actions = None;
         self.call(
             "remove_project",
             json!({ "id": id }),
@@ -1659,6 +1818,27 @@ impl Root {
         self.call(
             "set_session_pinned",
             json!({ "id": id, "pinned": pinned }),
+            cx,
+            |root, result, cx| match result {
+                Ok(value) => {
+                    root.sessions = value
+                        .as_array()
+                        .map(|sessions| {
+                            sessions.iter().filter_map(SessionRow::from_value).collect()
+                        })
+                        .unwrap_or_default();
+                    cx.notify();
+                }
+                Err(error) => root.toast(error, true, cx),
+            },
+        );
+    }
+
+    pub fn archive_session(&mut self, id: String, cx: &mut Context<Self>) {
+        self.overlay = None;
+        self.call(
+            "archive_session",
+            json!({ "id": id }),
             cx,
             |root, result, cx| match result {
                 Ok(value) => {
@@ -1703,6 +1883,7 @@ impl Root {
 
     pub fn set_project_pinned(&mut self, id: String, pinned: bool, cx: &mut Context<Self>) {
         self.overlay = None;
+        self.inline_project_actions = None;
         self.call(
             "set_project_pinned",
             json!({ "id": id, "pinned": pinned }),
@@ -2036,14 +2217,6 @@ impl Root {
         ordered
     }
 
-    pub fn sidebar_shortcuts(&self) -> HashMap<String, usize> {
-        self.sidebar_sessions()
-            .into_iter()
-            .enumerate()
-            .map(|(index, session)| (session.id, index + 1))
-            .collect()
-    }
-
     pub fn open_overlay(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         match &overlay {
             Overlay::Models => self.load_models(cx),
@@ -2160,9 +2333,35 @@ impl Render for Root {
                 this.save_prefs(json!({ "sidebar_visible": visible }), cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ToggleDetails, _window, cx| {
+                this.show_details = !this.show_details;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| {
                 this.open_overlay(Overlay::Settings, cx)
             }))
+            .on_action(cx.listener(|this, _: &AboutApp, _window, cx| {
+                this.overlay = Some(Overlay::About);
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|this, _: &CheckForUpdates, _window, cx| this.check_for_updates(cx)),
+            )
+            .on_action(cx.listener(|_, _: &HideApp, _window, cx| cx.hide()))
+            .on_action(cx.listener(|this, _: &IncreaseTextSize, _window, cx| {
+                this.adjust_text_scale(0.1, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DecreaseTextSize, _window, cx| {
+                this.adjust_text_scale(-0.1, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ResetTextSize, _window, cx| this.set_text_scale(1.0, cx)),
+            )
+            .on_action(
+                cx.listener(|_, _: &ToggleFullscreen, window, _cx| window.toggle_fullscreen()),
+            )
+            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _cx| window.minimize_window()))
+            .on_action(cx.listener(|_, _: &CloseWindow, window, _cx| window.remove_window()))
             .on_action(cx.listener(|this, _: &ToggleChanges, _window, cx| {
                 this.show_changes = !this.show_changes;
                 if this.show_changes {

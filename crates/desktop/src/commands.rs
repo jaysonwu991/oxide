@@ -22,7 +22,7 @@ use oxide_core::session::SessionLog;
 use oxide_core::snapshots::Snapshots;
 use oxide_core::theme_view;
 use oxide_core::update_notice;
-use oxide_core::updates::Component;
+use oxide_core::updates::{self, Component};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -1693,6 +1693,31 @@ pub async fn check_updates() -> CmdResult<Value> {
     serde_json::to_value(check).map_err(err)
 }
 
+/// Checks the beta GPUI release train. The beta does not replace itself in
+/// place, so the answer names the artifact to download and leaves installation
+/// to the reader rather than offering the stable app's in-place updater.
+pub async fn check_gpui_updates(current: String) -> CmdResult<Value> {
+    let platform = updates::platform().map_err(err)?;
+    let client = updates::client().map_err(err)?;
+    let repo = updates::repo();
+    let release = updates::latest(&client, &repo, Component::DesktopGpui, platform)
+        .await
+        .map_err(err)?;
+    let mut check = updates::Check::new(Component::DesktopGpui, &release, &current, false, &repo);
+    check.installation = "beta desktop app".to_string();
+    check.path = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    check.advice = check.update_available.then(|| match check.asset.as_ref() {
+        Some(asset) => format!(
+            "Download {} from the beta release page and replace the installed app. This beta does not update itself in place.",
+            asset.name
+        ),
+        None => "This beta release has no build for this platform; see the release page.".to_string(),
+    });
+    serde_json::to_value(check).map_err(err)
+}
+
 /// Installs the newest release of the app from its own train: the bundle this
 /// platform installs is downloaded, verified against the digest its release
 /// published, and put in this installation's place, so the window offers the
@@ -2279,6 +2304,7 @@ pub async fn dispatch(
         }
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
         "check_updates" => command_value(check_updates().await),
+        "check_gpui_updates" => command_value(check_gpui_updates(arg(&args, "current")?).await),
         "install_update" => {
             command_value(install_update(&state, optional_arg(&args, "token")?).await)
         }
