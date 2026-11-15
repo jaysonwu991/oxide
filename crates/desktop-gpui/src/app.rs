@@ -193,6 +193,7 @@ pub struct Root {
     pub forward: Vec<usize>,
     pub next_chat: u64,
     pub editors: HashMap<u64, Entity<Editor>>,
+    pending_focus: Option<u64>,
     pub search: Entity<Editor>,
     pub worktree_name: Entity<Editor>,
     pub worktree_base: Entity<Editor>,
@@ -333,6 +334,7 @@ impl Root {
             forward: Vec::new(),
             next_chat: 1,
             editors: HashMap::new(),
+            pending_focus: None,
             search,
             worktree_name,
             worktree_base,
@@ -819,13 +821,24 @@ impl Root {
         let Some(project) = self.current_project() else {
             return;
         };
+        let expected = project.clone();
         self.call(
             "project_info",
             json!({ "project": project }),
             cx,
-            |root, result, _| {
+            move |root, result, cx| {
                 if let Ok(value) = result {
+                    if root.current_project().as_deref() != Some(expected.as_str()) {
+                        return;
+                    }
+                    let awaiting = project_trust_awaiting(&value);
                     root.info = value;
+                    if awaiting {
+                        root.overlay = Some(Overlay::Trust {
+                            project: expected.clone(),
+                        });
+                        cx.notify();
+                    }
                 }
             },
         );
@@ -1304,6 +1317,27 @@ impl Root {
         title: String,
         cx: &mut Context<Self>,
     ) {
+        self.push_chat_with_focus(Some(window), project, session, title, cx);
+    }
+
+    fn push_chat_in_memory(
+        &mut self,
+        project: String,
+        session: Option<String>,
+        title: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_chat_with_focus(None, project, session, title, cx);
+    }
+
+    fn push_chat_with_focus(
+        &mut self,
+        window: Option<&mut Window>,
+        project: String,
+        session: Option<String>,
+        title: String,
+        cx: &mut Context<Self>,
+    ) {
         let id = self.next_chat;
         self.next_chat += 1;
         let mut chat = Chat::new(project.clone(), title);
@@ -1347,8 +1381,12 @@ impl Root {
         // details pane show, so they are read with the thread rather than only
         // when a turn ends.
         self.refresh_repository(self.active, cx);
-        if let Some(editor) = self.editors.get(&id) {
-            window.focus(&editor.read(cx).focus_handle(cx));
+        if let Some(window) = window {
+            if let Some(editor) = self.editors.get(&id) {
+                window.focus(&editor.read(cx).focus_handle(cx));
+            }
+        } else {
+            self.pending_focus = Some(id);
         }
         cx.notify();
     }
@@ -1777,12 +1815,24 @@ impl Root {
                 Ok(Some(paths)) => {
                     if let Some(path) = paths.into_iter().next() {
                         let path = path.to_string_lossy().to_string();
+                        let selected_path = path.clone();
                         root.call(
                             "add_project",
                             json!({ "path": path }),
                             cx,
-                            |root, result, cx| match result {
-                                Ok(_) => root.refresh_projects(cx),
+                            move |root, result, cx| match result {
+                                Ok(value) => {
+                                    root.projects = crate::model::projects(&value["projects"]);
+                                    let project =
+                                        added_project_path(&value, &root.projects, selected_path);
+                                    root.refresh_sessions(cx);
+                                    root.push_chat_in_memory(
+                                        project,
+                                        None,
+                                        "New chat".to_string(),
+                                        cx,
+                                    );
+                                }
                                 Err(error) => root.toast(error, true, cx),
                             },
                         );
@@ -2246,6 +2296,18 @@ impl Root {
     }
 }
 
+fn added_project_path(value: &Value, projects: &[ProjectRow], fallback: String) -> String {
+    value["added"]
+        .as_str()
+        .and_then(|id| projects.iter().find(|project| project.id == id))
+        .map(|project| project.path.clone())
+        .unwrap_or(fallback)
+}
+
+fn project_trust_awaiting(value: &Value) -> bool {
+    value["trust"]["awaiting"].as_bool().unwrap_or(false)
+}
+
 /// The attachment a path makes: the core's own limit and MIME rules, in the
 /// data URL shape `send_prompt` takes. `Ok(None)` for a path the core would not
 /// accept as an attachment.
@@ -2290,6 +2352,11 @@ impl Render for Root {
         if self.chats.is_empty() {
             if let Some(project) = self.current_project() {
                 self.push_chat(window, project, None, "New chat".to_string(), cx);
+            }
+        }
+        if let Some(id) = self.pending_focus.take() {
+            if let Some(editor) = self.editors.get(&id) {
+                window.focus(&editor.read(cx).focus_handle(cx));
             }
         }
 
@@ -2555,6 +2622,39 @@ mod sidebar_resize_tests {
         assert_eq!(clamp_sidebar_width(1280.0, 120.0), 160.0);
         assert_eq!(clamp_sidebar_width(1280.0, 900.0), 805.0);
         assert_eq!(clamp_sidebar_width(320.0, 280.0), 160.0);
+    }
+}
+
+#[cfg(test)]
+mod project_flow_tests {
+    use super::{added_project_path, project_trust_awaiting};
+    use crate::model;
+    use serde_json::json;
+
+    #[test]
+    fn a_new_project_is_the_one_the_window_opens() {
+        let value = json!({
+            "added": "new-id",
+            "projects": [
+                { "id": "old-id", "path": "/tmp/old", "name": "Old" },
+                { "id": "new-id", "path": "/tmp/new", "name": "New" }
+            ]
+        });
+        let projects = model::projects(&value["projects"]);
+        assert_eq!(
+            added_project_path(&value, &projects, "/tmp/typed".to_string()),
+            "/tmp/new"
+        );
+    }
+
+    #[test]
+    fn trust_prompts_read_the_trust_object() {
+        assert!(project_trust_awaiting(
+            &json!({ "trust": { "awaiting": true } })
+        ));
+        assert!(!project_trust_awaiting(
+            &json!({ "trust": { "awaiting": false } })
+        ));
     }
 }
 

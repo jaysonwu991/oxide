@@ -166,6 +166,77 @@ fn styled(theme: &Theme, spans: &[Inline]) -> StyledText {
     StyledText::new(text).with_runs(runs)
 }
 
+fn styled_height(
+    window: &mut Window,
+    theme: &Theme,
+    spans: &[Inline],
+    width: f32,
+    font_size: f32,
+    line_height: f32,
+) -> f32 {
+    let (text, runs) = runs(theme, spans);
+    window
+        .text_system()
+        .shape_text(
+            SharedString::from(text),
+            px(font_size),
+            &runs,
+            Some(px(width.max(1.0))),
+            None,
+        )
+        .ok()
+        .map(|lines| {
+            lines
+                .iter()
+                .map(|line| f32::from(line.size(px(line_height)).height))
+                .sum::<f32>()
+                .max(line_height)
+        })
+        .unwrap_or(line_height)
+}
+
+fn plain_text_height(
+    window: &mut Window,
+    text: &str,
+    width: f32,
+    font_size: f32,
+    line_height: f32,
+    family: &'static str,
+) -> f32 {
+    let run = TextRun {
+        len: text.len(),
+        font: Font {
+            family: family.into(),
+            features: Default::default(),
+            fallbacks: None,
+            weight: FontWeight::NORMAL,
+            style: FontStyle::Normal,
+        },
+        color: gpui::transparent_black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_text(
+            SharedString::from(text.to_string()),
+            px(font_size),
+            std::slice::from_ref(&run),
+            Some(px(width.max(1.0))),
+            None,
+        )
+        .ok()
+        .map(|lines| {
+            lines
+                .iter()
+                .map(|line| f32::from(line.size(px(line_height)).height))
+                .sum::<f32>()
+                .max(line_height)
+        })
+        .unwrap_or(line_height)
+}
+
 /// A single line of the window's text, in the window's own size.
 fn line(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
     div()
@@ -1777,6 +1848,16 @@ fn conversation(
     std::mem::swap(&mut scroll, &mut root.chats[index].scroll);
     let scroll_to_end = root.chats[index].scroll_to_end;
     let entries = root.chats[index].entries.clone();
+    let leading = RAIL_WIDTH
+        + if root.sidebar_visible {
+            root.sidebar_width + SIDEBAR_RESIZER_WIDTH
+        } else {
+            0.0
+        };
+    let trailing = (if root.show_details { 312.0 } else { 0.0 })
+        + (if root.show_changes { 380.0 } else { 0.0 });
+    let reading_width =
+        (f32::from(window.viewport_size().width) - leading - trailing - 44.0).clamp(280.0, 740.0);
 
     let mut transcript = div()
         .id("transcript")
@@ -1830,14 +1911,9 @@ fn conversation(
     }
 
     for (position, entry) in entries.iter().enumerate() {
-        transcript = transcript.child(
-            div()
-                .w_full()
-                .max_w(px(780.0))
-                .mx_auto()
-                .flex_none()
-                .child(entry_view(entry, index, position, theme, cx)),
-        );
+        transcript = transcript.child(div().w_full().max_w(px(740.0)).mx_auto().flex_none().child(
+            entry_view(entry, index, position, theme, reading_width, window, cx),
+        ));
     }
 
     let composer_editor = root.editors.get(&root.chats[index].id).cloned();
@@ -2211,6 +2287,8 @@ fn entry_view(
     chat: usize,
     _position: usize,
     theme: &Theme,
+    width: f32,
+    window: &mut Window,
     cx: &mut Context<Root>,
 ) -> gpui::Div {
     match entry {
@@ -2265,7 +2343,7 @@ fn entry_view(
                 );
             }
             for block in blocks {
-                column = column.child(block_view(block, theme));
+                column = column.child(block_view(block, theme, width - 22.0, window));
             }
             column
         }
@@ -2296,6 +2374,14 @@ fn entry_view(
                     div()
                         .text_size(px(12.5))
                         .line_height(px(19.0))
+                        .min_h(px(plain_text_height(
+                            window,
+                            text,
+                            width - 16.0,
+                            12.5,
+                            19.0,
+                            ".SystemUIFont",
+                        )))
                         .text_color(theme.thinking_text())
                         .child(text.clone()),
                 )
@@ -2377,6 +2463,9 @@ fn entry_view(
             );
             if !card.output.trim().is_empty() {
                 let (output, hidden) = compact_tool_output(&card.output);
+                let output_height =
+                    plain_text_height(window, &output, width - 46.0, 11.5, 17.0, "Menlo")
+                        + if hidden { 17.0 } else { 0.0 };
                 block = block.child(
                     div()
                         .id(SharedString::from(format!("tool-output-{}", card.id)))
@@ -2393,6 +2482,7 @@ fn entry_view(
                         .text_size(px(11.5))
                         .line_height(px(17.0))
                         .font_family("Menlo")
+                        .min_h(px(output_height + 16.0))
                         .whitespace_normal()
                         .overflow_hidden()
                         .text_color(theme.dim())
@@ -2576,20 +2666,21 @@ fn entry_view(
     }
 }
 
-fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
+fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> gpui::Div {
     match block {
         Block::Paragraph(spans) => {
             let lines = inline_lines(spans);
-            let rows = lines
+            let height = lines
                 .iter()
-                .map(|line| estimated_rows(line, 92))
-                .sum::<usize>();
+                .map(|line| styled_height(window, theme, line, width, 13.5, 22.0))
+                .sum::<f32>()
+                .max(22.0);
             div()
                 .flex()
                 .flex_col()
                 .w_full()
                 .min_w(px(0.0))
-                .min_h(px(rows as f32 * 22.0))
+                .min_h(px(height))
                 .flex_none()
                 .whitespace_normal()
                 .text_size(px(13.5))
@@ -2659,7 +2750,14 @@ fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
             .w_full()
             .min_w(px(0.0))
             .flex_none()
-            .min_h(px(estimated_rows(spans, 92) as f32 * 20.0))
+            .min_h(px(styled_height(
+                window,
+                theme,
+                spans,
+                width - 12.0,
+                13.0,
+                20.0,
+            )))
             .whitespace_normal()
             .pl_3()
             .border_l_2()
@@ -2674,7 +2772,14 @@ fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
             .w_full()
             .min_w(px(0.0))
             .flex_none()
-            .min_h(px(estimated_rows(spans, 88) as f32 * 21.0))
+            .min_h(px(styled_height(
+                window,
+                theme,
+                spans,
+                width - 24.0 - *depth as f32 * 14.0,
+                13.5,
+                21.0,
+            )))
             .gap_2()
             .pl(px(*depth as f32 * 14.0))
             .text_size(px(13.5))
@@ -2697,7 +2802,14 @@ fn block_view(block: &Block, theme: &Theme) -> gpui::Div {
             .w_full()
             .min_w(px(0.0))
             .flex_none()
-            .min_h(px(estimated_rows(spans, 86) as f32 * 21.0))
+            .min_h(px(styled_height(
+                window,
+                theme,
+                spans,
+                width - 32.0 - *depth as f32 * 14.0,
+                13.5,
+                21.0,
+            )))
             .gap_2()
             .pl(px(*depth as f32 * 14.0))
             .text_size(px(13.5))
@@ -2734,25 +2846,6 @@ fn inline_lines(spans: &[Inline]) -> Vec<Vec<Inline>> {
     lines
 }
 
-fn estimated_rows(spans: &[Inline], columns: usize) -> usize {
-    let columns = columns.max(1);
-    let mut rows = 0;
-    let mut current = 0;
-    for character in spans.iter().flat_map(|span| span.text.chars()) {
-        if character == '\n' {
-            rows += 1;
-            current = 0;
-        } else {
-            current += 1;
-            if current == columns {
-                rows += 1;
-                current = 0;
-            }
-        }
-    }
-    rows + usize::from(current > 0)
-}
-
 fn diff_block(text: &str, theme: &Theme) -> gpui::Div {
     let mut column = div()
         .flex()
@@ -2784,7 +2877,7 @@ fn diff_block(text: &str, theme: &Theme) -> gpui::Div {
 fn composer(
     root: &mut Root,
     theme: &Theme,
-    scale: f32,
+    _scale: f32,
     editor_height: Pixels,
     _window: &mut Window,
     cx: &mut Context<Root>,
@@ -2799,6 +2892,7 @@ fn composer(
     let running = chat.running();
     let attachments = chat.attachments.clone();
     let queued = chat.queued.clone();
+    let show_strip = chat.entries.is_empty() && !running;
     let project = root
         .selected_project()
         .map(|project| root.project_name(&project.path))
@@ -2831,7 +2925,7 @@ fn composer(
         .on_action(cx.listener(|root, _: &crate::app::Stop, _window, cx| root.stop(cx)))
         .flex()
         .flex_col()
-        .gap(px(4.0))
+        .gap(px(2.0))
         .w_full()
         .px(px(12.0))
         .py(px(10.0))
@@ -2840,17 +2934,25 @@ fn composer(
         .border_color(theme.border())
         .rounded(px(20.0));
 
-    // The row on the box's top edge, the way the page's composer carries its
-    // own: the folder the thread runs in and the branch it writes to. It sits
-    // inside the box rather than above it, so the two edges read as one.
-    box_row = box_row.child(
+    // Codex keeps the folder facts on their own narrow strip before a thread
+    // starts. Once the thread has a transcript, that room belongs to the
+    // message and the normal rounded composer takes the full column.
+    let strip = show_strip.then(|| {
         div()
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
-            .h(px(24.0))
-            .px_1()
+            .gap_3()
+            .w_full()
+            .max_w(px(716.0))
+            .min_h(px(32.0))
+            .px(px(10.0))
+            .py(px(4.0))
+            .bg(theme.panel_2())
+            .border_1()
+            .border_color(theme.border())
+            .border_b(px(0.0))
+            .rounded_t(px(10.0))
             .child(
                 div()
                     .id("composer-project")
@@ -2858,13 +2960,16 @@ fn composer(
                     .flex_row()
                     .items_center()
                     .gap_1()
+                    .flex_none()
                     .cursor_pointer()
                     .rounded(px(6.0))
                     .hover(move |style| style.bg(theme.panel_3()))
                     .child(icons::icon(Icon::Folder, 13.0, theme.faint()))
                     .child(
                         div()
-                            .flex_none()
+                            .max_w(px(240.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .text_size(px(11.5))
                             .text_color(theme.dim())
                             .child(project.clone()),
@@ -2879,12 +2984,14 @@ fn composer(
                     .flex_row()
                     .items_center()
                     .gap_1()
+                    .flex_none()
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .child(icons::icon(Icon::Branch, 13.0, theme.faint()))
                     .child(
                         div()
                             .min_w(px(0.0))
+                            .max_w(px(200.0))
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_size(px(11.0))
@@ -2892,6 +2999,7 @@ fn composer(
                             .child(branch),
                     )
             }))
+            .child(div().flex_1())
             .child(
                 div()
                     .id("composer-worktree")
@@ -2912,23 +3020,16 @@ fn composer(
                     .hover(move |style| style.bg(theme.panel_3()))
                     .tooltip(tip("Choose a Git worktree", theme))
                     .child(icons::icon(Icon::Worktree, 13.0, theme.faint()))
-                    .child(
-                        worktree
-                            .as_ref()
-                            .map(|worktree| worktree.name.clone())
-                            .unwrap_or_else(|| "Worktree".to_string()),
-                    )
+                    .children(worktree.as_ref().map(|worktree| {
+                        div()
+                            .max_w(px(160.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(worktree.name.clone())
+                    }))
                     .on_click(cx.listener(|root, _, _, cx| root.open_worktrees(cx))),
             )
-            .child(div().flex_1())
-            .children(running.then(|| {
-                div()
-                    .flex_none()
-                    .text_size(px(11.0))
-                    .text_color(theme.accent())
-                    .child("Working…")
-            })),
-    );
+    });
 
     if !attachments.is_empty() {
         box_row = box_row.child(
@@ -3181,10 +3282,16 @@ fn composer(
 
     let input = match editor {
         Some(editor) => {
-            let height = (f32::from(editor_height) + 6.0).clamp(26.0, 240.0);
-            div().w_full().h(px(height * scale)).child(editor.clone())
+            let height = (f32::from(editor_height) + 12.0).clamp(50.0, 220.0);
+            div()
+                .w_full()
+                .h(px(height))
+                .px_1()
+                .py(px(4.0))
+                .overflow_hidden()
+                .child(editor.clone())
         }
-        None => div().h(px(28.0)),
+        None => div().h(px(50.0)),
     };
 
     box_row = box_row.child(input);
@@ -3216,23 +3323,15 @@ fn composer(
                 ),
         )
         .child(
-            div()
-                .id("composer-approvals")
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1()
-                .h(px(30.0))
-                .px_2()
-                .rounded(px(8.0))
-                .cursor_pointer()
-                .text_size(px(11.5))
-                .text_color(theme.dim())
-                .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
-                .tooltip(tip("Tool approvals", theme))
-                .child(icons::icon(Icon::Lock, 13.0, theme.faint()))
-                .child("Tool approvals")
-                .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Approvals, cx))),
+            icon_button(
+                ("composer-approvals", 2usize),
+                Icon::Lock,
+                30.0,
+                theme,
+                false,
+            )
+            .tooltip(tip("Tool approvals", theme))
+            .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Approvals, cx))),
         )
         .child(div().flex_1());
 
@@ -3325,7 +3424,8 @@ fn composer(
         .px(px(22.0))
         .pb(px(10.0))
         .pt(px(14.0))
-        .child(div().w_full().max_w(px(780.0)).child(box_row))
+        .children(strip)
+        .child(div().w_full().max_w(px(740.0)).child(box_row))
 }
 
 /// The label a reasoning level wears: the stored name is `high`, the chip says
