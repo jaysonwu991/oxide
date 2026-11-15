@@ -1,11 +1,10 @@
-//! Oxide for Desktop, Beta: the GPUI front-end.
+//! Oxide for Desktop: the primary GPUI front-end.
 //!
 //! One native process draws the whole window, and the desktop engine
 //! (`oxide-desktop`'s library: projects, sessions, turns, approvals, updates)
 //! runs inside it. The engine, the configuration, the session store and the
-//! approval store are the ones the Electron window and the terminal use, so
-//! this is the same app with a different renderer — a beta front-end beside the
-//! stable one.
+//! approval store are the ones the Electron fallback and the terminal use, so
+//! this is the same app with the primary native renderer.
 
 mod app;
 mod editor;
@@ -36,10 +35,9 @@ fn main() {
         .any(|argument| argument == "--help" || argument == "-h")
     {
         println!(
-            "Oxide for Desktop (Beta) — the GPUI front-end.\n\n\
+            "Oxide for Desktop — the native GPUI front-end.\n\n\
              Usage: oxide-desktop-gpui [--version] [--check]\n\n\
-             Runs the same desktop engine as the Electron app, in this process, and\n\
-             draws its window with GPUI."
+             Runs the desktop engine in this process and draws its window with GPUI."
         );
         return;
     }
@@ -201,5 +199,21 @@ mod tests {
     fn markdown_survives_a_half_streamed_fence() {
         let blocks = markdown::parse("```rust\nfn main(");
         assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn the_desktop_does_not_call_itself_a_beta() {
+        for (name, source) in [
+            ("app.rs", include_str!("app.rs")),
+            ("overlays.rs", include_str!("overlays.rs")),
+            ("views.rs", include_str!("views.rs")),
+            ("package.sh", include_str!("../package.sh")),
+            ("Cargo.toml", include_str!("../Cargo.toml")),
+        ] {
+            assert!(
+                !source.to_ascii_lowercase().contains("beta"),
+                "{name} still brands the desktop as a beta"
+            );
+        }
     }
 }

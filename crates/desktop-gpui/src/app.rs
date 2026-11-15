@@ -1,12 +1,12 @@
 //! The window itself: the state the front-end holds, the engine's commands it
 //! calls, and the packets it paints.
 //!
-//! This is the GPUI front-end of the desktop app. It is a beta: the same engine,
-//! the same configuration, the same session store and the same approvals as the
-//! Electron window in `crates/desktop`, drawn natively by GPUI instead of a
-//! webview. Everything the engine answers — projects, threads, turns, cards,
-//! diffs, models, themes, prefs — is read from the commands in
-//! `oxide_desktop::commands`, which is why both windows behave the same way.
+//! This is the primary GPUI front-end of the desktop app. It uses the same
+//! configuration, session store and approvals as the Electron fallback in
+//! `crates/desktop`, drawn natively instead of by a webview. Everything the
+//! engine answers — projects, threads, turns, cards, diffs, models, themes,
+//! prefs — is read from the commands in `oxide_desktop::commands`, which is
+//! why both windows behave the same way.
 
 use crate::editor::{self, Editor, EditorEvent};
 use crate::engine::Engine;
@@ -605,7 +605,7 @@ impl Root {
             subscriptions,
         };
 
-        window.set_window_title("Oxide Beta");
+        window.set_window_title("Oxide");
         root.load_prefs(cx);
         root.load_language(cx);
         root.load_themes(cx);
@@ -691,22 +691,22 @@ impl Root {
         cx.bind_keys(bindings);
     }
 
-    /// The window's menu bar, the way the stable app's Electron menu is built.
+    /// The window's menu bar, the way the Electron fallback's menu is built.
     pub fn install_menus(cx: &mut App) {
         use gpui::{Menu, MenuItem, OsAction};
         cx.set_menus(vec![
             Menu {
-                name: "Oxide Beta".into(),
+                name: "Oxide".into(),
                 disabled: false,
                 items: vec![
-                    MenuItem::action("About Oxide Beta", AboutApp),
+                    MenuItem::action("About Oxide", AboutApp),
                     MenuItem::separator(),
                     MenuItem::action("Check for Updates…", CheckForUpdates),
                     MenuItem::action("Settings…", OpenSettings),
                     MenuItem::separator(),
-                    MenuItem::action("Hide Oxide Beta", HideApp),
+                    MenuItem::action("Hide Oxide", HideApp),
                     MenuItem::separator(),
-                    MenuItem::action("Quit Oxide Beta", QuitApp),
+                    MenuItem::action("Quit Oxide", QuitApp),
                 ],
             },
             Menu {
@@ -3360,7 +3360,7 @@ impl Root {
     }
 
     /// Picks files from disk and holds them as the turn's attachments, the way
-    /// the stable window's `pick_files` does — the same data URL the core reads.
+    /// the Electron fallback's `pick_files` does — the same data URL the core reads.
     pub fn attach_files(&mut self, cx: &mut Context<Self>) {
         let index = self.active;
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions {

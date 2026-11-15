@@ -158,7 +158,7 @@ jobs:
       - name: Check formatting
         working-directory: crates/desktop-gpui
         run: cargo fmt -- --check
-      - name: Lint the beta front-end
+      - name: Lint the GPUI desktop
         working-directory: crates/desktop-gpui
         run: cargo clippy --all-targets --locked -- -D warnings
 
@@ -204,7 +204,7 @@ jobs:
             libasound2t64 \
             libssl-dev \
             libgbm1
-      - name: Test the beta front-end
+      - name: Test the GPUI desktop
         working-directory: crates/desktop-gpui
         run: cargo test --locked
       - name: Build the debug front-end

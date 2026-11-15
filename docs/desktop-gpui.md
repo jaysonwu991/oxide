@@ -1,24 +1,24 @@
-# Desktop app (Beta, GPUI)
+# Desktop app (GPUI)
 
-`crates/desktop-gpui` is a **second desktop front-end for the same app**, drawn
-with [GPUI](https://gpui.rs) instead of a webview. It is shipped as a **beta**:
-it is the same Oxide — the same projects, chats, configuration, session store,
-approvals and themes — with a native renderer, released on its own train beside
-the stable Electron app in `crates/desktop` ([desktop.md](desktop.md)).
+`crates/desktop-gpui` is the **primary desktop front-end**, drawn with
+[GPUI](https://gpui.rs) instead of a webview. It is the same Oxide — the same
+projects, chats, configuration, session store, approvals and themes — with a
+native renderer. The Electron window in `crates/desktop` remains the fallback
+during the migration ([desktop.md](desktop.md)).
 
-Both windows are clients of one engine. The stable app starts
+Both windows are clients of one engine. The Electron fallback starts
 `oxide-desktop` as a child process and speaks one JSON packet per line to it;
-the beta links the same engine in-process — `oxide_desktop::commands::dispatch`
+GPUI links the same engine in-process — `oxide_desktop::commands::dispatch`
 is the command contract, `oxide_desktop::bridge::Host` is the pipe — so a change
 to a command, an approval rule, a turn, a theme or a preference reaches both
 windows without being written twice.
 
 ```mermaid
 graph TD
-    subgraph stable["crates/desktop — stable"]
+    subgraph fallback["crates/desktop — Electron fallback"]
         Electron["Electron window<br/>(TypeScript + ui/app.js)"] -->|JSON packet per line| Harness["oxide-desktop binary"]
     end
-    subgraph beta["crates/desktop-gpui — beta"]
+    subgraph primary["crates/desktop-gpui — primary"]
         GPUI["GPUI window<br/>(Rust views)"] -->|dispatch in-process| Lib["oxide-desktop library"]
     end
     Harness --> Engine["oxide_core<br/>config · sessions · agent · approvals · skills · MCP"]
@@ -26,18 +26,13 @@ graph TD
     Engine --> Store["config.json · auth.json · sessions · trust.json · approvals"]
 ```
 
-## Beta status
+## Release status
 
-The beta is marked everywhere it is seen: the window title reads **Oxide Beta**,
-the topbar and sidebar wear a `BETA` pill, the bundle identifies itself as
-`dev.oxide.desktop.beta` with the display name `Oxide Beta`, its installers are
-`Oxide-Beta-*` beside the stable `Oxide-*`, and it releases from
-`desktop-gpui-v*` tags with its own `desktop-gpui-latest` install link. It can
-be installed beside the stable app and shares its configuration.
-
-The stable window's functional surfaces and accessibility semantics are now
-present in the GPUI window. It remains beta while the native installers finish
-their own release soak. Both windows write the same stores: projects, sessions,
+GPUI is the public desktop app. It uses the product name **Oxide** and the
+bundle identifier `dev.oxide.desktop`, installs from the permanent
+`desktop-latest` alias, and releases on the internal `desktop-gpui-v*` train.
+The window's functional surfaces and accessibility semantics mirror the
+Electron fallback. Both windows write the same stores: projects, sessions,
 approvals, trust decisions, themes, language and preferences.
 
 ## Running
@@ -69,9 +64,9 @@ and a machine with only Command Line Tools can still build the app.
 
 | Platform | Artifact |
 | --- | --- |
-| macOS arm64 / x64 | `Oxide-Beta-macos-<arch>.dmg` — `Oxide Beta.app` beside an `Applications` link in Electron Desktop's Finder layout and drag direction, signed with the imported Developer ID identity and notarized when the App Store Connect key is configured, and signed ad-hoc when there is no identity |
-| Linux x64 / arm64 | `Oxide-Beta-linux-<arch>-Setup.tar.gz` — the binary, its icon, a desktop entry and the bundled plugins |
-| Windows x64 | `Oxide-Beta-win-<arch>-Setup.tar.gz` — the binary, its icon and the bundled plugins |
+| macOS arm64 / x64 | `Oxide-macos-<arch>.dmg` — `Oxide.app` beside an `Applications` link in Electron Desktop's Finder layout and drag direction, signed with the imported Developer ID identity and notarized when the App Store Connect key is configured, and signed ad-hoc when there is no identity |
+| Linux x64 / arm64 | `Oxide-linux-<arch>-Setup.tar.gz` — the binary, its icon, a desktop entry and the bundled plugins |
+| Windows x64 | `Oxide-win-<arch>-Setup.tar.gz` — the binary, its icon and the bundled plugins |
 
 Without a Developer ID the script signs the bundle ad-hoc. That matters for
 more than tidiness: a bundle whose binary carries only the linker's signature
@@ -79,20 +74,21 @@ fails `codesign --verify` as a bundle, and a copy that kept the download's
 `com.apple.quarantine` attribute is `Killed: 9` on launch — the "damaged" app a
 reader gets instead of an install. An ad-hoc bundle is valid, so a downloaded
 build asks the ordinary "unidentified developer" question once: right-click →
-Open, or `xattr -dr com.apple.quarantine "/Applications/Oxide Beta.app"`.
+Open, or `xattr -dr com.apple.quarantine "/Applications/Oxide.app"`.
 A local build from `./package.sh` has no quarantine attribute at all and opens
 directly.
 
 Each bundle carries `plugins/` beside the app (macOS: `Contents/Resources/plugins`),
 which the front-end installs into the shared plugin store at launch the way the
-stable app does, through `OXIDE_DESKTOP_PLUGINS` or the bundle's own layout.
+Electron fallback does, through `OXIDE_DESKTOP_PLUGINS` or the bundle's own layout.
 
 `.github/workflows/desktop-gpui.yml` is the same shape as `desktop.yml`: the same
 five hosts (macOS arm64 and x64, Linux x64 and arm64, Windows x64), the same
 certificate import and App Store Connect key steps, a `--check` of the built
 binary, a `desktop-gpui-v*` tag train that publishes on its own, and a permanent
-`desktop-gpui-latest` alias release marked pre-release so `/releases/latest` keeps
-pointing at a versioned release. The Linux runners install GPUI's system
+`desktop-latest` alias release marked pre-release so `/releases/latest` keeps
+pointing at a versioned release. The legacy `desktop-gpui-latest` alias remains
+during the transition. The Linux runners install GPUI's system
 libraries (X11, Wayland, fontconfig, freetype, Vulkan, ALSA) before building.
 
 `scripts/set-version.sh desktop-gpui-v1.2.3` stamps the tag's version into
@@ -267,11 +263,11 @@ that composer instead of being sent.
   worktrees, ⌘+ / ⌘− / ⌘0 for text size, ⌘1–⌘9 for the sidebar's chats, ⌘[ /
   ⌘], Esc to close a dialog, ⌘Q). The application menu has About, Check for
   Updates, Settings, Hide and Quit; the update dialog checks the
-  `desktop-gpui-v*` release train and offers the beta installer it finds.
+  `desktop-gpui-v*` release train and offers the installer it finds.
   Back leaves Settings, Customize or Projects before it walks the open-chat
   history.
-- **Updates** — **Check for Updates** resolves the beta's own
-  `desktop-gpui-v*` train through the shared release rules. A beta `.app`
+- **Updates** — **Check for Updates** resolves the desktop app's
+  `desktop-gpui-v*` train through the shared release rules. A packaged `.app`
   installed on macOS downloads the matching `.dmg`, verifies its SHA-256
   against GitHub's release metadata, replaces the running bundle, and offers
   **Restart and Install**. A source build, an administrator-owned copy, or a
@@ -284,7 +280,7 @@ that composer instead of being sent.
   card before it is applied. `language`/`set_language` read and write the shared
   language setting, and the catalog it answers with supplies the composer's
   placeholder; the window's other labels are English for now, so switching
-  language changes what the terminal and the stable window say before it changes
+  language changes what the terminal and the Electron fallback say before it changes
   this window's own furniture.
 - **Preferences** — `read_prefs`/`write_prefs` for the send key, follow-up
   behaviour, sidebar visibility, predictions, notifications, what they announce,
@@ -319,9 +315,9 @@ that say what they do: every icon-only control carries a hover label from
 glyph, and targets are 30px or larger (40px on the rail; the switch's hit area is
 50×34 around a 38×22 track).
 
-### What the beta covers
+### Desktop coverage
 
-The beta covers the same desktop workflow as the stable window: projects,
+GPUI covers the same desktop workflow as the Electron fallback: projects,
 threads and thread search; streamed turns, approvals and questions; models,
 thinking and providers; trust; reviews, hunk staging and undo; the PTY, pull
 requests and file viewer; plugin marketplaces, skills and MCP controls;

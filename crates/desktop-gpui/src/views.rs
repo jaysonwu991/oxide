@@ -558,8 +558,7 @@ pub fn topbar(
                 .pr_2()
                 .border_l_1()
                 .border_color(border_color)
-                .child(div().flex_1())
-                .child(pill("BETA", theme, true)),
+                .child(div().flex_1()),
         );
     }
 
@@ -691,13 +690,11 @@ pub fn topbar(
     )
     .tooltip(tip("Project details", theme))
     .on_click(cx.listener(|root, _, _, cx| root.toggle_details(cx)));
-    let beta = pill("BETA", theme, true);
     content = content
         .child(new_chat)
         .child(changes)
         .child(details)
-        .child(div().flex_none().w(px(4.0)))
-        .child(beta);
+        .child(div().flex_none().w(px(4.0)));
     row.child(content)
 }
 

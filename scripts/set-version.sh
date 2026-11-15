@@ -13,7 +13,7 @@
 #
 # A tag may carry a component prefix so each component releases independently:
 # `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
-# `desktop-gpui-v1.2.3` for the beta GPUI front-end, and
+# `desktop-gpui-v1.2.3` for the primary GPUI desktop app, and
 # `extension-v1.2.3` for the VS Code extension (which is versioned in its
 # own `editors/vscode/package.json`). A bare `1.2.3` is also accepted.
 #
@@ -108,7 +108,7 @@ if not patched_cargo:
 with open(cargo_path, "w", encoding="utf-8") as handle:
     handle.writelines(lines)
 
-# crates/desktop-gpui/Cargo.toml: the beta front-end is its own workspace as
+# crates/desktop-gpui/Cargo.toml: the GPUI desktop app is its own workspace as
 # well, and reports the version in its own manifest.
 if component == "gpui":
     gpui_manifest = f"{root}/crates/desktop-gpui/Cargo.toml"
@@ -130,7 +130,7 @@ if component == "gpui":
         sys.exit("error: could not find version in [package] of crates/desktop-gpui/Cargo.toml")
     with open(gpui_manifest, "w", encoding="utf-8") as handle:
         handle.writelines(lines)
-    print(f"set beta desktop version to {version}")
+    print(f"set GPUI desktop version to {version}")
     sys.exit(0)
 
 # crates/desktop/Cargo.toml: the desktop package is excluded from the root

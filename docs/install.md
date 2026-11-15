@@ -74,7 +74,8 @@ cargo install --path crates/cli
 
 ## Desktop app
 
-Prebuilt bundles are drafted under `desktop-v*` releases on the
+The primary desktop app is the native GPUI window in `crates/desktop-gpui`.
+Prebuilt packages are drafted under `desktop-gpui-v*` releases on the
 [releases page](https://github.com/jaysonwu991/oxide/releases), and the newest
 of each platform is also on the `desktop-latest`
 [release](https://github.com/jaysonwu991/oxide/releases/tag/desktop-latest),
@@ -82,11 +83,11 @@ whose files are replaced on every publish. Since `/releases/latest` names the
 newest release of the repository as a whole — which may be a CLI or extension
 one — `desktop-latest` is what a permanent link is built on.
 
-One installer per platform, named the same in every release: a disk image for
-macOS (Apple Silicon and Intel), a one-click per-user setup for Windows x64, and
-an AppImage for Linux x64 and arm64 (with a `tar.gz` of the same tree beside it).
-[README.md](../README.md#installers) links each of them; [desktop.md](desktop.md)
-tabulates the file names and how they are packaged.
+The native app ships a disk image for macOS (Apple Silicon and Intel), and
+`tar.gz` packages for Windows x64 and Linux x64/arm64. [README.md](../README.md#installers)
+links each of them; [desktop-gpui.md](desktop-gpui.md) explains the packaging.
+The Electron window remains available from versioned `desktop-v*` releases as a
+fallback during the transition.
 
 On macOS, an app that was not notarized — a build made without both the
 Developer ID certificate and the App Store Connect key — opens as **damaged**
@@ -99,7 +100,13 @@ xattr -dr com.apple.quarantine /Applications/Oxide.app
 
 A notarized release needs none of this.
 
-To build from source:
+To build the primary app from source:
+
+```sh
+cd crates/desktop-gpui && cargo run
+```
+
+To build the Electron fallback:
 
 ```sh
 cd crates/desktop
@@ -112,7 +119,8 @@ Both Node and Rust are needed: the window is TypeScript 7, and the engine it
 talks to is the Rust binary this package compiles. The package keeps its own
 tree, managed with pnpm, and is built from its own directory.
 
-See [desktop.md](desktop.md) for signing and packaging details.
+See [desktop-gpui.md](desktop-gpui.md) for the native app and
+[desktop.md](desktop.md) for the Electron fallback.
 
 ## VS Code extension
 

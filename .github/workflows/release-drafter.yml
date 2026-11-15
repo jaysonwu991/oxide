@@ -30,7 +30,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Draft the next beta desktop release
+      - name: Draft the next GPUI desktop release
         if: github.event_name == 'push'
         uses: release-drafter/release-drafter@v7
         with:

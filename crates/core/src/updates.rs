@@ -67,7 +67,7 @@ impl Component {
         match self {
             Self::Cli => "the oxide CLI",
             Self::Desktop => "the Oxide desktop app",
-            Self::DesktopGpui => "the Oxide desktop beta",
+            Self::DesktopGpui => "the Oxide desktop app",
             Self::Extension => "the Oxide extension for VS Code",
         }
     }
@@ -181,11 +181,26 @@ impl Component {
                 _ => Vec::new(),
             },
             Self::DesktopGpui => match platform {
-                "macos-arm64" => vec!["Oxide-Beta-macos-arm64.dmg".to_string()],
-                "macos-x64" => vec!["Oxide-Beta-macos-x64.dmg".to_string()],
-                "linux-x64" => vec!["Oxide-Beta-linux-x64-Setup.tar.gz".to_string()],
-                "linux-arm64" => vec!["Oxide-Beta-linux-arm64-Setup.tar.gz".to_string()],
-                "win-x64" => vec!["Oxide-Beta-win-x64-Setup.tar.gz".to_string()],
+                "macos-arm64" => vec![
+                    "Oxide-macos-arm64.dmg".to_string(),
+                    "Oxide-Beta-macos-arm64.dmg".to_string(),
+                ],
+                "macos-x64" => vec![
+                    "Oxide-macos-x64.dmg".to_string(),
+                    "Oxide-Beta-macos-x64.dmg".to_string(),
+                ],
+                "linux-x64" => vec![
+                    "Oxide-linux-x64-Setup.tar.gz".to_string(),
+                    "Oxide-Beta-linux-x64-Setup.tar.gz".to_string(),
+                ],
+                "linux-arm64" => vec![
+                    "Oxide-linux-arm64-Setup.tar.gz".to_string(),
+                    "Oxide-Beta-linux-arm64-Setup.tar.gz".to_string(),
+                ],
+                "win-x64" => vec![
+                    "Oxide-win-x64-Setup.tar.gz".to_string(),
+                    "Oxide-Beta-win-x64-Setup.tar.gz".to_string(),
+                ],
                 _ => Vec::new(),
             },
             Self::Extension => vec!["oxide-vscode.vsix".to_string()],
@@ -218,11 +233,26 @@ impl Component {
                 _ => Vec::new(),
             },
             Self::DesktopGpui => match platform {
-                "macos-arm64" => vec![format!("Oxide-Beta-{version}-macos-arm64.dmg")],
-                "macos-x64" => vec![format!("Oxide-Beta-{version}-macos-x64.dmg")],
-                "linux-x64" => vec![format!("Oxide-Beta-{version}-linux-x64-Setup.tar.gz")],
-                "linux-arm64" => vec![format!("Oxide-Beta-{version}-linux-arm64-Setup.tar.gz")],
-                "win-x64" => vec![format!("Oxide-Beta-{version}-win-x64-Setup.tar.gz")],
+                "macos-arm64" => vec![
+                    format!("Oxide-{version}-macos-arm64.dmg"),
+                    format!("Oxide-Beta-{version}-macos-arm64.dmg"),
+                ],
+                "macos-x64" => vec![
+                    format!("Oxide-{version}-macos-x64.dmg"),
+                    format!("Oxide-Beta-{version}-macos-x64.dmg"),
+                ],
+                "linux-x64" => vec![
+                    format!("Oxide-{version}-linux-x64-Setup.tar.gz"),
+                    format!("Oxide-Beta-{version}-linux-x64-Setup.tar.gz"),
+                ],
+                "linux-arm64" => vec![
+                    format!("Oxide-{version}-linux-arm64-Setup.tar.gz"),
+                    format!("Oxide-Beta-{version}-linux-arm64-Setup.tar.gz"),
+                ],
+                "win-x64" => vec![
+                    format!("Oxide-{version}-win-x64-Setup.tar.gz"),
+                    format!("Oxide-Beta-{version}-win-x64-Setup.tar.gz"),
+                ],
                 _ => Vec::new(),
             },
             Self::Extension => vec![format!("oxide-vscode-{version}.vsix")],
@@ -1117,11 +1147,14 @@ mod tests {
             "macos-arm64",
         );
         assert_eq!(gpui.version, "0.34.0");
-        assert_eq!(gpui.asset, "Oxide-Beta-macos-arm64.dmg");
+        assert_eq!(gpui.asset, "Oxide-macos-arm64.dmg");
         assert_eq!(
             gpui.url("jaysonwu991/oxide"),
-            "https://github.com/jaysonwu991/oxide/releases/download/desktop-gpui-v0.34.0/Oxide-Beta-macos-arm64.dmg"
+            "https://github.com/jaysonwu991/oxide/releases/download/desktop-gpui-v0.34.0/Oxide-macos-arm64.dmg"
         );
+        assert!(Component::DesktopGpui
+            .assets("desktop-gpui-v0.34.0", "macos-arm64")
+            .contains(&"Oxide-Beta-macos-arm64.dmg".to_string()));
         for (platform, asset) in [
             ("macos-x64", "Oxide-macos-x64.dmg"),
             ("linux-x64", "Oxide-linux-x86_64-Setup.AppImage"),
