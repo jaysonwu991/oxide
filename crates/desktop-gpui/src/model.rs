@@ -268,6 +268,7 @@ pub struct Chat {
     /// answers, so the chat claims the first run the stream names.
     pub awaiting_run: bool,
     pub reasoning: Option<String>,
+    pub agent: Option<String>,
     pub attachments: Vec<Attachment>,
     pub queued: Vec<QueuedMessage>,
     pub usage: Option<Usage>,
@@ -294,6 +295,7 @@ impl Chat {
             run: None,
             awaiting_run: false,
             reasoning: None,
+            agent: None,
             attachments: Vec::new(),
             queued: Vec::new(),
             usage: None,

@@ -32,6 +32,7 @@ actions!(
         NewChat,
         CloseChat,
         ToggleSidebar,
+        ToggleActivities,
         ToggleDetails,
         OpenSettings,
         ToggleChanges,
@@ -94,7 +95,9 @@ pub enum Overlay {
     Settings,
     About,
     Updates,
-    Models,
+    Help,
+    Mcp,
+    Agents,
     Shortcuts,
     Trust {
         project: String,
@@ -200,6 +203,7 @@ pub struct Root {
     pub worktree_branch: Entity<Editor>,
     pub session_name: Entity<Editor>,
     pub query: String,
+    pub activities_open: bool,
     /// Whether the sidebar is showing the search field in place of its brand row,
     /// the page's own swap between the name and the box.
     pub searching: bool,
@@ -212,6 +216,7 @@ pub struct Root {
     pub prefs: Value,
     pub info: Value,
     pub models: Value,
+    pub model_menu_open: bool,
     pub approvals: Vec<String>,
     pub commands: Vec<Value>,
     pub at_answer: Value,
@@ -341,6 +346,7 @@ impl Root {
             worktree_branch,
             session_name,
             query: String::new(),
+            activities_open: false,
             searching: false,
             results: Vec::new(),
             rail: Rail::Chats,
@@ -351,6 +357,7 @@ impl Root {
             prefs: Value::Null,
             info: Value::Null,
             models: Value::Null,
+            model_menu_open: false,
             approvals: Vec::new(),
             commands: Vec::new(),
             at_answer: Value::Null,
@@ -413,6 +420,11 @@ impl Root {
         bindings.push(KeyBinding::new("cmd-n", NewChat, Some("Root")));
         bindings.push(KeyBinding::new("cmd-w", CloseChat, Some("Root")));
         bindings.push(KeyBinding::new("cmd-b", ToggleSidebar, Some("Root")));
+        bindings.push(KeyBinding::new(
+            "cmd-shift-a",
+            ToggleActivities,
+            Some("Root"),
+        ));
         bindings.push(KeyBinding::new("cmd-j", ToggleDetails, Some("Root")));
         bindings.push(KeyBinding::new("cmd-,", OpenSettings, Some("Root")));
         bindings.push(KeyBinding::new("cmd-enter", ToggleChanges, Some("Root")));
@@ -490,6 +502,7 @@ impl Root {
                 items: vec![
                     MenuItem::action("Show or Hide Details", ToggleDetails),
                     MenuItem::action("Show or Hide the Sidebar", ToggleSidebar),
+                    MenuItem::action("Activities", ToggleActivities),
                     MenuItem::action("Changes", ToggleChanges),
                     MenuItem::action("Model Picker", OpenModels),
                     MenuItem::action("Git Worktrees", OpenWorktrees),
@@ -787,6 +800,7 @@ impl Root {
     /// goes into it, so looking for a thread is one click rather than an always
     /// present box above the list.
     pub fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.activities_open = false;
         self.searching = true;
         let editor = self.search.clone();
         window.focus(&editor.read(cx).focus_handle(cx));
@@ -799,6 +813,17 @@ impl Root {
         self.results.clear();
         let editor = self.search.clone();
         editor.update(cx, |editor, cx| editor.clear(cx));
+        cx.notify();
+    }
+
+    pub fn toggle_activities(&mut self, cx: &mut Context<Self>) {
+        self.activities_open = !self.activities_open;
+        if self.activities_open {
+            self.searching = false;
+            self.query.clear();
+            self.results.clear();
+            self.overlay = None;
+        }
         cx.notify();
     }
 
@@ -834,11 +859,12 @@ impl Root {
                     let awaiting = project_trust_awaiting(&value);
                     root.info = value;
                     if awaiting {
+                        root.model_menu_open = false;
                         root.overlay = Some(Overlay::Trust {
                             project: expected.clone(),
                         });
-                        cx.notify();
                     }
+                    cx.notify();
                 }
             },
         );
@@ -860,6 +886,22 @@ impl Root {
                 }
             },
         );
+    }
+
+    pub fn toggle_model_menu(&mut self, cx: &mut Context<Self>) {
+        if self.model_menu_open {
+            self.model_menu_open = false;
+            cx.notify();
+        } else {
+            self.open_model_menu(cx);
+        }
+    }
+
+    pub fn open_model_menu(&mut self, cx: &mut Context<Self>) {
+        self.overlay = None;
+        self.model_menu_open = true;
+        self.load_models(cx);
+        cx.notify();
     }
 
     pub fn load_approvals(&mut self, cx: &mut Context<Self>) {
@@ -1017,9 +1059,10 @@ impl Root {
             "list_commands",
             json!({ "project": project }),
             cx,
-            |root, result, _cx| {
+            |root, result, cx| {
                 if let Ok(value) = result {
                     root.commands = value.as_array().cloned().unwrap_or_default();
+                    cx.notify();
                 }
             },
         );
@@ -1338,6 +1381,7 @@ impl Root {
         title: String,
         cx: &mut Context<Self>,
     ) {
+        self.model_menu_open = false;
         let id = self.next_chat;
         self.next_chat += 1;
         let mut chat = Chat::new(project.clone(), title);
@@ -1584,18 +1628,25 @@ impl Root {
         );
     }
 
-    pub fn send(&mut self, cx: &mut Context<Self>) {
+    pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let index = self.active;
-        let Some(chat) = self.chats.get_mut(index) else {
+        let Some(chat_id) = self.chats.get(index).map(|chat| chat.id) else {
             return;
         };
-        let Some(editor) = self.editors.get(&chat.id).cloned() else {
+        let Some(editor) = self.editors.get(&chat_id).cloned() else {
             return;
         };
         let prompt = editor.read(cx).text().trim().to_string();
         if prompt.is_empty() {
             return;
         }
+        if self.run_slash_command(&prompt, window, cx) {
+            return;
+        }
+        self.model_menu_open = false;
+        let Some(chat) = self.chats.get_mut(index) else {
+            return;
+        };
         if let Some(run) = chat.run {
             let follow_up = self.prefs["follow_up"].as_str() != Some("steer");
             let queue = chat.attachments.clone();
@@ -1649,6 +1700,7 @@ impl Root {
         let project = chat.project.clone();
         let session = chat.session.clone();
         let reasoning = chat.reasoning.clone();
+        let agent = chat.agent.clone();
         let attachments: Vec<Value> = chat
             .attachments
             .iter()
@@ -1677,6 +1729,9 @@ impl Root {
         if let Some(reasoning) = reasoning {
             args["reasoning"] = json!(reasoning);
         }
+        if let Some(agent) = agent {
+            args["agent"] = json!(agent);
+        }
 
         self.call("send_prompt", args, cx, move |root, result, cx| {
             match result {
@@ -1702,6 +1757,80 @@ impl Root {
         editor.update(cx, |editor, cx| editor.clear(cx));
     }
 
+    pub fn run_slash_command(
+        &mut self,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((name, args)) = slash_command(text) else {
+            return false;
+        };
+        let name = name.to_ascii_lowercase();
+        if !performs_slash_command(&name, args) {
+            return false;
+        }
+        match name.as_str() {
+            "help" => self.open_overlay(Overlay::Help, cx),
+            "mcp" => self.open_overlay(Overlay::Mcp, cx),
+            "model" => self.open_model_menu(cx),
+            "agent" => self.open_overlay(Overlay::Agents, cx),
+            "permissions" => self.open_overlay(Overlay::Approvals, cx),
+            "trust" => {
+                let Some(project) = self.current_project() else {
+                    self.toast("Select a project first.", true, cx);
+                    self.clear_active_editor(cx);
+                    return true;
+                };
+                self.open_overlay(Overlay::Trust { project }, cx);
+            }
+            "reasoning" if args.is_empty() => {
+                self.open_model_menu(cx);
+            }
+            "reasoning"
+                if self.info["reasoningLevels"]
+                    .as_array()
+                    .is_some_and(|levels| {
+                        levels
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .any(|level| level.eq_ignore_ascii_case(args))
+                    }) =>
+            {
+                self.set_reasoning(args.to_ascii_lowercase(), cx);
+            }
+            "reasoning" => {
+                let levels = self.info["reasoningLevels"]
+                    .as_array()
+                    .map(|levels| {
+                        levels
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                self.toast(format!("Reasoning must be one of {levels}."), true, cx);
+            }
+            _ => return false,
+        }
+        self.clear_active_editor(cx);
+        true
+    }
+
+    fn clear_active_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self
+            .chats
+            .get(self.active)
+            .and_then(|chat| self.editors.get(&chat.id))
+            .cloned()
+        else {
+            return;
+        };
+        editor.update(cx, |editor, cx| editor.clear(cx));
+        cx.notify();
+    }
+
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         let index = self.active;
         let Some(run) = self.chats.get(index).and_then(|chat| chat.run) else {
@@ -1722,13 +1851,14 @@ impl Root {
     }
 
     pub fn set_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
+        self.model_menu_open = false;
         self.call(
             "set_model",
             json!({ "provider": provider, "model": model }),
             cx,
             |root, result, cx| match result {
                 Ok(_) => {
-                    root.overlay = None;
+                    root.model_menu_open = false;
                     root.load_project_info(cx);
                     root.toast("Model updated", false, cx);
                 }
@@ -1741,6 +1871,7 @@ impl Root {
         if let Some(chat) = self.chats.get_mut(self.active) {
             chat.reasoning = Some(level.clone());
         }
+        self.overlay = None;
         self.call(
             "set_reasoning",
             json!({ "reasoning": level }),
@@ -1750,6 +1881,14 @@ impl Root {
                 Err(error) => root.toast(error, true, cx),
             },
         );
+    }
+
+    pub fn set_agent(&mut self, agent: Option<String>, cx: &mut Context<Self>) {
+        if let Some(chat) = self.chats.get_mut(self.active) {
+            chat.agent = agent;
+        }
+        self.overlay = None;
+        cx.notify();
     }
 
     pub fn resolve_approval(&mut self, id: u64, decision: &str, cx: &mut Context<Self>) {
@@ -2156,7 +2295,7 @@ impl Root {
                 }
             }
             "model-catalog" => {
-                if matches!(self.overlay, Some(Overlay::Models)) {
+                if self.model_menu_open {
                     self.load_models(cx);
                 }
             }
@@ -2268,8 +2407,11 @@ impl Root {
     }
 
     pub fn open_overlay(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
+        self.model_menu_open = false;
         match &overlay {
-            Overlay::Models => self.load_models(cx),
+            Overlay::Help => self.load_commands(cx),
+            Overlay::Mcp => self.load_sources(cx),
+            Overlay::Agents => self.load_project_info(cx),
             Overlay::Settings => self.load_project_commands(cx),
             Overlay::Trust { project } => {
                 let project = project.clone();
@@ -2404,6 +2546,9 @@ impl Render for Root {
                 this.show_details = !this.show_details;
                 cx.notify();
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleActivities, _window, cx| this.toggle_activities(cx)),
+            )
             .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| {
                 this.open_overlay(Overlay::Settings, cx)
             }))
@@ -2437,9 +2582,7 @@ impl Render for Root {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &OpenModels, _window, cx| {
-                this.open_overlay(Overlay::Models, cx)
-            }))
+            .on_action(cx.listener(|this, _: &OpenModels, _window, cx| this.toggle_model_menu(cx)))
             .on_action(cx.listener(|this, _: &OpenWorktrees, _window, cx| this.open_worktrees(cx)))
             .on_action(cx.listener(|this, _: &Back, _window, cx| this.navigate_back(cx)))
             .on_action(cx.listener(|this, _: &Forward, _window, cx| this.navigate_forward(cx)))
@@ -2475,7 +2618,13 @@ impl Render for Root {
             }))
             .on_action(cx.listener(|_, _: &QuitApp, _window, cx| cx.quit()))
             .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
-                if this.overlay.take().is_some() {
+                if this.activities_open {
+                    this.activities_open = false;
+                    cx.notify();
+                } else if this.model_menu_open {
+                    this.model_menu_open = false;
+                    cx.notify();
+                } else if this.overlay.take().is_some() {
                     cx.notify();
                 } else {
                     this.focus_composer(window, cx);
@@ -2612,9 +2761,24 @@ fn clamp_sidebar_width(viewport: f32, width: f32) -> f32 {
     width.clamp(MIN_SIDEBAR_WIDTH, available)
 }
 
+fn slash_command(text: &str) -> Option<(&str, &str)> {
+    let command = text.trim().strip_prefix('/')?;
+    let end = command.find(char::is_whitespace).unwrap_or(command.len());
+    let (name, args) = command.split_at(end);
+    (!name.is_empty()).then(|| (name, args.trim()))
+}
+
+fn performs_slash_command(name: &str, args: &str) -> bool {
+    match name {
+        "mcp" => args.is_empty(),
+        "help" | "model" | "agent" | "permissions" | "trust" | "reasoning" => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod sidebar_resize_tests {
-    use super::clamp_sidebar_width;
+    use super::{clamp_sidebar_width, performs_slash_command, slash_command};
 
     #[test]
     fn sidebar_resize_preserves_the_reading_column() {
@@ -2622,6 +2786,32 @@ mod sidebar_resize_tests {
         assert_eq!(clamp_sidebar_width(1280.0, 120.0), 160.0);
         assert_eq!(clamp_sidebar_width(1280.0, 900.0), 805.0);
         assert_eq!(clamp_sidebar_width(320.0, 280.0), 160.0);
+    }
+
+    #[test]
+    fn slash_commands_are_split_and_routed() {
+        assert_eq!(slash_command("/model"), Some(("model", "")));
+        assert_eq!(
+            slash_command("  /Reasoning   high  "),
+            Some(("Reasoning", "high"))
+        );
+        assert_eq!(slash_command("what is /model?"), None);
+        assert_eq!(slash_command("/"), None);
+
+        for command in [
+            "help",
+            "mcp",
+            "model",
+            "agent",
+            "permissions",
+            "trust",
+            "reasoning",
+        ] {
+            assert!(performs_slash_command(command, ""), "{command}");
+        }
+        assert!(performs_slash_command("reasoning", "high"));
+        assert!(!performs_slash_command("mcp", "list"));
+        assert!(!performs_slash_command("tdd", ""));
     }
 }
 

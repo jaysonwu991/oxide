@@ -644,6 +644,8 @@ pub fn sidebar(
     let search = root.search.clone();
     let height = px(scale * 20.0).max(px(20.0));
     let searching = root.searching;
+    let activities_open = root.activities_open;
+    let activity_busy = root.chats.iter().any(|chat| chat.running());
     let mut column = div()
         .flex()
         .flex_col()
@@ -692,29 +694,40 @@ pub fn sidebar(
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_1()
                     .flex_1()
                     .px(px(6.0))
-                    .cursor_pointer()
                     .text_size(px(16.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text())
-                    .child("Oxide")
-                    .child(icons::icon(Icon::ChevronDown, 12.0, theme.faint()))
-                    .on_click(cx.listener(|root, _, _, cx| {
-                        root.rail = Rail::Projects;
-                        root.overlay = None;
-                        cx.notify();
-                    })),
+                    .child("Oxide"),
             )
-            .child(
-                icon_button("sidebar-notifications", Icon::Bell, 28.0, theme, false)
-                    .tooltip(tip("Notification settings", theme))
-                    .on_click(cx.listener(|root, _, _, cx| {
-                        root.settings_tab = crate::app::SettingsTab::Notifications;
-                        root.open_overlay(Overlay::Settings, cx);
-                    })),
-            )
+            .child({
+                let control = div()
+                    .relative()
+                    .flex_none()
+                    .child(
+                        icon_button(
+                            "sidebar-activities",
+                            Icon::Activity,
+                            28.0,
+                            theme,
+                            activities_open || activity_busy,
+                        )
+                        .tooltip(tip("Activities", theme))
+                        .on_click(cx.listener(|root, _, _, cx| root.toggle_activities(cx))),
+                    )
+                    .children(activity_busy.then(|| {
+                        div()
+                            .absolute()
+                            .top(px(4.0))
+                            .right(px(4.0))
+                            .w(px(5.0))
+                            .h(px(5.0))
+                            .rounded_full()
+                            .bg(theme.tool())
+                    }));
+                control
+            })
             .child(
                 icon_button("sidebar-search", Icon::Search, 28.0, theme, false)
                     .tooltip(tip("Search chats", theme))
@@ -759,7 +772,9 @@ pub fn sidebar(
         .pb(px(14.0))
         .gap(px(0.0));
 
-    if !root.query.trim().is_empty() {
+    if activities_open {
+        list = list.child(activity_feed(root, theme, cx));
+    } else if !root.query.trim().is_empty() {
         let results = root.results.clone();
         if results.is_empty() {
             list = list.child(
@@ -1110,6 +1125,225 @@ pub fn sidebar(
 
     column = column.child(list);
     column
+}
+
+fn activity_feed(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> Stateful<gpui::Div> {
+    let mut priority = Vec::new();
+    let mut represented = std::collections::HashSet::new();
+    for (index, chat) in root.chats.iter().enumerate() {
+        let approval = chat.entries.iter().any(|entry| {
+            matches!(
+                entry,
+                Entry::Approval(card) if card.decision.is_none()
+            )
+        });
+        let question = chat.entries.iter().any(|entry| {
+            matches!(
+                entry,
+                Entry::Question(card) if !card.answered
+            )
+        });
+        if chat.running() || approval || question {
+            if let Some(session) = &chat.session {
+                represented.insert(session.clone());
+            }
+            let detail = if approval {
+                "A tool is waiting for your approval".to_string()
+            } else if question {
+                "A question is waiting for your answer".to_string()
+            } else {
+                "A turn is running".to_string()
+            };
+            priority.push((
+                index,
+                chat.title.clone(),
+                root.project_name(&chat.project),
+                detail,
+                chat.running(),
+            ));
+        }
+    }
+
+    let mut recent = root.sessions.clone();
+    recent.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
+    recent.retain(|session| !represented.contains(&session.id));
+    recent.truncate(12);
+
+    let mut feed = div()
+        .id("sidebar-activities-panel")
+        .flex()
+        .flex_col()
+        .w_full()
+        .gap(px(4.0));
+    feed = feed.child(section("Priority", theme));
+    if priority.is_empty() {
+        feed = feed.child(
+            div()
+                .px(px(10.0))
+                .py(px(8.0))
+                .text_size(px(11.5))
+                .line_height(px(17.0))
+                .text_color(theme.faint())
+                .child("Nothing is waiting on you."),
+        );
+    } else {
+        for (index, title, project, detail, running) in priority {
+            let active = index == root.active;
+            feed = feed.child(activity_row(
+                ActivityItem {
+                    id: SharedString::from(format!("activity-chat-{index}")),
+                    title,
+                    project,
+                    detail,
+                    running,
+                    active,
+                },
+                theme,
+                cx,
+                move |root, window, cx| {
+                    root.activate(window, index, cx);
+                    cx.notify();
+                },
+            ));
+        }
+    }
+
+    if !recent.is_empty() {
+        feed = feed.child(section("Recent", theme));
+        for session in recent {
+            let id = session.id.clone();
+            let title = session.title.clone();
+            let project = root.project_name(&session.project);
+            let detail = session
+                .preview
+                .lines()
+                .next()
+                .filter(|line| !line.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| relative_time(session.modified_at));
+            let active = root
+                .chats
+                .iter()
+                .any(|chat| chat.session.as_deref() == Some(id.as_str()));
+            feed = feed.child(activity_row(
+                ActivityItem {
+                    id: SharedString::from(format!("activity-session-{id}")),
+                    title,
+                    project,
+                    detail,
+                    running: false,
+                    active,
+                },
+                theme,
+                cx,
+                move |root, window, cx| {
+                    if let Some(session) = root.sessions.iter().find(|row| row.id == id).cloned() {
+                        root.open_session(window, session, cx);
+                    }
+                },
+            ));
+        }
+    }
+    feed
+}
+
+struct ActivityItem {
+    id: SharedString,
+    title: String,
+    project: String,
+    detail: String,
+    running: bool,
+    active: bool,
+}
+
+fn activity_row(
+    item: ActivityItem,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
+) -> Stateful<gpui::Div> {
+    let ActivityItem {
+        id,
+        title,
+        project,
+        detail,
+        running,
+        active,
+    } = item;
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .mx(px(6.0))
+        .px(px(8.0))
+        .py(px(7.0))
+        .rounded(px(8.0))
+        .cursor_pointer()
+        .bg(if active {
+            theme.panel()
+        } else {
+            gpui::transparent_black()
+        })
+        .hover(move |style| style.bg(theme.panel()))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(12.5))
+                        .font_weight(if active {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(if active { theme.text() } else { theme.dim() })
+                        .child(title),
+                )
+                .children(running.then(|| {
+                    div()
+                        .flex_none()
+                        .w(px(6.0))
+                        .h(px(6.0))
+                        .rounded_full()
+                        .bg(theme.tool())
+                })),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(115.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(10.5))
+                        .text_color(theme.faint())
+                        .child(project),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_size(px(10.5))
+                        .text_color(theme.faint())
+                        .child(detail),
+                ),
+        )
+        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
 fn section(title: &'static str, theme: &Theme) -> gpui::Div {
@@ -2874,6 +3108,328 @@ fn diff_block(text: &str, theme: &Theme) -> gpui::Div {
 
 // ---------- composer ----------
 
+fn model_effort_menu(
+    root: &mut Root,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> Stateful<gpui::Div> {
+    let data = root.models.clone();
+    let current_model = root.info["model"].as_str().unwrap_or("Model").to_string();
+    let current_effort = root.info["reasoning"]
+        .as_str()
+        .unwrap_or("auto")
+        .to_string();
+    let levels = root.info["reasoningLevels"]
+        .as_array()
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|level| level.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .filter(|levels| !levels.is_empty())
+        .unwrap_or_else(|| vec!["auto".to_string()]);
+
+    let mut panel = div()
+        .id("composer-model-menu")
+        .absolute()
+        .right_0()
+        .bottom(px(38.0))
+        .w(px(420.0))
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(theme.border())
+        .bg(theme.panel())
+        .shadow_xl()
+        .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+            root.model_menu_open = false;
+            cx.notify();
+        }))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px(px(12.0))
+                .py(px(9.0))
+                .border_b_1()
+                .border_color(theme.border())
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(1.0))
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text())
+                                .child("Model & effort"),
+                        )
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(10.5))
+                                .text_color(theme.faint())
+                                .child(format!(
+                                    "{} · {}",
+                                    current_model,
+                                    capitalised(&current_effort)
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("composer-model-refresh")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .h(px(26.0))
+                        .px(px(8.0))
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(10.5))
+                        .text_color(theme.dim())
+                        .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
+                        .child("Refresh")
+                        .on_click(cx.listener(|root, _, _, cx| {
+                            let project = root.current_project().unwrap_or_default();
+                            root.call(
+                                "list_models",
+                                serde_json::json!({ "project": project, "refresh": true }),
+                                cx,
+                                |root, result, _| {
+                                    if let Ok(value) = result {
+                                        root.models = value;
+                                    }
+                                },
+                            );
+                        })),
+                ),
+        );
+
+    let mut body = div()
+        .id("composer-model-list")
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .max_h(px(270.0))
+        .overflow_y_scroll()
+        .p(px(6.0));
+    if let Some(error) = data["error"].as_str() {
+        body = body
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(11.5))
+                    .line_height(px(17.0))
+                    .text_color(theme.error())
+                    .child(error.to_string()),
+            )
+            .child(
+                div()
+                    .id("composer-model-connect")
+                    .mx_2()
+                    .mt_1()
+                    .px_2()
+                    .py_2()
+                    .rounded(px(7.0))
+                    .cursor_pointer()
+                    .text_size(px(11.5))
+                    .text_color(theme.accent())
+                    .hover(move |style| style.bg(theme.panel_2()))
+                    .child("Connect a provider")
+                    .on_click(cx.listener(|root, _, _, cx| {
+                        root.open_overlay(
+                            Overlay::Connect {
+                                provider: "a provider".to_string(),
+                            },
+                            cx,
+                        )
+                    })),
+            );
+    }
+    let providers = data["providers"].as_array().cloned().unwrap_or_default();
+    if providers.is_empty() && data["error"].as_str().is_none() {
+        body = body.child(
+            div()
+                .px_2()
+                .py_3()
+                .text_size(px(11.5))
+                .text_color(theme.faint())
+                .child("Loading models…"),
+        );
+    }
+    for provider in providers {
+        let provider_name = provider["provider"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let active = provider["active"].as_bool().unwrap_or(false);
+        let current = provider["current"].as_str().unwrap_or_default().to_string();
+        body = body.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .pt(px(7.0))
+                .pb(px(3.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if active {
+                            theme.accent()
+                        } else {
+                            theme.faint()
+                        })
+                        .child(provider_name.clone()),
+                )
+                .children((!current.is_empty()).then(|| {
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(theme.faint())
+                        .child(current.clone())
+                })),
+        );
+        if let Some(error) = provider["error"].as_str() {
+            body = body.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(10.5))
+                    .text_color(theme.error())
+                    .child(error.to_string()),
+            );
+        }
+        for model in provider["models"].as_array().cloned().unwrap_or_default() {
+            let (label, detail) = match &model {
+                serde_json::Value::String(name) => (name.clone(), None),
+                other => (
+                    other["id"]
+                        .as_str()
+                        .or_else(|| other["name"].as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    other["name"].as_str().map(str::to_string),
+                ),
+            };
+            let selected = active && label == current;
+            let provider_choice = provider_name.clone();
+            let model_choice = label.clone();
+            body = body.child(
+                div()
+                    .id(SharedString::from(format!("composer-model-{label}")))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .min_h(px(32.0))
+                    .px_2()
+                    .rounded(px(7.0))
+                    .cursor_pointer()
+                    .bg(if selected {
+                        theme.panel_2()
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .hover(move |style| style.bg(theme.panel_2()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(px(11.5))
+                                    .text_color(if selected {
+                                        theme.accent()
+                                    } else {
+                                        theme.text()
+                                    })
+                                    .child(label),
+                            )
+                            .children(detail.map(|detail| {
+                                div()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.faint())
+                                    .child(detail)
+                            })),
+                    )
+                    .children(selected.then(|| icons::icon(Icon::Check, 13.0, theme.accent())))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        root.set_model(provider_choice.clone(), model_choice.clone(), cx)
+                    })),
+            );
+        }
+    }
+    panel = panel.child(body);
+
+    let mut effort = div()
+        .flex()
+        .flex_row()
+        .gap(px(2.0))
+        .mx(px(8.0))
+        .mb(px(8.0))
+        .p(px(2.0))
+        .rounded(px(9.0))
+        .bg(theme.background());
+    for level in levels {
+        let selected = level.eq_ignore_ascii_case(&current_effort);
+        let choice = level.clone();
+        effort = effort.child(
+            div()
+                .id(SharedString::from(format!("composer-effort-{level}")))
+                .flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .h(px(28.0))
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .bg(if selected {
+                    theme.accent()
+                } else {
+                    gpui::transparent_black()
+                })
+                .text_size(px(10.5))
+                .text_color(if selected {
+                    theme.background()
+                } else {
+                    theme.dim()
+                })
+                .hover(move |style| {
+                    if selected {
+                        style
+                    } else {
+                        style.bg(theme.panel_2()).text_color(theme.text())
+                    }
+                })
+                .child(capitalised(&level))
+                .on_click(
+                    cx.listener(move |root, _, _, cx| root.set_reasoning(choice.clone(), cx)),
+                ),
+        );
+    }
+    panel.child(effort)
+}
+
 fn composer(
     root: &mut Root,
     theme: &Theme,
@@ -2921,7 +3477,7 @@ fn composer(
 
     let mut box_row = div()
         .key_context("Composer")
-        .on_action(cx.listener(|root, _: &crate::app::Send, _window, cx| root.send(cx)))
+        .on_action(cx.listener(|root, _: &crate::app::Send, window, cx| root.send(window, cx)))
         .on_action(cx.listener(|root, _: &crate::app::Stop, _window, cx| root.stop(cx)))
         .flex()
         .flex_col()
@@ -3150,7 +3706,9 @@ fn composer(
                                 .child(arguments)
                         }))
                         .on_click(cx.listener(move |root, _, window, cx| {
-                            root.fill_composer(format!("/{name} "), window, cx)
+                            if !root.run_slash_command(&format!("/{name}"), window, cx) {
+                                root.fill_composer(format!("/{name} "), window, cx);
+                            }
                         })),
                 );
             }
@@ -3335,36 +3893,26 @@ fn composer(
         )
         .child(div().flex_1());
 
-    footer = footer.child(setting_chip(
-        ("chip-model", 1usize),
-        model.clone(),
-        theme,
-        cx,
-        |root, _, cx| root.open_overlay(Overlay::Models, cx),
-    ));
-    footer = footer.child(setting_chip(
-        ("chip-reasoning", 2usize),
-        capitalised(&reasoning),
-        theme,
-        cx,
-        |root, _, cx| {
-            let levels = root.info["reasoningLevels"]
-                .as_array()
-                .map(|levels| {
-                    levels
-                        .iter()
-                        .filter_map(|level| level.as_str().map(str::to_string))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let next = levels
-                .iter()
-                .position(|level| level == &reasoning_level(root))
-                .map(|position| levels[(position + 1) % levels.len()].clone())
-                .unwrap_or_else(|| "off".to_string());
-            root.set_reasoning(next, cx);
-        },
-    ));
+    let mut model_controls = div().relative().flex().flex_row().gap_1().flex_none();
+    model_controls = model_controls
+        .child(setting_chip(
+            ("chip-model", 1usize),
+            model.clone(),
+            theme,
+            cx,
+            |root, _, cx| root.open_model_menu(cx),
+        ))
+        .child(setting_chip(
+            ("chip-reasoning", 2usize),
+            capitalised(&reasoning),
+            theme,
+            cx,
+            |root, _, cx| root.open_model_menu(cx),
+        ));
+    if root.model_menu_open {
+        model_controls = model_controls.child(model_effort_menu(root, theme, cx));
+    }
+    footer = footer.child(model_controls);
     footer = footer.child(context_ring(
         context_tokens,
         context_window,
@@ -3407,8 +3955,10 @@ fn composer(
                 .tooltip(tip("Send \u{00b7} \u{23ce}", theme))
                 .child(icons::icon(Icon::ArrowUp, 15.0, theme.background()))
                 .on_click(cx.listener(|root, _, window, cx| {
-                    root.send(cx);
-                    root.focus_composer(window, cx);
+                    root.send(window, cx);
+                    if root.overlay.is_none() {
+                        root.focus_composer(window, cx);
+                    }
                 })),
         );
     }
@@ -3436,10 +3986,6 @@ fn capitalised(label: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
         None => String::new(),
     }
-}
-
-fn reasoning_level(root: &Root) -> String {
-    root.info["reasoning"].as_str().unwrap_or("off").to_string()
 }
 
 fn context_ring(

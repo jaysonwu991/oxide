@@ -85,6 +85,10 @@ const GLYPHS: &[(&str, &str)] = &[
         glyph!(r##"<path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4"/>"##),
     ),
     (
+        "activity",
+        glyph!(r##"<path d="M3 12h4l2.2-7 4.1 14 2.3-7H21"/>"##),
+    ),
+    (
         "keyboard",
         glyph!(
             r##"<rect x="2.5" y="6.5" width="19" height="11" rx="2.5"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M7.5 14h9"/>"##
@@ -209,6 +213,7 @@ pub enum Icon {
     File,
     Globe,
     Bell,
+    Activity,
     Keyboard,
 }
 
@@ -246,6 +251,7 @@ impl Icon {
             Icon::File => "icons/file.svg",
             Icon::Globe => "icons/globe.svg",
             Icon::Bell => "icons/bell.svg",
+            Icon::Activity => "icons/activity.svg",
             Icon::Keyboard => "icons/keyboard.svg",
         }
     }
@@ -393,6 +399,7 @@ mod tests {
             Icon::File,
             Icon::Globe,
             Icon::Bell,
+            Icon::Activity,
             Icon::Keyboard,
         ] {
             let body = Assets.load(mark.path()).unwrap().unwrap();

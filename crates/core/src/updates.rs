@@ -619,12 +619,12 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
-/// The version a tag names: `v1.2.3`, `cli-v1.2.3`, `desktop-v1.2.3` and
-/// `extension-v1.2.3` all read as `1.2.3`. A version that carries no tag
-/// prefix (a running binary's `--version`) reads as itself.
+/// The version a tag names: `v1.2.3`, `cli-v1.2.3`, `desktop-v1.2.3`,
+/// `desktop-gpui-v1.2.3` and `extension-v1.2.3` all read as `1.2.3`. A version
+/// that carries no tag prefix (a running binary's `--version`) reads as itself.
 pub fn release_version(tag: &str) -> String {
     let tag = tag.trim();
-    let without_component = ["cli-", "desktop-", "extension-"]
+    let without_component = ["cli-", "desktop-gpui-", "desktop-", "extension-"]
         .iter()
         .find_map(|prefix| tag.strip_prefix(prefix))
         .unwrap_or(tag);
@@ -1021,6 +1021,7 @@ mod tests {
                 .unwrap(),
             "extension-v0.34.0"
         );
+        assert_eq!(release_version("desktop-gpui-v0.34.0"), "0.34.0");
         assert_eq!(release_version("desktop-v0.34.0"), "0.34.0");
         assert_eq!(release_version("extension-v0.34.0"), "0.34.0");
         assert_eq!(release_version("0.34.0"), "0.34.0");
@@ -1115,6 +1116,7 @@ mod tests {
             None,
             "macos-arm64",
         );
+        assert_eq!(gpui.version, "0.34.0");
         assert_eq!(gpui.asset, "Oxide-Beta-macos-arm64.dmg");
         assert_eq!(
             gpui.url("jaysonwu991/oxide"),
@@ -1162,6 +1164,7 @@ mod tests {
         let releases = serde_json::json!([
             { "tag_name": "extension-v0.26.0" },
             { "tag_name": "desktop-v0.26.0" },
+            { "tag_name": "desktop-gpui-v0.5.1" },
             { "tag_name": "v0.25.0" },
             { "tag_name": "v0.26.0" },
         ]);
@@ -1170,6 +1173,10 @@ mod tests {
         assert_eq!(
             newest_tag(&releases, Component::Desktop).unwrap(),
             "desktop-v0.26.0"
+        );
+        assert_eq!(
+            newest_tag(&releases, Component::DesktopGpui).unwrap(),
+            "desktop-gpui-v0.5.1"
         );
         assert_eq!(
             newest_tag(&releases, Component::Extension).unwrap(),
