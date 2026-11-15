@@ -65,7 +65,7 @@ actions!(
 );
 
 /// What the navigation rail shows.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rail {
     Chats,
     Projects,
@@ -221,6 +221,8 @@ pub struct Root {
     pub info: Value,
     pub models: Value,
     pub model_menu_open: bool,
+    pub model_menu_show_models: bool,
+    pub effort_drag_level: Option<String>,
     pub composer_tools_open: bool,
     pub approvals: Vec<String>,
     pub commands: Vec<Value>,
@@ -250,10 +252,7 @@ pub struct Root {
     pub expanded_projects: HashSet<String>,
     pub collapsed_projects: HashSet<String>,
     pub inline_project_actions: Option<String>,
-    pub project_actions_preview: Option<String>,
     pub project_actions_anchor_y: Option<f32>,
-    pub project_actions_anchor_id: Option<String>,
-    project_actions_generation: u64,
     pub(crate) project_actions_dismiss_armed: bool,
     pub(crate) composer_tools_dismiss_armed: bool,
     /// The pointer position and sidebar width when a resize drag began.
@@ -262,6 +261,12 @@ pub struct Root {
     pub update_check: Option<Value>,
     pub update_error: Option<String>,
     pub checking_updates: bool,
+    pub update_progress: Option<Value>,
+    pub update_result: Option<Value>,
+    pub update_failure: Option<String>,
+    pub update_restart_failed: bool,
+    pub updating_update: bool,
+    pub update_token: Option<String>,
     pub subscriptions: Vec<Subscription>,
 }
 
@@ -397,6 +402,8 @@ impl Root {
             info: Value::Null,
             models: Value::Null,
             model_menu_open: false,
+            model_menu_show_models: false,
+            effort_drag_level: None,
             composer_tools_open: false,
             approvals: Vec::new(),
             commands: Vec::new(),
@@ -423,10 +430,7 @@ impl Root {
             expanded_projects: HashSet::new(),
             collapsed_projects: HashSet::new(),
             inline_project_actions: None,
-            project_actions_preview: None,
             project_actions_anchor_y: None,
-            project_actions_anchor_id: None,
-            project_actions_generation: 0,
             project_actions_dismiss_armed: false,
             composer_tools_dismiss_armed: false,
             resizing: None,
@@ -434,6 +438,12 @@ impl Root {
             update_check: None,
             update_error: None,
             checking_updates: false,
+            update_progress: None,
+            update_result: None,
+            update_failure: None,
+            update_restart_failed: false,
+            updating_update: false,
+            update_token: None,
             subscriptions,
         };
 
@@ -746,9 +756,20 @@ impl Root {
     }
 
     pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if self.updating_update {
+            self.overlay = Some(Overlay::Updates);
+            cx.notify();
+            return;
+        }
         self.overlay = Some(Overlay::Updates);
         self.update_check = None;
         self.update_error = None;
+        self.update_progress = None;
+        self.update_result = None;
+        self.update_failure = None;
+        self.update_restart_failed = false;
+        self.updating_update = false;
+        self.update_token = None;
         self.checking_updates = true;
         self.call(
             "check_gpui_updates",
@@ -764,6 +785,107 @@ impl Root {
             },
         );
         cx.notify();
+    }
+
+    pub fn install_update(&mut self, cx: &mut Context<Self>) {
+        self.begin_update(false, cx);
+    }
+
+    pub fn download_update(&mut self, cx: &mut Context<Self>) {
+        self.begin_update(true, cx);
+    }
+
+    fn begin_update(&mut self, download: bool, cx: &mut Context<Self>) {
+        if self.updating_update {
+            return;
+        }
+        let token = oxide_desktop::update::new_token();
+        self.overlay = Some(Overlay::Updates);
+        self.update_error = None;
+        self.update_result = None;
+        self.update_failure = None;
+        self.update_restart_failed = false;
+        self.update_progress = Some(json!({
+            "stage": "checking",
+            "version": self
+                .update_check
+                .as_ref()
+                .and_then(|check| check["latest"].as_str())
+                .unwrap_or_default(),
+            "received": 0,
+            "total": null,
+            "token": token,
+        }));
+        self.update_token = Some(token.clone());
+        self.updating_update = true;
+        let expected = token.clone();
+        let command = if download {
+            "download_gpui_update"
+        } else {
+            "install_gpui_update"
+        };
+        self.call(
+            command,
+            json!({
+                "current": env!("CARGO_PKG_VERSION"),
+                "token": token,
+            }),
+            cx,
+            move |root, result, cx| {
+                if root.update_token.as_deref() != Some(expected.as_str()) {
+                    return;
+                }
+                root.updating_update = false;
+                root.update_progress = None;
+                match result {
+                    Ok(value) if value["cancelled"].as_bool().unwrap_or(false) => {
+                        root.update_token = None;
+                    }
+                    Ok(value) => root.update_result = Some(value),
+                    Err(error) => {
+                        root.update_token = None;
+                        root.update_failure = Some(error);
+                    }
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
+    }
+
+    pub fn cancel_update(&mut self, cx: &mut Context<Self>) {
+        let Some(token) = self.update_token.take() else {
+            return;
+        };
+        self.updating_update = false;
+        self.update_progress = None;
+        let expected = token.clone();
+        self.call(
+            "cancel_update",
+            json!({ "token": token }),
+            cx,
+            move |root, result, cx| {
+                if root.update_token.as_deref() == Some(expected.as_str()) {
+                    if let Err(error) = result {
+                        root.update_failure = Some(error);
+                    }
+                    cx.notify();
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    pub fn restart_for_update(&mut self, cx: &mut Context<Self>) {
+        self.update_failure = None;
+        self.update_restart_failed = false;
+        self.call("restart_app", json!({}), cx, |root, result, cx| {
+            if let Err(error) = result {
+                root.update_failure = Some(error);
+                root.update_restart_failed = true;
+                cx.notify();
+            }
+        });
     }
 
     fn set_text_scale(&mut self, scale: f64, cx: &mut Context<Self>) {
@@ -938,6 +1060,7 @@ impl Root {
     pub fn toggle_model_menu(&mut self, cx: &mut Context<Self>) {
         if self.model_menu_open {
             self.model_menu_open = false;
+            self.model_menu_show_models = false;
             cx.notify();
         } else {
             self.open_model_menu(cx);
@@ -948,6 +1071,7 @@ impl Root {
         self.overlay = None;
         self.composer_tools_open = false;
         self.model_menu_open = true;
+        self.model_menu_show_models = false;
         self.load_models(cx);
         cx.notify();
     }
@@ -1196,7 +1320,6 @@ impl Root {
         self.rail = Rail::Chats;
         self.overlay = None;
         self.inline_project_actions = None;
-        self.project_actions_preview = None;
         if self.current_project_owner().as_deref() == Some(project.as_str()) {
             self.focus_composer(window, cx);
             cx.notify();
@@ -1919,6 +2042,7 @@ impl Root {
 
     pub fn set_model(&mut self, provider: String, model: String, cx: &mut Context<Self>) {
         self.model_menu_open = false;
+        self.model_menu_show_models = false;
         self.call(
             "set_model",
             json!({ "provider": provider, "model": model }),
@@ -1926,6 +2050,7 @@ impl Root {
             |root, result, cx| match result {
                 Ok(_) => {
                     root.model_menu_open = false;
+                    root.model_menu_show_models = false;
                     root.load_project_info(cx);
                     root.toast("Model updated", false, cx);
                 }
@@ -2085,7 +2210,6 @@ impl Root {
     pub fn remove_project(&mut self, id: String, cx: &mut Context<Self>) {
         self.overlay = None;
         self.inline_project_actions = None;
-        self.project_actions_preview = None;
         self.call(
             "remove_project",
             json!({ "id": id }),
@@ -2168,7 +2292,6 @@ impl Root {
     pub fn set_project_pinned(&mut self, id: String, pinned: bool, cx: &mut Context<Self>) {
         self.overlay = None;
         self.inline_project_actions = None;
-        self.project_actions_preview = None;
         self.call(
             "set_project_pinned",
             json!({ "id": id, "pinned": pinned }),
@@ -2212,38 +2335,6 @@ impl Root {
                 Err(error) => root.toast(format!("Could not reorder projects: {error}"), true, cx),
             },
         );
-    }
-
-    pub fn hover_project_actions(&mut self, id: String, hovered: bool, cx: &mut Context<Self>) {
-        self.project_actions_generation = self.project_actions_generation.wrapping_add(1);
-        let generation = self.project_actions_generation;
-        if hovered {
-            self.project_actions_dismiss_armed = true;
-            if self.inline_project_actions.is_none()
-                && self.project_actions_preview.as_deref() != Some(id.as_str())
-            {
-                self.project_actions_preview = Some(id);
-                cx.notify();
-            }
-            return;
-        }
-        if self.project_actions_preview.as_deref() != Some(id.as_str()) {
-            return;
-        }
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(120))
-                .await;
-            let _ = this.update(cx, |root, cx| {
-                if root.project_actions_generation == generation
-                    && root.inline_project_actions.is_none()
-                {
-                    root.project_actions_preview = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
     }
 
     pub fn arm_project_actions_dismissal(&mut self, cx: &mut Context<Self>) {
@@ -2504,6 +2595,36 @@ impl Root {
                     self.load_models(cx);
                 }
             }
+            "update-progress" => {
+                if payload["token"].as_str().is_none()
+                    || payload["token"].as_str() == self.update_token.as_deref()
+                {
+                    self.updating_update = true;
+                    self.update_result = None;
+                    self.update_failure = None;
+                    self.update_restart_failed = false;
+                    self.update_progress = Some(payload);
+                }
+            }
+            "update-ready" => {
+                self.updating_update = false;
+                self.update_progress = None;
+                self.update_result = Some(payload);
+                self.overlay = Some(Overlay::Updates);
+            }
+            "update-failed" => {
+                self.updating_update = false;
+                self.update_progress = None;
+                if payload["cancelled"].as_bool().unwrap_or(false) {
+                    self.update_token = None;
+                } else {
+                    self.update_restart_failed = false;
+                    self.update_failure = payload["message"]
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| Some("The update did not finish.".to_string()));
+                }
+            }
             "restart" => {
                 self.relaunch(cx);
             }
@@ -2752,7 +2873,10 @@ impl Render for Root {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.end_sidebar_drag(cx)),
+                cx.listener(|this, _, _, cx| {
+                    this.effort_drag_level = None;
+                    this.end_sidebar_drag(cx);
+                }),
             )
             .on_action(cx.listener(|this, _: &NewChat, window, cx| this.new_chat(window, cx)))
             .on_action(cx.listener(|this, _: &CloseChat, _window, cx| {
@@ -2855,9 +2979,13 @@ impl Render for Root {
                     this.composer_tools_open = false;
                     cx.notify();
                 } else if this.model_menu_open {
-                    this.model_menu_open = false;
+                    if this.model_menu_show_models {
+                        this.model_menu_show_models = false;
+                    } else {
+                        this.model_menu_open = false;
+                    }
                     cx.notify();
-                } else if this.overlay.take().is_some() {
+                } else if !this.updating_update && this.overlay.take().is_some() {
                     cx.notify();
                 } else {
                     this.focus_composer(window, cx);
@@ -2887,7 +3015,7 @@ impl Render for Root {
         if self.sidebar_visible
             && self.rail == Rail::Chats
             && self.overlay.is_none()
-            && (self.inline_project_actions.is_some() || self.project_actions_preview.is_some())
+            && self.inline_project_actions.is_some()
         {
             shell = shell.child(views::project_actions_floating(self, &theme, cx));
         }
@@ -3018,7 +3146,8 @@ fn performs_slash_command(name: &str, args: &str) -> bool {
 
 #[cfg(test)]
 mod sidebar_resize_tests {
-    use super::{clamp_sidebar_width, performs_slash_command, slash_command};
+    use super::{clamp_sidebar_width, performs_slash_command, slash_command, Rail};
+    use crate::views::{customize_destination, effort_position, model_display_name};
 
     #[test]
     fn sidebar_resize_preserves_the_reading_column() {
@@ -3052,6 +3181,33 @@ mod sidebar_resize_tests {
         assert!(performs_slash_command("reasoning", "high"));
         assert!(!performs_slash_command("mcp", "list"));
         assert!(!performs_slash_command("tdd", ""));
+    }
+
+    #[test]
+    fn customize_leaves_settings_in_one_click_and_still_toggles_its_rail() {
+        assert_eq!(
+            customize_destination(Rail::Customize, true),
+            Rail::Customize
+        );
+        assert_eq!(customize_destination(Rail::Chats, true), Rail::Customize);
+        assert_eq!(customize_destination(Rail::Customize, false), Rail::Chats);
+        assert_eq!(customize_destination(Rail::Chats, false), Rail::Customize);
+    }
+
+    #[test]
+    fn effort_slider_tracks_the_selected_level_and_models_read_as_names() {
+        let levels = ["auto", "low", "medium", "high", "max"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(effort_position(&levels, "high"), Some(3));
+        assert_eq!(effort_position(&levels, "HIGH"), Some(3));
+        assert_eq!(effort_position(&levels, "unknown"), None);
+        assert_eq!(
+            model_display_name("deepseek-v4.1-flash"),
+            "DeepSeek V4.1 Flash"
+        );
+        assert_eq!(model_display_name("gpt-5"), "GPT 5");
     }
 }
 

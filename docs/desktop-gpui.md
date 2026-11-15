@@ -132,8 +132,8 @@ that composer instead of being sent.
 - **Projects and threads** — `list_projects`, `all_sessions` and
   `session_messages`; each project row has a disclosure control, selects the
   project when clicked, and reveals its compose and action controls on hover.
-  Hovering the row previews the project card beside it; the actions control pins
-  the card open, and the card carries the path, thread
+  Hovering the row does not open a floating card; the actions control opens the
+  project card deliberately, and the card carries the path, thread
   counts, new-thread, pin and remove actions. Thread rows reveal pin and archive
   controls on hover; right-click opens the rename, pin and archive dialog.
   Creating a project uses the same name-and-source-folders sheet as the Electron
@@ -148,8 +148,9 @@ that composer instead of being sent.
   and Escape or the control returns to the project tree.
 - **Navigation rail** — Chats starts a new chat, Projects toggles the project
   directory, More opens the searchable command menu, Worktrees opens the shared
-  checkout dialog, Customize toggles the integrations page, and Settings toggles
-  the settings sheet, matching Electron Desktop's rail.
+  checkout dialog, Customize replaces Settings with the integrations page and
+  otherwise toggles that page against Chats, and Settings toggles the settings
+  sheet, matching Electron Desktop's rail.
 - **A turn** — the composer sends through `send_prompt` with the project, the
   thread, the attachments and the chosen thinking level, and the streamed
   `agent-event` packets paint the same cards the stable window paints: the user's
@@ -162,10 +163,11 @@ that composer instead of being sent.
   button. The
   three-dot tools control opens Electron's compact menu above the composer with
   Connect a provider, Project access, Agents and Keyboard shortcuts; it does not
-  dim the conversation or replace the composer with a centered dialog. The two
-  chip opens one composer-anchored popover: the available models sit above a
-  segmented reasoning-effort control, without dimming or replacing the
-  conversation. `Stop`
+  dim the conversation or replace the composer with a centered dialog. The
+  combined model-and-effort chip opens one compact composer-anchored popover:
+  the current effort sits above the model row and a horizontal effort slider,
+  and the model row opens the provider/model list in the same surface. Nothing
+  dims or replaces the conversation. `Stop`
   cancels the run through
   `cancel_run`. A message typed while a turn is running is steered into it
   through `steer_run` (queued for the turn's end unless `follow_up` is `steer`,
@@ -196,8 +198,8 @@ that composer instead of being sent.
   time.
 - **Models, thinking, providers** — `list_models` (with refresh), `set_model`,
   `set_reasoning` and `project_info`; the model picker shows every provider's
-  catalog with the model in use marked, and the thinking chip cycles the levels
-  the active model advertises.
+  catalog with the model in use marked, while the combined popover's slider
+  offers exactly the effort levels the active model advertises.
 - **Trust** — `project_info.trust` gates a project's own skills, plugins, MCP
   servers and hooks exactly as the terminal does. A project that still needs a
   decision opens the trust dialog when its info arrives, including directly
@@ -230,9 +232,18 @@ that composer instead of being sent.
   worktrees, ⌘+ / ⌘− / ⌘0 for text size, ⌘1–⌘9 for the sidebar's chats, ⌘[ /
   ⌘], Esc to close a dialog, ⌘Q). The application menu has About, Check for
   Updates, Settings, Hide and Quit; the update dialog checks the
-  `desktop-gpui-v*` release train and links to the beta installer it finds.
+  `desktop-gpui-v*` release train and offers the beta installer it finds.
   Back leaves Settings, Customize or Projects before it walks the open-chat
   history.
+- **Updates** — **Check for Updates** resolves the beta's own
+  `desktop-gpui-v*` train through the shared release rules. A beta `.app`
+  installed on macOS downloads the matching `.dmg`, verifies its SHA-256
+  against GitHub's release metadata, replaces the running bundle, and offers
+  **Restart and Install**. A source build, an administrator-owned copy, or a
+  platform distributed as an archive gets **Download**, which writes the
+  verified installer into Downloads for the reader to open. The progress view
+  reports checking, transfer bytes, checksum verification and installation,
+  and can cancel until the bundle is being put in place.
 - **Appearance and language** — `theme_colors`/`set_theme` read the same theme
   files the CLI does, previewing each theme's semantic colors in a selectable
   card before it is applied. `language`/`set_language` read and write the shared
@@ -291,10 +302,6 @@ and planned, and the beta does not pretend otherwise:
 - the provider Connect dialog (the model picker says how to connect, and the
   stored credential is read on refresh);
 - the composer's inline predictions;
-- updating in place: Check for Updates reads the beta's own
-  `desktop-gpui-v*` release train, but the beta does not self-install because
-  it would need its own replacement path. Download and install the release the
-  dialog names.
 
 ## Verification
 

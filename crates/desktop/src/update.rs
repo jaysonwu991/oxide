@@ -113,9 +113,7 @@ impl Installation {
                 }
             }
         }
-        format!(
-            "Download {name} from the release page and install it the way this copy was installed."
-        )
+        format!("Download {name} and install it the way this copy was installed.")
     }
 }
 
@@ -254,8 +252,18 @@ fn writable(directory: &Path) -> bool {
 
 /// The newest release of the app, with the artifact this platform installs.
 pub async fn resolve(client: &reqwest::Client, repo: &str) -> Result<Release> {
+    resolve_component(client, repo, Component::Desktop).await
+}
+
+/// The newest release of one of the desktop release trains, with the artifact
+/// this platform installs.
+pub async fn resolve_component(
+    client: &reqwest::Client,
+    repo: &str,
+    component: Component,
+) -> Result<Release> {
     let platform = updates::platform()?;
-    updates::latest(client, repo, Component::Desktop, platform).await
+    updates::latest(client, repo, component, platform).await
 }
 
 /// The check a window paints, from a release already resolved: the desktop's own
@@ -266,7 +274,18 @@ pub fn check_for(
     repo: &str,
     current: &str,
 ) -> Check {
-    let mut check = Check::new(Component::Desktop, release, current, false, repo);
+    check_component_for(Component::Desktop, release, installation, repo, current)
+}
+
+/// The check a window paints for one desktop release train.
+pub fn check_component_for(
+    component: Component,
+    release: &Release,
+    installation: &Installation,
+    repo: &str,
+    current: &str,
+) -> Check {
+    let mut check = Check::new(component, release, current, false, repo);
     check.installation = installation.label.to_string();
     check.path = installation
         .path
@@ -281,14 +300,20 @@ pub fn check_for(
 
 /// Checks the app's own release train.
 pub async fn check() -> Result<Check> {
+    check_component(Component::Desktop, current_version()).await
+}
+
+/// Checks one desktop release train against the build a front-end is running.
+pub async fn check_component(component: Component, current: &str) -> Result<Check> {
     let client = updates::client()?;
     let repo = updates::repo();
-    let release = resolve(&client, &repo).await?;
-    Ok(check_for(
+    let release = resolve_component(&client, &repo, component).await?;
+    Ok(check_component_for(
+        component,
         &release,
         &installation(),
         &repo,
-        current_version(),
+        current,
     ))
 }
 
@@ -415,6 +440,21 @@ impl Drop for InstallGuard {
 /// anything is put in place — before the release is resolved and after it has
 /// been verified — are checked as well.
 pub async fn install_reporting(token: &str, report: impl Fn(Progress)) -> Result<Value> {
+    install_component_reporting(Component::Desktop, current_version(), token, report).await
+}
+
+/// Installs the newest release of one desktop release train against `current`.
+///
+/// The stable and beta apps share the release rules, the checksum check and the
+/// installation layouts, but each runs from its own train and bundle. The
+/// caller supplies both rather than this library borrowing the stable package's
+/// version for the beta binary that links it.
+pub async fn install_component_reporting(
+    component: Component,
+    current: &str,
+    token: &str,
+    report: impl Fn(Progress),
+) -> Result<Value> {
     let _installing = InstallGuard::take()?;
     // A cancel that arrived while this install was still on its way here: the
     // window offered the button the moment it asked for the install.
@@ -424,8 +464,7 @@ pub async fn install_reporting(token: &str, report: impl Fn(Progress)) -> Result
     report(Progress::step("checking", ""));
     let client = updates::client()?;
     let repo = updates::repo();
-    let release = resolve(&client, &repo).await?;
-    let current = current_version();
+    let release = resolve_component(&client, &repo, component).await?;
     if !updates::is_newer(&release.version, current) {
         bail!("Oxide {current} is the newest release, so there is nothing to install");
     }
@@ -521,6 +560,17 @@ pub async fn install_reporting(token: &str, report: impl Fn(Progress)) -> Result
 /// `token` is the download's own name, which is what a reader's cancel
 /// addresses, the way it does for an install.
 pub async fn download_reporting(token: &str, report: impl Fn(Progress)) -> Result<Value> {
+    download_component_reporting(Component::Desktop, current_version(), token, report).await
+}
+
+/// Downloads the newest installer from one desktop release train against
+/// `current` into the reader's Downloads folder.
+pub async fn download_component_reporting(
+    component: Component,
+    current: &str,
+    token: &str,
+    report: impl Fn(Progress),
+) -> Result<Value> {
     let _installing = InstallGuard::take()?;
     if cancelled(token) {
         bail!(CANCELLED);
@@ -528,8 +578,7 @@ pub async fn download_reporting(token: &str, report: impl Fn(Progress)) -> Resul
     report(Progress::step("checking", ""));
     let client = updates::client()?;
     let repo = updates::repo();
-    let release = resolve(&client, &repo).await?;
-    let current = current_version();
+    let release = resolve_component(&client, &repo, component).await?;
     if !updates::is_newer(&release.version, current) {
         bail!("Oxide {current} is the newest release, so there is nothing to download");
     }
@@ -955,6 +1004,42 @@ mod tests {
             "0.34.0",
         );
         assert!(!fresh.update_available && !fresh.installable && fresh.advice.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_beta_bundle_is_offered_its_own_release_and_can_replace_itself() {
+        let root = temp_dir("beta-bundle");
+        let bundle = bundle_fixture(&root);
+        let binary = bundle.join("Contents/MacOS/Oxide Beta");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"binary").unwrap();
+        let installation = installation_of(&binary, "macos", None, None);
+        let release = Release {
+            tag: "desktop-gpui-v0.35.0".to_string(),
+            version: "0.35.0".to_string(),
+            asset: "Oxide-Beta-macos-arm64.dmg".to_string(),
+            digest: Some(format!("sha256:{}", "0".repeat(64))),
+            notes: None,
+            released_at: None,
+        };
+
+        let check = check_component_for(
+            Component::DesktopGpui,
+            &release,
+            &installation,
+            "acme/oxide",
+            "0.34.0",
+        );
+
+        assert!(check.update_available && check.installable);
+        assert_eq!(check.component, Component::DesktopGpui);
+        assert_eq!(check.tag, "desktop-gpui-v0.35.0");
+        assert_eq!(
+            check.release_url,
+            "https://github.com/acme/oxide/releases/tag/desktop-gpui-v0.35.0"
+        );
+        assert_eq!(check.advice, None);
         fs::remove_dir_all(root).unwrap();
     }
 
