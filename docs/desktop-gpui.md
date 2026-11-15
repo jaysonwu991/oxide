@@ -132,18 +132,24 @@ that composer instead of being sent.
 - **Projects and threads** — `list_projects`, `all_sessions` and
   `session_messages`; each project row has a disclosure control, selects the
   project when clicked, and reveals its compose and action controls on hover.
-  The actions control opens an inline project card with its path, thread counts,
-  new-thread, pin and remove actions. Thread rows reveal pin and archive controls
-  on hover; right-click opens the rename, pin and archive dialog. Adding a
-  project uses the platform's folder picker (`App::prompt_for_paths`), the native
-  counterpart of the stable window's `pick_folder`. Adding one opens a draft in
-  the new folder and reads its `project_info`, so an unanswered project-trust
-  decision is shown immediately; removing one asks first.
+  Hovering the row previews the same inline project card Codex Desktop shows;
+  the actions control pins the card open, and the card carries the path, thread
+  counts, new-thread, pin and remove actions. Thread rows reveal pin and archive
+  controls on hover; right-click opens the rename, pin and archive dialog.
+  Creating a project uses the same name-and-source-folders sheet as the Electron
+  window, adding source folders through `App::prompt_for_paths`. The selected
+  project opens a draft and always asks for its own trust decision, including
+  when an ancestor folder already has one. Removing a project asks first and the
+  shared manager forgets that project's exact `trust.json` decision.
 - **Activities** — the pulse control beside Search toggles the project tree for
   the activity feed, as Codex Desktop does. Priority lists waiting approvals,
   questions and running chats; Recent lists the newest stored threads. Opening
   a row leaves the feed in place, the control carries a dot while a turn runs,
   and Escape or the control returns to the project tree.
+- **Navigation rail** — Chats starts a new chat, Projects toggles the project
+  directory, More opens the searchable command menu, Worktrees opens the shared
+  checkout dialog, Customize toggles the integrations page, and Settings toggles
+  the settings sheet, matching Electron Desktop's rail.
 - **A turn** — the composer sends through `send_prompt` with the project, the
   thread, the attachments and the chosen thinking level, and the streamed
   `agent-event` packets paint the same cards the stable window paints: the user's
@@ -152,7 +158,10 @@ that composer instead of being sent.
   a context ring beside the composer controls. Its top row names the project and
   the branch `git_info` reports (and leaves the branch out when the folder is not
   a repository); its footer carries the attach and tools controls, the approvals
-  dialog, the model and thinking chips, and the round send/stop button. The two
+  dialog, the model and thinking chips, and the round send/stop button. The
+  three-dot tools control opens Electron's compact menu above the composer with
+  Connect a provider, Project access, Agents and Keyboard shortcuts; it does not
+  dim the conversation or replace the composer with a centered dialog. The two
   chips open one composer-anchored popover: the available models sit above a
   segmented reasoning-effort control, without dimming or replacing the
   conversation. `Stop`

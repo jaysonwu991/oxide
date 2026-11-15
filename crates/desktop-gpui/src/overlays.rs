@@ -25,23 +25,38 @@ pub fn layer(
         return div();
     };
 
-    let mut scrim = div()
-        .absolute()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(hsla(0.0, 0.0, 0.0, 0.55));
+    let rail_popover = matches!(&overlay, Overlay::CommandMenu);
+    let create_project = matches!(&overlay, Overlay::NewProject);
+    let mut scrim = div().absolute().size_full().flex();
+    scrim = if rail_popover {
+        scrim
+            .items_start()
+            .justify_start()
+            .pt(px(58.0))
+            .pl(px(56.0))
+            .bg(gpui::transparent_black())
+    } else {
+        scrim.items_center().justify_center().bg(hsla(
+            0.0,
+            0.0,
+            0.0,
+            if create_project { 0.2 } else { 0.55 },
+        ))
+    };
 
     let panel = match overlay.clone() {
         Overlay::Settings => settings_page(root, theme, cx),
         Overlay::About => about_dialog(theme, cx),
         Overlay::Updates => update_dialog(root, theme, cx),
         Overlay::Help => command_help(root, theme, cx),
+        Overlay::CommandMenu => command_menu(root, theme, cx),
         Overlay::Mcp => mcp_servers(root, theme, cx),
         Overlay::Agents => agents_picker(root, theme, cx),
         Overlay::Shortcuts => shortcuts(theme, cx),
-        Overlay::Trust { project } => trust(root, theme, project, cx),
+        Overlay::Trust {
+            project,
+            onboarding,
+        } => trust(root, theme, project, onboarding, cx),
         Overlay::Approval { chat, id } => approval(root, theme, chat, id, cx),
         Overlay::Question { chat, id } => question(root, theme, chat, id, cx),
         Overlay::Confirm {
@@ -50,7 +65,7 @@ pub fn layer(
             action,
         } => confirm(theme, title, body, action, cx),
         Overlay::Connect { provider } => connect(theme, provider, cx),
-        Overlay::NewProject => new_project(theme, cx),
+        Overlay::NewProject => new_project(root, theme, cx),
         Overlay::SessionActions {
             id,
             title,
@@ -68,7 +83,6 @@ pub fn layer(
         Overlay::WorktreeBranch { project, name } => {
             worktree_branch(root, theme, project, name, cx)
         }
-        Overlay::ComposerTools => composer_tools(theme, cx),
         Overlay::Projects => projects(root, theme, cx),
         Overlay::RenameSession { project, id, title } => {
             rename_session(root, theme, project, id, title, cx)
@@ -1190,6 +1204,139 @@ fn switch(
 
 // ---------- models ----------
 
+fn command_menu(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let query = root.command_query.read(cx).text().to_ascii_lowercase();
+    let entries = [
+        ("new-chat", "New chat", "⌘T"),
+        ("new-tab", "New tab", ""),
+        ("close-chat", "Close chat", "⌘W"),
+        ("toggle-sidebar", "Show or hide the sidebar", "⌘B"),
+        ("back", "Back to the previous chat", "⌘["),
+        ("forward", "Forward to the next chat", "⌘]"),
+        ("open-project", "Open a folder…", "⌘O"),
+        ("search", "Search chats…", "⌘⇧F"),
+        ("panel", "Show or hide the panel", "⌘J"),
+        ("projects", "Manage projects…", ""),
+        ("worktrees", "Git worktrees…", "⌘⇧G"),
+        ("model", "Choose a model…", "⌘⇧M"),
+        ("permissions", "Tool approvals…", ""),
+        ("mcps", "MCP servers…", ""),
+        ("settings", "Settings…", "⌘,"),
+        ("shortcuts", "Keyboard shortcuts", ""),
+        ("updates", "Check for updates…", ""),
+    ];
+    let panel = dialog(theme, "Command menu", 430.0).child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .h(px(36.0))
+            .px_2()
+            .rounded(px(8.0))
+            .bg(theme.background())
+            .border_1()
+            .border_color(theme.border())
+            .child(icons::icon(Icon::Search, 14.0, theme.faint()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .child(root.command_query.clone()),
+            ),
+    );
+    let mut list = div()
+        .id("command-menu-list")
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .max_h(px(430.0))
+        .overflow_y_scroll();
+    let mut shown = 0;
+    for (id, label, hint) in entries {
+        if !query.is_empty() && !label.to_ascii_lowercase().contains(&query) {
+            continue;
+        }
+        shown += 1;
+        let action = id.to_string();
+        list = list.child(
+            div()
+                .id(SharedString::from(format!("command-menu-{id}")))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .min_h(px(34.0))
+                .px_2()
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel_2()))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.5))
+                        .text_color(theme.text())
+                        .child(label),
+                )
+                .children((!hint.is_empty()).then(|| {
+                    div()
+                        .flex_none()
+                        .text_size(px(10.5))
+                        .text_color(theme.faint())
+                        .child(hint)
+                }))
+                .on_click(cx.listener(move |root, _, window, cx| {
+                    run_command_menu_action(&action, root, window, cx)
+                })),
+        );
+    }
+    if shown == 0 {
+        list = list.child(
+            div()
+                .p_3()
+                .text_size(px(12.0))
+                .text_color(theme.faint())
+                .child("No command matches that"),
+        );
+    }
+    panel.child(list)
+}
+
+fn run_command_menu_action(
+    action: &str,
+    root: &mut Root,
+    window: &mut Window,
+    cx: &mut Context<Root>,
+) {
+    root.overlay = None;
+    match action {
+        "new-chat" | "new-tab" => root.new_chat(window, cx),
+        "close-chat" => root.close_chat(root.active, cx),
+        "toggle-sidebar" => {
+            root.sidebar_visible = !root.sidebar_visible;
+            let visible = root.sidebar_visible;
+            root.save_prefs(json!({ "sidebar_visible": visible }), cx);
+        }
+        "back" => root.navigate_back(cx),
+        "forward" => root.navigate_forward(cx),
+        "open-project" => root.open_new_project(window, cx),
+        "search" => root.open_search(window, cx),
+        "panel" => root.toggle_details(cx),
+        "projects" => {
+            root.rail = crate::app::Rail::Projects;
+            cx.notify();
+        }
+        "worktrees" => root.open_worktrees(cx),
+        "model" => root.open_model_menu(cx),
+        "permissions" => root.open_overlay(Overlay::Approvals, cx),
+        "mcps" => root.open_overlay(Overlay::Mcp, cx),
+        "settings" => root.open_overlay(Overlay::Settings, cx),
+        "shortcuts" => root.open_overlay(Overlay::Shortcuts, cx),
+        "updates" => root.check_for_updates(cx),
+        _ => cx.notify(),
+    }
+}
+
 fn command_help(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let commands = root.commands.clone();
     let mut panel = dialog(theme, "Slash commands", 620.0).child(
@@ -1501,9 +1648,15 @@ fn shortcuts(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
 
 // ---------- trust ----------
 
-fn trust(root: &mut Root, theme: &Theme, project: String, cx: &mut Context<Root>) -> gpui::Div {
+fn trust(
+    root: &mut Root,
+    theme: &Theme,
+    project: String,
+    onboarding: bool,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
     let info = root.info.clone();
-    let trusted = info["trust"]["trusted"].as_bool().unwrap_or(false);
+    let trusted = !onboarding && info["trust"]["trusted"].as_bool().unwrap_or(false);
     let required = info["trust"]["required"].as_bool().unwrap_or(false);
     let resources = info["trust"]["resources"]
         .as_array()
@@ -1522,7 +1675,9 @@ fn trust(root: &mut Root, theme: &Theme, project: String, cx: &mut Context<Root>
             .text_color(theme.dim())
             .child(format!(
                 "{project}\n\n{}\n\nA trusted project loads its own skills, plugins, MCP servers and hooks. Its tools can already read any path this process can, so trust is about the project's resources, not about file access — the same gate the terminal and the Electron window use.",
-                if trusted {
+                if onboarding {
+                    "Choose whether this project's own resources may load."
+                } else if trusted {
                     "Project resources are trusted."
                 } else if required {
                     "This folder has project resources that can reshape the agent."
@@ -1589,14 +1744,21 @@ fn trust(root: &mut Root, theme: &Theme, project: String, cx: &mut Context<Root>
             move |root, _, cx| root.set_trust(deny_path.clone(), false, cx),
         ));
     }
-    actions =
-        actions.child(
-            Button::new("Cancel").render("trust-cancel", theme, cx, |root, _, cx| {
+    if !onboarding {
+        actions = actions.child(Button::new("Cancel").render(
+            "trust-cancel",
+            theme,
+            cx,
+            |root, _, cx| {
                 root.overlay = None;
                 cx.notify();
-            }),
-        );
-    panel = panel.child(actions).child(close_button(theme, cx));
+            },
+        ));
+    }
+    panel = panel.child(actions);
+    if !onboarding {
+        panel = panel.child(close_button(theme, cx));
+    }
     panel
 }
 
@@ -2262,65 +2424,6 @@ fn worktree_branch(
         )
 }
 
-fn composer_tools(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    dialog(theme, "Composer tools", 440.0)
-        .child(tool_row(
-            "composer-tool-attach",
-            Icon::Paperclip,
-            "Attach files",
-            theme,
-            cx,
-            |root, _, cx| {
-                root.overlay = None;
-                root.attach_files(cx);
-            },
-        ))
-        .child(tool_row(
-            "composer-tool-worktree",
-            Icon::Worktree,
-            "Git worktree",
-            theme,
-            cx,
-            |root, _, cx| root.open_worktrees(cx),
-        ))
-        .child(tool_row(
-            "composer-tool-approvals",
-            Icon::Lock,
-            "Tool approvals",
-            theme,
-            cx,
-            |root, _, cx| root.open_overlay(Overlay::Approvals, cx),
-        ))
-        .child(tool_row(
-            "composer-tool-customize",
-            Icon::Customize,
-            "Customize",
-            theme,
-            cx,
-            |root, _, cx| {
-                root.rail = crate::app::Rail::Customize;
-                root.customize_tab = crate::app::CustomizeTab::Plugins;
-                root.overlay = None;
-                cx.notify();
-            },
-        ))
-        .child(tool_row(
-            "composer-tool-settings",
-            Icon::Settings,
-            "Settings",
-            theme,
-            cx,
-            |root, _, cx| root.open_overlay(Overlay::Settings, cx),
-        ))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .child(close_button(theme, cx)),
-        )
-}
-
 fn projects(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let projects = root.projects.clone();
     let current = root.current_project_owner();
@@ -2402,41 +2505,12 @@ fn projects(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div
                 "composer-projects-add",
                 theme,
                 cx,
-                |root, _, cx| root.add_project(cx),
+                |root, window, cx| root.open_new_project(window, cx),
             ))
             .child(div().flex_1())
             .child(close_button(theme, cx)),
     );
     panel
-}
-
-fn tool_row(
-    id: &'static str,
-    mark: Icon,
-    label: &'static str,
-    theme: &Theme,
-    cx: &mut Context<Root>,
-    on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap_3()
-        .h(px(40.0))
-        .px(px(10.0))
-        .rounded(px(8.0))
-        .cursor_pointer()
-        .hover(move |style| style.bg(theme.panel_2()))
-        .child(icons::icon(mark, 17.0, theme.dim()))
-        .child(
-            div()
-                .text_size(px(13.0))
-                .text_color(theme.text())
-                .child(label),
-        )
-        .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
 // ---------- approvals ----------
@@ -2581,33 +2655,232 @@ fn connect(theme: &Theme, provider: String, cx: &mut Context<Root>) -> gpui::Div
 
 // ---------- new project ----------
 
-fn new_project(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    dialog(theme, "Add a project", 460.0)
+fn new_project(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let folders = root.new_project_folders.clone();
+    let mut panel = div()
+        .flex()
+        .flex_col()
+        .w(px(520.0))
+        .p(px(20.0))
+        .rounded(px(20.0))
+        .bg(theme.panel_2())
+        .shadow_xl()
         .child(
             div()
-                .text_size(px(12.5))
-                .line_height(px(19.0))
-                .text_color(theme.dim())
-                .child("A project is a folder on disk. Its chats, approvals and configuration are the ones the terminal and the Electron window see."),
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .mb(px(16.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(20.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text())
+                        .child("Create project"),
+                )
+                .child(
+                    icon_button("new-project-close", Icon::Close, 24.0, theme, false)
+                        .tooltip(crate::views::tip("Close", theme))
+                        .on_click(cx.listener(|root, _, _, cx| {
+                            root.overlay = None;
+                            cx.notify();
+                        })),
+                ),
         )
         .child(
             div()
                 .flex()
                 .flex_row()
-                .justify_end()
-                .gap_2()
-                .child(Button::new("Choose folder").primary().render(
-                    "new-project-pick",
-                    theme,
-                    cx,
-                    |root, _, cx| {
-                        root.overlay = None;
-                        root.add_project(cx);
-                    },
-                ))
-                .child(Button::new("Cancel").render("new-project-cancel", theme, cx, |root, _, cx| {
-                    root.overlay = None;
-                    cx.notify();
-                })),
+                .items_center()
+                .h(px(40.0))
+                .mb(px(14.0))
+                .border_1()
+                .border_color(theme.accent())
+                .rounded(px(12.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_none()
+                        .w(px(40.0))
+                        .h_full()
+                        .border_r_1()
+                        .border_color(theme.border())
+                        .child(icons::icon(Icon::Folder, 18.0, theme.dim())),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .px(px(10.0))
+                        .child(root.project_name.clone()),
+                ),
         )
+        .child(
+            div()
+                .mb(px(8.0))
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text())
+                .child("Source folders"),
+        );
+
+    if folders.is_empty() {
+        panel = panel.child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(10.0))
+                .min_h(px(104.0))
+                .p(px(16.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border())
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(px(13.0))
+                        .text_color(theme.dim())
+                        .child("Add a folder on this computer")
+                        .child(icons::icon(Icon::ChevronDown, 12.0, theme.dim())),
+                )
+                .child(
+                    div()
+                        .id("new-project-pick")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(5.0))
+                        .h(px(28.0))
+                        .px(px(10.0))
+                        .rounded(px(20.0))
+                        .bg(theme.panel_3())
+                        .cursor_pointer()
+                        .text_size(px(13.0))
+                        .text_color(theme.text())
+                        .hover(move |style| style.bg(theme.panel()))
+                        .child(icons::icon(Icon::Plus, 14.0, theme.dim()))
+                        .child("Add")
+                        .on_click(cx.listener(|root, _, _, cx| root.add_project(cx))),
+                ),
+        );
+    } else {
+        let mut rows = div().flex().flex_col().gap(px(4.0));
+        for (index, folder) in folders.into_iter().enumerate() {
+            let remove_folder = folder.clone();
+            rows = rows.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .h(px(36.0))
+                    .px(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(theme.panel_2())
+                    .child(icons::icon(Icon::Folder, 14.0, theme.dim()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .font_family("Menlo")
+                            .text_size(px(11.0))
+                            .text_color(theme.dim())
+                            .child(folder),
+                    )
+                    .child(
+                        icon_button(
+                            SharedString::from(format!("new-project-remove-{index}")),
+                            Icon::Close,
+                            24.0,
+                            theme,
+                            false,
+                        )
+                        .tooltip(crate::views::tip("Remove source folder", theme))
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            root.new_project_folders
+                                .retain(|path| path != &remove_folder);
+                            cx.notify();
+                        })),
+                    ),
+            );
+        }
+        panel = panel.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .min_h(px(104.0))
+                .p(px(16.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border())
+                .child(rows)
+                .child(
+                    div()
+                        .id("new-project-pick")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(5.0))
+                        .h(px(28.0))
+                        .px(px(10.0))
+                        .rounded(px(20.0))
+                        .bg(theme.panel_3())
+                        .cursor_pointer()
+                        .text_size(px(13.0))
+                        .text_color(theme.text())
+                        .hover(move |style| style.bg(theme.panel()))
+                        .child(icons::icon(Icon::Plus, 14.0, theme.dim()))
+                        .child("Add")
+                        .on_click(cx.listener(|root, _, _, cx| root.add_project(cx))),
+                ),
+        );
+    }
+
+    panel.child(
+        div()
+            .flex()
+            .flex_row()
+            .justify_end()
+            .gap(px(16.0))
+            .mt(px(32.0))
+            .child(
+                Button::new("Cancel")
+                    .render("new-project-cancel", theme, cx, |root, _, cx| {
+                        root.overlay = None;
+                        cx.notify();
+                    })
+                    .h(px(34.0))
+                    .px(px(18.0))
+                    .rounded(px(10.0))
+                    .bg(gpui::transparent_black())
+                    .text_size(px(13.5))
+                    .text_color(theme.dim())
+                    .hover(move |style| style.bg(theme.panel()).text_color(theme.text())),
+            )
+            .child(
+                Button::new("Create project")
+                    .primary()
+                    .render("new-project-create", theme, cx, |root, _, cx| {
+                        root.create_project(cx)
+                    })
+                    .h(px(34.0))
+                    .px(px(18.0))
+                    .rounded(px(10.0))
+                    .text_size(px(13.5)),
+            ),
+    )
 }
