@@ -35,11 +35,10 @@ the topbar and sidebar wear a `BETA` pill, the bundle identifies itself as
 `desktop-gpui-v*` tags with its own `desktop-gpui-latest` install link. It can
 be installed beside the stable app and shares its configuration.
 
-It is a beta because the surface is still catching up with the stable window
-(see [What the beta covers](#what-the-beta-covers) below), not because it writes
-anything different: projects, sessions, approvals, trust decisions, themes,
-language and preferences are the shared stores, and both windows read and write
-the same ones.
+The stable window's functional surfaces and accessibility semantics are now
+present in the GPUI window. It remains beta while the native installers finish
+their own release soak. Both windows write the same stores: projects, sessions,
+approvals, trust decisions, themes, language and preferences.
 
 ## Running
 
@@ -103,6 +102,11 @@ libraries (X11, Wayland, fontconfig, freetype, Vulkan, ALSA) before building.
 CI (`.github/workflows/ci.yml`, job `desktop-gpui`) checks formatting, clippy
 with warnings denied, the crate's tests, a release build and the engine check on
 Ubuntu, macOS and Windows.
+
+GPUI is pinned to Zed commit
+`596dfdcf32d85d4d8d17a8887b4d0979ec7c5e14`, whose AccessKit integration emits
+the platform accessibility tree. The dependency is pinned rather than following
+Zed's moving `main` branch.
 
 ## What the window does
 
@@ -226,12 +230,36 @@ that composer instead of being sent.
   `changes undo` and the VS Code panel run). Every turn that changed files
   leaves an **Edited N files** card in the transcript — the count, the totals,
   the files it touched, `Undo` for the newest turn, and `View changes`.
+  Repository files can be staged, unstaged or reverted from the pane, and each
+  changed block carries its own `Stage hunk` / `Unstage hunk` action through
+  `shape_change`. **Open file** opens the reviewed file in the shared viewer.
+- **Workspace panel** — the right-hand dock has Changes, Terminal and Pulls
+  tabs. The terminal starts in the thread's project or worktree through
+  `terminal_open`, renders a real `vt100` screen from the engine's output, sends
+  ordinary and control keys through `terminal_write`, and closes its shell when
+  the pane or destination is left. Pulls reads `pull_requests`, opens one through
+  `pull_request`, and shows its description, checks, files and conversation.
+- **File viewer** — `file_view` backs a viewer for Markdown, images, CSV and
+  source text. Markdown renders through the transcript's own renderer, images
+  use their data URL, CSV becomes a table, source is shown in a monospaced
+  reading surface, and the viewer reports truncated files instead of silently
+  cutting them.
 - **Project details** — the topbar's details toggle opens the right-hand column
   from `repository_changes`, `git_info` and `mcp_servers`: the project and its
   actions, `View changes` with the tree's totals, the repository's branch (or
   `Local checkout`), the repository's pull request for the current branch when
   `pull_requests` finds one, and the sources the thread can reach with their
   state (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
+- **Customize and providers** — the Customize destination loads
+  `plugin_catalog`, searches installed and marketplace plugins, adds, updates
+  and removes marketplaces, and installs, enables, disables and uninstalls
+  plugins through `change_plugin`. MCP rows can be enabled or disabled, have
+  their model exposure cycled, and authorize through the same shared MCP store.
+  The provider dialog loads `list_providers`, filters them, reuses a stored
+  credential or accepts a key/model/base URL, and connects through `login`.
+- **Predictions** — after a turn ends, an empty composer can request the next
+  message through `predict`, paint it above the editor, and insert it as an
+  editable draft with Tab or a click without sending it.
 - **Menus and keys** — the macOS menu bar carries the app's own menu, File,
   Edit, View, Window and Help menus over the same actions as the shortcuts
   (⌘N/⌘T, ⌘W, ⌘B, ⌘⇧A for Activities, ⌘J, ⌘,, ⌘⏎ for changes, ⌘⇧M for models, ⌘⇧G for Git
@@ -268,12 +296,20 @@ that composer instead of being sent.
 
 ### Accessibility
 
-GPUI 0.2.2 paints its own tree and hands the platform no accessibility
-information, so VoiceOver reads this window as empty: there are no roles, names
-or values to announce. That is a limit of the framework, not something this
-front-end can paper over.
+GPUI publishes the window through AccessKit on macOS, Windows and Linux. Oxide
+annotates its native tree with application, toolbar, navigation, complementary,
+main, dialog, tab-list, tab, list, tree-item, article, terminal and text-input
+roles. Buttons and icon controls have names; switches expose their toggled
+state; tabs expose the selected item; fields expose their values and
+placeholders; transcript entries have speaker/content labels; and the terminal
+exposes its text value. Interaction annotations add native click, focus and
+set-value actions, so assistive technology is not limited to reading the screen.
 
-What the window does offer: the keyboard shortcuts in the next section — Esc
+What the window does offer: every ordinary button and icon control is a tab stop
+with a visible focus ring, and Enter or Space activates the focused control.
+Tab moves forward and Shift-Tab moves backward when focus is outside a text
+editor or the terminal; text fields and the terminal keep their own Tab behaviour.
+The keyboard shortcuts in the next section — Esc
 closes whatever dialog is open, ⌘, opens settings, and ⌘N, ⌘W, ⌘B, ⌘⇧A, ⌘⏎, ⌘⇧M, ⌘⇧G,
 ⌘[ and ⌘] do the work their tooltips name — a composer that is a real text
 editor with a caret, selection and the usual editing keys, and mouse affordances
@@ -282,44 +318,28 @@ that say what they do: every icon-only control carries a hover label from
 glyph, and targets are 30px or larger (40px on the rail; the switch's hit area is
 50×34 around a 38×22 track).
 
-What is missing: a tab order into the window's controls, a focus ring drawn for
-keyboard use, and an accessibility tree. The first two would need one stable
-`FocusHandle` per control on `Root` and a key handler beside each click handler;
-the third needs a gpui that emits one.
-
 ### What the beta covers
 
-The beta is usable for the work the window is for: open a project, start, reopen
-and search threads, watch a turn stream, answer its approvals and questions,
-switch model and thinking level, trust a project, read the changes it left, and
-switch theme, language and preferences — all against the shared stores.
-
-### What the beta does not cover yet
-
-These parts of the stable window are not in the beta yet. They are engine-backed
-and planned, and the beta does not pretend otherwise:
-
-- the terminal pane, the pull-request listing and the file viewer;
-- the Customize surface (browsing, installing and enabling plugins, skills and
-  MCP servers) — the rail's Customize page shows what is configured and the
-  settings that act on it, but not the marketplace;
-- hunk-level staging and opening a reviewed file in the file viewer;
-- the provider Connect dialog (the model picker says how to connect, and the
-  stored credential is read on refresh);
-- the composer's inline predictions;
+The beta covers the same desktop workflow as the stable window: projects,
+threads and thread search; streamed turns, approvals and questions; models,
+thinking and providers; trust; reviews, hunk staging and undo; the PTY, pull
+requests and file viewer; plugin marketplaces, skills and MCP controls;
+predictions; themes, language and preferences.
 
 ## Verification
 
 - `cargo test` in `crates/desktop-gpui`: the markdown block and inline parsers,
   the transcript model (a streamed answer becoming one card, a tool card
   keeping its call and result together, the one-line summary of a call), the
-  composer's input rules, new-project selection and nested trust state, and
-  every glyph in `src/icons.rs` — each drawing parses and rasterises to ink at
-  the size the window paints it.
+  composer's input rules, new-project selection and nested trust state, terminal
+  parsing and key encoding, review-hunk construction, and every glyph in
+  `src/icons.rs` — each drawing parses and rasterises to ink at the size the
+  window paints it.
 - `cargo clippy --all-targets -- -D warnings` in the crate.
 - `./target/debug/oxide-desktop-gpui --check` against a real configuration. It
   prints the project and session counts its own model parsed, so a listing that
   arrives in a shape the sidebar cannot read shows up as `0 projects` rather
-  than as a window that paints nothing.
+  than as a window that paints nothing. It also reads the provider catalog and
+  plugin marketplace catalog used by the Connect and Customize surfaces.
 - `./package.sh` on a Mac, which builds the release binary, signs and notarizes
   when asked to, and writes the `.dmg`.

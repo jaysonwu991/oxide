@@ -14,8 +14,10 @@ mod icons;
 mod markdown;
 mod model;
 mod overlays;
+mod terminal;
 mod theme;
 mod views;
+mod workspace;
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -50,7 +52,7 @@ fn main() {
         }
     };
 
-    gpui::Application::new()
+    gpui_platform::application()
         .with_assets(icons::Assets)
         .run(move |cx| {
             app::Root::bind_keys(cx);
@@ -81,6 +83,8 @@ fn check() -> i32 {
         ("language", json!({ "project": serde_json::Value::Null })),
         ("list_themes", json!({ "project": "." })),
         ("list_approvals", json!({ "project": "." })),
+        ("list_providers", json!({})),
+        ("plugin_catalog", json!({})),
     ];
 
     let mut failed = false;

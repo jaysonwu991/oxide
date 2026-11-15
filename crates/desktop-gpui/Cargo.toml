@@ -16,18 +16,17 @@ description = "Oxide for Desktop (Beta): the GPUI front-end"
 oxide-core = { path = "../core" }
 oxide-desktop = { path = "../desktop" }
 anyhow = "1"
-# gpui's HTTP client unpacks tarballs through `zed-async-tar`, whose optional
-# `xattr` 0.2.3 still names `libc::ENOATTR` on Linux. libc dropped that alias
-# for Linux in 0.2.190, so the graph holds libc at the last release that
-# defines it (as `ENODATA`). Drop this pin once `xattr` moves past 0.2.3.
-libc = "=0.2.189"
 # `runtime_shaders` compiles GPUI's Metal shaders at launch instead of at build
 # time, so a machine without Xcode's downloadable Metal toolchain can still
 # build this app (see docs/desktop-gpui.md).
-gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+# Keep both GPUI packages on one Zed revision; this revision publishes AccessKit
+# nodes to macOS, Windows and Linux.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "596dfdcf32d85d4d8d17a8887b4d0979ec7c5e14" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "596dfdcf32d85d4d8d17a8887b4d0979ec7c5e14", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "io-std", "sync", "net"] }
 unicode-segmentation = "1"
+vt100 = "0.18.1"
 
 # The window's glyphs are SVG, and the tests rasterise each one to prove it
 # draws something: these are the same versions GPUI paints them with.

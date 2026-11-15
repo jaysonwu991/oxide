@@ -184,8 +184,9 @@ from its own `desktop-gpui-v*` train.
 cd crates/desktop-gpui && cargo run
 ```
 
-See [docs/desktop-gpui.md](docs/desktop-gpui.md) for what the beta covers, what
-it does not yet, and how it is packaged, signed and released.
+See [docs/desktop-gpui.md](docs/desktop-gpui.md) for the beta's complete desktop
+surface, AccessKit accessibility tree, and how it is packaged, signed and
+released.
 
 ## VS Code extension
 
