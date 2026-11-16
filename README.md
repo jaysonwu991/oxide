@@ -77,13 +77,12 @@ and `oxide uninstall` are in [docs/install.md](docs/install.md).
 
 ## Installers
 
-Oxide Desktop GPUI and the VS Code extension, always the newest build. Each
-desktop link points at the `desktop-latest` release published by the GPUI
-workflow, while the extension uses `extension-latest`; their files are replaced
-on every publish, so the links themselves never change. Versioned
-`desktop-gpui-v*` and `extension-v*` releases name the version a file is from.
-Oxide Desktop Electron keeps its own independent `desktop-v*` release train and
-`desktop-electron-latest` installer alias.
+Oxide Desktop GPUI, Oxide Desktop Electron, and the VS Code extension are always
+the newest build. GPUI links use `desktop-latest`, Electron links use its
+independent `desktop-electron-latest` alias, and the extension uses
+`extension-latest`; their files are replaced on every publish, so the links
+themselves never change. Versioned `desktop-gpui-v*`, `desktop-v*`, and
+`extension-v*` releases name the version a file is from.
 
 | Surface | Platform | Installer |
 | --- | --- | --- |
@@ -92,6 +91,11 @@ Oxide Desktop Electron keeps its own independent `desktop-v*` release train and
 | Oxide Desktop GPUI | Windows x64 | [Oxide-win-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.tar.gz) |
 | Oxide Desktop GPUI | Linux x64 | [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
 | Oxide Desktop GPUI | Linux arm64 | [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
+| Oxide Desktop Electron | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-macos-arm64.dmg) |
+| Oxide Desktop Electron | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-macos-x64.dmg) |
+| Oxide Desktop Electron | Windows x64 | [Oxide-win-x64-Setup.exe](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-win-x64-Setup.exe) |
+| Oxide Desktop Electron | Linux x64 | [AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-linux-x86_64-Setup.AppImage) · [tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-linux-x64-Setup.tar.gz) |
+| Oxide Desktop Electron | Linux arm64 | [AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-linux-arm64-Setup.AppImage) · [tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-linux-arm64-Setup.tar.gz) |
 | VS Code | any | [oxide-vscode.vsix](https://github.com/jaysonwu991/oxide/releases/download/extension-latest/oxide-vscode.vsix) |
 
 On macOS, an app that was not notarized — a build made without both the
