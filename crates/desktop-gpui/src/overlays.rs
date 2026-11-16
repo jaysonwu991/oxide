@@ -3047,15 +3047,7 @@ fn computer_use(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui:
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text())
                             .child(if let Some(activity) = &activity {
-                                if activity.stopped {
-                                    "Stopped"
-                                } else if activity.failed {
-                                    "Action failed"
-                                } else if activity.running {
-                                    "Using computer"
-                                } else {
-                                    "Finished"
-                                }
+                                activity.status_label()
                             } else {
                                 "No active Computer Use session"
                             }),
@@ -3115,10 +3107,14 @@ fn computer_use(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui:
                 div()
                     .text_size(px(11.0))
                     .text_color(theme.faint())
-                    .child(activity.as_ref().and_then(|activity| activity.image.as_ref()).map_or(
-                        "No screenshot captured yet. Accessibility actions do not always return an image.",
-                        |_| "Last captured screenshot",
-                    )),
+                    .child(
+                        activity
+                            .as_ref()
+                            .map_or(
+                                "No screenshot captured yet. Accessibility actions do not always return an image.",
+                                |activity| activity.caption(),
+                            ),
+                    ),
             )
             .children(can_stop.then(|| {
                 Button::new("Stop task").danger().render(

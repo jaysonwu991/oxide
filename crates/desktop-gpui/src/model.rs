@@ -285,6 +285,81 @@ pub struct ComputerUseActivity {
     pub failed: bool,
     pub image: Option<Attachment>,
     pub image_app: Option<String>,
+    pub permissions: Option<ComputerUsePermissions>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComputerUsePermissions {
+    pub accessibility: bool,
+    pub screen_recording: bool,
+}
+
+impl ComputerUsePermissions {
+    pub fn available(&self) -> bool {
+        self.accessibility && self.screen_recording
+    }
+}
+
+impl ComputerUseActivity {
+    pub fn needs_permissions_attention(&self) -> bool {
+        self.permissions
+            .as_ref()
+            .is_some_and(|permissions| !permissions.available())
+            && (self.action == "permissions" || self.failed)
+    }
+
+    pub fn permissions_ready(&self) -> bool {
+        self.action == "permissions"
+            && self
+                .permissions
+                .as_ref()
+                .is_some_and(ComputerUsePermissions::available)
+    }
+
+    pub fn permission_caption(&self) -> Option<&'static str> {
+        let permissions = self.permissions.as_ref()?;
+        Some(match (permissions.accessibility, permissions.screen_recording) {
+            (true, true) => "App control and screen capture permissions are available.",
+            (false, true) => {
+                "Enable Oxide under System Settings → Privacy & Security → Device Control & Data Access."
+            }
+            (true, false) => {
+                "Enable Oxide under System Settings → Privacy & Security → Screen & System Audio Recording."
+            }
+            (false, false) => {
+                "Enable Oxide under both Device Control & Data Access and Screen & System Audio Recording in System Settings → Privacy & Security."
+            }
+        })
+    }
+
+    pub fn status_label(&self) -> &'static str {
+        if self.stopped {
+            "Stopped"
+        } else if self.needs_permissions_attention() {
+            "Permissions needed"
+        } else if self.failed {
+            "Action failed"
+        } else if self.running {
+            "Using computer"
+        } else if self.permissions_ready() {
+            "Ready"
+        } else {
+            "Finished"
+        }
+    }
+
+    pub fn caption(&self) -> &'static str {
+        if self.action == "permissions" || self.needs_permissions_attention() {
+            return self.permission_caption().unwrap_or(
+                "No screenshot captured yet. Accessibility actions do not always return an image.",
+            );
+        }
+        if self.image.is_some() {
+            "Last captured screenshot"
+        } else {
+            "No screenshot captured yet. Accessibility actions do not always return an image."
+        }
+    }
 }
 
 /// Whether a tool belongs to an Oxide or Codex Computer Use server. MCP tool
@@ -339,6 +414,14 @@ fn tool_attachments(value: &Value) -> Vec<Attachment> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn parse_permissions(text: &str) -> Option<ComputerUsePermissions> {
+    let status = serde_json::from_str::<Value>(text.trim()).ok()?;
+    Some(ComputerUsePermissions {
+        accessibility: status["accessibility"].as_bool()?,
+        screen_recording: status["screen_recording"].as_bool()?,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -416,12 +499,18 @@ impl Chat {
     pub fn computer_use(&self) -> Option<ComputerUseActivity> {
         let mut latest = None;
         let mut image = None;
+        let mut permissions = None;
+        let mut permissions_seen = false;
         for entry in self.entries.iter().rev() {
             let Entry::Tool(card) = entry else {
                 continue;
             };
             if !is_computer_tool(&card.name) {
                 continue;
+            }
+            if !permissions_seen && card.name.ends_with("__permissions") {
+                permissions_seen = true;
+                permissions = parse_permissions(&card.output);
             }
             if image.is_none() {
                 if let Some(attachment) = card.media.last() {
@@ -436,7 +525,7 @@ impl Chat {
                     card.status == Status::Failed,
                 ));
             }
-            if image.is_some() && latest.is_some() {
+            if image.is_some() && latest.is_some() && permissions_seen {
                 break;
             }
         }
@@ -450,6 +539,7 @@ impl Chat {
             failed,
             image,
             image_app,
+            permissions,
         })
     }
 
@@ -861,6 +951,63 @@ mod tests {
         assert_eq!(activity.action, "get app state");
         assert_eq!(activity.image_app.as_deref(), Some("Edge"));
         assert_eq!(activity.image.unwrap().data_url, PNG);
+    }
+
+    #[test]
+    fn permission_diagnostics_become_an_actionable_computer_use_state() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "oxide-computer-use__permissions",
+            "arguments": {},
+        }));
+        chat.apply(&json!({
+            "type": "tool_execution_end",
+            "toolName": "oxide-computer-use__permissions",
+            "result": r#"{
+                "accessibility": false,
+                "screen_recording": true,
+                "launching_app": "/Applications/Oxide.app",
+                "guidance": "Grant access in System Settings."
+            }"#,
+            "isError": false,
+        }));
+
+        let activity = chat.computer_use().unwrap();
+        assert_eq!(
+            activity.permissions,
+            Some(ComputerUsePermissions {
+                accessibility: false,
+                screen_recording: true,
+            })
+        );
+        assert!(activity.needs_permissions_attention());
+        assert_eq!(activity.status_label(), "Permissions needed");
+        assert_eq!(
+            activity.caption(),
+            "Enable Oxide under System Settings → Privacy & Security → Device Control & Data Access."
+        );
+
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "oxide-computer-use__permissions",
+            "arguments": {},
+        }));
+        chat.apply(&json!({
+            "type": "tool_execution_end",
+            "toolName": "oxide-computer-use__permissions",
+            "result": r#"{"accessibility": true, "screen_recording": true}"#,
+            "isError": false,
+        }));
+
+        let activity = chat.computer_use().unwrap();
+        assert!(!activity.needs_permissions_attention());
+        assert!(activity.permissions_ready());
+        assert_eq!(activity.status_label(), "Ready");
+        assert_eq!(
+            activity.caption(),
+            "App control and screen capture permissions are available."
+        );
     }
 
     #[test]

@@ -2124,8 +2124,11 @@ runtime with `oxide-computer-use install --client oxide`.
 Desktop uses the shared MCP registry and approval store for the plugin's tools.
 Discover them with `tool_search`; use `permissions` on newer server builds to
 check the actual MCP process. A `doctor` run from another terminal can report
-different macOS permissions. Grant Accessibility and Screen Recording to the
-hosting app (Oxide.app for Desktop); only the user can approve those grants.
+different macOS permissions. On macOS 27 and later, enable the hosting app
+(Oxide.app for Desktop) under **Privacy & Security → Device Control & Data
+Access** for app control and **Privacy & Security → Screen & System Audio
+Recording** for capture. Older macOS releases call these Accessibility and
+Screen Recording. Only the user can approve those grants.
 
 MCP image content travels as media through `McpToolResult`, `ToolOutput` and
 `AgentEvent::ToolResult`. The JSON event's `attachments` carry data URLs, and
@@ -2150,6 +2153,14 @@ failed actions and stopped turns have distinct states. **Stop task** uses the
 existing conversation cancellation path. Activity and screenshots belong to the
 originating conversation, including live background runs and restored sessions.
 These are snapshots, not a continuous stream or an input-isolated desktop.
+Electron keeps its live screen and click-through cursor overlay active for the
+whole turn after the first Computer Use call, including the waits between calls;
+Escape cancels that task. The bundled skill prefers accessibility operations
+and `background: true` keyboard delivery when possible, while pointer fallback
+still belongs to the foreground desktop.
+The `permissions` diagnostic is surfaced as **Ready** when both macOS grants are
+present, or **Permissions needed** with the missing grant named. It does not
+capture a screenshot, so that state is not presented as a finished screen action.
 
 An opt-in macOS companion app launches the configured `oxide-computer-use` runtime
 under a separate LaunchServices app instance, with private local MCP transport,

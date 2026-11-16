@@ -20,13 +20,23 @@ Keep the task scoped to the app and flow the user named. Use `list_apps` and
 Observe the interface after actions; a successful tool call alone does not
 establish that the desired state was reached.
 
-The user controls Accessibility and Screen Recording in System Settings.
-Report a missing permission from the actual MCP call and ask the user to grant
-it to the hosting app. Do not try to approve operating-system permission
-prompts on their behalf.
+The user controls these grants in System Settings. On macOS 27 and later, app
+control is under **Privacy & Security → Device Control & Data Access**, and
+screen capture is under **Privacy & Security → Screen & System Audio Recording**.
+Older macOS releases call these **Accessibility** and **Screen Recording**.
+Report a missing permission from the actual MCP call and ask the user to enable
+the hosting app. Do not try to approve operating-system permission prompts on
+their behalf.
 
 `type_text` and `press_key` accept `background: true`, which posts keyboard
 events to one process without activating it; verify the app accepted them.
-Pointer input still moves the real cursor. The `computer-use://screen` MCP
-resource captures on read and announces when the screen may have changed; it
-is not a continuous live stream.
+Prefer accessibility operations (`set_value`, `select_text`, `perform_secondary_action`
+and a plain element `click`, which uses `AXPress` when available) because they
+can leave the person's foreground app and keyboard focus alone. When a keyboard
+action is required and the task should not take over the desktop, pass
+`background: true` with the target `app`. Do not describe pointer input as
+background: fallback clicks, coordinate clicks, scrolling and dragging move the
+real cursor and bring the target forward.
+
+The `computer-use://screen` MCP resource captures on read and announces when the
+screen may have changed; it is not a continuous live stream.

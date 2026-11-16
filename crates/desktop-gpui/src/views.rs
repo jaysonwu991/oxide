@@ -2201,15 +2201,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         .get(root.active)
         .and_then(|chat| chat.computer_use())
     {
-        let status = if activity.stopped {
-            "Stopped"
-        } else if activity.failed {
-            "Action failed"
-        } else if activity.running {
-            "Using computer"
-        } else {
-            "Finished"
-        };
+        let status = activity.status_label();
         let action = [activity.app.clone(), Some(activity.action.clone())]
             .into_iter()
             .flatten()
@@ -2306,13 +2298,12 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                         }))
                 })
             }))
-            .child(div().text_size(px(10.5)).text_color(theme.faint()).child(
-                if activity.image.is_some() {
-                    "Last captured screenshot"
-                } else {
-                    "No screenshot captured yet"
-                },
-            ));
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(theme.faint())
+                    .child(activity.caption()),
+            );
         if activity.running {
             card = card.child(Button::new("Stop task").danger().render(
                 "details-computer-use-stop",

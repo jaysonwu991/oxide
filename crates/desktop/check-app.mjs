@@ -1329,14 +1329,14 @@ vm.runInThisContext(
     " answerQuestion, collectAnswers, requestAt, acceptAt, moveAt, closeAt, atKey," +
     " showApproval, loadLanguage, openLanguage, switchLanguage, renderLanguageRows," +
     " resetTranscript, renderChanges, closeReview, undoChanges," +
-    " updateRunBanner, openRun, handleEvent, removeProject, clearSelectedProject, selectProject," +
+    " updateRunBanner, openRun, handleEvent, removeProject, clearSelectedProject, selectProject, readProjectChanges," +
     " loadSessions, renderProjectsTree, renderSessions, renderMcps, openSession, renderProjectMeta, updateSendState, setFollowUpBehavior, paintQueue, queueAction, setBusy, setIdle," +
     " loadGit, openProjectDetails, refreshProjectDetails, openRepositoryChanges, changeReviewScope," +
     " loadMcps, openSessions, openCustomize, closeCustomize, mutatePlugin, renderPlugins," +
     " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
     " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkThread, restoreThread, captureChatTab, threads, visibleThread, withThread, turnInThread, backgroundRun, openThreadRecord, threadForRunId," +
-    " startTool, finishTool, toggleTool, renderStoredTranscript, paintComputerUse, isComputerTool, openUpdate, installUpdate, cancelUpdate," +
+    " startTool, finishTool, toggleTool, renderStoredTranscript, paintComputerUse, isComputerTool, runningComputerThread, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
     " bubble, renderMarkdown, markdownToText, readMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog," +
@@ -4644,27 +4644,74 @@ console.log("computer-use activity and persistent preview");
 const computerThread = app.visibleThread();
 computerThread.computerUse = null;
 computerThread.tools = [];
-computerThread.busy = true;
+computerThread.busy = false;
 computerThread.runError = "";
 computerThread.stopRequested = false;
 check("recognized local computer-use server names without matching unrelated tools",
   app.isComputerTool("computer-use-local__click") && app.isComputerTool("oxide-computer-use__get_app_state") && app.isComputerTool("computer_use__screenshot") && !app.isComputerTool("other__computer-use"));
+const missingPermissionCard = app.startTool("oxide-computer-use__permissions", "{}");
+app.finishTool(missingPermissionCard, JSON.stringify({
+  accessibility: false,
+  screen_recording: true,
+  launching_app: "/Applications/Oxide.app",
+  guidance: "Grant access in System Settings.",
+}));
+check(
+  "reported missing Computer Use permissions instead of a finished screenshot session",
+  app.el("computer-use-status").textContent === "Permissions needed" &&
+    app.el("computer-use-snapshot").textContent.includes("Device Control & Data Access"),
+  `${app.el("computer-use-status").textContent} / ${app.el("computer-use-snapshot").textContent}`,
+);
+const readyPermissionCard = app.startTool("oxide-computer-use__permissions", "{}");
+app.finishTool(readyPermissionCard, JSON.stringify({
+  accessibility: true,
+  screen_recording: true,
+  launching_app: "/Applications/Oxide.app",
+  guidance: "Ready.",
+}));
+check(
+  "reported a healthy permission check without claiming a screenshot",
+  app.el("computer-use-status").textContent === "Ready" &&
+    app.el("computer-use-snapshot").textContent === "App control and screen capture permissions are available.",
+  `${app.el("computer-use-status").textContent} / ${app.el("computer-use-snapshot").textContent}`,
+);
+computerThread.computerUse = null;
+computerThread.tools = [];
+computerThread.busy = true;
 const pointerCard = app.startTool("computer-use__click", '{"app":"Edge"}');
 check("showed a mouse icon and active computer-use status",
   Boolean(pointerCard.block.querySelector(".computer-tool-icon")) &&
   app.el("computer-use-toggle").classList.contains("computer-active") &&
   app.el("computer-use-status").textContent === "Using computer");
 app.finishTool(pointerCard, "Clicked", { attachments: [{ name: "Edge", dataUrl: toolShot }] });
+check(
+  "kept the live Computer Use session between individual tool calls",
+  app.runningComputerThread() === computerThread,
+);
 const persistentPreview = app.el("computer-use-preview").children[0];
 const axCard = app.startTool("computer-use__get_app_state", '{"app":"Finder"}');
 app.finishTool(axCard, "Accessibility tree");
 check("kept the last screenshot and its original app label after an AX-only action",
   app.el("computer-use-preview").children[0] === persistentPreview &&
-  app.el("computer-use-snapshot").textContent.endsWith("Edge") &&
+  app.el("computer-use-snapshot").textContent.includes("Edge") &&
   app.el("computer-use-action").textContent.startsWith("Finder"));
 check("did not describe a snapshot as a live feed",
   app.el("computer-use-status").textContent === "Waiting for next action" &&
-  app.el("computer-use-snapshot").textContent.startsWith("Last captured screenshot"));
+  app.el("computer-use-snapshot").textContent.startsWith("Last captured screenshot") &&
+  app.el("computer-use-snapshot").textContent.includes("Esc to stop") &&
+  app.el("computer-use-toggle").getAttribute("aria-keyshortcuts") === "Escape");
+computerThread.runId = 9001;
+calls.length = 0;
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+await nextTick();
+check(
+  "cancelled the active Computer Use task with Escape",
+  projectCalls("cancel_run").some(([, args]) => args.runId === 9001),
+  JSON.stringify(projectCalls("cancel_run")),
+);
+computerThread.runId = null;
+computerThread.stopRequested = false;
+app.paintComputerUse();
 app.el("computer-use-toggle").onclick();
 await nextTick();
 check("opened computer-use controls independently of the details dock",
@@ -4744,7 +4791,12 @@ app.paintComputerUse();
 // diff it kept is there for the reader who clicks the card.
 console.log("an edit tool's card");
 app.state.session = "changes-chat";
-repositoryChanges = { files: [{ path: "src/main.rs", added: 7, removed: 3 }], added: 7, removed: 3 };
+repositoryChanges = {
+  project: app.runFolder(),
+  files: [{ path: "src/main.rs", added: 7, removed: 3 }],
+  added: 7,
+  removed: 3,
+};
 app.setBusy();
 await nextTick();
 const editCard = app.startTool(
@@ -4755,6 +4807,7 @@ app.finishTool(editCard, "Successfully replaced 1 block(s) in src/main.rs.", {
   diff: { path: "src/main.rs", text: "-  1      a\n+      1  b" },
   elapsed: 12,
 });
+await app.readProjectChanges(app.runFolder());
 check(
   "counted the lines the call moved beside its state",
   editCard.tstate.textContent.includes("+1 −1"),
@@ -4783,7 +4836,8 @@ check(
     elementFor("live-changes").innerHTML.includes("+7") &&
     elementFor("live-changes").innerHTML.includes("−3") &&
     elementFor("details-stats").innerHTML === elementFor("live-changes").innerHTML.slice(elementFor("live-changes").innerHTML.indexOf("</span>") + 7),
-  elementFor("live-changes").innerHTML,
+  `hidden=${elementFor("live-changes").hidden}; folder=${app.runFolder()}; ` +
+    `live=${elementFor("live-changes").innerHTML}; details=${elementFor("details-stats").innerHTML}`,
 );
 check(
   "centered the live file summary over the composer",

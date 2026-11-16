@@ -42,10 +42,13 @@ trial. Reconnect the server or restart Oxide after changing configuration.
 Existing permission and approval choices are not migrated or reset by the build.
 
 Open the helper normally to use its permission menu. Only the user can grant
-Accessibility and Screen Recording. Query `permissions` through the actual MCP
-connection afterward. OS grants to Oxide.app do not grant this helper access.
-Rebuilding an ad-hoc bundle can invalidate grants; release builds need a stable
-signing identity. Setup remains manual in this development workflow.
+app control and screen capture. On macOS 27 and later these are under System
+Settings → Privacy & Security → Device Control & Data Access and Screen &
+System Audio Recording respectively; older systems call them Accessibility and
+Screen Recording. Query `permissions` through the actual MCP connection
+afterward. OS grants to Oxide.app do not grant this helper access. Rebuilding an
+ad-hoc bundle can invalidate grants; release builds need a stable signing
+identity. Setup remains manual in this development workflow.
 
 ## Transport and lifecycle
 
@@ -98,5 +101,7 @@ While a Computer Use tool is running, Electron Desktop reads
 `computer-use://screen` from the turn's own MCP session every 1.5 seconds and
 shows it as the live preview, and draws a click-through overlay (an edge frame
 on every display and a ring on the pointer) that is excluded from screen
-capture. Both end with the task. Browser integration and unlock/relock remain
-outside Desktop; they belong to the runtime.
+capture. Once a turn starts using Computer Use, both stay active through the
+waits between actions and end when that turn ends. Escape cancels the active
+Computer Use turn, matching Codex's task-level shortcut. Browser integration
+and unlock/relock remain outside Desktop; they belong to the runtime.
