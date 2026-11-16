@@ -70,6 +70,7 @@ pub struct SessionRow {
     pub id: String,
     pub project: String,
     pub title: String,
+    pub named: bool,
     pub preview: String,
     pub modified_at: u64,
     pub pinned: bool,
@@ -95,6 +96,7 @@ impl SessionRow {
             id,
             project: value["cwd"].as_str().unwrap_or_default().to_string(),
             title,
+            named: !name.is_empty(),
             preview,
             modified_at: number(value, "modified_at", "modifiedAt"),
             pinned: value["pinned"].as_bool().unwrap_or(false),
@@ -440,6 +442,7 @@ pub struct Chat {
     pub project: String,
     pub session: Option<String>,
     pub title: String,
+    pub provisional_title: bool,
     pub entries: Vec<Entry>,
     pub run: Option<u64>,
     pub stop_requested: bool,
@@ -473,6 +476,7 @@ impl Chat {
             project,
             session: None,
             title,
+            provisional_title: true,
             entries: Vec::new(),
             run: None,
             stop_requested: false,
@@ -1159,6 +1163,15 @@ mod tests {
             session.title,
             "Align GPUI window with the Electron fallback"
         );
+        assert!(session.named);
+        let unnamed = SessionRow::from_value(&json!({
+            "cwd": "/tmp",
+            "id": "unnamed",
+            "name": "",
+            "preview": "Prompt"
+        }))
+        .expect("an unnamed session row");
+        assert!(!unnamed.named);
         assert_eq!(session.project, "/Users/jayson/Projects/oxide");
         assert_eq!(session.modified_at, 1_794_657_550);
     }

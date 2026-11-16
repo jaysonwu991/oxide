@@ -35,7 +35,7 @@ pub fn summarize(text: &str, max: usize) -> String {
 /// is asked for the title through a structured tool, but providers can still
 /// include presentation such as `Title:` or surrounding quotes in the string.
 pub fn generated(text: &str, max: usize) -> String {
-    let Some(mut title) = first_prose_line(text) else {
+    let Some(mut title) = first_prose_line_inner(text, false) else {
         return String::new();
     };
     if title
@@ -143,9 +143,16 @@ fn looks_like_location(word: &str) -> bool {
 
 /// The first line of `text` that reads as prose, with its Markdown taken off: a
 /// fence, a rule and a table row say nothing on their own, and a fenced block's
-/// contents are a listing rather than a title.
+/// contents are a listing rather than a title. A short unmarked lead-in such as
+/// a window or product name is joined to the request below it, so the title
+/// says what the session did rather than stopping at the label.
 fn first_prose_line(text: &str) -> Option<String> {
+    first_prose_line_inner(text, true)
+}
+
+fn first_prose_line_inner(text: &str, combine_lead: bool) -> Option<String> {
     let mut fenced = false;
+    let mut first: Option<(String, bool)> = None;
     for raw in text.lines() {
         let line = raw.trim();
         if line.starts_with("```") || line.starts_with("~~~") {
@@ -158,10 +165,52 @@ fn first_prose_line(text: &str) -> Option<String> {
         let plain = plain_text(line);
         // A line that is only punctuation (`---`) is a rule, not a title.
         if plain.chars().any(char::is_alphanumeric) {
-            return Some(plain);
+            let marked = strip_block_marker(line) != line;
+            let Some((lead, unmarked)) = first.take() else {
+                first = Some((plain, !marked));
+                continue;
+            };
+            if combine_lead && unmarked && short_lead(&lead) {
+                return Some(format!("{lead}: {plain}"));
+            }
+            return Some(lead);
         }
     }
-    None
+    first.map(|(line, _)| line)
+}
+
+fn short_lead(text: &str) -> bool {
+    text.split_whitespace().count() <= 4
+        && text.chars().count() <= 36
+        && !text.ends_with(['.', '?', '!', ':'])
+        && !text.split_whitespace().next().is_some_and(|word| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "add"
+                    | "build"
+                    | "change"
+                    | "check"
+                    | "create"
+                    | "delete"
+                    | "document"
+                    | "explain"
+                    | "find"
+                    | "fix"
+                    | "improve"
+                    | "make"
+                    | "move"
+                    | "paste"
+                    | "remove"
+                    | "rename"
+                    | "review"
+                    | "run"
+                    | "show"
+                    | "support"
+                    | "test"
+                    | "update"
+                    | "use"
+            )
+        })
 }
 
 /// One line with its Markdown markers removed: a link or an image keeps its
@@ -386,5 +435,17 @@ mod tests {
         assert_eq!(summarize("\n\n## Heading\n\nbody", TITLE_LIMIT), "Heading");
         assert_eq!(summarize("![alt text](a.png)", TITLE_LIMIT), "alt text");
         assert_eq!(summarize("---\n***", TITLE_LIMIT), "");
+        assert_eq!(
+            summarize("GPUI Desktop\nFix the composer title", TITLE_LIMIT),
+            "GPUI Desktop: Fix the composer title"
+        );
+        assert_eq!(
+            summarize("## GPUI Desktop\nFix the composer title", TITLE_LIMIT),
+            "GPUI Desktop"
+        );
+        assert_eq!(
+            summarize("Fix the build\nplease", TITLE_LIMIT),
+            "Fix the build"
+        );
     }
 }

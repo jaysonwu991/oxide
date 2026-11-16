@@ -150,7 +150,10 @@ reveal rather than two frames of the wrong page.
   pin and remove controls. Thread rows reveal pin and archive
   controls on hover; right-click opens the rename, pin and archive dialog. An
   open stored thread keeps the same persisted label in the topbar and sidebar,
-  and Recents lists only sessions not already shown under a project.
+  the open chat takes a refreshed stored title when a run finishes, and Recents
+  lists only sessions not already shown under a project. An unnamed session
+  combines a short subject line with the request below it, so a window or
+  product label does not become the whole title.
   Creating a project uses the same name-and-source-folders sheet as the Electron
   window, adding source folders through `App::prompt_for_paths`. The selected
   project opens a draft and always asks for its own trust decision, including

@@ -1180,6 +1180,7 @@ impl Root {
                     .as_array()
                     .map(|sessions| sessions.iter().filter_map(SessionRow::from_value).collect())
                     .unwrap_or_default();
+                synchronize_session_titles(&mut root.chats, &root.sessions);
             }
         });
     }
@@ -3858,6 +3859,7 @@ impl Root {
                         if let Some(title) = payload["title"].as_str() {
                             if !title.trim().is_empty() {
                                 self.chats[index].title = title.to_string();
+                                self.chats[index].provisional_title = false;
                             }
                         }
                     }
@@ -4691,6 +4693,27 @@ fn can_reuse_new_chat(chat: &Chat, composer_text: &str) -> bool {
         && composer_text.trim().is_empty()
 }
 
+fn synchronize_session_titles(chats: &mut [Chat], sessions: &[SessionRow]) {
+    let titles: HashMap<&str, &SessionRow> = sessions
+        .iter()
+        .filter(|session| !session.title.trim().is_empty())
+        .map(|session| (session.id.as_str(), session))
+        .collect();
+    for chat in chats {
+        let Some(session) = chat.session.as_deref() else {
+            continue;
+        };
+        if let Some(row) = titles.get(session) {
+            if row.named || chat.provisional_title {
+                chat.title = row.title.clone();
+                if row.named {
+                    chat.provisional_title = false;
+                }
+            }
+        }
+    }
+}
+
 /// Whether picking another project moves this tab with it: a draft nothing has
 /// been written in yet stands in one folder at a time and follows the picker,
 /// while a tab that holds work keeps the folder that work was started in.
@@ -4703,9 +4726,9 @@ mod sidebar_resize_tests {
     use super::{
         add_attachment, can_reuse_new_chat, clamp_sidebar_width, composer_has_content,
         details_visible, draft_follows_project, performs_slash_command, resized_changes_width,
-        slash_command, toggled_details, Rail,
+        slash_command, synchronize_session_titles, toggled_details, Rail,
     };
-    use crate::model::{Attachment, Chat};
+    use crate::model::{Attachment, Chat, SessionRow};
     use crate::views::{customize_destination, effort_position, model_display_name};
 
     #[test]
@@ -4806,6 +4829,24 @@ mod sidebar_resize_tests {
 
         composed.session = Some("saved-thread".to_string());
         assert!(!can_reuse_new_chat(&composed, ""));
+    }
+
+    #[test]
+    fn a_refreshed_session_title_reaches_the_open_chat() {
+        let mut chat = Chat::new("/tmp/project".to_string(), "GPUI Desktop".to_string());
+        chat.session = Some("session".to_string());
+        let sessions = vec![SessionRow {
+            id: "session".to_string(),
+            title: "GPUI Desktop: Fix the composer title".to_string(),
+            ..SessionRow::default()
+        }];
+        synchronize_session_titles(std::slice::from_mut(&mut chat), &sessions);
+        assert_eq!(chat.title, "GPUI Desktop: Fix the composer title");
+
+        chat.provisional_title = false;
+        chat.title = "Generated title".to_string();
+        synchronize_session_titles(std::slice::from_mut(&mut chat), &sessions);
+        assert_eq!(chat.title, "Generated title");
     }
 
     #[test]

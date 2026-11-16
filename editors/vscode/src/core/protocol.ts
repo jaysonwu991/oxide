@@ -555,9 +555,11 @@ function words(line: string): string[] {
 }
 
 /// The first line of `text` that reads as prose, with its Markdown taken off:
-/// `""` when the message has none.
+/// `""` when the message has none. A short unmarked lead-in is joined to the
+/// request below it so a product or window label does not become the title.
 function titleLine(text: string): string {
   let fenced = false;
+  let first: { plain: string; unmarked: boolean } | null = null;
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (/^(?:```|~~~)/.test(line)) {
@@ -568,9 +570,30 @@ function titleLine(text: string): string {
     const plain = plainText(line);
     // A line that is only punctuation (`---`, `| --- |`) is a rule or a table
     // border, not a title.
-    if (plain && /[\p{L}\p{N}]/u.test(plain)) return plain;
+    if (!plain || !/[\p{L}\p{N}]/u.test(plain)) continue;
+    const unmarked = !BLOCK_MARKER.test(line);
+    if (!first) {
+      first = { plain, unmarked };
+      continue;
+    }
+    if (first.unmarked && shortLead(first.plain)) return `${first.plain}: ${plain}`;
+    return first.plain;
   }
-  return "";
+  return first?.plain || "";
+}
+
+function shortLead(text: string): boolean {
+  const first = text.split(/\s+/, 1)[0]?.toLowerCase() || "";
+  return (
+    text.split(/\s+/).length <= 4 &&
+    text.length <= 36 &&
+    !/[.?!:]$/.test(text) &&
+    ![
+      "add", "build", "change", "check", "create", "delete", "document", "explain",
+      "find", "fix", "improve", "make", "move", "paste", "remove", "rename", "review",
+      "run", "show", "support", "test", "update", "use",
+    ].includes(first)
+  );
 }
 
 /// One line with its Markdown markers removed: a link or an image keeps its

@@ -958,6 +958,15 @@ describe("Transcript", () => {
     assert.equal(summarizeTitle("```rust\nfn main() {}\n```\nRun this"), "Run this");
     assert.equal(summarizeTitle("---\n| a | b |\nWhitespace   collapsed"), "Whitespace collapsed");
     assert.equal(summarizeTitle("   "), "");
+    assert.equal(
+      summarizeTitle("GPUI Desktop\nFix the composer title"),
+      "GPUI Desktop: Fix the composer title",
+    );
+    assert.equal(
+      summarizeTitle("## GPUI Desktop\nFix the composer title"),
+      "GPUI Desktop",
+    );
+    assert.equal(summarizeTitle("Fix the build\nplease"), "Fix the build");
     // A long title is cut at a word boundary, never mid-word.
     const long = summarizeTitle("word ".repeat(30));
     assert.ok(long.length <= 64, long);
