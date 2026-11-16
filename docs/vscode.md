@@ -349,10 +349,12 @@ note saying the thread was resumed — so a resumed thread reads like the thread
 is instead of an empty panel that answers nothing. A turn is what was said and
 what was called, and a stored thread is mostly the second: an assistant step that
 only dispatched tools paints no bubble, each call it made paints the same tool
-card the live turn painted, and the result the CLI stores as a message of its own
-is folded into the card it answers rather than shown beside it. The tail is
-counted in those stored messages, so reopening a long thread shows several of its
-turns rather than its last reply only. A replayed card carries the change its own
+card the live turn painted, and stored reasoning is replayed as its thinking
+block before the assistant step it produced. The result the CLI stores as a
+message of its own is folded into the card it answers rather than shown beside
+it. The tail is counted in those stored messages, so reopening a long thread
+shows several of its turns rather than its last reply only. A replayed card
+carries the change its own
 arguments describe — an `edit`'s replacements — rather than one
 built against the file as it stands, which is no longer the state the call found;
 an `edit`'s replacements are previewed one block each, separated by the same `⋯`

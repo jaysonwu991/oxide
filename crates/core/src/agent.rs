@@ -1334,12 +1334,17 @@ async fn run_loop(
         {
             let _ = set_session_title(&runtime, &tx, &call.function.arguments, depth);
         }
-        let tool_calls: Vec<_> = turn
+        let mut tool_calls: Vec<_> = turn
             .tool_calls
             .iter()
             .filter(|call| !internal_tool(&call.function.name))
             .cloned()
             .collect();
+        if tool_enabled(&config, "grep") {
+            for call in &mut tool_calls {
+                redirect_shell_search(call, &cwd);
+            }
+        }
         let has_answer = !turn.content.trim().is_empty();
 
         // Some providers insist on returning a tool call without the answer we
@@ -2013,6 +2018,26 @@ async fn seed_read_reuse(
             .seed(&cwd, &reads, render);
     })
     .await;
+}
+
+/// A shell grep that is exactly a bounded search becomes the search tool before
+/// permissions, events or execution see it. The model still receives its result
+/// under the same call id, while every front-end paints `Search` rather than a
+/// `bash` card that failed only because the command shape was redirected.
+fn redirect_shell_search(call: &mut ToolCall, cwd: &Path) -> bool {
+    if call.function.name != "bash" {
+        return false;
+    }
+    let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
+    let Some(command) = args.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(search) = tools::bounded_shell_grep(command, cwd) else {
+        return false;
+    };
+    call.function.name = "grep".to_string();
+    call.function.arguments = search.to_string();
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3713,7 +3738,34 @@ fn verification_key(command: &str) -> Option<String> {
         None => command,
     };
     let base = base.trim().trim_end_matches("2>&1").trim();
-    looks_like_verification_command(base).then(|| base.to_string())
+    if !looks_like_verification_command(base) {
+        return None;
+    }
+    let mut directory = None;
+    let mut commands = Vec::new();
+    for segment in tools::shell_segments(base) {
+        let segment = segment.trim();
+        if let Some(target) = segment
+            .strip_prefix("cd")
+            .and_then(|rest| rest.strip_prefix(char::is_whitespace))
+            .map(str::trim)
+            .filter(|target| !target.is_empty())
+        {
+            directory = Some(target.trim_matches(['\'', '"']));
+        } else {
+            let segment = segment.trim_end_matches("2>&1").trim();
+            if !segment.is_empty() {
+                commands.push(segment);
+            }
+        }
+    }
+    (!commands.is_empty()).then(|| {
+        let commands = commands.join("\0");
+        match directory.unwrap_or_default() {
+            "" => commands,
+            directory => format!("{directory}\0{commands}"),
+        }
+    })
 }
 
 /// The byte index of the first `needle` outside single or double quotes.
@@ -7431,6 +7483,31 @@ for line in sys.stdin:
         }
     }
 
+    #[test]
+    fn a_representable_shell_grep_becomes_a_search_call_before_dispatch() {
+        let mut call = tool_call("bash");
+        call.function.arguments = json!({
+            "command": r#"grep -rn "pub struct TextRun" -A 20 /Users/jayson/.cargo/registry/src/index.crates.io/gpui-0.2.2/src/text_system.rs"#
+        })
+        .to_string();
+        assert!(redirect_shell_search(&mut call, Path::new(".")));
+        assert_eq!(call.function.name, "grep");
+        assert_eq!(
+            serde_json::from_str::<Value>(&call.function.arguments).unwrap(),
+            json!({
+                "output_mode": "content",
+                "pattern": "pub struct TextRun",
+                "path": "/Users/jayson/.cargo/registry/src/index.crates.io/gpui-0.2.2/src/text_system.rs",
+                "context": 20
+            })
+        );
+
+        let mut filtered = tool_call("bash");
+        filtered.function.arguments = json!({"command": "printf needle | grep needle"}).to_string();
+        assert!(!redirect_shell_search(&mut filtered, Path::new(".")));
+        assert_eq!(filtered.function.name, "bash");
+    }
+
     fn tool_call(name: &str) -> ToolCall {
         ToolCall {
             id: format!("call_{name}"),
@@ -8938,6 +9015,28 @@ for line in sys.stdin:
         assert_ne!(
             verification_key("cargo test -- --exact 'foo'").unwrap(),
             quoted
+        );
+    }
+
+    #[test]
+    fn repeated_crate_scoped_verifiers_keep_their_directory_and_output_plumbing() {
+        let base =
+            verification_key("cd crates/desktop-gpui && cargo test 2>&1 | tail -20").unwrap();
+        assert_eq!(
+            verification_key("cd crates/desktop-gpui && cargo test | grep 'test result'").unwrap(),
+            base
+        );
+        assert_ne!(
+            verification_key("cd crates/cli && cargo test 2>&1 | tail -20").unwrap(),
+            base
+        );
+        assert_ne!(
+            verification_key("cd crates/desktop-gpui && cargo clippy --all-targets").unwrap(),
+            base
+        );
+        assert_ne!(
+            verification_key("cd crates/desktop-gpui && cargo fmt && cargo test").unwrap(),
+            base
         );
     }
 

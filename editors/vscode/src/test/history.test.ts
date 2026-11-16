@@ -145,6 +145,29 @@ describe("stored session history", () => {
     ]);
   });
 
+  it("replays stored thinking before the step it produced", () => {
+    const history = parseSessionHistory(
+      JSON.stringify({
+        ...payload,
+        messages: [
+          {
+            role: "assistant",
+            content: "I found it.",
+            thinking: "Check the timeout before changing the test.",
+            toolCalls: [{ id: "c1", name: "read", arguments: '{"path":"test.rs"}' }],
+          },
+          { role: "tool", content: "timeout: 1s", toolCallId: "c1" },
+        ],
+      }),
+    );
+    assert.ok(history);
+    assert.deepEqual(history.entries, [
+      { kind: "thinking", text: "Check the timeout before changing the test." },
+      { kind: "assistant", text: "I found it." },
+      { kind: "tool", name: "read", args: '{"path":"test.rs"}', output: "timeout: 1s", isError: false },
+    ]);
+  });
+
   it("drops a result whose call the tail left out", () => {
     const history = parseSessionHistory(
       JSON.stringify({

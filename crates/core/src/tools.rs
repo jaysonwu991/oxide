@@ -3689,6 +3689,8 @@ struct ShellGrep {
     extended: bool,
     /// A trailing `| head -N`, which maps to the tool's `limit`.
     limit: Option<usize>,
+    /// `-A`, `-B` or `-C`, restated as the tool's symmetric context window.
+    context: Option<usize>,
     recursive: bool,
     restatable: bool,
     fixed: bool,
@@ -3755,6 +3757,11 @@ impl ShellGrep {
         }
         if let Some(limit) = self.limit {
             call.insert("limit".to_string(), json!(limit));
+        }
+        if !self.files_only {
+            if let Some(context) = self.context.filter(|context| *context > 0) {
+                call.insert("context".to_string(), json!(context));
+            }
         }
         if literal {
             call.insert("literal".to_string(), json!(true));
@@ -4027,6 +4034,7 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
         word_boundary: false,
         extended: false,
         limit: None,
+        context: None,
         recursive: false,
         restatable: grep_index == 0,
         fixed: false,
@@ -4074,6 +4082,21 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                 grep.extended = *word == "--extended-regexp";
                 continue;
             }
+            if let Some(value) = word
+                .strip_prefix("--after-context=")
+                .or_else(|| word.strip_prefix("--before-context="))
+                .or_else(|| word.strip_prefix("--context="))
+            {
+                set_grep_context(&mut grep, value);
+                continue;
+            }
+            if matches!(*word, "--after-context" | "--before-context" | "--context") {
+                match arguments.next() {
+                    Some(value) => set_grep_context(&mut grep, value),
+                    None => grep.restatable = false,
+                }
+                continue;
+            }
             if *word == "--fixed-strings" {
                 grep.fixed = true;
                 continue;
@@ -4090,10 +4113,7 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
             }
             if matches!(
                 *word,
-                "--after-context"
-                    | "--before-context"
-                    | "--context"
-                    | "--max-count"
+                "--max-count"
                     | "--label"
                     | "--exclude"
                     | "--exclude-dir"
@@ -4140,11 +4160,26 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                                 | 'l'
                                 | 'w'
                                 | 'I'
+                                | 'A'
+                                | 'B'
+                                | 'C'
                         ) {
                             grep.restatable = false;
                         }
                         if flag == 'r' || flag == 'R' {
                             grep.recursive = true;
+                        }
+                        if matches!(flag, 'A' | 'B' | 'C') {
+                            let value = if flags.peek().is_none() {
+                                arguments.next().map(|value| value.to_string())
+                            } else {
+                                Some(flags.collect::<String>())
+                            };
+                            match value {
+                                Some(value) => set_grep_context(&mut grep, &value),
+                                None => grep.restatable = false,
+                            }
+                            break;
                         }
                         if matches!(flag, 'e' | 'f') {
                             grep.restatable &= !saw_pattern && flag == 'e';
@@ -4159,7 +4194,7 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
                             }
                             break;
                         }
-                        if matches!(flag, 'A' | 'B' | 'C' | 'm' | 'd' | 'D') {
+                        if matches!(flag, 'm' | 'd' | 'D') {
                             if flags.peek().is_none() {
                                 arguments.next();
                             }
@@ -4185,6 +4220,28 @@ fn parse_shell_grep(segment: &str) -> Option<ShellGrep> {
         }
     }
     Some(grep)
+}
+
+fn set_grep_context(grep: &mut ShellGrep, value: &str) {
+    match value.parse::<usize>() {
+        Ok(context) => {
+            grep.context = Some(grep.context.unwrap_or(0).max(context));
+        }
+        Err(_) => grep.restatable = false,
+    }
+}
+
+/// A standalone grep whose pattern and one search operand can be restated
+/// faithfully. Unlike the recursive-sweep guard, this also covers a search of
+/// one named file, so the harness can show it as a `grep` call rather than a
+/// shell command that happened to run grep.
+fn standalone_shell_grep(command: &str) -> Option<ShellGrep> {
+    let segments = shell_segments(command);
+    let [segment] = segments.as_slice() else {
+        return None;
+    };
+    let grep = parse_shell_grep(segment)?;
+    (!grep.operands.is_empty()).then_some(grep)
 }
 
 /// The line cap a trailing `| head` puts on a search, so a refused or
@@ -4441,7 +4498,7 @@ fn unquoted_shell_operator(command: &str) -> bool {
     quote.is_some()
 }
 
-fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
+pub(crate) fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
     let command = command.trim();
     let first = *shell_segments(command).first()?;
     let words = grep_shell_words(first);
@@ -4479,12 +4536,12 @@ fn bounded_shell_grep(command: &str, cwd: &Path) -> Option<Value> {
         .strip_suffix(" 2>/dev/null")
         .unwrap_or(command)
         .trim();
-    if unquoted_shell_operator(command)
-        || grep_shell_words(command).first().copied() != Some("grep")
-    {
+    let words = grep_shell_words(command);
+    let first = words.first()?;
+    if unquoted_shell_operator(command) || !matches!(shell_word_name(first), "grep" | "grep.exe") {
         return None;
     }
-    let mut grep = recursive_shell_grep(command, &base)?;
+    let mut grep = standalone_shell_grep(command)?;
     grep.limit = grep.limit.or(head);
     if base != cwd {
         grep.base = Some(base.clone());
@@ -8691,8 +8748,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxide_search_status_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("input.txt"), "build succeeded\n").unwrap();
+        let standalone = execute(
+            &call("bash", json!({ "command": "grep '^error' input.txt" })),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(!standalone.is_error, "{}", standalone.text);
+        assert!(
+            standalone.text.contains("bounded `grep`"),
+            "{}",
+            standalone.text
+        );
+        assert!(standalone.text.contains(NO_MATCHES), "{}", standalone.text);
         for command in [
-            "grep '^error' input.txt",
             "printf 'build succeeded\\n' | grep '^error' | head -40",
             "printf 'build succeeded\\n' | grep -v 'succeeded'",
             "cd . && printf 'build succeeded\\n' | grep '^error' | head -40",
@@ -9852,10 +9922,31 @@ mod tests {
                 r#"grep -rn "first\|second" ."#,
                 json!({"output_mode": "content", "pattern": "first|second", "path": "."}),
             ),
+            (
+                r#"grep -rn "pub struct TextRun" -A 20 /Users/example/.cargo/registry/src/text_system.rs"#,
+                json!({"output_mode": "content", "pattern": "pub struct TextRun", "path": "/Users/example/.cargo/registry/src/text_system.rs", "context": 20}),
+            ),
+            (
+                r#"/usr/bin/grep -rn "pub struct TextRun" -A20 /Users/example/.cargo/registry/src/text_system.rs"#,
+                json!({"output_mode": "content", "pattern": "pub struct TextRun", "path": "/Users/example/.cargo/registry/src/text_system.rs", "context": 20}),
+            ),
+            (
+                "grep -r -B3 needle src",
+                json!({"output_mode": "content", "pattern": "needle", "path": "src", "context": 3}),
+            ),
+            (
+                "grep -rn --context=4 needle src",
+                json!({"output_mode": "content", "pattern": "needle", "path": "src", "context": 4}),
+            ),
+            (
+                "grep -n needle README.md",
+                json!({"output_mode": "content", "pattern": "needle", "path": "README.md"}),
+            ),
         ] {
             let call = bounded_shell_grep(command, Path::new(".")).expect(command);
             assert_eq!(call, expected, "{command}");
         }
+        assert!(bounded_shell_grep("grep -rn -A nope needle .", Path::new(".")).is_none());
     }
 
     #[tokio::test]

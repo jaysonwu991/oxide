@@ -128,6 +128,7 @@ fn message_view(message: &Message) -> Value {
         "role": message.role,
         "content": message.display().unwrap_or_default(),
         "attachments": message_attachments(message),
+        "thinking": message.reasoning_content().unwrap_or_default(),
         "toolCalls": message
             .tool_calls
             .as_ref()
@@ -2879,7 +2880,7 @@ mod tests {
     }
 
     #[test]
-    fn message_view_exposes_tool_calls_for_replay() {
+    fn message_view_exposes_tool_calls_and_thinking_for_replay() {
         let call = ToolCall {
             id: "call_1".into(),
             kind: "function".into(),
@@ -2889,10 +2890,14 @@ mod tests {
                 arguments: "{\"command\":\"ls\"}".into(),
             },
         };
-        let message = Message::assistant("checking", vec![call]);
+        let message = Message::assistant("checking", vec![call]).with_thinking(vec![json!({
+            "type": "thinking",
+            "thinking": "inspect the checkout first"
+        })]);
         let view = message_view(&message);
         assert_eq!(view["role"], "assistant");
         assert_eq!(view["content"], "checking");
+        assert_eq!(view["thinking"], "inspect the checkout first");
         assert_eq!(view["toolCalls"][0]["id"], "call_1");
         assert_eq!(view["toolCalls"][0]["name"], "bash");
         assert_eq!(view["toolCalls"][0]["arguments"], "{\"command\":\"ls\"}");

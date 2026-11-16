@@ -241,6 +241,7 @@ export type ToolPatch = Partial<
 /// steps would otherwise replay as a bubble or two.
 export type ReplayEntry =
   | { kind: "user"; text: string; attachments?: SentChip[] }
+  | { kind: "thinking"; text: string }
   | { kind: "assistant"; text: string }
   | { kind: "tool"; name: string; args: string; output: string; isError: boolean };
 
@@ -747,9 +748,17 @@ export class Transcript {
   replay(entries: ReplayEntry[]): void {
     for (const entry of entries) {
       if (entry.kind === "user") this.pushUser(entry.text, entry.attachments ?? []);
+      else if (entry.kind === "thinking") this.pushThinking(entry.text);
       else if (entry.kind === "assistant") this.pushAssistant(entry.text);
       else this.pushTool(entry.name, entry.args, entry.output, entry.isError);
     }
+  }
+
+  private pushThinking(text: string): void {
+    this.closeAssistant();
+    this.closeThinking();
+    const item: ThinkingItem = { id: this.nextId++, kind: "thinking", text };
+    this.items.push(item);
   }
 
   /// A tool call pushed whole, as a stored thread records it: finished, with the

@@ -2948,7 +2948,10 @@ impl Config {
         }
 
         sections.push(
-            "# Tool use\nBatch independent `read`, `grep`, `find` and `ls` calls. Locate files with `grep` (regular expressions; matching filenames newest modified first; `include` restricts the glob), using `output_mode: \"content\"`, `context` and `literal` as needed. Once a search identifies likely files, act instead of rephrasing it. If nothing matches, check case, path and glob before concluding absence. Read code and its related tests together. Re-read only after a change, an edit mismatch, or for a region not previously returned.\n\nSearch with these tools, never with a shell `grep -r`/`rg`/`find` from the repo root: the tools honor ignore rules, and `grep` spreads its scan across threads while skipping `.git/`, `target/`, `node_modules/` and `.venv/`. Never sweep the whole filesystem or home directory. After a refusal, switch to that tool. `read`, `ls`, `find` and `grep` accept absolute paths. `bash` already starts in the project root, so do not prefix `cd <root> &&`; keep each command to one task.\n\nBefore editing, read the region and copy `oldText` from that result: leading indentation matters, while `N|` numbering and trailing whitespace are tolerated. All `edit.edits` target one `path` and match the original file. Use one call per file, drop no-ops and merge overlaps; a failed batch writes nothing, so re-read and correct it. Create scratch scripts with `write` inside the project: a script in a temp directory resolves its relative imports against its own directory.\n\nBefore automation, inspect the nearest manifest, scripts and installed runner; check `--help` before guessing flags and avoid installing what is already present. Use the bash tool's `timeout` milliseconds and select only needed fields (for example with `--jq`). Stderr is diagnostic even on success: judge the exit status and result. A search with no matches is a result, not failure. `gh pr checks` exits 8 while checks are pending; that is neither a pass nor a failure, so do not wait for every check unless the user requested CI.".to_string(),
+            "# Tool use\nBatch independent `read`, `grep`, `find` and `ls` calls. Treat a multi-item request as one change set: inspect the relevant code for every item before the first edit, apply independent fixes before a broad build/test pass, and do not use a full verifier as a progress checkpoint after each small edit. Run the broad verifier once after the last related edit; repeat it only when later evidence invalidates that result. Locate files with `grep` (regular expressions; matching filenames newest modified first; `include` restricts the glob), using `output_mode: \"content\"`, `context` and `literal` as needed. Once a search identifies likely files, act instead of rephrasing it. If nothing matches, check case, path and glob before concluding absence. Read code and its related tests together. Re-read only after a change, an edit mismatch, or for a region not previously returned.\n\nSearch with these tools, never with a shell `grep -r`/`rg`/`find` from the repo root: the tools honor ignore rules, and `grep` spreads its scan across threads while skipping `.git/`, `target/`, `node_modules/` and `.venv/`. Never sweep the whole filesystem or home directory. After a refusal, switch to that tool. `read`, `ls`, `find` and `grep` accept absolute paths. `bash` already starts in the project root, so do not prefix `cd <root> &&`; keep each command to one task.\n\nBefore editing, read the region and copy `oldText` from that result: leading indentation matters, while `N|` numbering and trailing whitespace are tolerated. All `edit.edits` target one `path` and match the original file. Use one call per file, drop no-ops and merge overlaps; a failed batch writes nothing, so re-read and correct it. Create scratch scripts with `write` inside the project: a script in a temp directory resolves its relative imports against its own directory.\n\nBefore automation, inspect the nearest manifest, scripts and installed runner; check `--help` before guessing flags and avoid installing what is already present. Use the bash tool's `timeout` milliseconds and select only needed fields (for example with `--jq`). Stderr is diagnostic even on success: judge the exit status and result. A search with no matches is a result, not failure. `gh pr checks` exits 8 while checks are pending; that is neither a pass nor a failure, so do not wait for every check unless the user requested CI.".to_string(),
+        );
+        sections.push(
+            "# Search calls\nCall `grep` directly for content and filename searches, including absolute paths. Use `output_mode: \"content\"` for matching lines and `context: N` for surrounding lines; never write `grep`, `rg` or `grep -rn` inside `bash`. The search tool keeps scope, ignore rules and output bounds in one place.".to_string(),
         );
 
         let effort = self.effective_reasoning();
@@ -3198,6 +3201,24 @@ mod tests {
         let prompt = config.compose_system_prompt();
         assert!(prompt.contains("# Tool use"));
         assert!(prompt.contains("Batch independent"));
+        assert!(
+            prompt.contains("Treat a multi-item request as one change set"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("do not use a full verifier as a progress checkpoint"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Run the broad verifier once after the last related edit"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("# Search calls"), "{prompt}");
+        assert!(
+            prompt.contains("never write `grep`, `rg` or `grep -rn` inside `bash`"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("`context: N`"), "{prompt}");
         assert!(prompt.contains("act instead of rephrasing"), "{prompt}");
         assert!(
             prompt.contains("already starts in the project root"),
