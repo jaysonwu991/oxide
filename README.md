@@ -11,17 +11,18 @@
 
 # Oxide
 
-A native Rust AI coding agent with a terminal UI, Oxide Desktop GPUI, an
-Electron desktop fallback, and a VS Code extension. Oxide streams from
+A native Rust AI coding agent with a terminal UI, two independent desktop apps
+— Oxide Desktop GPUI and Oxide Desktop Electron — and a VS Code extension.
+Oxide streams from
 OpenAI-compatible and Anthropic models, runs a tool-using agent loop against
 your project, and understands its own `.oxide/` configuration layout out of the
 box, with Claude Code configuration support for compatibility.
 
 ## Highlights
 
-- **One core, several front-ends** — a ratatui terminal UI, the primary native
-  GPUI desktop app (`crates/desktop-gpui`), an Electron fallback
-  (`crates/desktop`) during the desktop migration, and a VS Code extension
+- **One core, several front-ends** — a ratatui terminal UI, the recommended
+  native GPUI desktop app (`crates/desktop-gpui`), an independently supported
+  Electron desktop app (`crates/desktop`), and a VS Code extension
   (`editors/vscode`), all sharing the same configuration, sessions, trust
   decisions, and MCP servers.
 - **Providers** — 35 built-in providers behind one table: every OpenAI-compatible
@@ -81,7 +82,7 @@ desktop link points at the `desktop-latest` release published by the GPUI
 workflow, while the extension uses `extension-latest`; their files are replaced
 on every publish, so the links themselves never change. Versioned
 `desktop-gpui-v*` and `extension-v*` releases name the version a file is from.
-The Electron fallback keeps separate `desktop-v*` releases and its own
+Oxide Desktop Electron keeps its own independent `desktop-v*` release train and
 `desktop-electron-latest` installer alias.
 
 | Surface | Platform | Installer |
@@ -156,10 +157,12 @@ terminal and editor integration. It manages multiple projects and their threads
 from one window, with streamed turns, reviews, worktrees, terminals, plugins,
 MCP servers and AccessKit accessibility.
 
-**Use Oxide Desktop GPUI instead of the Electron Desktop fallback.** GPUI owns
-the `desktop-latest` installer links, the release updates, and the current
-desktop feature work. Electron remains available only for compatibility and for
-features that have not yet completed their native migration.
+**Oxide Desktop GPUI is the recommended desktop app.** It owns the
+`desktop-latest` installer links and receives new desktop feature work first.
+Oxide Desktop Electron remains a fully supported, independent desktop app with
+the same Rust engine and shared configuration, sessions, approvals and MCP
+servers; it has its own release train so either app can be installed and updated
+separately.
 
 The package is its own Cargo workspace:
 
@@ -171,19 +174,19 @@ Prebuilt installers are in [Installers](#installers). See
 [docs/desktop-gpui.md](docs/desktop-gpui.md) for the complete surface,
 accessibility, signing and packaging.
 
-### Electron fallback
+### Oxide Desktop Electron
 
-`crates/desktop` remains the [Electron](https://electronjs.org) fallback while
-the native installers finish their transition. It drives the same Rust engine
-through the existing JSON bridge and shares the same stores. Versioned
-`desktop-v*` releases remain available; Electron no longer owns the permanent
-installer links.
+`crates/desktop` is the independent [Electron](https://electronjs.org) desktop
+app. It drives the same Rust engine through its JSON bridge and shares the same
+stores and project state while keeping its own window implementation, installer
+and `desktop-v*` release train. GPUI is recommended for new installs, but the
+Electron app is a supported first-class frontend rather than a fallback.
 
 ```sh
 cd crates/desktop && pnpm install && pnpm start
 ```
 
-See [docs/desktop.md](docs/desktop.md) for the fallback window and its packaging.
+See [docs/desktop.md](docs/desktop.md) for the Electron desktop app and its packaging.
 
 ## Oxide Computer Use
 
@@ -223,7 +226,7 @@ setting tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 | Guide | Contents |
 | --- | --- |
 | [docs/features.md](docs/features.md) | The full feature list behind the highlights above. |
-| [docs/install.md](docs/install.md) | Install and update the CLI, Oxide Desktop GPUI, the Electron fallback, and the extension; supported platforms, `oxide update`, `oxide uninstall`. |
+| [docs/install.md](docs/install.md) | Install and update the CLI, Oxide Desktop GPUI, Oxide Desktop Electron, and the extension; supported platforms, `oxide update`, `oxide uninstall`. |
 | [docs/tui.md](docs/tui.md) | Terminal layout, keyboard shortcuts, copying. |
 | [docs/modes.md](docs/modes.md) | `-p/--print`, `--mode json`, `--mode rpc`, `oxide session`, a turn's changes. |
 | [docs/configuration.md](docs/configuration.md) | `config.json`, CLI flags, environment variables, providers, trust, themes, compaction, data locations. |
@@ -231,7 +234,7 @@ setting tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 | [docs/tools.md](docs/tools.md) | Tool parameters, behavior, output caps, concurrency. |
 | [docs/cli.md](docs/cli.md) | Task-by-task guide: MCP servers, subagents, commands, skills, plugins, permissions, reasoning, attachments, notifications. |
 | [docs/desktop-gpui.md](docs/desktop-gpui.md) | Primary native Oxide Desktop GPUI. |
-| [docs/desktop.md](docs/desktop.md) | Electron fallback architecture, interface, packaging, and signing. |
+| [docs/desktop.md](docs/desktop.md) | Oxide Desktop Electron architecture, interface, packaging, and signing. |
 | [docs/vscode.md](docs/vscode.md) | VS Code extension architecture, protocol, testing. |
 | [docs/comparison.md](docs/comparison.md) | Oxide next to Claude Code, Codex, Pi Coding Agent, and OpenCode. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Architecture notes, conventions, releases. |
@@ -247,8 +250,9 @@ cargo fmt
 
 The workspace members are `crates/core` (shared agent core) and `crates/cli` (the
 `oxide` terminal binary). `crates/desktop-gpui` and `crates/desktop` are
-separate Cargo workspaces: GPUI is the primary native desktop app, while
-Electron is the compatibility fallback packaged with electron-builder. The VS
+separate Cargo workspaces: GPUI is the recommended native desktop app, while
+Electron is an independently supported desktop app packaged with
+electron-builder. The VS
 Code extension is a separate pnpm package:
 
 ```sh
