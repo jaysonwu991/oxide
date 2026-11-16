@@ -1,5 +1,12 @@
 # Oxide Computer Use helper (macOS development build)
 
+> **Apple Developer verification warning:** `Oxide Computer Use` has not been
+> Developer ID signed or notarized by Apple for distribution. The default build
+> is ad-hoc signed. Supplying `--identity` with a Developer ID certificate signs
+> the bundle, but it does not perform notarization. macOS Gatekeeper can warn
+> about or block the app, and rebuilding an ad-hoc bundle can invalidate its
+> Accessibility and Screen Recording grants.
+
 This companion app gives the existing `computer-use` MCP runtime a separate
 macOS app identity. The native menu-bar cursor provides permission diagnostics,
 user-initiated permission requests, and **Stop computer use and quit**. Desktop
@@ -21,8 +28,9 @@ python3 crates/desktop/computer-use/build.py \
 
 The destination must not exist. Default signing is ad-hoc for development.
 `--identity 'Developer ID Application: …'` signs both executables with hardened
-runtime and a timestamp; notarization and release/installer integration remain
-separate work. The helper executable targets macOS 13; the app declares macOS 14 or newer to
+runtime and a timestamp. It does not notarize them. Notarization,
+release/installer integration, and stable distribution signing remain separate
+work. The helper executable targets macOS 13; the app declares macOS 14 or newer to
 match the runtime's documented requirement. A supplied runtime can require a
 newer OS. Only the current host OS
 and architecture have been exercised.
@@ -88,7 +96,7 @@ This is not complete Codex parity. Pointer input still moves the real cursor;
 keyboard input can use `background: true` to post to one process without
 activating it. `get_app_state` returns the current app-window screenshot by
 default, while `computer-use://screen` is pulled by the client rather than
-streamed on a timer. Oxide Desktop's Computer Use dialog provides per-app
+streamed on a timer. Oxide Desktop GPUI's Computer Use dialog provides per-app
 approval controls and the last captured screenshot; a system-wide cursor
 overlay, automatic unlock/display covering, and a built-in browser remain
 client features. Native permission prompts, actual capture/input,

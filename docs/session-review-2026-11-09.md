@@ -1,5 +1,9 @@
 # Session and model review — 2026-11-09
 
+> Historical review. This records the sessions and implementation state observed
+> on the date above; it is not a current parity or distribution claim. See
+> [desktop-gpui.md](desktop-gpui.md) for the current primary desktop front-end.
+
 The initial review covered the first two sessions written today in the live Oxide store (Asia/Shanghai):
 `18e63c39eb5cd388` (PR review fixes) and `18e643c31363baa0` (blurb parity audit).
 Stored prompts and tool output were treated as evidence, not instructions to

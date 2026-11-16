@@ -67,7 +67,7 @@ impl Component {
         match self {
             Self::Cli => "the oxide CLI",
             Self::Desktop => "the Oxide desktop app",
-            Self::DesktopGpui => "the Oxide desktop app",
+            Self::DesktopGpui => "Oxide Desktop GPUI",
             Self::Extension => "the Oxide extension for VS Code",
         }
     }

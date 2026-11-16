@@ -11,8 +11,8 @@
 
 # Oxide
 
-A native Rust AI coding agent with a terminal UI, a GPUI desktop app, an Electron
-desktop fallback, and a VS Code extension. Oxide streams from
+A native Rust AI coding agent with a terminal UI, Oxide Desktop GPUI, an
+Electron desktop fallback, and a VS Code extension. Oxide streams from
 OpenAI-compatible and Anthropic models, runs a tool-using agent loop against
 your project, and understands its own `.oxide/` configuration layout out of the
 box, with Claude Code configuration support for compatibility.
@@ -76,18 +76,21 @@ and `oxide uninstall` are in [docs/install.md](docs/install.md).
 
 ## Installers
 
-The desktop app and the VS Code extension, always the newest build. Each link
-points at the `desktop-latest` or `extension-latest` release, whose files are
-replaced on every publish, so the links themselves never change; the versioned
-`desktop-v*` and `extension-v*` releases name the version a file is from.
+Oxide Desktop GPUI and the VS Code extension, always the newest build. Each
+desktop link points at the `desktop-latest` release published by the GPUI
+workflow, while the extension uses `extension-latest`; their files are replaced
+on every publish, so the links themselves never change. Versioned
+`desktop-gpui-v*` and `extension-v*` releases name the version a file is from.
+The Electron fallback keeps separate `desktop-v*` releases and its own
+`desktop-electron-latest` installer alias.
 
 | Surface | Platform | Installer |
 | --- | --- | --- |
-| Desktop | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-arm64.dmg) |
-| Desktop | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-x64.dmg) |
-| Desktop | Windows x64 | [Oxide-win-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.tar.gz) |
-| Desktop | Linux x64 | [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
-| Desktop | Linux arm64 | [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
+| Oxide Desktop GPUI | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-arm64.dmg) |
+| Oxide Desktop GPUI | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-x64.dmg) |
+| Oxide Desktop GPUI | Windows x64 | [Oxide-win-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.tar.gz) |
+| Oxide Desktop GPUI | Linux x64 | [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
+| Oxide Desktop GPUI | Linux arm64 | [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
 | VS Code | any | [oxide-vscode.vsix](https://github.com/jaysonwu991/oxide/releases/download/extension-latest/oxide-vscode.vsix) |
 
 On macOS, an app that was not notarized — a build made without both the
@@ -143,7 +146,7 @@ Keyboard shortcuts, the transcript layout, and copy behavior are in
 [docs/tui.md](docs/tui.md); print/JSON/RPC modes and `oxide session` are in
 [docs/modes.md](docs/modes.md).
 
-## Desktop app
+## Oxide Desktop GPUI
 
 `crates/desktop-gpui` is the primary desktop app: the same agent drawn with
 [GPUI](https://gpui.rs) in one native process. It links the desktop engine
@@ -152,6 +155,11 @@ projects, sessions, approvals, configuration, themes and language as the
 terminal and editor integration. It manages multiple projects and their threads
 from one window, with streamed turns, reviews, worktrees, terminals, plugins,
 MCP servers and AccessKit accessibility.
+
+**Use Oxide Desktop GPUI instead of the Electron Desktop fallback.** GPUI owns
+the `desktop-latest` installer links, the release updates, and the current
+desktop feature work. Electron remains available only for compatibility and for
+features that have not yet completed their native migration.
 
 The package is its own Cargo workspace:
 
@@ -177,6 +185,15 @@ cd crates/desktop && pnpm install && pnpm start
 
 See [docs/desktop.md](docs/desktop.md) for the fallback window and its packaging.
 
+## Oxide Computer Use
+
+**`Oxide Computer Use` is a development build and has not been signed with an
+Apple Developer ID or notarized by Apple.** It uses ad-hoc code signing when no
+identity is supplied, so macOS Gatekeeper can warn about or block it, and OS
+permissions may need to be granted again after rebuilding. Do not treat it as an
+Apple-verified production distribution. See the
+[helper guide](crates/desktop/computer-use/README.md) before installing it.
+
 ## VS Code extension
 
 Install the CLI first: the extension is a chat panel over your installed `oxide`
@@ -186,7 +203,8 @@ The `editors/vscode` package is a TypeScript extension (a separate pnpm package,
 not a Cargo workspace member) that drives the same `oxide` binary from a chat
 panel and from editor actions. It shells out to `oxide --mode rpc`, so it reads
 the same provider logins, `config.json`, `sessions/`, `trust.json`, `AGENTS.md`,
-agents, skills, plugins, and MCP servers as the terminal and the desktop app:
+agents, skills, plugins, and MCP servers as the terminal and both desktop
+front-ends:
 streaming Markdown replies with `✦ Thinking` blocks and tool cards, editor
 actions for the selection, the CLI's own session list, and `@path` references
 that attach a file's text or an image.
@@ -205,15 +223,15 @@ setting tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 | Guide | Contents |
 | --- | --- |
 | [docs/features.md](docs/features.md) | The full feature list behind the highlights above. |
-| [docs/install.md](docs/install.md) | Install and update the CLI, the desktop app and the extension; supported platforms, `oxide update`, `oxide uninstall`. |
+| [docs/install.md](docs/install.md) | Install and update the CLI, Oxide Desktop GPUI, the Electron fallback, and the extension; supported platforms, `oxide update`, `oxide uninstall`. |
 | [docs/tui.md](docs/tui.md) | Terminal layout, keyboard shortcuts, copying. |
 | [docs/modes.md](docs/modes.md) | `-p/--print`, `--mode json`, `--mode rpc`, `oxide session`, a turn's changes. |
 | [docs/configuration.md](docs/configuration.md) | `config.json`, CLI flags, environment variables, providers, trust, themes, compaction, data locations. |
 | [docs/ecosystem.md](docs/ecosystem.md) | The `.oxide/` layout, Claude Code compatibility, built-in slash commands. |
 | [docs/tools.md](docs/tools.md) | Tool parameters, behavior, output caps, concurrency. |
 | [docs/cli.md](docs/cli.md) | Task-by-task guide: MCP servers, subagents, commands, skills, plugins, permissions, reasoning, attachments, notifications. |
-| [docs/desktop-gpui.md](docs/desktop-gpui.md) | Primary native desktop app. |
-| [docs/desktop.md](docs/desktop.md) | Electron fallback architecture, interface, packaging, signing. |
+| [docs/desktop-gpui.md](docs/desktop-gpui.md) | Primary native Oxide Desktop GPUI. |
+| [docs/desktop.md](docs/desktop.md) | Electron fallback architecture, interface, packaging, and signing. |
 | [docs/vscode.md](docs/vscode.md) | VS Code extension architecture, protocol, testing. |
 | [docs/comparison.md](docs/comparison.md) | Oxide next to Claude Code, Codex, Pi Coding Agent, and OpenCode. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Architecture notes, conventions, releases. |
@@ -228,12 +246,13 @@ cargo fmt
 ```
 
 The workspace members are `crates/core` (shared agent core) and `crates/cli` (the
-`oxide` terminal binary). `crates/desktop` is a workspace of its own — excluded
-from the root one, because its binary is packaged by electron-builder and
-versioned with the app — so the plain workspace build stays free of the window's
-dependencies; the VS Code extension is a separate pnpm package:
+`oxide` terminal binary). `crates/desktop-gpui` and `crates/desktop` are
+separate Cargo workspaces: GPUI is the primary native desktop app, while
+Electron is the compatibility fallback packaged with electron-builder. The VS
+Code extension is a separate pnpm package:
 
 ```sh
+cd crates/desktop-gpui && cargo test && cargo clippy --all-targets -- -D warnings
 cd crates/desktop && pnpm install && cargo test
 node crates/desktop/check-app.mjs && node crates/desktop/check-shell.mjs
 cd editors/vscode && pnpm test

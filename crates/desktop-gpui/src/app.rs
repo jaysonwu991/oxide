@@ -294,6 +294,10 @@ pub struct Root {
     pub theme: Theme,
     pub strings: Strings,
     pub projects: Vec<ProjectRow>,
+    /// Whether the engine has answered with the project list. The welcome page
+    /// waits for it, so the window cannot offer to add a folder, or say that
+    /// none is open, before the app knows which folders there are.
+    pub projects_loaded: bool,
     pub sessions: Vec<SessionRow>,
     pub chats: Vec<Chat>,
     pub active: usize,
@@ -368,6 +372,7 @@ pub struct Root {
     pub inline_project_actions: Option<String>,
     pub project_actions_anchor_y: Option<f32>,
     pub(crate) project_actions_dismiss_armed: bool,
+    pub assistant_actions: Option<(usize, usize)>,
     pub(crate) composer_tools_dismiss_armed: bool,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
@@ -529,6 +534,7 @@ impl Root {
             theme: Theme::default(),
             strings: Strings(HashMap::new()),
             projects: Vec::new(),
+            projects_loaded: false,
             sessions: Vec::new(),
             chats: Vec::new(),
             active: 0,
@@ -598,6 +604,7 @@ impl Root {
             inline_project_actions: None,
             project_actions_anchor_y: None,
             project_actions_dismiss_armed: false,
+            assistant_actions: None,
             composer_tools_dismiss_armed: false,
             resizing: None,
             show_changes: false,
@@ -1122,18 +1129,16 @@ impl Root {
     }
 
     pub fn refresh_projects(&mut self, cx: &mut Context<Self>) {
-        self.call(
-            "list_projects",
-            json!({}),
-            cx,
-            |root, result, cx| match result {
+        self.call("list_projects", json!({}), cx, |root, result, cx| {
+            root.projects_loaded = true;
+            match result {
                 Ok(value) => {
                     root.projects = crate::model::projects(&value);
                     root.refresh_sessions(cx);
                 }
                 Err(error) => root.toast(format!("Could not list projects: {error}"), true, cx),
-            },
-        );
+            }
+        });
     }
 
     pub fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
@@ -2243,7 +2248,11 @@ impl Root {
     }
 
     pub fn toggle_details(&mut self, cx: &mut Context<Self>) {
-        self.show_details = !self.show_details;
+        let next = toggled_details(self.show_details, !self.chats.is_empty());
+        if next == self.show_details {
+            return;
+        }
+        self.show_details = next;
         if self.show_details {
             self.show_changes = false;
             self.change_review = None;
@@ -2481,6 +2490,43 @@ impl Root {
             Some(session.id.clone()),
             session.title.clone(),
             cx,
+        );
+    }
+
+    pub fn branch_active_chat(&mut self, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.get(self.active) else {
+            return;
+        };
+        let (Some(project), Some(session)) = (Some(chat.project.clone()), chat.session.clone())
+        else {
+            return;
+        };
+        self.assistant_actions = None;
+        self.call(
+            "fork_session",
+            json!({ "project": project, "id": session, "name": "Side chat" }),
+            cx,
+            move |root, result, cx| match result {
+                Ok(value) => {
+                    let Some(id) = value["id"].as_str().map(str::to_string) else {
+                        root.toast("The side chat did not return a session id.", true, cx);
+                        return;
+                    };
+                    let title = value["name"]
+                        .as_str()
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or("Side chat")
+                        .to_string();
+                    let project = value["cwd"]
+                        .as_str()
+                        .filter(|cwd| !cwd.is_empty())
+                        .unwrap_or(&project)
+                        .to_string();
+                    root.push_chat_in_memory(project, Some(id), title, cx);
+                    root.toast("Started a side chat.", false, cx);
+                }
+                Err(error) => root.toast(format!("Could not start a side chat: {error}"), true, cx),
+            },
         );
     }
 
@@ -3115,6 +3161,49 @@ impl Root {
         );
     }
 
+    pub fn open_project_actions(
+        &mut self,
+        window: &mut Window,
+        id: String,
+        path: String,
+        name: String,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.inline_project_actions = None;
+        self.project_name
+            .update(cx, |editor, cx| editor.set_text(name.clone(), cx));
+        self.overlay = Some(Overlay::ProjectActions {
+            id,
+            path,
+            name,
+            pinned,
+        });
+        let focus = self.project_name.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    pub fn save_project_name(&mut self, id: String, cx: &mut Context<Self>) {
+        let name = self.project_name.read(cx).text().trim().to_string();
+        if name.is_empty() {
+            self.toast("Project name cannot be empty", true, cx);
+            return;
+        }
+        self.call(
+            "update_project",
+            json!({ "id": id, "name": name }),
+            cx,
+            |root, result, cx| match result {
+                Ok(_) => {
+                    root.overlay = None;
+                    root.refresh_projects(cx);
+                }
+                Err(error) => root.toast(format!("Could not rename project: {error}"), true, cx),
+            },
+        );
+    }
+
     pub fn remove_project(&mut self, id: String, cx: &mut Context<Self>) {
         self.overlay = None;
         self.inline_project_actions = None;
@@ -3627,6 +3716,13 @@ impl Root {
                     }
                 }
                 if kind == "session_title" {
+                    if let Some(index) = self.chats.iter().position(|chat| chat.run == run) {
+                        if let Some(title) = payload["title"].as_str() {
+                            if !title.trim().is_empty() {
+                                self.chats[index].title = title.to_string();
+                            }
+                        }
+                    }
                     self.refresh_sessions(cx);
                 }
             }
@@ -3636,11 +3732,10 @@ impl Root {
                 let title = payload["title"].as_str().map(str::to_string);
                 if let Some(index) = self.claim_run(Some(run)) {
                     let chat = &mut self.chats[index];
+                    let was_new = chat.session.is_none();
                     chat.session = session;
-                    if let Some(title) = title {
-                        if !title.trim().is_empty() {
-                            chat.title = title;
-                        }
+                    if let Some(title) = agent_start_title(&chat.title, title.as_deref(), was_new) {
+                        chat.title = title;
                     }
                 }
                 self.refresh_sessions(cx);
@@ -3998,6 +4093,22 @@ fn composer_has_content(prompt: &str, has_attachments: bool) -> bool {
     !prompt.trim().is_empty() || has_attachments
 }
 
+pub(crate) fn details_visible(show_details: bool, has_chat: bool) -> bool {
+    show_details && has_chat
+}
+
+fn toggled_details(show_details: bool, has_chat: bool) -> bool {
+    if !has_chat {
+        return show_details;
+    }
+    !show_details
+}
+
+fn agent_start_title(current: &str, incoming: Option<&str>, was_new: bool) -> Option<String> {
+    let incoming = incoming.filter(|title| !title.trim().is_empty())?;
+    (was_new || current.trim().is_empty() || current == "New chat").then(|| incoming.to_string())
+}
+
 pub(crate) fn change_hunk(lines: &[Value], first: usize, last: usize) -> Value {
     let start = first.saturating_sub(3);
     let end = (last + 4).min(lines.len());
@@ -4210,6 +4321,8 @@ impl Render for Root {
                 ) {
                 } else if this.activities_open {
                     this.activities_open = false;
+                    cx.notify();
+                } else if this.assistant_actions.take().is_some() {
                     cx.notify();
                 } else if this.composer_tools_open {
                     this.composer_tools_open = false;
@@ -4445,7 +4558,8 @@ fn can_reuse_new_chat(chat: &Chat, composer_text: &str) -> bool {
 mod sidebar_resize_tests {
     use super::{
         add_attachment, can_reuse_new_chat, clamp_sidebar_width, composer_has_content,
-        performs_slash_command, resized_changes_width, slash_command, Rail,
+        details_visible, performs_slash_command, resized_changes_width, slash_command,
+        toggled_details, Rail,
     };
     use crate::model::{Attachment, Chat};
     use crate::views::{customize_destination, effort_position, model_display_name};
@@ -4472,6 +4586,16 @@ mod sidebar_resize_tests {
             resized_changes_width(1100.0, true, 300.0, 900.0, 700.0, 430.0),
             340.0
         );
+    }
+
+    #[test]
+    fn project_details_are_available_only_with_an_open_chat() {
+        assert!(details_visible(true, true));
+        assert!(!details_visible(true, false));
+        assert!(!details_visible(false, true));
+        assert!(!toggled_details(true, true));
+        assert!(toggled_details(false, true));
+        assert!(toggled_details(true, false));
     }
 
     #[test]
@@ -4583,7 +4707,7 @@ mod sidebar_resize_tests {
 
 #[cfg(test)]
 mod project_flow_tests {
-    use super::{added_project_path, project_trust_awaiting};
+    use super::{added_project_path, agent_start_title, project_trust_awaiting};
     use crate::model;
     use serde_json::json;
 
@@ -4611,6 +4735,22 @@ mod project_flow_tests {
         assert!(!project_trust_awaiting(
             &json!({ "trust": { "awaiting": false } })
         ));
+    }
+
+    #[test]
+    fn an_existing_chat_keeps_the_title_its_sidebar_names() {
+        assert_eq!(
+            agent_start_title("Old title", Some("New topic"), false),
+            None
+        );
+        assert_eq!(
+            agent_start_title("Old title", Some("New topic"), true),
+            Some("New topic".to_string())
+        );
+        assert_eq!(
+            agent_start_title("New chat", Some("First topic"), false),
+            Some("First topic".to_string())
+        );
     }
 }
 

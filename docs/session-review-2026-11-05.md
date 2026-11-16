@@ -1,5 +1,10 @@
 # Session review — 5 November 2026
 
+> Historical review. This records the state observed on the date above; it is
+> not a current product or parity claim. See [desktop-gpui.md](desktop-gpui.md)
+> and [oxide-reins-parity.md](oxide-reins-parity.md) for current desktop and
+> Computer Use status.
+
 Reviewed all five saved Oxide sessions with entries dated 5 November in
 Asia/Shanghai (UTC+8). Counted tool result messages and their explicit `error:`
 markers; successful commands whose output discussed errors were not failures.

@@ -6,7 +6,7 @@
 //! and its composer, and the changes a turn left behind — from the same state
 //! `crate::app::Root` keeps.
 
-use crate::app::{Button, ChangeScope, ConfirmAction, CustomizeTab, Overlay, Rail, Root};
+use crate::app::{Button, ChangeScope, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
 use crate::model::{Attachment, EditedFile, Entry, Status};
@@ -702,14 +702,30 @@ pub fn topbar(
         theme,
         root.show_details,
     )
-    .tooltip(tip("Project details", theme))
+    .aria_label(if root.show_details {
+        "Hide project details"
+    } else {
+        "Show project details"
+    })
+    .aria_expanded(root.show_details)
+    .tooltip(tip(
+        if root.show_details {
+            "Hide project details \u{00b7} \u{2318}J"
+        } else {
+            "Show project details \u{00b7} \u{2318}J"
+        },
+        theme,
+    ))
     .on_click(cx.listener(|root, _, _, cx| root.toggle_details(cx)));
+    let has_chat = !root.chats.is_empty();
     content = content
         .child(new_chat)
         .child(changes)
         .child(computer_use)
-        .child(details)
         .child(div().flex_none().w(px(4.0)));
+    if has_chat {
+        content = content.child(details);
+    }
     row.child(content)
 }
 
@@ -1060,6 +1076,7 @@ pub fn sidebar(
         list = list.child(projects_header(theme, cx));
         let projects = root.projects.clone();
         let current_project = root.current_project_owner();
+        let mut project_session_ids = HashSet::new();
         for project in projects {
             let path = project.path.clone();
             let name = root.project_name(&path);
@@ -1280,6 +1297,7 @@ pub fn sidebar(
             if !collapsed {
                 for session in sessions {
                     let id = session.id.clone();
+                    project_session_ids.insert(id.clone());
                     let pinned = session.pinned;
                     let active = root
                         .chats
@@ -1341,6 +1359,7 @@ pub fn sidebar(
         }
 
         let mut recents = root.sessions.clone();
+        recents.retain(|session| !project_session_ids.contains(&session.id));
         recents.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
         recents.truncate(5);
         if !recents.is_empty() {
@@ -1667,10 +1686,10 @@ fn project_actions_panel(
         session_count,
         active,
     } = project;
-    let path_for_new = path.clone();
-    let path_for_remove = path.clone();
     let id_for_pin = id.clone();
-    let id_for_remove = id.clone();
+    let id_for_edit = id.clone();
+    let path_for_edit = path.clone();
+    let name_for_edit = name.clone();
     let chats = match session_count {
         0 => "No chats".to_string(),
         1 => "1 chat".to_string(),
@@ -1727,6 +1746,11 @@ fn project_actions_panel(
         .child(
             div()
                 .mt(px(4.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(icons::icon(Icon::Chat, 14.0, theme.faint()))
                 .text_size(px(11.5))
                 .text_color(theme.dim())
                 .child(summary),
@@ -1734,55 +1758,47 @@ fn project_actions_panel(
         .child(
             div()
                 .mt(px(5.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_size(px(11.5))
                 .text_color(theme.faint())
+                .child(icons::icon(Icon::Folder, 14.0, theme.faint()))
                 .child(path),
         )
         .child(
             div()
-                .mt(px(9.0))
+                .id(SharedString::from(format!("project-inline-edit-{id}")))
+                .role(gpui::Role::Button)
+                .aria_label("Edit project")
+                .mt(px(8.0))
                 .flex()
                 .flex_row()
+                .items_center()
                 .gap(px(6.0))
-                .child(
-                    Button::new("New chat")
-                        .render(
-                            SharedString::from(format!("project-inline-new-{id}")),
-                            theme,
-                            cx,
-                            move |root, window, cx| {
-                                root.inline_project_actions = None;
-                                root.collapsed_projects.remove(&path_for_new);
-                                root.push_chat(
-                                    window,
-                                    path_for_new.clone(),
-                                    None,
-                                    "New chat".to_string(),
-                                    cx,
-                                );
-                                root.focus_composer(window, cx);
-                            },
-                        )
-                        .flex_1(),
-                )
-                .child(Button::new("Remove").danger().render(
-                    SharedString::from(format!("project-inline-remove-{id}")),
-                    theme,
-                    cx,
-                    move |root, _, cx| {
-                        root.inline_project_actions = None;
-                        root.overlay = Some(Overlay::Confirm {
-                            title: "Remove project".to_string(),
-                            body: format!(
-                                "Remove {path_for_remove} from the sidebar? The folder and its chats stay on disk."
-                            ),
-                            action: ConfirmAction::RemoveProject(id_for_remove.clone()),
-                        });
-                        cx.notify();
-                    },
-                )),
+                .h(px(34.0))
+                .px(px(2.0))
+                .border_t_1()
+                .border_color(theme.border())
+                .cursor_pointer()
+                .text_size(px(12.0))
+                .text_color(theme.text())
+                .hover(move |style| style.text_color(theme.accent()))
+                .child(icons::icon(Icon::Settings, 14.0, theme.dim()))
+                .child("Edit project")
+                .on_click(cx.listener(move |root, _, window, cx| {
+                    root.open_project_actions(
+                        window,
+                        id_for_edit.clone(),
+                        path_for_edit.clone(),
+                        name_for_edit.clone(),
+                        pinned,
+                        cx,
+                    );
+                })),
         )
 }
 
@@ -2108,17 +2124,18 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                 let project = project.clone();
                 icon_button("details-more", Icon::More, 24.0, theme, false)
                     .tooltip(tip("Project actions", theme))
-                    .on_click(cx.listener(move |root, _, _, cx| {
+                    .on_click(cx.listener(move |root, _, window, cx| {
                         let Some(project) = project.clone() else {
                             return;
                         };
-                        root.overlay = Some(Overlay::ProjectActions {
-                            id: project.id,
-                            path: project.path,
-                            name: project.name,
-                            pinned: project.pinned,
-                        });
-                        cx.notify();
+                        root.open_project_actions(
+                            window,
+                            project.id,
+                            project.path,
+                            project.name,
+                            project.pinned,
+                            cx,
+                        );
                     }))
             }),
     );
@@ -2126,7 +2143,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
     panel = panel.child(detail_row(
         "details-changes",
         Icon::Changes,
-        "Changes",
+        "View changes",
         if files > 0 {
             Some(vec![
                 (format!("+{added}"), theme.success()),
@@ -2496,7 +2513,7 @@ pub fn main(
         .min_h(px(0.0));
 
     column = column.child(conversation(root, theme, scale, window, cx));
-    if root.show_details {
+    if crate::app::details_visible(root.show_details, !root.chats.is_empty()) {
         column = column.child(details(root, theme, cx));
     }
     if root.show_changes {
@@ -2527,7 +2544,7 @@ fn conversation(
         .bg(theme.background());
 
     if root.chats.is_empty() {
-        pane = pane.child(empty_state(root, theme, cx));
+        pane = pane.child(empty_state(root, theme, "welcome", cx));
         return pane;
     }
 
@@ -2540,6 +2557,10 @@ fn conversation(
     let mut scroll = gpui::ScrollHandle::new();
     std::mem::swap(&mut scroll, &mut root.chats[index].scroll);
     let scroll_to_end = root.chats[index].scroll_to_end;
+    if scroll_to_end {
+        root.chats[index].follow_latest = true;
+    }
+    let follow_latest = root.chats[index].follow_latest;
     let entries = root.chats[index].entries.clone();
     let leading = RAIL_WIDTH
         + if root.sidebar_visible {
@@ -2566,6 +2587,24 @@ fn conversation(
         .min_h(px(0.0))
         .overflow_y_scroll()
         .track_scroll(&scroll)
+        .on_scroll(
+            cx.listener(move |root, event: &gpui::ScrollEvent, window, cx| {
+                let delta_y = event.delta.pixel_delta(window.line_height()).y;
+                let Some(chat) = root.chats.get_mut(index) else {
+                    return;
+                };
+                let following = transcript_following_after_scroll(
+                    f32::from(delta_y),
+                    f32::from(chat.scroll.offset().y),
+                    f32::from(chat.scroll.max_offset().y),
+                    chat.follow_latest,
+                );
+                if chat.follow_latest != following {
+                    chat.follow_latest = following;
+                    cx.notify();
+                }
+            }),
+        )
         .px(px(22.0))
         .pt(px(34.0))
         .pb(px(10.0))
@@ -2607,7 +2646,7 @@ fn conversation(
     }
 
     if entries.is_empty() {
-        transcript = transcript.child(empty_state(root, theme, cx));
+        transcript = transcript.child(empty_state(root, theme, "transcript-welcome", cx));
     }
 
     for (position, entry) in entries.iter().enumerate() {
@@ -2622,15 +2661,22 @@ fn conversation(
                 .max_w(px(740.0))
                 .mx_auto()
                 .flex_none()
-                .child(entry_view(
-                    entry,
-                    index,
-                    position,
-                    theme,
-                    reading_width,
-                    window,
-                    cx,
-                )),
+                .child({
+                    let mut view =
+                        entry_view(entry, index, position, theme, reading_width, window, cx);
+                    if let Entry::Assistant {
+                        text,
+                        streaming: false,
+                        ..
+                    } = entry
+                    {
+                        if !text.trim().is_empty() {
+                            view = view
+                                .child(assistant_actions(root, text, index, position, theme, cx));
+                        }
+                    }
+                    view
+                }),
         );
     }
 
@@ -2647,11 +2693,7 @@ fn conversation(
         .min_h(px(0.0))
         .child(transcript);
 
-    let following = {
-        let max = scroll.max_offset().y;
-        max <= px(0.0) || -scroll.offset().y >= max - px(32.0)
-    };
-    if scroll_to_end || following {
+    if scroll_to_end || follow_latest {
         scroll.scroll_to_bottom();
         root.chats[index].scroll_to_end = false;
     }
@@ -2660,6 +2702,24 @@ fn conversation(
     pane = pane.child(pane_body);
     root.chats[index].scroll = scroll;
     pane
+}
+
+fn transcript_following_after_scroll(
+    delta_y: f32,
+    offset_y: f32,
+    max_offset_y: f32,
+    was_following: bool,
+) -> bool {
+    if max_offset_y <= 0.0 {
+        return true;
+    }
+    if delta_y > 0.0 {
+        return false;
+    }
+    if delta_y < 0.0 && offset_y + delta_y <= -max_offset_y {
+        return true;
+    }
+    was_following
 }
 
 /// The page the window opens on before a thread is in the transcript: the mark,
@@ -2672,9 +2732,37 @@ const SUGGESTIONS: [&str; 4] = [
     "Review the working tree changes and summarize the risks.",
 ];
 
-fn empty_state(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
+/// How long the invite takes to appear once the engine has listed the projects.
+const WELCOME_REVEAL: Duration = Duration::from_millis(180);
+
+/// What the invite can say while it draws. The engine answers with the project
+/// list a frame or more after the window opens, and until it has the page does
+/// not know whether a folder is open: it draws the mark alone rather than an
+/// invitation — and a button to add a folder — that the next frame takes back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Welcome {
+    Waiting,
+    Project,
+    NoProject,
+}
+
+fn welcome(loaded: bool, has_project: bool) -> Welcome {
+    match (loaded, has_project) {
+        (false, _) => Welcome::Waiting,
+        (true, true) => Welcome::Project,
+        (true, false) => Welcome::NoProject,
+    }
+}
+
+fn empty_state(
+    root: &mut Root,
+    theme: &Theme,
+    key: &'static str,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
     let project = root.selected_project().cloned();
-    let mut page = div()
+    let state = welcome(root.projects_loaded, project.is_some());
+    let page = div()
         .flex()
         .flex_col()
         .flex_1()
@@ -2695,23 +2783,28 @@ fn empty_state(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                 .rounded(px(11.0))
                 .bg(theme.well())
                 .child(icons::mark(40.0)),
-        )
-        .child(
-            div()
-                .id("welcome-heading")
-                .role(gpui::Role::Heading)
-                .aria_level(1)
-                .aria_label("What should we build?")
-                .pt(px(16.0))
-                .text_size(px(24.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text())
-                .child("What should we build?"),
         );
+
+    if state == Welcome::Waiting {
+        return page.into_any_element();
+    }
+
+    let mut invite = div().flex().flex_col().items_center().child(
+        div()
+            .id("welcome-heading")
+            .role(gpui::Role::Heading)
+            .aria_level(1)
+            .aria_label("What should we build?")
+            .pt(px(16.0))
+            .text_size(px(24.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme.text())
+            .child("What should we build?"),
+    );
 
     match project {
         Some(project) => {
-            page = page
+            invite = invite
                 .child(
                     div()
                         .pt(px(8.0))
@@ -2722,25 +2815,33 @@ fn empty_state(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                 .child(div().pt(px(22.0)).w_full().child(suggestions(theme, cx)));
         }
         None => {
-            page =
-                page.child(
+            invite = invite
+                .child(
                     div()
                         .pt(px(8.0))
                         .text_size(px(12.5))
                         .text_color(theme.dim())
                         .child("Open a folder to start a chat in it."),
                 )
-                .child(div().pt(px(22.0)).child(
-                    Button::new("Add project").primary().render(
-                        "empty-add",
-                        theme,
-                        cx,
-                        |root, window, cx| root.open_new_project(window, cx),
-                    ),
-                ));
+                .child(
+                    div()
+                        .pt(px(22.0))
+                        .child(Button::new("Add project").primary().render(
+                            "empty-add",
+                            theme,
+                            cx,
+                            |root, window, cx| root.open_new_project(window, cx),
+                        )),
+                );
         }
     }
-    page
+
+    page.child(invite.with_animation(
+        (key, state as usize),
+        Animation::new(WELCOME_REVEAL).with_easing(gpui::ease_in_out),
+        |invite, delta| invite.opacity(delta),
+    ))
+    .into_any_element()
 }
 
 fn suggestions(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
@@ -3504,6 +3605,106 @@ fn entry_view(
             block
         }
     }
+}
+
+fn assistant_actions(
+    root: &mut Root,
+    text: &str,
+    chat: usize,
+    position: usize,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    let open = root.assistant_actions == Some((chat, position));
+    let response = text.to_string();
+    let mut actions = div().relative().flex().flex_none().child(
+        icon_button(
+            SharedString::from(format!("assistant-actions-{chat}-{position}")),
+            Icon::More,
+            28.0,
+            theme,
+            open,
+        )
+        .tooltip(tip("More actions", theme))
+        .on_click(cx.listener(move |root, _, _, cx| {
+            root.assistant_actions = if open { None } else { Some((chat, position)) };
+            cx.notify();
+        })),
+    );
+    if open {
+        actions = actions.child(
+            div()
+                .id("assistant-actions-menu")
+                .role(gpui::Role::Menu)
+                .aria_label("Assistant actions")
+                .absolute()
+                .left_0()
+                .bottom(px(34.0))
+                .w(px(210.0))
+                .flex()
+                .flex_col()
+                .p(px(6.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border())
+                .bg(theme.panel())
+                .shadow_xl()
+                .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+                    if root.assistant_actions.take().is_some() {
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .id("assistant-copy-response")
+                        .role(gpui::Role::Button)
+                        .aria_label("Copy response")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .text_color(theme.text())
+                        .hover(move |style| style.bg(theme.panel_2()))
+                        .child(icons::icon(Icon::File, 14.0, theme.faint()))
+                        .child("Copy response")
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                response.clone(),
+                            ));
+                            root.assistant_actions = None;
+                            root.toast("Copied response", false, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id("assistant-branch-chat")
+                        .role(gpui::Role::Button)
+                        .aria_label("Branch in new chat")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .text_color(theme.text())
+                        .hover(move |style| style.bg(theme.panel_2()))
+                        .child(icons::icon(Icon::Branch, 14.0, theme.faint()))
+                        .child("Branch in new chat")
+                        .on_click(cx.listener(|root, _, _, cx| {
+                            root.branch_active_chat(cx);
+                        })),
+                ),
+        );
+    }
+    actions
 }
 
 fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> gpui::Div {
@@ -6183,7 +6384,7 @@ pub fn projects_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
                         .child(
                             icon_button(more_control, Icon::More, 30.0, theme, false)
                                 .tooltip(tip("Project actions", theme))
-                                .on_click(cx.listener(move |root, _, _, cx| {
+                                .on_click(cx.listener(move |root, _, window, cx| {
                                     cx.stop_propagation();
                                     let pinned = root
                                         .projects
@@ -6191,13 +6392,14 @@ pub fn projects_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> 
                                         .find(|project| project.id == action_id)
                                         .map(|project| project.pinned)
                                         .unwrap_or(pinned);
-                                    root.overlay = Some(Overlay::ProjectActions {
-                                        id: action_id.clone(),
-                                        path: action_path.clone(),
-                                        name: action_name.clone(),
+                                    root.open_project_actions(
+                                        window,
+                                        action_id.clone(),
+                                        action_path.clone(),
+                                        action_name.clone(),
                                         pinned,
-                                    });
-                                    cx.notify();
+                                        cx,
+                                    );
                                 })),
                         ),
                 )
@@ -7222,6 +7424,42 @@ fn customize_empty(theme: &Theme, mark: Icon, title: &str, detail: &str) -> gpui
                 .text_color(theme.dim())
                 .child(detail.to_string()),
         )
+}
+
+#[cfg(test)]
+mod welcome_tests {
+    use super::{welcome, Welcome};
+
+    #[test]
+    fn the_invite_waits_for_the_project_list() {
+        // The button that opens a folder belongs to a page that has answered for
+        // the folders there are: before the engine lists them the invite is the
+        // mark alone, so the window cannot flash a folder prompt over a project
+        // it is about to open.
+        assert_eq!(welcome(false, false), Welcome::Waiting);
+        assert_eq!(welcome(false, true), Welcome::Waiting);
+        assert_eq!(welcome(true, false), Welcome::NoProject);
+        assert_eq!(welcome(true, true), Welcome::Project);
+    }
+}
+
+#[cfg(test)]
+mod transcript_scroll_tests {
+    use super::transcript_following_after_scroll;
+
+    #[test]
+    fn an_upward_scroll_stops_following_before_the_old_snap_band() {
+        assert!(!transcript_following_after_scroll(1.0, -499.0, 500.0, true));
+        assert!(!transcript_following_after_scroll(1.0, -100.0, 500.0, true));
+    }
+
+    #[test]
+    fn returning_to_the_bottom_resumes_following() {
+        assert!(transcript_following_after_scroll(
+            -1.0, -499.0, 500.0, false
+        ));
+        assert!(transcript_following_after_scroll(0.0, 0.0, 0.0, false));
+    }
 }
 
 #[cfg(test)]

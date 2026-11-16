@@ -1,4 +1,4 @@
-# Desktop app (GPUI)
+# Oxide Desktop GPUI
 
 `crates/desktop-gpui` is the **primary desktop front-end**, drawn with
 [GPUI](https://gpui.rs) instead of a webview. It is the same Oxide — the same
@@ -28,12 +28,14 @@ graph TD
 
 ## Release status
 
-GPUI is the public desktop app. It uses the product name **Oxide** and the
-bundle identifier `dev.oxide.desktop`, installs from the permanent
-`desktop-latest` alias, and releases on the internal `desktop-gpui-v*` train.
-The window's functional surfaces and accessibility semantics mirror the
-Electron fallback. Both windows write the same stores: projects, sessions,
-approvals, trust decisions, themes, language and preferences.
+GPUI is the recommended desktop app and publishes as **Oxide Desktop GPUI**. The
+mounted application keeps the product name **Oxide**, its bundle is `Oxide.app`,
+and its bundle identifier is `dev.oxide.desktop`. It installs from the permanent
+`desktop-latest` alias and releases on the `desktop-gpui-v*` train with titles
+such as **Oxide Desktop GPUI v0.14.0**. The window's functional surfaces and
+accessibility semantics mirror the Electron fallback. Both windows write the
+same stores: projects, sessions, approvals, trust decisions, themes, language
+and preferences.
 
 ## Running
 
@@ -112,7 +114,8 @@ with the platform's traffic lights inside it, navigation, the open chats' tabs
 (or the thread's own folder and title while one is open) and a changes toggle; a
 56px rail; the 300px sidebar (draggable) with its brand row — where the search
 field takes the name's place when opened — New Chat, Activities and a project
-tree limited to the five newest threads per project, followed by spaced Recents;
+tree limited to the five newest threads per project, followed by Recents for
+sessions not already shown under a project;
 the reading column with its transcript, the welcome page before a thread is in
 it, and the composer; and a content-sized project details panel docked to the
 right. The project details panel is open by default. Chat,
@@ -130,13 +133,24 @@ would flatten its two colors into one. The window draws its own titlebar, so it
 opens the first project's draft in memory: the welcome page's suggestions fill
 that composer instead of being sent.
 
+That page waits for `list_projects`: until the engine has answered, the welcome
+is the brand mark alone, so a project the window is about to open cannot be
+announced as no folder at all, and the button that adds one cannot flash before
+the list that would have offered it. The invite below the mark fades in over
+180ms once the list is in, and only when its state changes, so a launch is one
+reveal rather than two frames of the wrong page.
+
 - **Projects and threads** — `list_projects`, `all_sessions` and
   `session_messages`; each project row has a disclosure control, selects the
   project when clicked, and reveals its compose and action controls on hover.
   Hovering the row does not open a floating card; the actions control opens the
-  project card deliberately, and the card carries the path, thread
-  counts, new-thread, pin and remove actions. Thread rows reveal pin and archive
-  controls on hover; right-click opens the rename, pin and archive dialog.
+  project card deliberately. The card follows Codex's compact project summary:
+  the project name and pin, thread count and active state, checkout path, and a
+  single **Edit project** action. That action opens the project name editor with
+  pin and remove controls. Thread rows reveal pin and archive
+  controls on hover; right-click opens the rename, pin and archive dialog. An
+  open stored thread keeps the same persisted label in the topbar and sidebar,
+  and Recents lists only sessions not already shown under a project.
   Creating a project uses the same name-and-source-folders sheet as the Electron
   window, adding source folders through `App::prompt_for_paths`. The selected
   project opens a draft and always asks for its own trust decision, including
@@ -168,7 +182,11 @@ that composer instead of being sent.
   combined model-and-effort chip opens one compact composer-anchored popover:
   the current effort sits above the model row and a horizontal effort slider,
   and the model row opens the provider/model list in the same surface. Nothing
-  dims or replaces the conversation. `Stop`
+  dims or replaces the conversation. The transcript follows streamed output
+  while the reader is at its end; the first upward scroll stops following, even
+  when that scroll is smaller than a page, and scrolling back to the end resumes
+  it. Each completed answer has a **More actions** control with copy-response
+  and branch-in-new-chat actions. `Stop`
   cancels the run through
   `cancel_run`. A message typed while a turn is running is steered into it
   through `steer_run` (queued for the turn's end unless `follow_up` is `steer`,
@@ -247,6 +265,9 @@ that composer instead of being sent.
   `Local checkout`), the repository's pull request for the current branch when
   `pull_requests` finds one, and the sources the thread can reach with their
   state (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
+  Like Codex Desktop, the toggle and ⌘J are available only while a chat is
+  open, report whether the panel is expanded, and show or hide the same panel
+  without leaving a stale dock behind.
 - **Customize and providers** — the Customize destination loads
   `plugin_catalog`, searches installed and marketplace plugins, adds, updates
   and removes marketplaces, and installs, enables, disables and uninstalls
@@ -290,6 +311,21 @@ that composer instead of being sent.
   Skills, MCP servers, Shortcuts) — and each field is a row of labelled
   controls: inline theme and language choices, segments for other choices, a
   switch for a flag, and a scale stepper.
+
+### Computer Use
+
+Oxide Desktop GPUI recognizes the shared `oxide-computer-use` MCP server and
+shows a mouse indicator, the latest returned screenshot, Stop task, and
+per-app policy controls in the transcript and project details. These are
+snapshots rather than an isolated background desktop or continuous video feed.
+The optional native helper adds a separate macOS app identity, launch services,
+permission diagnostics, and a native menu-bar stop control.
+
+**The helper has not been Apple Developer ID-signed or notarized for release.**
+Its documented default is an ad-hoc development build, so macOS Gatekeeper may
+warn about or block it. See the
+[helper guide](../crates/desktop/computer-use/README.md) and the
+[parity review](oxide-reins-parity.md) before installing it.
 
 ### Accessibility
 

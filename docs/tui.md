@@ -61,7 +61,8 @@ grant to give rather than being sent to the model as the text it was typed as.
 
 `/language` draws the interface in British English (the default) or Simplified
 Chinese: `/language zh-CN` switches it for every front-end — the same
-`settings.json` key the desktop app's globe and the VS Code panel's command write
+`settings.json` key the desktop front-ends' language controls and the VS Code
+panel's command write
 — and `/language` alone reports the choice. `--language <tag>` sets it for one
 run without writing the setting. The transcript's own labels (a thinking block,
 the queued-message rows, the approval prompt) are part of the interface and
@@ -73,7 +74,7 @@ as `[branch]`, each folded to a one-line note with `Ctrl+O to expand` until
 
 A URL in a reply is clickable: written bare or as an `<autolink>` the URL is
 the link itself, and a labelled link is drawn as its label alone — the target
-is not printed, as in the desktop app and the panel — with the whole label
+is not printed, as in both desktop front-ends and the panel — with the whole label
 answering. A left click opens it in the system browser (and the click is not
 also a text selection). When you have scrolled away from the newest output, a
 `↓ Jump to latest message · End` row floats over the bottom of the transcript;

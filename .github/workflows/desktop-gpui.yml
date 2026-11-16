@@ -214,7 +214,7 @@ jobs:
           set -euo pipefail
           if ! gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft \
-              --title "Oxide Desktop ${GITHUB_REF_NAME#desktop-gpui-}" --generate-notes
+              --title "Oxide Desktop GPUI ${GITHUB_REF_NAME#desktop-gpui-}" --generate-notes
           fi
           find release-assets -type f -print0 \
             | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
@@ -231,11 +231,11 @@ jobs:
           for alias_tag in desktop-latest desktop-gpui-latest; do
             if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
               gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
-                --title "Oxide Desktop installers" \
+                --title "Oxide Desktop GPUI installers" \
                 --notes "The newest desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-gpui-v*\` release is the one that names a version."
             else
               gh release edit "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
-                --title "Oxide Desktop installers"
+                --title "Oxide Desktop GPUI installers"
             fi
             gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" \
               --json assets --jq '.assets[].name' \
