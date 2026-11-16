@@ -2647,7 +2647,11 @@ fn conversation(
         .min_h(px(0.0))
         .child(transcript);
 
-    if scroll_to_end {
+    let following = {
+        let max = scroll.max_offset().y;
+        max <= px(0.0) || -scroll.offset().y >= max - px(32.0)
+    };
+    if scroll_to_end || following {
         scroll.scroll_to_bottom();
         root.chats[index].scroll_to_end = false;
     }
@@ -3545,7 +3549,31 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
             .font_weight(FontWeight::SEMIBOLD)
             .child(styled(theme, spans)),
         Block::Code { language, text } => {
-            let label = if language.is_empty() {
+            if language.eq_ignore_ascii_case("mermaid") {
+                if let Some(diagram) = crate::mermaid::render(text, theme.background().l < 0.5) {
+                    let available = (width - 2.0).max(80.0);
+                    let scale = (available / diagram.width).min(1.0);
+                    return div()
+                        .flex()
+                        .flex_row()
+                        .justify_center()
+                        .w_full()
+                        .flex_none()
+                        .py_2()
+                        .rounded(px(9.0))
+                        .bg(theme.panel())
+                        .border_1()
+                        .border_color(theme.border())
+                        .child(
+                            gpui::img(diagram.image.clone())
+                                .w(px(diagram.width * scale))
+                                .h(px(diagram.height * scale)),
+                        );
+                }
+            }
+            let label = if language.eq_ignore_ascii_case("mermaid") {
+                "Mermaid diagram \u{00b7} source".to_string()
+            } else if language.is_empty() {
                 "code".to_string()
             } else {
                 language.clone()
@@ -3602,7 +3630,11 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
             .line_height(px(20.0))
             .text_color(theme.dim())
             .child(styled(theme, spans)),
-        Block::Bullet { depth, spans } => div()
+        Block::Bullet {
+            depth,
+            checked,
+            spans,
+        } => div()
             .flex()
             .flex_row()
             .w_full()
@@ -3620,7 +3652,11 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
             .pl(px(*depth as f32 * 14.0))
             .text_size(px(13.5))
             .line_height(px(21.0))
-            .child(div().text_color(theme.faint()).child("•"))
+            .child(div().text_color(theme.faint()).child(match checked {
+                Some(true) => "\u{2611}",
+                Some(false) => "\u{2610}",
+                None => "\u{2022}",
+            }))
             .child(
                 div()
                     .flex_1()
@@ -3659,6 +3695,55 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
                     .child(styled(theme, spans)),
             ),
         Block::Rule => crate::app::rule(theme),
+        Block::Table { header, rows } => {
+            let columns = header.len().max(1);
+            let cell_width = ((width - 2.0) / columns as f32).max(40.0);
+            let mut table = div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .flex_none()
+                .overflow_hidden()
+                .rounded(px(9.0))
+                .border_1()
+                .border_color(theme.border());
+            let all = std::iter::once((true, header)).chain(rows.iter().map(|row| (false, row)));
+            for (head, row) in all {
+                let height = row
+                    .iter()
+                    .map(|cell| styled_height(window, theme, cell, cell_width - 20.0, 13.0, 20.0))
+                    .fold(20.0_f32, f32::max)
+                    + 12.0;
+                let mut line = div()
+                    .flex()
+                    .flex_row()
+                    .w_full()
+                    .flex_none()
+                    .h(px(height))
+                    .border_b_1()
+                    .border_color(theme.border())
+                    .when(head, |line| {
+                        line.bg(theme.panel()).font_weight(FontWeight::SEMIBOLD)
+                    });
+                for index in 0..columns {
+                    let empty = Vec::new();
+                    let cell = row.get(index).unwrap_or(&empty);
+                    line = line.child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .px(px(10.0))
+                            .py(px(6.0))
+                            .text_size(px(13.0))
+                            .line_height(px(20.0))
+                            .whitespace_normal()
+                            .child(styled(theme, cell)),
+                    );
+                }
+                table = table.child(line);
+            }
+            table
+        }
     }
 }
 
@@ -4942,10 +5027,36 @@ fn composer(
         theme,
     ));
 
+    let has_text = !editor_text.trim().is_empty();
     if running {
+        if has_text {
+            footer = footer.child(
+                div()
+                    .id("composer-send")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .flex_none()
+                    .w(px(30.0))
+                    .h(px(30.0))
+                    .rounded(px(15.0))
+                    .cursor_pointer()
+                    .bg(theme.panel_3())
+                    .hover(move |style| style.bg(theme.accent()))
+                    .tooltip(tip("Queue \u{00b7} \u{23ce}", theme))
+                    .child(icons::icon(Icon::ArrowUp, 15.0, theme.text()))
+                    .on_click(cx.listener(|root, _, window, cx| {
+                        root.send(window, cx);
+                        if root.overlay.is_none() {
+                            root.focus_composer(window, cx);
+                        }
+                    })),
+            );
+        }
         footer = footer.child(
             div()
                 .id("composer-stop")
+                .relative()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -4954,10 +5065,29 @@ fn composer(
                 .h(px(30.0))
                 .rounded(px(15.0))
                 .cursor_pointer()
-                .bg(theme.panel_3())
-                .hover(move |style| style.bg(theme.panel()))
+                .bg(theme.text())
+                .hover(move |style| style.opacity(0.85))
                 .tooltip(tip("Stop the turn", theme))
-                .child(icons::icon(Icon::Square, 14.0, theme.text()))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            icons::icon(Icon::Spinner, 30.0, theme.faint()).with_animation(
+                                "composer-stop-ring",
+                                Animation::new(Duration::from_millis(1100)).repeat(),
+                                |icon, delta| {
+                                    icon.with_transformation(Transformation::rotate(percentage(
+                                        delta,
+                                    )))
+                                },
+                            ),
+                        ),
+                )
+                .child(icons::icon(Icon::Square, 13.0, theme.background()))
                 .on_click(cx.listener(|root, _, _, cx| root.stop(cx))),
         );
     } else {
@@ -4972,10 +5102,22 @@ fn composer(
                 .h(px(30.0))
                 .rounded(px(15.0))
                 .cursor_pointer()
-                .bg(theme.text())
+                .bg(if has_text {
+                    theme.text()
+                } else {
+                    theme.panel_3()
+                })
                 .hover(move |style| style.bg(theme.accent()))
                 .tooltip(tip("Send \u{00b7} \u{23ce}", theme))
-                .child(icons::icon(Icon::ArrowUp, 15.0, theme.background()))
+                .child(icons::icon(
+                    Icon::ArrowUp,
+                    15.0,
+                    if has_text {
+                        theme.background()
+                    } else {
+                        theme.dim()
+                    },
+                ))
                 .on_click(cx.listener(|root, _, window, cx| {
                     root.send(window, cx);
                     if root.overlay.is_none() {
@@ -4987,6 +5129,47 @@ fn composer(
 
     box_row = box_row.child(footer);
 
+    let live_pill = root
+        .live_changes
+        .clone()
+        .filter(|(project, files, _, _)| *project == root.chats[index].project && *files > 0)
+        .map(|(_, files, added, removed)| {
+            div()
+                .id("live-changes")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.0))
+                .mb(px(8.0))
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(14.0))
+                .border_1()
+                .border_color(theme.border())
+                .bg(theme.panel_2())
+                .shadow_md()
+                .cursor_pointer()
+                .text_size(px(11.5))
+                .text_color(theme.dim())
+                .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
+                .tooltip(tip("View changes", theme))
+                .child(if files == 1 {
+                    "1 file changed".to_string()
+                } else {
+                    format!("{files} files changed")
+                })
+                .child(div().text_color(theme.success()).child(format!("+{added}")))
+                .child(
+                    div()
+                        .text_color(theme.error())
+                        .child(format!("\u{2212}{removed}")),
+                )
+                .on_click(cx.listener(|root, _, _, cx| {
+                    root.show_changes = true;
+                    root.open_repository_changes(cx);
+                }))
+        });
+
     div()
         .flex()
         .flex_col()
@@ -4996,6 +5179,7 @@ fn composer(
         .px(px(22.0))
         .pb(px(10.0))
         .pt(px(14.0))
+        .children(live_pill)
         .children(strip)
         .child(div().w_full().max_w(px(740.0)).child(box_row))
 }

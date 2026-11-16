@@ -372,6 +372,8 @@ pub struct Root {
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
     pub show_changes: bool,
+    pub live_changes: Option<(String, usize, usize, usize)>,
+    pub live_changes_busy: bool,
     pub changes_width: f32,
     pub changes_resizing: Option<(f32, f32)>,
     pub change_review: Option<ChangeReview>,
@@ -599,6 +601,8 @@ impl Root {
             composer_tools_dismiss_armed: false,
             resizing: None,
             show_changes: false,
+            live_changes: None,
+            live_changes_busy: false,
             changes_width: 430.0,
             changes_resizing: None,
             change_review: None,
@@ -2614,6 +2618,37 @@ impl Root {
         cx.notify();
     }
 
+    pub fn refresh_live_changes(&mut self, cx: &mut Context<Self>) {
+        if self.live_changes_busy {
+            return;
+        }
+        let Some(project) = self.chats.get(self.active).map(|chat| chat.project.clone()) else {
+            return;
+        };
+        if project.is_empty() {
+            return;
+        }
+        self.live_changes_busy = true;
+        let asked = project.clone();
+        self.call(
+            "repository_changes",
+            json!({ "project": project }),
+            cx,
+            move |root, result, cx| {
+                root.live_changes_busy = false;
+                root.live_changes = result.ok().map(|value| {
+                    (
+                        asked,
+                        value["files"].as_array().map(Vec::len).unwrap_or(0),
+                        value["added"].as_u64().unwrap_or(0) as usize,
+                        value["removed"].as_u64().unwrap_or(0) as usize,
+                    )
+                });
+                cx.notify();
+            },
+        );
+    }
+
     pub fn refresh_repository(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(project) = self.chats.get(index).map(|chat| chat.project.clone()) else {
             return;
@@ -3587,6 +3622,9 @@ impl Root {
                 let kind = payload["type"].as_str().unwrap_or_default().to_string();
                 if let Some(index) = self.claim_run(run) {
                     self.chats[index].apply(&payload);
+                    if kind == "tool_execution_end" && index == self.active {
+                        self.refresh_live_changes(cx);
+                    }
                 }
                 if kind == "session_title" {
                     self.refresh_sessions(cx);
@@ -3636,6 +3674,8 @@ impl Root {
                 self.refresh_sessions(cx);
                 let index = self.active;
                 self.refresh_repository(index, cx);
+                self.refresh_live_changes(cx);
+                self.refresh_live_changes(cx);
                 if ended_active {
                     self.maybe_predict(cx);
                 }
