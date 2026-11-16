@@ -2739,11 +2739,7 @@ fn conversation(
                         .bg(theme.panel_2())
                         .shadow_lg()
                         .cursor_pointer()
-                        .hover(move |style| {
-                            style
-                                .bg(theme.panel_3())
-                                .border_color(theme.dim())
-                        })
+                        .hover(move |style| style.bg(theme.panel_3()).border_color(theme.dim()))
                         .tooltip(tip("Jump to latest message", theme))
                         .child(icons::icon(Icon::ArrowDown, 18.0, theme.text()))
                         .on_click(cx.listener(move |root, _, _, cx| {
