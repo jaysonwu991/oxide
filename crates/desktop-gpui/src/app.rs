@@ -254,9 +254,10 @@ fn field_editor(placeholder: &'static str, cx: &mut App) -> Entity<Editor> {
         Editor::new(
             placeholder,
             theme.text(),
+            theme.dim(),
             theme.faint(),
             theme.accent(),
-            theme.wash("accent", 0.25),
+            theme.selection(),
             cx,
         )
         .single_line()
@@ -394,6 +395,10 @@ pub struct Root {
     pub prediction: String,
     pub prediction_chat: Option<u64>,
     pub prediction_generation: u64,
+    pub run_clock_ticking: bool,
+    /// Bumped for every command typed into the dock's terminal, so the branch
+    /// read that follows a command only answers for the newest one.
+    pub terminal_generation: u64,
     pub update_check: Option<Value>,
     pub update_error: Option<String>,
     pub checking_updates: bool,
@@ -418,9 +423,10 @@ impl Root {
             Editor::new(
                 "Search chats",
                 theme.text(),
+                theme.dim(),
                 theme.faint(),
                 theme.accent(),
-                theme.wash("accent", 0.25),
+                theme.selection(),
                 cx,
             )
             .single_line()
@@ -430,9 +436,10 @@ impl Root {
             Editor::new(
                 "Search commands",
                 theme.text(),
+                theme.dim(),
                 theme.faint(),
                 theme.accent(),
-                theme.wash("accent", 0.25),
+                theme.selection(),
                 cx,
             )
             .single_line()
@@ -442,9 +449,10 @@ impl Root {
             Editor::new(
                 "Worktree name",
                 theme.text(),
+                theme.dim(),
                 theme.faint(),
                 theme.accent(),
-                theme.wash("accent", 0.25),
+                theme.selection(),
                 cx,
             )
             .single_line()
@@ -454,9 +462,10 @@ impl Root {
             Editor::new(
                 "HEAD (current checkout)",
                 theme.text(),
+                theme.dim(),
                 theme.faint(),
                 theme.accent(),
-                theme.wash("accent", 0.25),
+                theme.selection(),
                 cx,
             )
             .single_line()
@@ -466,9 +475,10 @@ impl Root {
             Editor::new(
                 "Branch name",
                 theme.text(),
+                theme.dim(),
                 theme.faint(),
                 theme.accent(),
-                theme.wash("accent", 0.25),
+                theme.selection(),
                 cx,
             )
             .single_line()
@@ -478,9 +488,10 @@ impl Root {
             Editor::new(
                 "Chat title",
                 theme.text(),
+                theme.dim(),
                 theme.faint(),
                 theme.accent(),
-                theme.wash("accent", 0.25),
+                theme.selection(),
                 cx,
             )
             .single_line()
@@ -490,9 +501,10 @@ impl Root {
             Editor::new(
                 "Project name",
                 theme.text(),
+                theme.dim(),
                 theme.faint(),
                 theme.accent(),
-                theme.wash("accent", 0.25),
+                theme.selection(),
                 cx,
             )
             .single_line()
@@ -625,6 +637,8 @@ impl Root {
             prediction: String::new(),
             prediction_chat: None,
             prediction_generation: 0,
+            run_clock_ticking: false,
+            terminal_generation: 0,
             update_check: None,
             update_error: None,
             checking_updates: false,
@@ -642,6 +656,24 @@ impl Root {
         root.load_language(cx);
         root.load_themes(cx);
         root.refresh_projects(cx);
+
+        // A branch switched in a terminal is the reader's to see here, and
+        // nothing in this process was told it changed: coming back to the
+        // window reads the folder's facts again, the way the page does. The
+        // observer runs once as it is registered, which is the launch read.
+        let mut registered = false;
+        let activation = cx.observe_window_activation(window, move |root, window, cx| {
+            let first = !std::mem::replace(&mut registered, true);
+            if first || !window.is_window_active() {
+                return;
+            }
+            root.load_git(cx);
+            if root.show_changes || root.show_details {
+                let index = root.active;
+                root.refresh_repository(index, cx);
+            }
+        });
+        root.subscriptions.push(activation);
 
         cx.spawn(async move |this, cx| {
             while let Some(packet) = packets.recv().await {
@@ -1495,7 +1527,6 @@ impl Root {
         }
         self.stop_terminal(cx);
         self.show_changes = true;
-        self.show_details = false;
         self.panel_tab = PanelTab::Pulls;
         self.changes_width = self.changes_width.max(500.0);
         self.load_pulls(cx);
@@ -1532,7 +1563,6 @@ impl Root {
             return;
         }
         self.show_changes = true;
-        self.show_details = false;
         self.panel_tab = PanelTab::Terminal;
         self.changes_width = self.changes_width.max(620.0);
         window.focus(&self.terminal_focus, cx);
@@ -1586,6 +1616,7 @@ impl Root {
         else {
             return;
         };
+        let submitted = data == "\r";
         self.call(
             "terminal_write",
             json!({ "id": id, "data": data }),
@@ -1597,6 +1628,28 @@ impl Root {
                 }
             },
         );
+        if submitted {
+            self.read_branch_after_terminal(cx);
+        }
+    }
+
+    /// A command typed in the dock's own terminal may have switched the folder's
+    /// branch, and this window never left its own focus to hear about it: the
+    /// branch is read again once the command has had time to run.
+    fn read_branch_after_terminal(&mut self, cx: &mut Context<Self>) {
+        self.terminal_generation = self.terminal_generation.wrapping_add(1);
+        let generation = self.terminal_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(700))
+                .await;
+            let _ = this.update(cx, |root, cx| {
+                if root.terminal_generation == generation {
+                    root.load_git(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn terminal_write_text(&mut self, text: &'static str, cx: &mut Context<Self>) {
@@ -2093,7 +2146,45 @@ impl Root {
             cx.notify();
             return;
         }
+        // Picking another folder is a move to that folder, not another thread:
+        // the draft nothing has been written in yet follows the picker, so
+        // clicking through the sidebar leaves one tab to type in. A tab that
+        // already holds work keeps it and the picker opens its own.
+        if self.retarget_draft(project.clone(), cx) {
+            self.focus_composer(window, cx);
+            cx.notify();
+            return;
+        }
         self.push_chat(window, project, None, "New chat".to_string(), cx);
+    }
+
+    /// Points the active tab's untouched draft at `project`, answering whether
+    /// there was one to move. Everything the folder decides for a thread — its
+    /// commands, its repository — is read again, since the draft now stands in
+    /// a different one.
+    fn retarget_draft(&mut self, project: String, cx: &mut Context<Self>) -> bool {
+        let index = self.active;
+        let Some(chat) = self.chats.get(index) else {
+            return false;
+        };
+        let Some(editor) = self.editors.get(&chat.id).cloned() else {
+            return false;
+        };
+        if !draft_follows_project(chat, editor.read(cx).text(), &project) {
+            return false;
+        }
+        self.changes = None;
+        self.show_changes = false;
+        self.stop_terminal(cx);
+        self.prediction.clear();
+        self.prediction_chat = None;
+        self.prediction_generation = self.prediction_generation.wrapping_add(1);
+        self.at_answer = Value::Null;
+        self.at_chat = None;
+        self.chats[index].project = project;
+        self.load_project_commands(cx);
+        self.refresh_repository(index, cx);
+        true
     }
 
     pub fn create_worktree(&mut self, cx: &mut Context<Self>) {
@@ -2248,6 +2339,16 @@ impl Root {
     }
 
     pub fn toggle_details(&mut self, cx: &mut Context<Self>) {
+        if self.show_changes {
+            self.close_workspace_panel(cx);
+            self.show_details = true;
+            self.change_review = None;
+            let index = self.active;
+            self.refresh_repository(index, cx);
+            self.load_sources(cx);
+            cx.notify();
+            return;
+        }
         let next = toggled_details(self.show_details, !self.chats.is_empty());
         if next == self.show_details {
             return;
@@ -2367,9 +2468,10 @@ impl Root {
             Editor::new(
                 placeholder,
                 theme.text(),
+                theme.dim(),
                 theme.faint(),
                 theme.accent(),
-                theme.wash("accent", 0.28),
+                theme.selection(),
                 cx,
             )
         });
@@ -2837,6 +2939,7 @@ impl Root {
         chat.scroll_to_end = true;
         chat.stop_requested = false;
         chat.awaiting_run = true;
+        chat.run_started_at = Some(Instant::now());
 
         let mut args = json!({
             "project": project,
@@ -2864,6 +2967,7 @@ impl Root {
                 }
                 Err(error) => {
                     if let Some(chat) = root.chats.get_mut(index) {
+                        chat.finish_run();
                         chat.awaiting_run = false;
                         chat.entries.push(Entry::Error(error));
                     }
@@ -2871,8 +2975,34 @@ impl Root {
             }
             cx.notify();
         });
+        self.start_run_clock_ticker(cx);
 
         editor.update(cx, |editor, cx| editor.clear(cx));
+    }
+
+    fn start_run_clock_ticker(&mut self, cx: &mut Context<Self>) {
+        if self.run_clock_ticking {
+            return;
+        }
+        self.run_clock_ticking = true;
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let running = this
+                .update(cx, |root, cx| {
+                    let running = root.chats.iter().any(Chat::running);
+                    if running {
+                        cx.notify();
+                    } else {
+                        root.run_clock_ticking = false;
+                    }
+                    running
+                })
+                .unwrap_or(false);
+            if !running {
+                break;
+            }
+        })
+        .detach();
     }
 
     pub fn run_slash_command(
@@ -3360,6 +3490,7 @@ impl Root {
         let Some(project) = self.chats.get(self.active).map(|chat| chat.project.clone()) else {
             return;
         };
+        self.stop_terminal(cx);
         self.rail = Rail::Chats;
         let card = self
             .changes
@@ -3378,6 +3509,14 @@ impl Root {
         self.open_change_review(project, ChangeScope::Repository, card, None, cx);
         self.panel_tab = PanelTab::Changes;
         self.refresh_repository(self.active, cx);
+    }
+
+    pub fn toggle_repository_changes(&mut self, cx: &mut Context<Self>) {
+        if self.show_changes && self.panel_tab == PanelTab::Changes {
+            self.close_workspace_panel(cx);
+        } else {
+            self.open_repository_changes(cx);
+        }
     }
 
     pub fn open_turn_changes(
@@ -3414,7 +3553,6 @@ impl Root {
         let first = review.open_files.iter().next().cloned();
         self.change_review = Some(review);
         self.show_changes = true;
-        self.show_details = false;
         if let Some(path) = first {
             self.request_change_sides(path, cx);
         }
@@ -3748,6 +3886,7 @@ impl Root {
                     let chat = &mut self.chats[index];
                     chat.run = None;
                     chat.awaiting_run = false;
+                    chat.finish_run();
                     chat.changes = payload.get("changes").cloned();
                     chat.baseline = payload["baseline"].as_str().map(str::to_string);
                     chat.after = payload["after"].as_str().map(str::to_string);
@@ -3768,8 +3907,10 @@ impl Root {
                 }
                 self.refresh_sessions(cx);
                 let index = self.active;
+                // A run may have switched branch, so the composer's own row is
+                // read again along with the changes the turn left behind.
+                self.load_git(cx);
                 self.refresh_repository(index, cx);
-                self.refresh_live_changes(cx);
                 self.refresh_live_changes(cx);
                 if ended_active {
                     self.maybe_predict(cx);
@@ -4255,11 +4396,7 @@ impl Render for Root {
             .on_action(cx.listener(|_, _: &MinimizeWindow, window, _cx| window.minimize_window()))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _cx| window.remove_window()))
             .on_action(cx.listener(|this, _: &ToggleChanges, _window, cx| {
-                if this.show_changes {
-                    this.close_workspace_panel(cx);
-                } else {
-                    this.open_repository_changes(cx);
-                }
+                this.toggle_repository_changes(cx);
             }))
             .on_action(cx.listener(|this, _: &OpenModels, _window, cx| this.toggle_model_menu(cx)))
             .on_action(cx.listener(|this, _: &OpenWorktrees, _window, cx| this.open_worktrees(cx)))
@@ -4554,12 +4691,19 @@ fn can_reuse_new_chat(chat: &Chat, composer_text: &str) -> bool {
         && composer_text.trim().is_empty()
 }
 
+/// Whether picking another project moves this tab with it: a draft nothing has
+/// been written in yet stands in one folder at a time and follows the picker,
+/// while a tab that holds work keeps the folder that work was started in.
+fn draft_follows_project(chat: &Chat, composer_text: &str, project: &str) -> bool {
+    chat.project != project && can_reuse_new_chat(chat, composer_text)
+}
+
 #[cfg(test)]
 mod sidebar_resize_tests {
     use super::{
         add_attachment, can_reuse_new_chat, clamp_sidebar_width, composer_has_content,
-        details_visible, performs_slash_command, resized_changes_width, slash_command,
-        toggled_details, Rail,
+        details_visible, draft_follows_project, performs_slash_command, resized_changes_width,
+        slash_command, toggled_details, Rail,
     };
     use crate::model::{Attachment, Chat};
     use crate::views::{customize_destination, effort_position, model_display_name};
@@ -4662,6 +4806,29 @@ mod sidebar_resize_tests {
 
         composed.session = Some("saved-thread".to_string());
         assert!(!can_reuse_new_chat(&composed, ""));
+    }
+
+    #[test]
+    fn picking_a_project_moves_a_blank_draft_instead_of_opening_a_tab() {
+        let draft = Chat::new("/tmp/project".to_string(), "New chat".to_string());
+        assert!(draft_follows_project(&draft, "", "/tmp/other"));
+        assert!(!draft_follows_project(&draft, "", "/tmp/project"));
+        assert!(!draft_follows_project(
+            &draft,
+            "half a thought",
+            "/tmp/other"
+        ));
+
+        let mut held = Chat::new("/tmp/project".to_string(), "New chat".to_string());
+        held.attachments.push(Attachment::new(
+            "shot.png".to_string(),
+            "data:image/png;base64,00".to_string(),
+        ));
+        assert!(!draft_follows_project(&held, "", "/tmp/other"));
+
+        let mut saved = Chat::new("/tmp/project".to_string(), "Older thread".to_string());
+        saved.session = Some("saved-thread".to_string());
+        assert!(!draft_follows_project(&saved, "", "/tmp/other"));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use gpui::{Image, ImageFormat};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// A number the engine wrote, under the name the Rust struct serialises it with.
 /// The snapshots the page's own bridge answers with used camelCase for a few of
@@ -246,6 +247,9 @@ pub enum Entry {
     },
     Approval(ApprovalCard),
     Question(QuestionCard),
+    RunTime {
+        elapsed: Duration,
+    },
 }
 
 impl Entry {
@@ -458,6 +462,7 @@ pub struct Chat {
     pub context_tokens: Option<u64>,
     pub context_provider: String,
     pub context_model: String,
+    pub run_started_at: Option<Instant>,
     pub scroll: gpui::ScrollHandle,
 }
 
@@ -487,6 +492,7 @@ impl Chat {
             context_tokens: None,
             context_provider: String::new(),
             context_model: String::new(),
+            run_started_at: None,
             scroll: gpui::ScrollHandle::new(),
         }
     }
@@ -606,6 +612,14 @@ impl Chat {
         }
         self.entries.push(Entry::Edited(card));
         self.scroll_to_end = true;
+    }
+
+    pub fn finish_run(&mut self) {
+        if let Some(started) = self.run_started_at.take() {
+            self.entries.push(Entry::RunTime {
+                elapsed: started.elapsed(),
+            });
+        }
     }
 
     pub fn mark_undone(&mut self) {
@@ -1087,6 +1101,22 @@ mod tests {
 
         chat.record_turn(&json!({ "changes": { "files": [], "added": 0, "removed": 0 } }));
         assert_eq!(chat.entries.len(), 2);
+    }
+
+    #[test]
+    fn a_finished_run_clock_stays_above_its_change_card() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.run_started_at = Some(Instant::now());
+        chat.finish_run();
+        chat.record_turn(&json!({
+            "changes": {
+                "files": [{ "path": "src/main.rs", "added": 2, "removed": 1 }],
+                "added": 2,
+                "removed": 1
+            }
+        }));
+        assert!(matches!(chat.entries[0], Entry::RunTime { .. }));
+        assert!(matches!(chat.entries[1], Entry::Edited(_)));
     }
 
     #[test]

@@ -14,9 +14,10 @@ use gpui::{
     ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle,
     Focusable, Font, FontStyle, FontWeight, ImageFormat, KeyBinding, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollEvent, SharedString,
-    TextAlign, TextRun, UTF16Selection, Window,
+    StrikethroughStyle, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 use std::ops::Range;
+use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
 
 actions!(
@@ -110,15 +111,20 @@ impl EventEmitter<EditorEvent> for Editor {}
 
 pub const FONT_SIZE: f32 = 13.5;
 pub const LINE_HEIGHT: f32 = 20.0;
+const MONO_FONT: &str = "Menlo";
 const MAX_HISTORY: usize = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunStyle {
     Normal,
     Bold,
+    BoldItalic,
     Italic,
     Quote,
     Code,
+    Strike,
+    Link,
+    Task,
     Syntax,
     Decoration,
 }
@@ -126,8 +132,27 @@ enum RunStyle {
 struct ShapedLine {
     start: usize,
     end: usize,
+    line_height: Pixels,
     display_to_source: Vec<usize>,
     line: gpui::WrappedLine,
+}
+
+impl ShapedLine {
+    fn height(&self) -> Pixels {
+        self.line.size(self.line_height).height
+    }
+}
+
+/// One composer line painted: the text the reader sees, the byte of the source
+/// each of its bytes stands for, the runs that style it and the size a heading
+/// gives it. A heading is drawn larger than the line it is written in, so the
+/// size travels with the line rather than being the editor's one constant.
+struct RenderedLine {
+    display: String,
+    display_to_source: Vec<usize>,
+    runs: Vec<TextRun>,
+    font_size: Pixels,
+    line_height: Pixels,
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +174,7 @@ pub struct Editor {
     measured_height: Pixels,
     selecting: bool,
     color: gpui::Hsla,
+    muted_color: gpui::Hsla,
     placeholder_color: gpui::Hsla,
     caret_color: gpui::Hsla,
     selection_color: gpui::Hsla,
@@ -163,6 +189,7 @@ impl Editor {
     pub fn new(
         placeholder: impl Into<SharedString>,
         color: gpui::Hsla,
+        muted_color: gpui::Hsla,
         placeholder_color: gpui::Hsla,
         caret_color: gpui::Hsla,
         selection_color: gpui::Hsla,
@@ -180,6 +207,7 @@ impl Editor {
             measured_height: px(LINE_HEIGHT + 8.0),
             selecting: false,
             color,
+            muted_color,
             placeholder_color,
             caret_color,
             selection_color,
@@ -579,12 +607,35 @@ impl Editor {
     fn move_vertical(&mut self, down: bool, select: bool, cx: &mut Context<Self>) {
         let cursor = self.cursor_offset();
         let caret = self.point_for_offset(cursor);
-        let target_y = if down {
-            caret.y + px(LINE_HEIGHT + 0.5)
-        } else {
-            (caret.y - px(LINE_HEIGHT)).max(px(0.0)) + px(0.5)
+        // The rows of the rendered lines, so the caret steps one painted row at
+        // a time: a heading's row is taller than plain text's, and a wrapped
+        // line holds several.
+        let mut rows: Vec<(f32, f32)> = Vec::new();
+        let mut row_top = 0.0;
+        for shaped in &self.lines {
+            let row_height = f32::from(shaped.line_height).max(1.0);
+            let count = ((f32::from(shaped.height()) / row_height).round() as usize).max(1);
+            for _ in 0..count {
+                rows.push((row_top, row_height));
+                row_top += row_height;
+            }
+        }
+        let Some(current) = rows
+            .iter()
+            .position(|(top, height)| f32::from(caret.y) < top + height)
+        else {
+            return;
         };
-        let target = self.offset_for_point(point(caret.x, target_y));
+        let target = if down {
+            current + 1
+        } else {
+            match current.checked_sub(1) {
+                Some(target) => target,
+                None => return,
+            }
+        };
+        let y = rows.get(target).map_or(row_top + 0.5, |(top, _)| top + 0.5);
+        let target = self.offset_for_point(point(caret.x, px(y)));
         if select {
             self.select_to(target, cx);
         } else {
@@ -636,21 +687,36 @@ impl Editor {
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
-        // Read through the shared media reader first, so a Finder copy attaches
-        // the copied file rather than the icon the pasteboard also carries.
-        if let Some((name, data_url)) = oxide_core::media::clipboard_media() {
-            cx.emit(EditorEvent::AttachmentPasted { name, data_url });
-            return;
-        }
-
+        // Two reads answer a paste. The window's own read is in process and
+        // knows the text and the picture at once; the shared media reader is
+        // the one that names the file a Finder copy carries, and it asks the
+        // pasteboard through a subprocess. Text needs only the first, so it is
+        // inserted now. A picture waits for the reader on the app's own task,
+        // since a read this slow would otherwise hold the window still.
         let clipboard = cx.read_from_clipboard();
-        if let Some((name, data_url)) = clipboard.as_ref().and_then(clipboard_image_attachment) {
-            cx.emit(EditorEvent::AttachmentPasted { name, data_url });
-            return;
+        let picture = clipboard.as_ref().and_then(clipboard_image_attachment);
+        let text = clipboard.and_then(|item| item.text());
+        if picture.is_none() {
+            if let Some(text) = text.as_ref().filter(|text| !clipboard_names_file(text)) {
+                self.insert(text, cx);
+                return;
+            }
         }
-        if let Some(text) = clipboard.and_then(|item| item.text()) {
-            self.insert(&text, cx);
-        }
+        let pasted = cx
+            .background_executor()
+            .spawn(async move { oxide_core::media::clipboard_media().or(picture) });
+        cx.spawn(async move |this, cx| {
+            let Some((name, data_url)) = pasted.await else {
+                if let Some(text) = text {
+                    let _ = this.update(cx, |editor, cx| editor.insert(&text, cx));
+                }
+                return;
+            };
+            let _ = this.update(cx, |_editor, cx| {
+                cx.emit(EditorEvent::AttachmentPasted { name, data_url });
+            });
+        })
+        .detach();
     }
 
     fn delete_to_line_start(&mut self, cx: &mut Context<Self>) {
@@ -705,6 +771,35 @@ impl Editor {
         self.insert(&insertion, cx);
     }
 
+    fn toggle_task_at_point(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) -> bool {
+        let offset = self.offset_for_point(position);
+        let (line, _) = self.line_of(offset);
+        let range = self.line_bounds()[line].clone();
+        let Some((marker, checked)) = task_marker(&self.content[range.clone()]) else {
+            return false;
+        };
+        let indent =
+            self.content[range.clone()].len() - self.content[range.clone()].trim_start().len();
+        if f32::from(position.x) > (indent + 2) as f32 * 8.0 + 12.0 {
+            return false;
+        }
+        self.remember();
+        let marker = range.start + marker;
+        let replacement = if checked { " " } else { "x" };
+        self.content = format!(
+            "{}{}{}",
+            &self.content[..marker],
+            replacement,
+            &self.content[marker + 1..]
+        )
+        .into();
+        self.selected_range = marker + 1..marker + 1;
+        self.selection_reversed = false;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+        true
+    }
+
     /// The point a byte offset is painted at, in the editor's own coordinates.
     fn point_for_offset(&self, offset: usize) -> Point<Pixels> {
         let mut y = px(0.0);
@@ -720,11 +815,12 @@ impl Editor {
                     .iter()
                     .rposition(|position| *position <= source)
                     .unwrap_or(0);
-                if let Some(position) = shaped.line.position_for_index(display, px(LINE_HEIGHT)) {
+                if let Some(position) = shaped.line.position_for_index(display, shaped.line_height)
+                {
                     return point(position.x, y + position.y);
                 }
             }
-            y += shaped.line.size(px(LINE_HEIGHT)).height;
+            y += shaped.height();
         }
         point(px(0.0), y)
     }
@@ -740,10 +836,10 @@ impl Editor {
         let position = point(position.x, position.y + px(scroll_offset));
         let mut y = px(0.0);
         for shaped in &self.lines {
-            let height = shaped.line.size(px(LINE_HEIGHT)).height;
+            let height = shaped.height();
             if position.y <= y + height {
                 let within = point(position.x, position.y - y);
-                return match shaped.line.index_for_position(within, px(LINE_HEIGHT)) {
+                return match shaped.line.index_for_position(within, shaped.line_height) {
                     Ok(index) | Err(index) => {
                         shaped.start
                             + shaped
@@ -762,9 +858,20 @@ impl Editor {
     fn total_height(&self) -> Pixels {
         self.lines
             .iter()
-            .map(|shaped| shaped.line.size(px(LINE_HEIGHT)).height)
+            .map(ShapedLine::height)
             .fold(px(0.0), |sum, height| sum + height)
             .max(px(LINE_HEIGHT))
+    }
+
+    /// The height of one painted row of the line holding `offset`, so a caret in
+    /// a heading is as tall as the heading's row rather than as tall as plain
+    /// text, and a wrapped line's caret is one row rather than the paragraph.
+    fn row_height_at(&self, offset: usize) -> Pixels {
+        self.lines
+            .iter()
+            .find(|shaped| offset <= shaped.end)
+            .map(|shaped| shaped.line_height)
+            .unwrap_or(px(LINE_HEIGHT))
     }
 
     fn max_scroll(&self) -> f32 {
@@ -774,7 +881,7 @@ impl Editor {
     fn ensure_caret_visible(&mut self) {
         let caret = self.point_for_offset(self.cursor_offset());
         let top = f32::from(caret.y);
-        let bottom = top + LINE_HEIGHT;
+        let bottom = top + f32::from(self.row_height_at(self.cursor_offset()));
         let visible = f32::from(self.viewport_height);
         if top < self.scroll_offset + 4.0 {
             self.scroll_offset = (top - 4.0).max(0.0);
@@ -802,42 +909,62 @@ impl Editor {
         }
     }
 
+    fn mono_font(&self) -> Font {
+        Font {
+            family: MONO_FONT.into(),
+            features: Default::default(),
+            fallbacks: None,
+            weight: FontWeight::NORMAL,
+            style: FontStyle::Normal,
+        }
+    }
+
     fn push_run(&self, runs: &mut Vec<TextRun>, text: &str, style: RunStyle) {
         if text.is_empty() {
             return;
         }
-        let (weight, font_style, color, background_color) = match style {
-            RunStyle::Normal => (FontWeight::NORMAL, FontStyle::Normal, self.color, None),
-            RunStyle::Bold => (FontWeight::SEMIBOLD, FontStyle::Normal, self.color, None),
-            RunStyle::Italic => (FontWeight::NORMAL, FontStyle::Italic, self.color, None),
-            RunStyle::Quote => (FontWeight::NORMAL, FontStyle::Italic, self.color, None),
-            RunStyle::Code => (
-                FontWeight::NORMAL,
-                FontStyle::Normal,
-                self.caret_color,
-                Some(self.selection_color),
-            ),
-            RunStyle::Syntax => (
-                FontWeight::NORMAL,
-                FontStyle::Normal,
-                transparent_black(),
-                None,
-            ),
-            RunStyle::Decoration => (
-                FontWeight::NORMAL,
-                FontStyle::Normal,
-                self.placeholder_color,
-                None,
-            ),
-        };
-        runs.push(TextRun {
+        let mut run = TextRun {
             len: text.len(),
-            font: self.editor_font(weight, font_style),
-            color,
-            background_color,
+            font: self.editor_font(FontWeight::NORMAL, FontStyle::Normal),
+            color: self.color,
+            background_color: None,
             underline: None,
             strikethrough: None,
-        });
+        };
+        match style {
+            RunStyle::Normal => {}
+            RunStyle::Bold => run.font.weight = FontWeight::SEMIBOLD,
+            RunStyle::BoldItalic => {
+                run.font.weight = FontWeight::SEMIBOLD;
+                run.font.style = FontStyle::Italic;
+            }
+            RunStyle::Italic => run.font.style = FontStyle::Italic,
+            RunStyle::Quote => run.color = self.muted_color,
+            RunStyle::Code => {
+                run.font = self.mono_font();
+                let mut background = self.color;
+                background.a = 0.12;
+                run.background_color = Some(background);
+            }
+            RunStyle::Strike => {
+                run.strikethrough = Some(StrikethroughStyle {
+                    thickness: px(1.0),
+                    color: Some(self.color),
+                });
+            }
+            RunStyle::Link => {
+                run.color = self.caret_color;
+                run.underline = Some(UnderlineStyle {
+                    thickness: px(1.0),
+                    color: Some(self.caret_color),
+                    wavy: false,
+                });
+            }
+            RunStyle::Task => run.color = self.caret_color,
+            RunStyle::Syntax => run.color = transparent_black(),
+            RunStyle::Decoration => {}
+        }
+        runs.push(run);
     }
 
     fn append_visible(
@@ -887,11 +1014,36 @@ impl Editor {
         }
     }
 
-    fn render_line(&self, text: &str) -> (String, Vec<usize>, Vec<TextRun>) {
+    fn render_line(&self, text: &str, fenced: bool) -> RenderedLine {
         let mut display = String::new();
         let mut display_to_source = vec![0];
         let mut runs = Vec::new();
+        if fenced {
+            self.append_visible(
+                &mut display,
+                &mut display_to_source,
+                &mut runs,
+                0,
+                text,
+                RunStyle::Code,
+            );
+            if let Some(last) = display_to_source.last_mut() {
+                *last = text.len();
+            }
+            return RenderedLine {
+                display,
+                display_to_source,
+                runs,
+                font_size: px(FONT_SIZE),
+                line_height: px(LINE_HEIGHT),
+            };
+        }
         let (prefix_end, _prefix_style, content_style) = line_marker(text);
+        let scale = if self.single_line {
+            1.0
+        } else {
+            heading_scale(text)
+        };
         let indent = text.len() - text.trim_start().len();
         if indent > 0 {
             self.append_visible(
@@ -914,15 +1066,20 @@ impl Editor {
                 None
             } else if let Some(quoted) = trimmed.strip_prefix("> ") {
                 let _ = quoted;
-                Some(("│ ".to_string(), RunStyle::Decoration))
-            } else if trimmed.starts_with("- [ ] ") || trimmed.starts_with("* [ ] ") {
-                Some(("☐ ".to_string(), RunStyle::Decoration))
+                Some(("│ ".to_string(), RunStyle::Quote))
+            } else if trimmed.starts_with("- [ ] ")
+                || trimmed.starts_with("* [ ] ")
+                || trimmed.starts_with("+ [ ] ")
+            {
+                Some(("☐ ".to_string(), RunStyle::Task))
             } else if trimmed.starts_with("- [x] ")
                 || trimmed.starts_with("* [x] ")
+                || trimmed.starts_with("+ [x] ")
                 || trimmed.starts_with("- [X] ")
                 || trimmed.starts_with("* [X] ")
+                || trimmed.starts_with("+ [X] ")
             {
-                Some(("☑ ".to_string(), RunStyle::Decoration))
+                Some(("☑ ".to_string(), RunStyle::Task))
             } else if trimmed.starts_with("- ")
                 || trimmed.starts_with("* ")
                 || trimmed.starts_with("+ ")
@@ -955,6 +1112,111 @@ impl Editor {
         let mut plain_start = 0;
         let mut index = 0;
         while index < content.len() {
+            if let Some((entity, next)) = entity_marker(content, index) {
+                if plain_start < index {
+                    self.append_visible(
+                        &mut display,
+                        &mut display_to_source,
+                        &mut runs,
+                        content_start + plain_start,
+                        &content[plain_start..index],
+                        content_style,
+                    );
+                }
+                Self::append_hidden(&mut display_to_source, content_start + index);
+                self.append_visible(
+                    &mut display,
+                    &mut display_to_source,
+                    &mut runs,
+                    content_start + index,
+                    entity.encode_utf8(&mut [0; 4]),
+                    content_style,
+                );
+                Self::append_hidden(&mut display_to_source, content_start + next);
+                index = next;
+                plain_start = index;
+                continue;
+            }
+            if content[index..].starts_with('\\') {
+                let next = content[index + 1..].chars().next();
+                if next.is_some_and(is_markdown_punctuation) {
+                    if plain_start < index {
+                        self.append_visible(
+                            &mut display,
+                            &mut display_to_source,
+                            &mut runs,
+                            content_start + plain_start,
+                            &content[plain_start..index],
+                            content_style,
+                        );
+                    }
+                    let next_end = index + 1 + next.map_or(0, char::len_utf8);
+                    Self::append_hidden(&mut display_to_source, content_start + index + 1);
+                    self.append_visible(
+                        &mut display,
+                        &mut display_to_source,
+                        &mut runs,
+                        content_start + index + 1,
+                        &content[index + 1..next_end],
+                        content_style,
+                    );
+                    index = next_end;
+                    plain_start = index;
+                    continue;
+                }
+            }
+            if let Some(link) = autolink_marker(content, index) {
+                if plain_start < index {
+                    self.append_visible(
+                        &mut display,
+                        &mut display_to_source,
+                        &mut runs,
+                        content_start + plain_start,
+                        &content[plain_start..index],
+                        content_style,
+                    );
+                }
+                if link.angle {
+                    Self::append_hidden(&mut display_to_source, content_start + link.text_start);
+                }
+                self.append_visible(
+                    &mut display,
+                    &mut display_to_source,
+                    &mut runs,
+                    content_start + link.text_start,
+                    &content[link.text_start..link.text_end],
+                    RunStyle::Link,
+                );
+                Self::append_hidden(&mut display_to_source, content_start + link.next);
+                index = link.next;
+                plain_start = index;
+                continue;
+            }
+            if let Some(link) = link_marker(content, index) {
+                if plain_start < index {
+                    self.append_visible(
+                        &mut display,
+                        &mut display_to_source,
+                        &mut runs,
+                        content_start + plain_start,
+                        &content[plain_start..index],
+                        content_style,
+                    );
+                }
+                Self::append_hidden(&mut display_to_source, content_start + link.text_start);
+                self.append_visible(
+                    &mut display,
+                    &mut display_to_source,
+                    &mut runs,
+                    content_start + link.text_start,
+                    &content[link.text_start..link.text_end],
+                    RunStyle::Link,
+                );
+                Self::append_hidden(&mut display_to_source, content_start + link.next);
+                index = link.next;
+                plain_start = index;
+                continue;
+            }
             let Some((marker, closer, style)) = inline_marker(content, index) else {
                 index += content[index..].chars().next().map_or(1, char::len_utf8);
                 continue;
@@ -997,7 +1259,13 @@ impl Editor {
         if let Some(last) = display_to_source.last_mut() {
             *last = text.len();
         }
-        (display, display_to_source, runs)
+        RenderedLine {
+            display,
+            display_to_source,
+            runs,
+            font_size: px(FONT_SIZE * scale),
+            line_height: px(LINE_HEIGHT * scale),
+        }
     }
 
     fn shape(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1006,14 +1274,26 @@ impl Editor {
         let width = bounds.size.width.max(px(16.0));
         let mut lines = Vec::new();
         let mut start = 0;
+        let mut fence = None;
         for text in self.content.split('\n') {
-            let (display, display_to_source, runs) = self.render_line(text);
+            let current_fence = fence;
+            if let Some(marker) = current_fence {
+                if fence_closes(text, marker) {
+                    fence = None;
+                }
+            } else if let Some(marker) = fence_opens(text) {
+                fence = Some(marker);
+            }
+            let rendered = self.render_line(
+                text,
+                current_fence.is_some_and(|marker| !fence_closes(text, marker)),
+            );
             let shaped = window
                 .text_system()
                 .shape_text(
-                    SharedString::from(display),
-                    px(FONT_SIZE),
-                    &runs,
+                    SharedString::from(rendered.display),
+                    rendered.font_size,
+                    &rendered.runs,
                     if self.single_line { None } else { Some(width) },
                     None,
                 )
@@ -1023,7 +1303,8 @@ impl Editor {
                 lines.push(ShapedLine {
                     start,
                     end: start + text.len(),
-                    display_to_source,
+                    line_height: rendered.line_height,
+                    display_to_source: rendered.display_to_source,
                     line,
                 });
             }
@@ -1044,7 +1325,11 @@ impl Editor {
             .scroll_offset
             .min((f32::from(self.total_height()) - f32::from(bounds.size.height)).max(0.0));
         let vertical_padding = if self.single_line {
-            (f32::from(bounds.size.height) - LINE_HEIGHT).max(0.0) / 2.0
+            let line_height = self
+                .lines
+                .first()
+                .map_or(px(LINE_HEIGHT), ShapedLine::height);
+            (f32::from(bounds.size.height) - f32::from(line_height)).max(0.0) / 2.0
         } else {
             0.0
         };
@@ -1054,7 +1339,8 @@ impl Editor {
         );
         let mut y = text_origin.y;
         for shaped in &self.lines {
-            let height = shaped.line.size(px(LINE_HEIGHT)).height;
+            let height = shaped.height();
+            let row_height = f32::from(shaped.line_height);
             let origin = point(bounds.origin.x, y);
             let line_bounds = Bounds::new(origin, size(bounds.size.width, height));
 
@@ -1077,13 +1363,15 @@ impl Editor {
                         .rposition(|position| *position <= to_source)
                         .unwrap_or(from_index);
                     if let (Some(from), Some(to)) = (
-                        shaped.line.position_for_index(from_index, px(LINE_HEIGHT)),
-                        shaped.line.position_for_index(to_index, px(LINE_HEIGHT)),
+                        shaped
+                            .line
+                            .position_for_index(from_index, shaped.line_height),
+                        shaped.line.position_for_index(to_index, shaped.line_height),
                     ) {
-                        let first_row = (f32::from(from.y) / LINE_HEIGHT) as usize;
-                        let last_row = (f32::from(to.y) / LINE_HEIGHT) as usize;
+                        let first_row = (f32::from(from.y) / row_height) as usize;
+                        let last_row = (f32::from(to.y) / row_height) as usize;
                         for row in first_row..=last_row {
-                            let row_top = y + px(row as f32 * LINE_HEIGHT);
+                            let row_top = y + px(row as f32 * row_height);
                             let left = if row == first_row { from.x } else { px(0.0) };
                             let right = if row == last_row {
                                 to.x
@@ -1093,7 +1381,7 @@ impl Editor {
                             window.paint_quad(fill(
                                 Bounds::new(
                                     point(bounds.origin.x + left, row_top),
-                                    size((right - left).max(px(1.0)), px(LINE_HEIGHT)),
+                                    size((right - left).max(px(1.0)), shaped.line_height),
                                 ),
                                 self.selection_color,
                             ));
@@ -1104,7 +1392,7 @@ impl Editor {
 
             let _ = shaped.line.paint(
                 origin,
-                px(LINE_HEIGHT),
+                shaped.line_height,
                 TextAlign::Left,
                 Some(line_bounds),
                 window,
@@ -1118,7 +1406,7 @@ impl Editor {
             let cursor: PaintQuad = fill(
                 Bounds::new(
                     point(text_origin.x + caret.x, text_origin.y + caret.y),
-                    size(px(1.5), px(LINE_HEIGHT)),
+                    size(px(1.5), self.row_height_at(self.cursor_offset())),
                 ),
                 self.caret_color,
             );
@@ -1288,7 +1576,7 @@ impl EntityInputHandler for Editor {
             point(bounds.origin.x + from.x, bounds.origin.y + from.y),
             point(
                 bounds.origin.x + to.x,
-                bounds.origin.y + to.y + px(LINE_HEIGHT),
+                bounds.origin.y + to.y + self.row_height_at(range.end),
             ),
         ))
     }
@@ -1350,6 +1638,10 @@ impl Render for Editor {
                         return;
                     };
                     let local = event.position - bounds.origin;
+                    if this.toggle_task_at_point(local, cx) {
+                        this.selecting = false;
+                        return;
+                    }
                     let offset = this.offset_for_point(local);
                     if event.modifiers.shift {
                         this.select_to(offset, cx);
@@ -1477,6 +1769,11 @@ fn clipboard_image_attachment(item: &ClipboardItem) -> Option<(String, String)> 
     ))
 }
 
+fn clipboard_names_file(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with("file://") || (!text.contains('\n') && Path::new(text).exists())
+}
+
 fn line_marker(text: &str) -> (usize, RunStyle, RunStyle) {
     let indent = text.len() - text.trim_start().len();
     let trimmed = &text[indent..];
@@ -1510,12 +1807,222 @@ fn line_marker(text: &str) -> (usize, RunStyle, RunStyle) {
     (indent, RunStyle::Syntax, RunStyle::Normal)
 }
 
+fn fence_opens(text: &str) -> Option<char> {
+    let trimmed = text.trim_start();
+    let marker = *trimmed.as_bytes().first()? as char;
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
+    let count = trimmed.chars().take_while(|ch| *ch == marker).count();
+    (count >= 3).then_some(marker)
+}
+
+fn fence_closes(text: &str, marker: char) -> bool {
+    let trimmed = text.trim();
+    let count = trimmed.chars().take_while(|ch| *ch == marker).count();
+    count >= 3 && trimmed.chars().all(|ch| ch == marker)
+}
+
+/// The size a heading line is drawn at, as the page's composer grows one: two
+/// times the composer's text at the first level, then the levels the page's own
+/// headings scale by. A line that is not a heading keeps the composer's size.
+fn heading_scale(text: &str) -> f32 {
+    let indent = text.len() - text.trim_start().len();
+    let trimmed = &text[indent..];
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if !(1..=6).contains(&hashes) || trimmed.as_bytes().get(hashes) != Some(&b' ') {
+        return 1.0;
+    }
+    match hashes {
+        1 => 2.0,
+        2 => 1.5,
+        3 => 1.17,
+        4 => 1.0,
+        5 => 0.83,
+        _ => 0.67,
+    }
+}
+
+/// The `[text](target)` a composer line holds: where its text starts and ends
+/// and where the line carries on afterwards. Only the text is drawn; the
+/// brackets and the target stay in the source, the way the page renders a link.
+struct LinkMarker {
+    text_start: usize,
+    text_end: usize,
+    next: usize,
+}
+
+struct AutoLinkMarker {
+    text_start: usize,
+    text_end: usize,
+    next: usize,
+    angle: bool,
+}
+
+fn autolink_marker(text: &str, index: usize) -> Option<AutoLinkMarker> {
+    if text[index..].starts_with('<') {
+        let close = text[index + 1..].find('>')? + index + 1;
+        let target = &text[index + 1..close];
+        if !(target.starts_with("http://") || target.starts_with("https://")) {
+            return None;
+        }
+        return Some(AutoLinkMarker {
+            text_start: index + 1,
+            text_end: close,
+            next: close + 1,
+            angle: true,
+        });
+    }
+    if !(text[index..].starts_with("http://") || text[index..].starts_with("https://")) {
+        return None;
+    }
+    let mut end = text[index..]
+        .char_indices()
+        .find_map(|(offset, ch)| {
+            (ch.is_whitespace() || matches!(ch, '<' | '>' | '`')).then_some(index + offset)
+        })
+        .unwrap_or(text.len());
+    while end > index
+        && text[..end]
+            .chars()
+            .last()
+            .is_some_and(|ch| matches!(ch, '.' | ',' | ';' | ':' | '!' | '?'))
+    {
+        end -= text[..end].chars().last().map_or(1, char::len_utf8);
+    }
+    while text[index..end].ends_with(')')
+        && text[index..end].matches(')').count() > text[index..end].matches('(').count()
+    {
+        end -= 1;
+    }
+    Some(AutoLinkMarker {
+        text_start: index,
+        text_end: end,
+        next: end,
+        angle: false,
+    })
+}
+
+fn link_marker(text: &str, index: usize) -> Option<LinkMarker> {
+    let body = text[index..].strip_prefix('[')?;
+    let mut label_depth = 1usize;
+    let mut close = None;
+    let mut characters = body.char_indices().peekable();
+    while let Some((offset, character)) = characters.next() {
+        match character {
+            '\\' => {
+                characters.next();
+            }
+            '[' => label_depth += 1,
+            ']' => {
+                label_depth -= 1;
+                if label_depth == 0 {
+                    close = Some(offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    if close == 0 {
+        return None;
+    }
+    let after = body[close + 1..].strip_prefix('(')?;
+    let mut cursor = 0usize;
+    while after[cursor..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+    {
+        cursor += after[cursor..].chars().next()?.len_utf8();
+    }
+    let target_start = cursor;
+    if after[cursor..].starts_with('<') {
+        let angle = after[cursor + 1..].find('>')?;
+        cursor += angle + 2;
+    } else {
+        let mut depth = 0usize;
+        for (offset, character) in after[target_start..].char_indices() {
+            match character {
+                '(' => depth += 1,
+                ')' if depth == 0 => break,
+                ')' => depth -= 1,
+                character if depth == 0 && character.is_whitespace() => break,
+                _ => {}
+            }
+            cursor = target_start + offset + character.len_utf8();
+        }
+    }
+    if cursor == target_start {
+        return None;
+    }
+    while after[cursor..]
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+    {
+        cursor += after[cursor..].chars().next()?.len_utf8();
+    }
+    if let Some(quote @ ('"' | '\'')) = after[cursor..].chars().next() {
+        let title = &after[cursor + quote.len_utf8()..];
+        let end = title.find(quote)?;
+        cursor += quote.len_utf8() + end + quote.len_utf8();
+        while after[cursor..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+        {
+            cursor += after[cursor..].chars().next()?.len_utf8();
+        }
+    }
+    if !after[cursor..].starts_with(')') {
+        return None;
+    }
+    let text_start = index + 1;
+    let text_end = text_start + close;
+    Some(LinkMarker {
+        text_start,
+        text_end,
+        next: index + close + cursor + 4,
+    })
+}
+
+fn is_markdown_punctuation(ch: char) -> bool {
+    "\\`*_{}[]()#+-.!>~|".contains(ch)
+}
+
+fn entity_marker(text: &str, index: usize) -> Option<(char, usize)> {
+    let rest = text[index..].strip_prefix('&')?;
+    let end = rest.find(';')?;
+    if end == 0 || end > 12 {
+        return None;
+    }
+    let name = &rest[..end];
+    let character = match name.to_ascii_lowercase().as_str() {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{a0}',
+        name if name.starts_with("#x") => u32::from_str_radix(&name[2..], 16)
+            .ok()
+            .and_then(char::from_u32)?,
+        name if name.starts_with('#') => name[1..].parse().ok().and_then(char::from_u32)?,
+        _ => return None,
+    };
+    Some((character, index + end + 2))
+}
+
 fn inline_marker(text: &str, index: usize) -> Option<(usize, usize, RunStyle)> {
     let rest = &text[index..];
-    let (marker, style) = if rest.starts_with("**") || rest.starts_with("__") {
+    let (marker, style) = if rest.starts_with("***") || rest.starts_with("___") {
+        (3, RunStyle::BoldItalic)
+    } else if rest.starts_with("**") || rest.starts_with("__") {
         (2, RunStyle::Bold)
     } else if rest.starts_with("~~") {
-        (2, RunStyle::Italic)
+        (2, RunStyle::Strike)
     } else if rest.starts_with('`') {
         (1, RunStyle::Code)
     } else if rest.starts_with('*') || rest.starts_with('_') {
@@ -1582,6 +2089,29 @@ fn marker_content_start(text: &str) -> Option<usize> {
     None
 }
 
+fn task_marker(text: &str) -> Option<(usize, bool)> {
+    let indent = text.len() - text.trim_start().len();
+    let trimmed = &text[indent..];
+    for marker in ["- ", "* ", "+ "] {
+        let Some(rest) = trimmed.strip_prefix(marker) else {
+            continue;
+        };
+        let checked = match rest.as_bytes().get(1) {
+            Some(b' ') => false,
+            Some(b'x' | b'X') => true,
+            _ => return None,
+        };
+        if rest.as_bytes().first() == Some(&b'[')
+            && rest.as_bytes().get(2) == Some(&b']')
+            && rest.as_bytes().get(3) == Some(&b' ')
+        {
+            return Some((indent + marker.len() + 1, checked));
+        }
+        return None;
+    }
+    None
+}
+
 fn continuation_prefix(text: &str) -> Option<String> {
     let start = marker_content_start(text)?;
     if start >= text.len() {
@@ -1614,8 +2144,9 @@ fn continuation_prefix(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        clipboard_image_attachment, continuation_prefix, line_marker, marker_content_start,
-        RunStyle,
+        autolink_marker, clipboard_image_attachment, clipboard_names_file, continuation_prefix,
+        entity_marker, fence_closes, fence_opens, heading_scale, inline_marker, line_marker,
+        link_marker, marker_content_start, task_marker, RunStyle,
     };
     use gpui::{ClipboardItem, Image, ImageFormat};
 
@@ -1651,6 +2182,76 @@ mod tests {
     }
 
     #[test]
+    fn a_heading_is_drawn_at_the_size_its_level_names() {
+        assert_eq!(heading_scale("# Plan"), 2.0);
+        assert_eq!(heading_scale("## Plan"), 1.5);
+        assert_eq!(heading_scale("### Plan"), 1.17);
+        assert_eq!(heading_scale("#### Plan"), 1.0);
+        assert_eq!(heading_scale("##### Plan"), 0.83);
+        assert_eq!(heading_scale("###### Plan"), 0.67);
+        assert_eq!(heading_scale("#Plan"), 1.0);
+        assert_eq!(heading_scale("- item"), 1.0);
+    }
+
+    #[test]
+    fn a_link_keeps_its_text_and_hides_its_target() {
+        let link = link_marker("[Oxide](https://example.com) here", 0).unwrap();
+        assert_eq!(link.text_start, 1);
+        assert_eq!(link.text_end, 6);
+        assert_eq!(link.next, 28);
+        assert!(link_marker("array[0] = 1", 5).is_none());
+        assert!(link_marker("[](empty)", 0).is_none());
+        let nested = link_marker("[wiki](https://example.com/a_(b)) after", 0).unwrap();
+        assert_eq!(nested.next, 33);
+    }
+
+    #[test]
+    fn bare_and_angle_links_stop_before_sentence_punctuation() {
+        let bare = autolink_marker("see https://example.com/oxide. next", 4).unwrap();
+        assert_eq!(bare.text_start, 4);
+        assert_eq!(bare.text_end, 29);
+        assert!(!bare.angle);
+
+        let angle = autolink_marker("<https://example.com>", 0).unwrap();
+        assert_eq!((angle.text_start, angle.text_end, angle.next), (1, 20, 21));
+        assert!(angle.angle);
+    }
+
+    #[test]
+    fn markdown_entities_render_as_the_character_they_name() {
+        assert_eq!(entity_marker("a &amp; b", 2), Some(('&', 7)));
+        assert_eq!(entity_marker("&#x2192;", 0), Some(('\u{2192}', 8)));
+        assert_eq!(entity_marker("&unknown;", 0), None);
+    }
+
+    #[test]
+    fn strikethrough_is_its_own_style() {
+        assert_eq!(inline_marker("~~gone~~", 0), Some((2, 6, RunStyle::Strike)));
+        assert_eq!(inline_marker("**bold**", 0), Some((2, 6, RunStyle::Bold)));
+        assert_eq!(
+            inline_marker("***both***", 0),
+            Some((3, 7, RunStyle::BoldItalic))
+        );
+    }
+
+    #[test]
+    fn a_code_fence_keeps_its_language_and_closes_on_its_own_marker() {
+        assert_eq!(fence_opens("```rust"), Some('`'));
+        assert_eq!(fence_opens("  ~~~~"), Some('~'));
+        assert!(fence_closes("```", '`'));
+        assert!(!fence_closes("```rust", '`'));
+        assert!(!fence_closes("~~~", '`'));
+    }
+
+    #[test]
+    fn a_task_marker_points_at_the_checkbox_source_character() {
+        assert_eq!(task_marker("- [ ] todo"), Some((3, false)));
+        assert_eq!(task_marker("  * [X] done"), Some((5, true)));
+        assert_eq!(task_marker("+ [x] done"), Some((3, true)));
+        assert_eq!(task_marker("plain"), None);
+    }
+
+    #[test]
     fn a_clipboard_picture_becomes_an_image_data_url() {
         let item = ClipboardItem::new_image(&Image::from_bytes(
             ImageFormat::Png,
@@ -1659,5 +2260,12 @@ mod tests {
         let (name, data_url) = clipboard_image_attachment(&item).unwrap();
         assert_eq!(name, "pasted-image.png");
         assert_eq!(data_url, "data:image/png;base64,iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn a_clipboard_file_is_not_inserted_as_ordinary_text_first() {
+        assert!(clipboard_names_file("file:///tmp/shot.png"));
+        assert!(!clipboard_names_file("ordinary clipboard text"));
+        assert!(!clipboard_names_file("two\nlines"));
     }
 }

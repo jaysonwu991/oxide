@@ -667,20 +667,14 @@ pub fn topbar(
     let new_chat = icon_button("new-chat", Icon::Plus, 30.0, theme, false)
         .tooltip(tip("New chat \u{00b7} \u{2318}N", theme))
         .on_click(cx.listener(|root, _, window, cx| root.new_chat(window, cx)));
-    let changes = icon_button("changes", Icon::Changes, 30.0, theme, root.show_changes)
+    let changes_open = root.show_changes && root.panel_tab == crate::app::PanelTab::Changes;
+    let changes = icon_button("changes", Icon::Changes, 30.0, theme, changes_open)
+        .aria_expanded(changes_open)
         .tooltip(tip(
             "Changes this turn left \u{00b7} \u{2318}\u{23ce}",
             theme,
         ))
-        .on_click(cx.listener(|root, _, _, cx| {
-            if root.show_changes {
-                root.show_changes = false;
-                root.change_review = None;
-                cx.notify();
-            } else {
-                root.open_repository_changes(cx);
-            }
-        }));
+        .on_click(cx.listener(|root, _, _, cx| root.toggle_repository_changes(cx)));
     let computer_use_active = root
         .chats
         .get(root.active)
@@ -695,28 +689,23 @@ pub fn topbar(
     )
     .tooltip(tip("Computer use", theme))
     .on_click(cx.listener(|root, _, _, cx| root.open_computer_use(cx)));
-    let details = icon_button(
-        "details-toggle",
-        Icon::Details,
-        30.0,
-        theme,
-        root.show_details,
-    )
-    .aria_label(if root.show_details {
-        "Hide project details"
-    } else {
-        "Show project details"
-    })
-    .aria_expanded(root.show_details)
-    .tooltip(tip(
-        if root.show_details {
-            "Hide project details \u{00b7} \u{2318}J"
+    let details_open = root.show_details && !root.show_changes;
+    let details = icon_button("details-toggle", Icon::Details, 30.0, theme, details_open)
+        .aria_label(if details_open {
+            "Hide project details"
         } else {
-            "Show project details \u{00b7} \u{2318}J"
-        },
-        theme,
-    ))
-    .on_click(cx.listener(|root, _, _, cx| root.toggle_details(cx)));
+            "Show project details"
+        })
+        .aria_expanded(details_open)
+        .tooltip(tip(
+            if details_open {
+                "Hide project details \u{00b7} \u{2318}J"
+            } else {
+                "Show project details \u{00b7} \u{2318}J"
+            },
+            theme,
+        ))
+        .on_click(cx.listener(|root, _, _, cx| root.toggle_details(cx)));
     let has_chat = !root.chats.is_empty();
     content = content
         .child(new_chat)
@@ -2073,14 +2062,16 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         })
         .or_else(|| root.pulls.first())
         .cloned();
-    let totals = root
+    let changes = root
         .chats
         .get(root.active)
         .and_then(|chat| chat.changes.clone())
         .unwrap_or(serde_json::Value::Null);
-    let added = totals["added"].as_u64().unwrap_or(0);
-    let removed = totals["removed"].as_u64().unwrap_or(0);
-    let files = totals["files"].as_array().map(Vec::len).unwrap_or(0);
+    let project_path = project
+        .as_ref()
+        .map(|project| project.path.as_str())
+        .unwrap_or_default();
+    let (files, added, removed) = change_totals(project_path, root.live_changes.as_ref(), &changes);
 
     let mut panel = div()
         .id("details-pane")
@@ -2154,15 +2145,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         },
         theme,
         cx,
-        |root, _, cx| {
-            if root.show_changes {
-                root.show_changes = false;
-                root.change_review = None;
-                cx.notify();
-            } else {
-                root.open_repository_changes(cx);
-            }
-        },
+        |root, _, cx| root.toggle_repository_changes(cx),
     ));
 
     panel = panel.child(detail_row(
@@ -2493,6 +2476,21 @@ fn detail_row(
     row.on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
+fn change_totals(
+    project: &str,
+    live: Option<&(String, usize, usize, usize)>,
+    changes: &Value,
+) -> (usize, u64, u64) {
+    if let Some((_live_project, files, added, removed)) = live.filter(|live| live.0 == project) {
+        return (*files, *added as u64, *removed as u64);
+    }
+    (
+        changes["files"].as_array().map(Vec::len).unwrap_or(0),
+        changes["added"].as_u64().unwrap_or(0),
+        changes["removed"].as_u64().unwrap_or(0),
+    )
+}
+
 pub fn main(
     root: &mut Root,
     theme: &Theme,
@@ -2513,7 +2511,10 @@ pub fn main(
         .min_h(px(0.0));
 
     column = column.child(conversation(root, theme, scale, window, cx));
-    if crate::app::details_visible(root.show_details, !root.chats.is_empty()) {
+    if crate::app::details_visible(
+        root.show_details && !root.show_changes,
+        !root.chats.is_empty(),
+    ) {
         column = column.child(details(root, theme, cx));
     }
     if root.show_changes {
@@ -2561,6 +2562,7 @@ fn conversation(
         root.chats[index].follow_latest = true;
     }
     let follow_latest = root.chats[index].follow_latest;
+    let run_started_at = root.chats[index].run_started_at;
     let entries = root.chats[index].entries.clone();
     let leading = RAIL_WIDTH
         + if root.sidebar_visible {
@@ -2568,12 +2570,15 @@ fn conversation(
         } else {
             0.0
         };
-    let trailing = (if root.show_details { 312.0 } else { 0.0 })
-        + (if root.show_changes {
-            root.changes_width + 5.0
-        } else {
-            0.0
-        });
+    let trailing = (if root.show_details && !root.show_changes {
+        312.0
+    } else {
+        0.0
+    }) + (if root.show_changes {
+        root.changes_width + 5.0
+    } else {
+        0.0
+    });
     let reading_width =
         (f32::from(window.viewport_size().width) - leading - trailing - 44.0).clamp(280.0, 740.0);
 
@@ -2678,6 +2683,14 @@ fn conversation(
                     view
                 }),
         );
+    }
+    if let Some(started) = run_started_at {
+        transcript = transcript.child(run_time_view(
+            started.elapsed(),
+            true,
+            SharedString::from(format!("running-turn-{index}")),
+            theme,
+        ));
     }
 
     let composer_editor = root.editors.get(&root.chats[index].id).cloned();
@@ -3177,6 +3190,9 @@ fn entry_accessibility_label(entry: &Entry) -> String {
         Entry::Compaction { summary, .. } => format!("Conversation compacted: {summary}"),
         Entry::Approval(card) => format!("Approval needed for {}: {}", card.tool, card.detail),
         Entry::Question(_) => "Oxide has a question".to_string(),
+        Entry::RunTime { elapsed } => {
+            format!("Worked for {}", format_run_duration(*elapsed))
+        }
     }
 }
 
@@ -3604,7 +3620,75 @@ fn entry_view(
             }
             block
         }
+        Entry::RunTime { elapsed } => run_time_view(
+            *elapsed,
+            false,
+            SharedString::from(format!("run-time-{chat}-{position}")),
+            theme,
+        ),
     }
+}
+
+fn run_time_view(
+    elapsed: Duration,
+    running: bool,
+    id: impl Into<gpui::ElementId>,
+    theme: &Theme,
+) -> gpui::Div {
+    let label = if running {
+        format!("Working for {}", format_run_duration(elapsed))
+    } else {
+        format!("Worked for {}", format_run_duration(elapsed))
+    };
+    div().flex_none().w_full().max_w(px(740.0)).mx_auto().child(
+        div()
+            .id(id)
+            .role(gpui::Role::Status)
+            .aria_label(label.clone())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(7.0))
+            .pb(px(8.0))
+            .border_b_1()
+            .border_color(theme.border())
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(8.0))
+                    .h(px(8.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(if running {
+                        theme.accent()
+                    } else {
+                        theme.success()
+                    })
+                    .bg(if running {
+                        theme.wash("accent", 0.22)
+                    } else {
+                        theme.success()
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(theme.dim())
+                    .child(label),
+            ),
+    )
+}
+
+fn format_run_duration(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m {}s", seconds % 60);
+    }
+    format!("{}h {}m", minutes / 60, minutes % 60)
 }
 
 fn assistant_actions(
@@ -4688,7 +4772,7 @@ fn composer(
                 && root.prefs["send_key"].as_str() != Some("mod-enter")
             {
                 cx.stop_propagation();
-                root.open_repository_changes(cx);
+                root.toggle_repository_changes(cx);
             }
         }))
         .on_action(cx.listener(|root, _: &crate::app::Send, window, cx| root.send(window, cx)))
@@ -7428,7 +7512,9 @@ fn customize_empty(theme: &Theme, mark: Icon, title: &str, detail: &str) -> gpui
 
 #[cfg(test)]
 mod welcome_tests {
-    use super::{welcome, Welcome};
+    use super::{change_totals, format_run_duration, welcome, Welcome};
+    use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn the_invite_waits_for_the_project_list() {
@@ -7440,6 +7526,31 @@ mod welcome_tests {
         assert_eq!(welcome(false, true), Welcome::Waiting);
         assert_eq!(welcome(true, false), Welcome::NoProject);
         assert_eq!(welcome(true, true), Welcome::Project);
+    }
+
+    #[test]
+    fn a_live_repository_count_wins_over_a_stale_thread_listing() {
+        let changes = json!({
+            "files": [{ "path": "old.rs" }],
+            "added": 1,
+            "removed": 0
+        });
+        let live = ("/tmp/project".to_string(), 3, 278, 79);
+        assert_eq!(
+            change_totals("/tmp/project", Some(&live), &changes),
+            (3, 278, 79)
+        );
+        assert_eq!(
+            change_totals("/tmp/other", Some(&live), &changes),
+            (1, 1, 0)
+        );
+    }
+
+    #[test]
+    fn a_run_clock_uses_the_same_duration_shape_as_the_desktop_page() {
+        assert_eq!(format_run_duration(Duration::from_secs(7)), "7s");
+        assert_eq!(format_run_duration(Duration::from_secs(67)), "1m 7s");
+        assert_eq!(format_run_duration(Duration::from_secs(3670)), "1h 1m");
     }
 }
 

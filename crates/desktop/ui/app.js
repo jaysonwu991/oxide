@@ -1478,6 +1478,44 @@ function autolink(url, stash, bare = false) {
 }
 
 // Link labels can contain balanced brackets, as issue keys in PR titles do.
+function inlineDestination(text, start) {
+  let i = start + 1;
+  while (/\s/.test(text[i] || "")) i += 1;
+  let url = "";
+  if (text[i] === "<") {
+    const close = text.indexOf(">", i + 1);
+    if (close < 0) return null;
+    url = text.slice(i + 1, close);
+    i = close + 1;
+  } else {
+    const begin = i;
+    let depth = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === "(") depth += 1;
+      else if (ch === ")") {
+        if (depth === 0) break;
+        depth -= 1;
+      } else if (/\s/.test(ch) && depth === 0) break;
+      i += 1;
+    }
+    url = text.slice(begin, i);
+  }
+  if (!url) return null;
+  while (/\s/.test(text[i] || "")) i += 1;
+  let title = null;
+  if (text[i] === '"' || text[i] === "'") {
+    const quote = text[i];
+    const close = text.indexOf(quote, i + 1);
+    if (close < 0) return null;
+    title = text.slice(i + 1, close);
+    i = close + 1;
+    while (/\s/.test(text[i] || "")) i += 1;
+  }
+  if (text[i] !== ")") return null;
+  return { url, title, length: i - start + 1 };
+}
+
 function inlineLinks(text, stash) {
   const starts = [];
   let output = "";
@@ -1491,17 +1529,16 @@ function inlineLinks(text, stash) {
       const start = starts.pop();
       // A link may be written `<destination>` and may carry a title, which is
       // kept on the anchor so a read gives the line back as it was written.
-      const destination = /^\(\s*(?:<([^>]*)>|([^)\s]+))?(?:\s+(?:"([^"]*)"|'([^']*)'))?\s*\)/.exec(text.slice(i + 1));
-      if (!destination || (destination[1] == null && destination[2] == null)) continue;
-      const title = destination[3] ?? destination[4];
-      const url = destination[1] ?? destination[2];
+      const destination = text[i + 1] === "(" ? inlineDestination(text, i + 1) : null;
+      if (!destination) continue;
+      const { title, url } = destination;
       // A destination holding a stashed escape is not a URL any more, so the
       // line stays literal rather than building a link out of a placeholder.
       if (url.includes("\u0000")) continue;
       output += text.slice(copied, start) + stash(anchor(
         url, escapeHtml(text.slice(start + 1, i)), false, false, title,
       ));
-      i += destination[0].length;
+      i += destination.length;
       copied = i + 1;
       starts.length = 0;
     }
