@@ -1054,7 +1054,7 @@ impl App {
         let Some(text) = message.display() else {
             return "Turn complete".to_string();
         };
-        let title = oxide_core::title::summarize(&text, oxide_core::title::TITLE_LIMIT);
+        let title = oxide_core::title::first_line(&text, oxide_core::title::TITLE_LIMIT);
         if title.is_empty() {
             "Turn complete".to_string()
         } else {

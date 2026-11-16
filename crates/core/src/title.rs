@@ -15,7 +15,18 @@ pub const TITLE_LIMIT: usize = 64;
 /// title could be made of. A title never opens with what a paste put there: the
 /// pasted path is the paste's, and the request is the line's own words.
 pub fn summarize(text: &str, max: usize) -> String {
-    let Some(line) = first_prose_line(text) else {
+    summarize_with(text, max, true)
+}
+
+/// The first prose line alone, without joining a short subject lead-in to the
+/// request below it. Completion notices use this because an answer's following
+/// lines are body text rather than part of its label.
+pub fn first_line(text: &str, max: usize) -> String {
+    summarize_with(text, max, false)
+}
+
+fn summarize_with(text: &str, max: usize, combine_lead: bool) -> String {
+    let Some(line) = first_prose_line_inner(text, combine_lead) else {
         return String::new();
     };
     // A message can open with what a paste put there — a clipboard image's own
@@ -146,10 +157,6 @@ fn looks_like_location(word: &str) -> bool {
 /// contents are a listing rather than a title. A short unmarked lead-in such as
 /// a window or product name is joined to the request below it, so the title
 /// says what the session did rather than stopping at the label.
-fn first_prose_line(text: &str) -> Option<String> {
-    first_prose_line_inner(text, true)
-}
-
 fn first_prose_line_inner(text: &str, combine_lead: bool) -> Option<String> {
     let mut fenced = false;
     let mut first: Option<(String, bool)> = None;
@@ -446,6 +453,10 @@ mod tests {
         assert_eq!(
             summarize("Fix the build\nplease", TITLE_LIMIT),
             "Fix the build"
+        );
+        assert_eq!(
+            first_line("all done\n\non two lines", TITLE_LIMIT),
+            "all done"
         );
     }
 }

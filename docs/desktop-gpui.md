@@ -195,7 +195,9 @@ reveal rather than two frames of the wrong page.
   dims or replaces the conversation. The transcript follows streamed output
   while the reader is at its end; the first upward scroll stops following, even
   when that scroll is smaller than a page, and scrolling back to the end resumes
-  it. Each completed answer has a **More actions** control with copy-response
+  it. While reading earlier output, the floating down-arrow control above the
+  composer returns to the latest message and resumes following new output. Each
+  completed answer has a **More actions** control with copy-response
   and branch-in-new-chat actions. `Stop`
   cancels the run through
   `cancel_run`. A message typed while a turn is running is steered into it
@@ -274,7 +276,9 @@ reveal rather than two frames of the wrong page.
   `undo_turn` and the shared snapshot repository (the same restore the terminal's
   `changes undo` and the VS Code panel run). Every turn that changed files
   leaves an **Edited N files** card in the transcript — the count, the totals,
-  the files it touched, `Undo` for the newest turn, and `View changes`.
+  the files it touched, `Undo` for the newest turn, and `View changes`. The
+  card's three-dot menu copies the complete change summary or opens the review,
+  matching Codex Desktop.
   Repository files can be staged, unstaged or reverted from the pane, and each
   changed block carries its own `Stage hunk` / `Unstage hunk` action through
   `shape_change`. **Open file** opens the reviewed file in the shared viewer.

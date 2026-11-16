@@ -374,6 +374,7 @@ pub struct Root {
     pub project_actions_anchor_y: Option<f32>,
     pub(crate) project_actions_dismiss_armed: bool,
     pub assistant_actions: Option<(usize, usize)>,
+    pub edited_actions: Option<(usize, usize)>,
     pub(crate) composer_tools_dismiss_armed: bool,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
@@ -617,6 +618,7 @@ impl Root {
             project_actions_anchor_y: None,
             project_actions_dismiss_armed: false,
             assistant_actions: None,
+            edited_actions: None,
             composer_tools_dismiss_armed: false,
             resizing: None,
             show_changes: false,
@@ -4461,7 +4463,9 @@ impl Render for Root {
                 } else if this.activities_open {
                     this.activities_open = false;
                     cx.notify();
-                } else if this.assistant_actions.take().is_some() {
+                } else if this.assistant_actions.take().is_some()
+                    || this.edited_actions.take().is_some()
+                {
                     cx.notify();
                 } else if this.composer_tools_open {
                     this.composer_tools_open = false;

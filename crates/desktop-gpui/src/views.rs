@@ -2667,8 +2667,16 @@ fn conversation(
                 .mx_auto()
                 .flex_none()
                 .child({
-                    let mut view =
-                        entry_view(entry, index, position, theme, reading_width, window, cx);
+                    let mut view = entry_view(
+                        root,
+                        entry,
+                        index,
+                        position,
+                        theme,
+                        reading_width,
+                        window,
+                        cx,
+                    );
                     if let Entry::Assistant {
                         text,
                         streaming: false,
@@ -2699,12 +2707,63 @@ fn conversation(
         .map(|editor| editor.read(cx).height())
         .unwrap_or(px(20.0));
 
-    let mut pane_body = div()
+    let mut transcript_area = div()
+        .relative()
         .flex()
         .flex_col()
         .flex_1()
         .min_h(px(0.0))
         .child(transcript);
+    if !follow_latest {
+        transcript_area = transcript_area.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(8.0))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .id("jump-latest")
+                        .role(gpui::Role::Button)
+                        .aria_label("Jump to latest message")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(36.0))
+                        .h(px(36.0))
+                        .rounded(px(18.0))
+                        .border_1()
+                        .border_color(theme.border())
+                        .bg(theme.panel_2())
+                        .shadow_lg()
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style
+                                .bg(theme.panel_3())
+                                .border_color(theme.dim())
+                        })
+                        .tooltip(tip("Jump to latest message", theme))
+                        .child(icons::icon(Icon::ArrowDown, 18.0, theme.text()))
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            let Some(chat) = root.chats.get_mut(index) else {
+                                return;
+                            };
+                            chat.follow_latest = true;
+                            chat.scroll_to_end = true;
+                            cx.notify();
+                        })),
+                ),
+        );
+    }
+
+    let mut pane_body = div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h(px(0.0))
+        .child(transcript_area);
 
     if scroll_to_end || follow_latest {
         scroll.scroll_to_bottom();
@@ -2913,13 +2972,16 @@ fn suggestions(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
 /// the first few files it touched, and the two things a reader wants next —
 /// putting them back, or reading them in the changes pane.
 fn edited_card(
+    root: &mut Root,
     card: &crate::model::EditedCard,
     chat: usize,
+    position: usize,
     theme: &Theme,
     cx: &mut Context<Root>,
 ) -> gpui::Div {
     let count = card.files.len();
     let mut head = div()
+        .relative()
         .flex()
         .flex_row()
         .items_center()
@@ -2962,6 +3024,7 @@ fn edited_card(
                 .text_color(theme.error())
                 .child(format!("\u{2212}{}", card.removed)),
         );
+    head = head.child(edited_actions(root, card, chat, position, theme, cx));
 
     if card.undone {
         head = head.child(
@@ -3109,6 +3172,129 @@ fn edited_card(
     block
 }
 
+fn edited_actions(
+    root: &mut Root,
+    card: &crate::model::EditedCard,
+    chat: usize,
+    position: usize,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    let open = root.edited_actions == Some((chat, position));
+    let summary = edited_summary(card);
+    let review_card = card.clone();
+    let mut actions = div().relative().flex().flex_none().child(
+        icon_button(
+            SharedString::from(format!("edited-actions-{chat}-{position}")),
+            Icon::More,
+            26.0,
+            theme,
+            open,
+        )
+        .tooltip(tip("Change actions", theme))
+        .on_click(cx.listener(move |root, _, _, cx| {
+            root.assistant_actions = None;
+            root.edited_actions = if open { None } else { Some((chat, position)) };
+            cx.notify();
+        })),
+    );
+    if open {
+        actions = actions.child(
+            div()
+                .id(SharedString::from(format!(
+                    "edited-actions-menu-{chat}-{position}"
+                )))
+                .role(gpui::Role::Menu)
+                .aria_label("Change actions")
+                .absolute()
+                .right_0()
+                .top(px(30.0))
+                .w(px(210.0))
+                .flex()
+                .flex_col()
+                .p(px(6.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border())
+                .bg(theme.panel())
+                .shadow_xl()
+                .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+                    if root.edited_actions.take().is_some() {
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .id(("edited-copy-summary", chat))
+                        .role(gpui::Role::Button)
+                        .aria_label("Copy change summary")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .text_color(theme.text())
+                        .hover(move |style| style.bg(theme.panel_2()))
+                        .child(icons::icon(Icon::File, 14.0, theme.faint()))
+                        .child("Copy change summary")
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(summary.clone()));
+                            root.edited_actions = None;
+                            root.toast("Copied change summary", false, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("edited-open-changes", chat))
+                        .role(gpui::Role::Button)
+                        .aria_label("Open in changes")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .text_color(theme.text())
+                        .hover(move |style| style.bg(theme.panel_2()))
+                        .child(icons::icon(Icon::Changes, 14.0, theme.faint()))
+                        .child("Open in changes")
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            root.edited_actions = None;
+                            root.open_turn_changes(&review_card, None, cx);
+                        })),
+                ),
+        );
+    }
+    actions
+}
+
+fn edited_summary(card: &crate::model::EditedCard) -> String {
+    let mut summary = format!(
+        "Edited {} file{} (+{} \u{2212}{})",
+        card.files.len(),
+        if card.files.len() == 1 { "" } else { "s" },
+        card.added,
+        card.removed
+    );
+    for file in &card.files {
+        summary.push_str(&format!(
+            "\n{} {} +{} \u{2212}{}",
+            status_letter(&file.status),
+            file.path,
+            file.added,
+            file.removed
+        ));
+    }
+    summary
+}
+
 /// `status_letter` names a change the way git does: added, modified, deleted.
 fn status_letter(status: &str) -> &'static str {
     match status {
@@ -3197,6 +3383,7 @@ fn entry_accessibility_label(entry: &Entry) -> String {
 }
 
 fn entry_view(
+    root: &mut Root,
     entry: &Entry,
     chat: usize,
     position: usize,
@@ -3460,7 +3647,7 @@ fn entry_view(
             }
             block
         }
-        Entry::Edited(card) => edited_card(card, chat, theme, cx),
+        Entry::Edited(card) => edited_card(root, card, chat, position, theme, cx),
         Entry::Error(message) => div()
             .flex()
             .flex_col()
@@ -7512,7 +7699,8 @@ fn customize_empty(theme: &Theme, mark: Icon, title: &str, detail: &str) -> gpui
 
 #[cfg(test)]
 mod welcome_tests {
-    use super::{change_totals, format_run_duration, welcome, Welcome};
+    use super::{change_totals, edited_summary, format_run_duration, welcome, Welcome};
+    use crate::model::{EditedCard, EditedFile};
     use serde_json::json;
     use std::time::Duration;
 
@@ -7551,6 +7739,31 @@ mod welcome_tests {
         assert_eq!(format_run_duration(Duration::from_secs(7)), "7s");
         assert_eq!(format_run_duration(Duration::from_secs(67)), "1m 7s");
         assert_eq!(format_run_duration(Duration::from_secs(3670)), "1h 1m");
+    }
+
+    #[test]
+    fn a_change_card_menu_copies_every_file_and_its_totals() {
+        let card = EditedCard {
+            project: "/tmp/project".to_string(),
+            baseline: None,
+            after: None,
+            files: vec![EditedFile {
+                path: "src/main.rs".to_string(),
+                added: 3,
+                removed: 1,
+                status: "modified".to_string(),
+                binary: false,
+                diff: String::new(),
+            }],
+            added: 3,
+            removed: 1,
+            latest: true,
+            undone: false,
+        };
+        assert_eq!(
+            edited_summary(&card),
+            "Edited 1 file (+3 \u{2212}1)\nM src/main.rs +3 \u{2212}1"
+        );
     }
 }
 
