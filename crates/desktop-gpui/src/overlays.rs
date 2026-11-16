@@ -248,6 +248,8 @@ fn selectable(
         .flex_row()
         .items_center()
         .gap_2()
+        .w_full()
+        .min_w(px(0.0))
         .min_h(px(34.0))
         .px_2()
         .py(px(6.0))
@@ -258,28 +260,34 @@ fn selectable(
         } else {
             gpui::transparent_black()
         })
-        .hover(move |style| style.bg(theme.panel_2()))
+        .hover(move |style| style.bg(theme.panel_2()));
+    let mut copy = div()
+        .flex_1()
+        .min_w(px(0.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
         .child(
-            div().flex_1().min_w(px(0.0)).flex().flex_col().child(
-                div()
-                    .text_size(px(12.5))
-                    .text_color(if selected {
-                        theme.accent()
-                    } else {
-                        theme.text()
-                    })
-                    .child(label),
-            ),
+            div()
+                .text_size(px(12.5))
+                .text_color(if selected {
+                    theme.accent()
+                } else {
+                    theme.text()
+                })
+                .child(label),
         );
     if let Some(detail) = detail {
-        row = row.child(
+        copy = copy.child(
             div()
-                .flex_none()
                 .text_size(px(11.0))
+                .line_height(px(16.0))
                 .text_color(theme.faint())
+                .whitespace_normal()
                 .child(detail),
         );
     }
+    row = row.child(copy);
     if selected {
         row = row.child(div().text_color(theme.accent()).child("✓"));
     }
@@ -890,6 +898,7 @@ fn input_box(
     cx: &mut Context<Root>,
 ) -> Stateful<Div> {
     let focus_editor = editor.clone();
+    let click_editor = editor.clone();
     let value_editor = editor.clone();
     let value = editor.read(cx).text().to_string();
     div()
@@ -906,6 +915,12 @@ fn input_box(
                 value_editor.update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
             }
         })
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |_, _, window, cx| {
+                window.focus(&click_editor.read(cx).focus_handle(cx), cx);
+            }),
+        )
         .h(px(34.0))
         .px_2()
         .flex()
@@ -1668,6 +1683,7 @@ fn command_menu(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui:
                 div()
                     .flex_1()
                     .min_w(px(0.0))
+                    .h_full()
                     .child(root.command_query.clone()),
             ),
     );
@@ -1987,7 +2003,15 @@ fn agents_picker(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Di
             .text_color(theme.dim())
             .child("Choose the default agent for this chat."),
     );
-    let mut list = div().flex().flex_col().gap_1();
+    let mut list = div()
+        .id("agent-picker-list")
+        .flex()
+        .flex_col()
+        .gap_1()
+        .w_full()
+        .min_w(px(0.0))
+        .max_h(px(500.0))
+        .overflow_y_scroll();
     list = list.child(selectable(
         "agent-default",
         "Default agent".to_string(),
@@ -3634,6 +3658,12 @@ fn connect(root: &mut Root, theme: &Theme, provider: String, cx: &mut Context<Ro
                             .update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
                     }
                 })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|root, _, window, cx| {
+                        window.focus(&root.provider_filter.read(cx).focus_handle(cx), cx);
+                    }),
+                )
                 .h(px(36.0))
                 .px_2()
                 .flex()
@@ -3649,6 +3679,7 @@ fn connect(root: &mut Root, theme: &Theme, provider: String, cx: &mut Context<Ro
                     div()
                         .flex_1()
                         .min_w(px(0.0))
+                        .h_full()
                         .child(root.provider_filter.clone()),
                 ),
         )
@@ -3741,6 +3772,12 @@ fn new_project(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::
                             .update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
                     }
                 })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|root, _, window, cx| {
+                        window.focus(&root.project_name.read(cx).focus_handle(cx), cx);
+                    }),
+                )
                 .flex()
                 .flex_row()
                 .items_center()
@@ -3765,6 +3802,7 @@ fn new_project(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::
                     div()
                         .flex_1()
                         .min_w(px(0.0))
+                        .h_full()
                         .px(px(10.0))
                         .child(root.project_name.clone()),
                 ),

@@ -154,6 +154,7 @@ pub struct Editor {
     selection_color: gpui::Hsla,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
+    single_line: bool,
     scroll_offset: f32,
     viewport_height: Pixels,
 }
@@ -184,6 +185,7 @@ impl Editor {
             selection_color,
             undo: Vec::new(),
             redo: Vec::new(),
+            single_line: false,
             scroll_offset: 0.0,
             viewport_height: px(LINE_HEIGHT + 8.0),
         }
@@ -244,6 +246,11 @@ impl Editor {
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.set_text("", cx);
+    }
+
+    pub fn single_line(mut self) -> Self {
+        self.single_line = true;
+        self
     }
 
     fn cursor_offset(&self) -> usize {
@@ -1007,7 +1014,7 @@ impl Editor {
                     SharedString::from(display),
                     px(FONT_SIZE),
                     &runs,
-                    Some(width),
+                    if self.single_line { None } else { Some(width) },
                     None,
                 )
                 .ok()
@@ -1036,7 +1043,16 @@ impl Editor {
         let scroll_offset = self
             .scroll_offset
             .min((f32::from(self.total_height()) - f32::from(bounds.size.height)).max(0.0));
-        let mut y = bounds.origin.y - px(scroll_offset);
+        let vertical_padding = if self.single_line {
+            (f32::from(bounds.size.height) - LINE_HEIGHT).max(0.0) / 2.0
+        } else {
+            0.0
+        };
+        let text_origin = point(
+            bounds.origin.x,
+            bounds.origin.y + px(vertical_padding) - px(scroll_offset),
+        );
+        let mut y = text_origin.y;
         for shaped in &self.lines {
             let height = shaped.line.size(px(LINE_HEIGHT)).height;
             let origin = point(bounds.origin.x, y);
@@ -1101,10 +1117,7 @@ impl Editor {
             let caret = self.point_for_offset(self.cursor_offset());
             let cursor: PaintQuad = fill(
                 Bounds::new(
-                    point(
-                        bounds.origin.x + caret.x,
-                        bounds.origin.y + caret.y - px(scroll_offset),
-                    ),
+                    point(text_origin.x + caret.x, text_origin.y + caret.y),
                     size(px(1.5), px(LINE_HEIGHT)),
                 ),
                 self.caret_color,
@@ -1136,7 +1149,7 @@ impl Editor {
             ) {
                 if let Some(line) = shaped.pop() {
                     let _ = line.paint(
-                        bounds.origin,
+                        text_origin,
                         px(LINE_HEIGHT),
                         TextAlign::Left,
                         Some(bounds),
@@ -1300,10 +1313,13 @@ impl Render for Editor {
         let paint_entity = entity.clone();
         let paint_focus = focus.clone();
         let color = self.color;
+        let editor_id = ("oxide-editor", cx.entity_id());
 
         div()
-            .id("oxide-editor")
+            .id(editor_id)
             .size_full()
+            .flex_1()
+            .min_w(px(0.0))
             .key_context("Editor")
             .track_focus(&focus)
             .cursor(gpui::CursorStyle::IBeam)
