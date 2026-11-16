@@ -15,7 +15,18 @@ pub const TITLE_LIMIT: usize = 64;
 /// title could be made of. A title never opens with what a paste put there: the
 /// pasted path is the paste's, and the request is the line's own words.
 pub fn summarize(text: &str, max: usize) -> String {
-    let Some(line) = first_prose_line(text) else {
+    summarize_with(text, max, true)
+}
+
+/// The first prose line alone, without joining a short subject lead-in to the
+/// request below it. Completion notices use this because an answer's following
+/// lines are body text rather than part of its label.
+pub fn first_line(text: &str, max: usize) -> String {
+    summarize_with(text, max, false)
+}
+
+fn summarize_with(text: &str, max: usize, combine_lead: bool) -> String {
+    let Some(line) = first_prose_line_inner(text, combine_lead) else {
         return String::new();
     };
     // A message can open with what a paste put there — a clipboard image's own
@@ -35,7 +46,7 @@ pub fn summarize(text: &str, max: usize) -> String {
 /// is asked for the title through a structured tool, but providers can still
 /// include presentation such as `Title:` or surrounding quotes in the string.
 pub fn generated(text: &str, max: usize) -> String {
-    let Some(mut title) = first_prose_line(text) else {
+    let Some(mut title) = first_prose_line_inner(text, false) else {
         return String::new();
     };
     if title
@@ -143,9 +154,12 @@ fn looks_like_location(word: &str) -> bool {
 
 /// The first line of `text` that reads as prose, with its Markdown taken off: a
 /// fence, a rule and a table row say nothing on their own, and a fenced block's
-/// contents are a listing rather than a title.
-fn first_prose_line(text: &str) -> Option<String> {
+/// contents are a listing rather than a title. A short unmarked lead-in such as
+/// a window or product name is joined to the request below it, so the title
+/// says what the session did rather than stopping at the label.
+fn first_prose_line_inner(text: &str, combine_lead: bool) -> Option<String> {
     let mut fenced = false;
+    let mut first: Option<(String, bool)> = None;
     for raw in text.lines() {
         let line = raw.trim();
         if line.starts_with("```") || line.starts_with("~~~") {
@@ -158,10 +172,52 @@ fn first_prose_line(text: &str) -> Option<String> {
         let plain = plain_text(line);
         // A line that is only punctuation (`---`) is a rule, not a title.
         if plain.chars().any(char::is_alphanumeric) {
-            return Some(plain);
+            let marked = strip_block_marker(line) != line;
+            let Some((lead, unmarked)) = first.take() else {
+                first = Some((plain, !marked));
+                continue;
+            };
+            if combine_lead && unmarked && short_lead(&lead) {
+                return Some(format!("{lead}: {plain}"));
+            }
+            return Some(lead);
         }
     }
-    None
+    first.map(|(line, _)| line)
+}
+
+fn short_lead(text: &str) -> bool {
+    text.split_whitespace().count() <= 4
+        && text.chars().count() <= 36
+        && !text.ends_with(['.', '?', '!', ':'])
+        && !text.split_whitespace().next().is_some_and(|word| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "add"
+                    | "build"
+                    | "change"
+                    | "check"
+                    | "create"
+                    | "delete"
+                    | "document"
+                    | "explain"
+                    | "find"
+                    | "fix"
+                    | "improve"
+                    | "make"
+                    | "move"
+                    | "paste"
+                    | "remove"
+                    | "rename"
+                    | "review"
+                    | "run"
+                    | "show"
+                    | "support"
+                    | "test"
+                    | "update"
+                    | "use"
+            )
+        })
 }
 
 /// One line with its Markdown markers removed: a link or an image keeps its
@@ -386,5 +442,21 @@ mod tests {
         assert_eq!(summarize("\n\n## Heading\n\nbody", TITLE_LIMIT), "Heading");
         assert_eq!(summarize("![alt text](a.png)", TITLE_LIMIT), "alt text");
         assert_eq!(summarize("---\n***", TITLE_LIMIT), "");
+        assert_eq!(
+            summarize("GPUI Desktop\nFix the composer title", TITLE_LIMIT),
+            "GPUI Desktop: Fix the composer title"
+        );
+        assert_eq!(
+            summarize("## GPUI Desktop\nFix the composer title", TITLE_LIMIT),
+            "GPUI Desktop"
+        );
+        assert_eq!(
+            summarize("Fix the build\nplease", TITLE_LIMIT),
+            "Fix the build"
+        );
+        assert_eq!(
+            first_line("all done\n\non two lines", TITLE_LIMIT),
+            "all done"
+        );
     }
 }

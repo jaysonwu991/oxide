@@ -483,6 +483,12 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 :is(.msg .body, .markdown-input) { word-break: break-word; }
 .msg.user .body { white-space: normal; }
 :is(.msg .body, .markdown-input) :is(h1, h2, h3, h4, h5, h6) { margin: 14px 0 6px; line-height: 1.3; }
+:is(.msg .body, .markdown-input) h1 { font-size: 2em; }
+:is(.msg .body, .markdown-input) h2 { font-size: 1.5em; }
+:is(.msg .body, .markdown-input) h3 { font-size: 1.17em; }
+:is(.msg .body, .markdown-input) h4 { font-size: 1em; }
+:is(.msg .body, .markdown-input) h5 { font-size: 0.83em; }
+:is(.msg .body, .markdown-input) h6 { font-size: 0.67em; }
 :is(.msg .body, .markdown-input) p { margin: 7px 0; }
 :is(.msg .body, .markdown-input) ul, :is(.msg .body, .markdown-input) ol { margin: 7px 0; padding-left: 22px; }
 :is(.msg .body, .markdown-input) li { margin: 2px 0; }
@@ -497,6 +503,7 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
   border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: inherit;
+  color: inherit;
 }
 :is(.msg .body, .markdown-input) pre {
   background: var(--sidebar);
@@ -520,6 +527,11 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
   margin: 0 5px 0 0;
   vertical-align: -1px;
   accent-color: var(--accent);
+}
+.markdown-input::selection,
+.markdown-input *::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: inherit;
 }
 
 .tok-keyword { color: var(--accent); }

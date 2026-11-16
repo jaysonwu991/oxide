@@ -115,6 +115,11 @@ impl Theme {
     pub fn accent(&self) -> Hsla {
         self.color("accent")
     }
+    pub fn selection(&self) -> Hsla {
+        let mut color = self.accent();
+        color.a = 0.28;
+        color
+    }
     pub fn success(&self) -> Hsla {
         self.color("success")
     }

@@ -150,12 +150,19 @@ reveal rather than two frames of the wrong page.
   pin and remove controls. Thread rows reveal pin and archive
   controls on hover; right-click opens the rename, pin and archive dialog. An
   open stored thread keeps the same persisted label in the topbar and sidebar,
-  and Recents lists only sessions not already shown under a project.
+  the open chat takes a refreshed stored title when a run finishes, and Recents
+  lists only sessions not already shown under a project. An unnamed session
+  combines a short subject line with the request below it, so a window or
+  product label does not become the whole title.
   Creating a project uses the same name-and-source-folders sheet as the Electron
   window, adding source folders through `App::prompt_for_paths`. The selected
   project opens a draft and always asks for its own trust decision, including
   when an ancestor folder already has one. Removing a project asks first and the
-  shared manager forgets that project's exact `trust.json` decision.
+  shared manager forgets that project's exact `trust.json` decision. Selecting a
+  project when the open tab is still an untouched draft moves that draft to the
+  picked folder instead of opening another tab, so stepping through the sidebar
+  leaves one place to type; a tab that already holds work keeps it and opens a
+  new one.
 - **Activities** — the pulse control beside Search toggles the project tree for
   the activity feed, as Codex Desktop does. Priority lists waiting approvals,
   questions and running chats; Recent lists the newest stored threads. Opening
@@ -173,7 +180,10 @@ reveal rather than two frames of the wrong page.
   tool cards with their call, output and diff, errors, compaction notices, and
   a context ring beside the composer controls. Its top row names the project and
   the branch `git_info` reports (and leaves the branch out when the folder is not
-  a repository); its footer carries the attach and tools controls, the approvals
+  a repository); that branch is read again when a turn ends, when the window
+  becomes active again, and just after a command is typed into the dock's own
+  terminal, so one switched outside this window's knowledge shows up here; its
+  footer carries the attach and tools controls, the approvals
   dialog, one combined model-and-thinking chip, and the round send/stop
   button. The
   three-dot tools control opens Electron's compact menu above the composer with
@@ -185,7 +195,9 @@ reveal rather than two frames of the wrong page.
   dims or replaces the conversation. The transcript follows streamed output
   while the reader is at its end; the first upward scroll stops following, even
   when that scroll is smaller than a page, and scrolling back to the end resumes
-  it. Each completed answer has a **More actions** control with copy-response
+  it. While reading earlier output, the floating down-arrow control above the
+  composer returns to the latest message and resumes following new output. Each
+  completed answer has a **More actions** control with copy-response
   and branch-in-new-chat actions. `Stop`
   cancels the run through
   `cancel_run`. A message typed while a turn is running is steered into it
@@ -195,6 +207,14 @@ reveal rather than two frames of the wrong page.
   from disk or pasted from the system clipboard and sent as the data URLs the
   core's own attachment rules accept — the same images, PDFs and text the
   terminal and the stable window attach, under the same size and count limits.
+  Each turn leaves its own status-dot `Working for` / `Worked for` line in the
+  transcript, updated once a second while it runs and kept above that turn's
+  change card, so scrolling back through earlier turns preserves their clocks.
+  A paste reads the pasteboard twice: the window's in-process read answers
+  ordinary text immediately, while a picture or a path that names a file waits
+  for the shared media reader on the background task and lands as an attachment
+  when it answers, instead of holding the window still or inserting the file
+  path as prose.
   Image attachments show a thumbnail in the composer, a larger preview in the
   sent message, and open in a full-size viewer when clicked. An attachment can
   be sent without text. The composer lists
@@ -207,10 +227,22 @@ reveal rather than two frames of the wrong page.
 - **Composer** — the editor starts at Codex's two-line height, grows to a
   capped scrolling surface, and keeps the caret in view. Markdown renders in
   place while the source stays editable: heading markers and emphasis
-  delimiters are hidden, list and task markers become glyphs, inline code is
-  tinted, and quote lines keep their bar. Selection maps between rendered and
-  source text, and the field supports undo/redo, word/line navigation,
-  double-click word selection and triple-click line selection.
+  delimiters are hidden, list and task markers become glyphs, and inline code
+  keeps the normal text color over the same faint neutral wash as the page
+  rather than borrowing the accent-colored selection brush. `~~struck~~` text
+  is struck through, `[text](url)` and bare `http(s)://` links are underlined
+  while their source stays editable, and quote lines keep their dim bar without
+  becoming italic. Headings use the page's complete scale — `2em`, `1.5em`,
+  `1.17em`, `1em`, `.83em` and `.67em` — so their painted rows, caret,
+  selection and scroll follow that height. Fenced blocks render their contents
+  literally in the monospaced code style, combined `***strong emphasis***` is
+  preserved, escaped punctuation stays literal, entities show the character
+  they name, and clicking a rendered Task List box toggles its `[ ]` / `[x]`
+  source. Selection is a translucent accent wash separate from syntax colors.
+  Selection maps between rendered and source text, and the field supports
+  undo/redo, word/line navigation, double-click word selection and triple-click
+  line selection. Single-line fields such as search keep one size whatever they
+  hold.
 - **Approvals and questions** — `approval-request` and `question-request` are
   answered in a dialog and inline on the card they belong to, through
   `resolve_approval` / `resolve_question` and the shared brokers, so the terminal
@@ -244,7 +276,9 @@ reveal rather than two frames of the wrong page.
   `undo_turn` and the shared snapshot repository (the same restore the terminal's
   `changes undo` and the VS Code panel run). Every turn that changed files
   leaves an **Edited N files** card in the transcript — the count, the totals,
-  the files it touched, `Undo` for the newest turn, and `View changes`.
+  the files it touched, `Undo` for the newest turn, and `View changes`. The
+  card's three-dot menu copies the complete change summary or opens the review,
+  matching Codex Desktop.
   Repository files can be staged, unstaged or reverted from the pane, and each
   changed block carries its own `Stage hunk` / `Unstage hunk` action through
   `shape_change`. **Open file** opens the reviewed file in the shared viewer.
@@ -261,13 +295,20 @@ reveal rather than two frames of the wrong page.
   cutting them.
 - **Project details** — the topbar's details toggle opens the right-hand column
   from `repository_changes`, `git_info` and `mcp_servers`: the project and its
-  actions, `View changes` with the tree's totals, the repository's branch (or
+  actions, `View changes` with the live tree totals used by the composer's
+  change pill, the repository's branch (or
   `Local checkout`), the repository's pull request for the current branch when
   `pull_requests` finds one, and the sources the thread can reach with their
   state (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
   Like Codex Desktop, the toggle and ⌘J are available only while a chat is
   open, report whether the panel is expanded, and show or hide the same panel
-  without leaving a stale dock behind.
+  without leaving a stale dock behind. Opening a dock tab temporarily gives the
+  details pane's width to the dock without forgetting whether the reader had
+  details open; closing the dock restores that pane, while its own button
+  switches straight back to it. The Changes control is active only while Changes
+  is the open dock tab: pressing it while Terminal or Pulls is open switches to
+  Changes, and pressing it again closes Changes rather than closing whichever
+  unrelated tab happened to share the dock.
 - **Customize and providers** — the Customize destination loads
   `plugin_catalog`, searches installed and marketplace plugins, adds, updates
   and removes marketplaces, and installs, enables, disables and uninstalls

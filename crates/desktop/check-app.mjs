@@ -2282,6 +2282,13 @@ check(
   String(sheet.indexOf(":is(.msg .body, .markdown-input) code")),
 );
 check(
+  "kept the composer's Markdown selection and heading scale explicit",
+  /\.markdown-input::selection,[^{]*\.markdown-input \*::selection \{[^}]*background: color-mix\(in srgb, var\(--accent\) 28%, transparent\);[^}]*color: inherit;/.test(sheet) &&
+    /:is\(\.msg \.body, \.markdown-input\) h1 \{ font-size: 2em; \}/.test(sheet) &&
+    /:is\(\.msg \.body, \.markdown-input\) h6 \{ font-size: 0\.67em; \}/.test(sheet),
+  String(sheet.indexOf(".markdown-input::selection")),
+);
+check(
   "left the row's own readouts without handlers",
   facts.includes('<span id="git"') &&
     !/id="(git|context-ring)"[^>]*onclick/.test(facts) &&
@@ -6288,6 +6295,17 @@ check(
   bracketLink === '<p>PR <a href="https://github.com/Skyscanner/falcon/pull/11519" target="_blank" rel="noreferrer">#11519 [CYB-5757] feat: allow indexing</a> is open.</p>',
   bracketLink,
 );
+const nestedDestination = app.renderMarkdown(
+  '[Wiki](https://example.com/a_(b) "Nested target")',
+  true,
+);
+check(
+  "kept a link destination's balanced parentheses and title in the composer",
+  nestedDestination.includes('href="https://example.com/a_(b)"') &&
+    nestedDestination.includes('title="Nested target"') &&
+    nestedDestination.includes(">Wiki</a>"),
+  nestedDestination,
+);
 
 // A Markdown table is rendered from `splitRow`, a string splitter. The review's
 // diff row builder once shared the name and shadowed it through hoisting, so a
@@ -9561,7 +9579,7 @@ const functionCode = (code, name) => {
   return "";
 };
 const constCode = (code, name) => stripIndent((code.match(new RegExp(`^ *const ${name} = .*$`, "m")) || [""])[0]);
-const markdownPieces = ["markdownToText", "readMarkdown", "anchor", "autolink", "inlineLinks", "decodeEntities", "inline",
+const markdownPieces = ["markdownToText", "readMarkdown", "anchor", "autolink", "inlineDestination", "inlineLinks", "decodeEntities", "inline",
   "splitRow", "isTableSeparator", "tableAligns", "tableHtml", "startsTable", "isFenceEnd", "listItem", "renderList",
   "renderMarkdown"];
 const markdownConstants = ["BLOCK_START", "RULE", "LIST_ITEM", "ENTITIES", "CARET", "TAIL_NEWLINE"];

@@ -667,20 +667,14 @@ pub fn topbar(
     let new_chat = icon_button("new-chat", Icon::Plus, 30.0, theme, false)
         .tooltip(tip("New chat \u{00b7} \u{2318}N", theme))
         .on_click(cx.listener(|root, _, window, cx| root.new_chat(window, cx)));
-    let changes = icon_button("changes", Icon::Changes, 30.0, theme, root.show_changes)
+    let changes_open = root.show_changes && root.panel_tab == crate::app::PanelTab::Changes;
+    let changes = icon_button("changes", Icon::Changes, 30.0, theme, changes_open)
+        .aria_expanded(changes_open)
         .tooltip(tip(
             "Changes this turn left \u{00b7} \u{2318}\u{23ce}",
             theme,
         ))
-        .on_click(cx.listener(|root, _, _, cx| {
-            if root.show_changes {
-                root.show_changes = false;
-                root.change_review = None;
-                cx.notify();
-            } else {
-                root.open_repository_changes(cx);
-            }
-        }));
+        .on_click(cx.listener(|root, _, _, cx| root.toggle_repository_changes(cx)));
     let computer_use_active = root
         .chats
         .get(root.active)
@@ -695,28 +689,23 @@ pub fn topbar(
     )
     .tooltip(tip("Computer use", theme))
     .on_click(cx.listener(|root, _, _, cx| root.open_computer_use(cx)));
-    let details = icon_button(
-        "details-toggle",
-        Icon::Details,
-        30.0,
-        theme,
-        root.show_details,
-    )
-    .aria_label(if root.show_details {
-        "Hide project details"
-    } else {
-        "Show project details"
-    })
-    .aria_expanded(root.show_details)
-    .tooltip(tip(
-        if root.show_details {
-            "Hide project details \u{00b7} \u{2318}J"
+    let details_open = root.show_details && !root.show_changes;
+    let details = icon_button("details-toggle", Icon::Details, 30.0, theme, details_open)
+        .aria_label(if details_open {
+            "Hide project details"
         } else {
-            "Show project details \u{00b7} \u{2318}J"
-        },
-        theme,
-    ))
-    .on_click(cx.listener(|root, _, _, cx| root.toggle_details(cx)));
+            "Show project details"
+        })
+        .aria_expanded(details_open)
+        .tooltip(tip(
+            if details_open {
+                "Hide project details \u{00b7} \u{2318}J"
+            } else {
+                "Show project details \u{00b7} \u{2318}J"
+            },
+            theme,
+        ))
+        .on_click(cx.listener(|root, _, _, cx| root.toggle_details(cx)));
     let has_chat = !root.chats.is_empty();
     content = content
         .child(new_chat)
@@ -2073,14 +2062,16 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         })
         .or_else(|| root.pulls.first())
         .cloned();
-    let totals = root
+    let changes = root
         .chats
         .get(root.active)
         .and_then(|chat| chat.changes.clone())
         .unwrap_or(serde_json::Value::Null);
-    let added = totals["added"].as_u64().unwrap_or(0);
-    let removed = totals["removed"].as_u64().unwrap_or(0);
-    let files = totals["files"].as_array().map(Vec::len).unwrap_or(0);
+    let project_path = project
+        .as_ref()
+        .map(|project| project.path.as_str())
+        .unwrap_or_default();
+    let (files, added, removed) = change_totals(project_path, root.live_changes.as_ref(), &changes);
 
     let mut panel = div()
         .id("details-pane")
@@ -2154,15 +2145,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         },
         theme,
         cx,
-        |root, _, cx| {
-            if root.show_changes {
-                root.show_changes = false;
-                root.change_review = None;
-                cx.notify();
-            } else {
-                root.open_repository_changes(cx);
-            }
-        },
+        |root, _, cx| root.toggle_repository_changes(cx),
     ));
 
     panel = panel.child(detail_row(
@@ -2493,6 +2476,21 @@ fn detail_row(
     row.on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
 }
 
+fn change_totals(
+    project: &str,
+    live: Option<&(String, usize, usize, usize)>,
+    changes: &Value,
+) -> (usize, u64, u64) {
+    if let Some((_live_project, files, added, removed)) = live.filter(|live| live.0 == project) {
+        return (*files, *added as u64, *removed as u64);
+    }
+    (
+        changes["files"].as_array().map(Vec::len).unwrap_or(0),
+        changes["added"].as_u64().unwrap_or(0),
+        changes["removed"].as_u64().unwrap_or(0),
+    )
+}
+
 pub fn main(
     root: &mut Root,
     theme: &Theme,
@@ -2513,7 +2511,10 @@ pub fn main(
         .min_h(px(0.0));
 
     column = column.child(conversation(root, theme, scale, window, cx));
-    if crate::app::details_visible(root.show_details, !root.chats.is_empty()) {
+    if crate::app::details_visible(
+        root.show_details && !root.show_changes,
+        !root.chats.is_empty(),
+    ) {
         column = column.child(details(root, theme, cx));
     }
     if root.show_changes {
@@ -2561,6 +2562,7 @@ fn conversation(
         root.chats[index].follow_latest = true;
     }
     let follow_latest = root.chats[index].follow_latest;
+    let run_started_at = root.chats[index].run_started_at;
     let entries = root.chats[index].entries.clone();
     let leading = RAIL_WIDTH
         + if root.sidebar_visible {
@@ -2568,12 +2570,15 @@ fn conversation(
         } else {
             0.0
         };
-    let trailing = (if root.show_details { 312.0 } else { 0.0 })
-        + (if root.show_changes {
-            root.changes_width + 5.0
-        } else {
-            0.0
-        });
+    let trailing = (if root.show_details && !root.show_changes {
+        312.0
+    } else {
+        0.0
+    }) + (if root.show_changes {
+        root.changes_width + 5.0
+    } else {
+        0.0
+    });
     let reading_width =
         (f32::from(window.viewport_size().width) - leading - trailing - 44.0).clamp(280.0, 740.0);
 
@@ -2663,7 +2668,7 @@ fn conversation(
                 .flex_none()
                 .child({
                     let mut view =
-                        entry_view(entry, index, position, theme, reading_width, window, cx);
+                        entry_view(root, entry, index, position, reading_width, window, cx);
                     if let Entry::Assistant {
                         text,
                         streaming: false,
@@ -2679,6 +2684,14 @@ fn conversation(
                 }),
         );
     }
+    if let Some(started) = run_started_at {
+        transcript = transcript.child(run_time_view(
+            started.elapsed(),
+            true,
+            SharedString::from(format!("running-turn-{index}")),
+            theme,
+        ));
+    }
 
     let composer_editor = root.editors.get(&root.chats[index].id).cloned();
     let editor_height = composer_editor
@@ -2686,12 +2699,59 @@ fn conversation(
         .map(|editor| editor.read(cx).height())
         .unwrap_or(px(20.0));
 
-    let mut pane_body = div()
+    let mut transcript_area = div()
+        .relative()
         .flex()
         .flex_col()
         .flex_1()
         .min_h(px(0.0))
         .child(transcript);
+    if !follow_latest {
+        transcript_area = transcript_area.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(8.0))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .id("jump-latest")
+                        .role(gpui::Role::Button)
+                        .aria_label("Jump to latest message")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(36.0))
+                        .h(px(36.0))
+                        .rounded(px(18.0))
+                        .border_1()
+                        .border_color(theme.border())
+                        .bg(theme.panel_2())
+                        .shadow_lg()
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(theme.panel_3()).border_color(theme.dim()))
+                        .tooltip(tip("Jump to latest message", theme))
+                        .child(icons::icon(Icon::ArrowDown, 18.0, theme.text()))
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            let Some(chat) = root.chats.get_mut(index) else {
+                                return;
+                            };
+                            chat.follow_latest = true;
+                            chat.scroll_to_end = true;
+                            cx.notify();
+                        })),
+                ),
+        );
+    }
+
+    let mut pane_body = div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h(px(0.0))
+        .child(transcript_area);
 
     if scroll_to_end || follow_latest {
         scroll.scroll_to_bottom();
@@ -2900,13 +2960,16 @@ fn suggestions(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
 /// the first few files it touched, and the two things a reader wants next —
 /// putting them back, or reading them in the changes pane.
 fn edited_card(
+    root: &mut Root,
     card: &crate::model::EditedCard,
     chat: usize,
+    position: usize,
     theme: &Theme,
     cx: &mut Context<Root>,
 ) -> gpui::Div {
     let count = card.files.len();
     let mut head = div()
+        .relative()
         .flex()
         .flex_row()
         .items_center()
@@ -2949,6 +3012,7 @@ fn edited_card(
                 .text_color(theme.error())
                 .child(format!("\u{2212}{}", card.removed)),
         );
+    head = head.child(edited_actions(root, card, chat, position, theme, cx));
 
     if card.undone {
         head = head.child(
@@ -3096,6 +3160,129 @@ fn edited_card(
     block
 }
 
+fn edited_actions(
+    root: &mut Root,
+    card: &crate::model::EditedCard,
+    chat: usize,
+    position: usize,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    let open = root.edited_actions == Some((chat, position));
+    let summary = edited_summary(card);
+    let review_card = card.clone();
+    let mut actions = div().relative().flex().flex_none().child(
+        icon_button(
+            SharedString::from(format!("edited-actions-{chat}-{position}")),
+            Icon::More,
+            26.0,
+            theme,
+            open,
+        )
+        .tooltip(tip("Change actions", theme))
+        .on_click(cx.listener(move |root, _, _, cx| {
+            root.assistant_actions = None;
+            root.edited_actions = if open { None } else { Some((chat, position)) };
+            cx.notify();
+        })),
+    );
+    if open {
+        actions = actions.child(
+            div()
+                .id(SharedString::from(format!(
+                    "edited-actions-menu-{chat}-{position}"
+                )))
+                .role(gpui::Role::Menu)
+                .aria_label("Change actions")
+                .absolute()
+                .right_0()
+                .top(px(30.0))
+                .w(px(210.0))
+                .flex()
+                .flex_col()
+                .p(px(6.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border())
+                .bg(theme.panel())
+                .shadow_xl()
+                .on_mouse_down_out(cx.listener(|root, _, _, cx| {
+                    if root.edited_actions.take().is_some() {
+                        cx.notify();
+                    }
+                }))
+                .child(
+                    div()
+                        .id(("edited-copy-summary", chat))
+                        .role(gpui::Role::Button)
+                        .aria_label("Copy change summary")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .text_color(theme.text())
+                        .hover(move |style| style.bg(theme.panel_2()))
+                        .child(icons::icon(Icon::File, 14.0, theme.faint()))
+                        .child("Copy change summary")
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(summary.clone()));
+                            root.edited_actions = None;
+                            root.toast("Copied change summary", false, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("edited-open-changes", chat))
+                        .role(gpui::Role::Button)
+                        .aria_label("Open in changes")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .text_color(theme.text())
+                        .hover(move |style| style.bg(theme.panel_2()))
+                        .child(icons::icon(Icon::Changes, 14.0, theme.faint()))
+                        .child("Open in changes")
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            root.edited_actions = None;
+                            root.open_turn_changes(&review_card, None, cx);
+                        })),
+                ),
+        );
+    }
+    actions
+}
+
+fn edited_summary(card: &crate::model::EditedCard) -> String {
+    let mut summary = format!(
+        "Edited {} file{} (+{} \u{2212}{})",
+        card.files.len(),
+        if card.files.len() == 1 { "" } else { "s" },
+        card.added,
+        card.removed
+    );
+    for file in &card.files {
+        summary.push_str(&format!(
+            "\n{} {} +{} \u{2212}{}",
+            status_letter(&file.status),
+            file.path,
+            file.added,
+            file.removed
+        ));
+    }
+    summary
+}
+
 /// `status_letter` names a change the way git does: added, modified, deleted.
 fn status_letter(status: &str) -> &'static str {
     match status {
@@ -3177,18 +3364,23 @@ fn entry_accessibility_label(entry: &Entry) -> String {
         Entry::Compaction { summary, .. } => format!("Conversation compacted: {summary}"),
         Entry::Approval(card) => format!("Approval needed for {}: {}", card.tool, card.detail),
         Entry::Question(_) => "Oxide has a question".to_string(),
+        Entry::RunTime { elapsed } => {
+            format!("Worked for {}", format_run_duration(*elapsed))
+        }
     }
 }
 
 fn entry_view(
+    root: &mut Root,
     entry: &Entry,
     chat: usize,
     position: usize,
-    theme: &Theme,
     width: f32,
     window: &mut Window,
     cx: &mut Context<Root>,
 ) -> gpui::Div {
+    let theme = root.theme.clone();
+    let theme = &theme;
     match entry {
         Entry::User { text, attachments } => {
             let mut card = div()
@@ -3444,7 +3636,7 @@ fn entry_view(
             }
             block
         }
-        Entry::Edited(card) => edited_card(card, chat, theme, cx),
+        Entry::Edited(card) => edited_card(root, card, chat, position, theme, cx),
         Entry::Error(message) => div()
             .flex()
             .flex_col()
@@ -3604,7 +3796,75 @@ fn entry_view(
             }
             block
         }
+        Entry::RunTime { elapsed } => run_time_view(
+            *elapsed,
+            false,
+            SharedString::from(format!("run-time-{chat}-{position}")),
+            theme,
+        ),
     }
+}
+
+fn run_time_view(
+    elapsed: Duration,
+    running: bool,
+    id: impl Into<gpui::ElementId>,
+    theme: &Theme,
+) -> gpui::Div {
+    let label = if running {
+        format!("Working for {}", format_run_duration(elapsed))
+    } else {
+        format!("Worked for {}", format_run_duration(elapsed))
+    };
+    div().flex_none().w_full().max_w(px(740.0)).mx_auto().child(
+        div()
+            .id(id)
+            .role(gpui::Role::Status)
+            .aria_label(label.clone())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(7.0))
+            .pb(px(8.0))
+            .border_b_1()
+            .border_color(theme.border())
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(8.0))
+                    .h(px(8.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(if running {
+                        theme.accent()
+                    } else {
+                        theme.success()
+                    })
+                    .bg(if running {
+                        theme.wash("accent", 0.22)
+                    } else {
+                        theme.success()
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(theme.dim())
+                    .child(label),
+            ),
+    )
+}
+
+fn format_run_duration(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m {}s", seconds % 60);
+    }
+    format!("{}h {}m", minutes / 60, minutes % 60)
 }
 
 fn assistant_actions(
@@ -4688,7 +4948,7 @@ fn composer(
                 && root.prefs["send_key"].as_str() != Some("mod-enter")
             {
                 cx.stop_propagation();
-                root.open_repository_changes(cx);
+                root.toggle_repository_changes(cx);
             }
         }))
         .on_action(cx.listener(|root, _: &crate::app::Send, window, cx| root.send(window, cx)))
@@ -7428,7 +7688,10 @@ fn customize_empty(theme: &Theme, mark: Icon, title: &str, detail: &str) -> gpui
 
 #[cfg(test)]
 mod welcome_tests {
-    use super::{welcome, Welcome};
+    use super::{change_totals, edited_summary, format_run_duration, welcome, Welcome};
+    use crate::model::{EditedCard, EditedFile};
+    use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn the_invite_waits_for_the_project_list() {
@@ -7440,6 +7703,56 @@ mod welcome_tests {
         assert_eq!(welcome(false, true), Welcome::Waiting);
         assert_eq!(welcome(true, false), Welcome::NoProject);
         assert_eq!(welcome(true, true), Welcome::Project);
+    }
+
+    #[test]
+    fn a_live_repository_count_wins_over_a_stale_thread_listing() {
+        let changes = json!({
+            "files": [{ "path": "old.rs" }],
+            "added": 1,
+            "removed": 0
+        });
+        let live = ("/tmp/project".to_string(), 3, 278, 79);
+        assert_eq!(
+            change_totals("/tmp/project", Some(&live), &changes),
+            (3, 278, 79)
+        );
+        assert_eq!(
+            change_totals("/tmp/other", Some(&live), &changes),
+            (1, 1, 0)
+        );
+    }
+
+    #[test]
+    fn a_run_clock_uses_the_same_duration_shape_as_the_desktop_page() {
+        assert_eq!(format_run_duration(Duration::from_secs(7)), "7s");
+        assert_eq!(format_run_duration(Duration::from_secs(67)), "1m 7s");
+        assert_eq!(format_run_duration(Duration::from_secs(3670)), "1h 1m");
+    }
+
+    #[test]
+    fn a_change_card_menu_copies_every_file_and_its_totals() {
+        let card = EditedCard {
+            project: "/tmp/project".to_string(),
+            baseline: None,
+            after: None,
+            files: vec![EditedFile {
+                path: "src/main.rs".to_string(),
+                added: 3,
+                removed: 1,
+                status: "modified".to_string(),
+                binary: false,
+                diff: String::new(),
+            }],
+            added: 3,
+            removed: 1,
+            latest: true,
+            undone: false,
+        };
+        assert_eq!(
+            edited_summary(&card),
+            "Edited 1 file (+3 \u{2212}1)\nM src/main.rs +3 \u{2212}1"
+        );
     }
 }
 

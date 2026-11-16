@@ -10,6 +10,7 @@ use gpui::{Image, ImageFormat};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// A number the engine wrote, under the name the Rust struct serialises it with.
 /// The snapshots the page's own bridge answers with used camelCase for a few of
@@ -69,6 +70,7 @@ pub struct SessionRow {
     pub id: String,
     pub project: String,
     pub title: String,
+    pub named: bool,
     pub preview: String,
     pub modified_at: u64,
     pub pinned: bool,
@@ -94,6 +96,7 @@ impl SessionRow {
             id,
             project: value["cwd"].as_str().unwrap_or_default().to_string(),
             title,
+            named: !name.is_empty(),
             preview,
             modified_at: number(value, "modified_at", "modifiedAt"),
             pinned: value["pinned"].as_bool().unwrap_or(false),
@@ -246,6 +249,9 @@ pub enum Entry {
     },
     Approval(ApprovalCard),
     Question(QuestionCard),
+    RunTime {
+        elapsed: Duration,
+    },
 }
 
 impl Entry {
@@ -436,6 +442,7 @@ pub struct Chat {
     pub project: String,
     pub session: Option<String>,
     pub title: String,
+    pub provisional_title: bool,
     pub entries: Vec<Entry>,
     pub run: Option<u64>,
     pub stop_requested: bool,
@@ -458,6 +465,7 @@ pub struct Chat {
     pub context_tokens: Option<u64>,
     pub context_provider: String,
     pub context_model: String,
+    pub run_started_at: Option<Instant>,
     pub scroll: gpui::ScrollHandle,
 }
 
@@ -468,6 +476,7 @@ impl Chat {
             project,
             session: None,
             title,
+            provisional_title: true,
             entries: Vec::new(),
             run: None,
             stop_requested: false,
@@ -487,6 +496,7 @@ impl Chat {
             context_tokens: None,
             context_provider: String::new(),
             context_model: String::new(),
+            run_started_at: None,
             scroll: gpui::ScrollHandle::new(),
         }
     }
@@ -606,6 +616,14 @@ impl Chat {
         }
         self.entries.push(Entry::Edited(card));
         self.scroll_to_end = true;
+    }
+
+    pub fn finish_run(&mut self) {
+        if let Some(started) = self.run_started_at.take() {
+            self.entries.push(Entry::RunTime {
+                elapsed: started.elapsed(),
+            });
+        }
     }
 
     pub fn mark_undone(&mut self) {
@@ -1090,6 +1108,22 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_run_clock_stays_above_its_change_card() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.run_started_at = Some(Instant::now());
+        chat.finish_run();
+        chat.record_turn(&json!({
+            "changes": {
+                "files": [{ "path": "src/main.rs", "added": 2, "removed": 1 }],
+                "added": 2,
+                "removed": 1
+            }
+        }));
+        assert!(matches!(chat.entries[0], Entry::RunTime { .. }));
+        assert!(matches!(chat.entries[1], Entry::Edited(_)));
+    }
+
+    #[test]
     fn a_project_row_reads_the_engines_own_names() {
         let projects = projects(&json!([{
             "display_path": "~/Projects/oxide",
@@ -1129,6 +1163,15 @@ mod tests {
             session.title,
             "Align GPUI window with the Electron fallback"
         );
+        assert!(session.named);
+        let unnamed = SessionRow::from_value(&json!({
+            "cwd": "/tmp",
+            "id": "unnamed",
+            "name": "",
+            "preview": "Prompt"
+        }))
+        .expect("an unnamed session row");
+        assert!(!unnamed.named);
         assert_eq!(session.project, "/Users/jayson/Projects/oxide");
         assert_eq!(session.modified_at, 1_794_657_550);
     }
