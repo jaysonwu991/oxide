@@ -20,7 +20,7 @@
 # The categories, replacers, and change templates are shared with the CLI,
 # stable desktop and VS Code configs; keep the four files in sync.
 
-name-template: 'Oxide Desktop v$RESOLVED_VERSION'
+name-template: 'Oxide Desktop GPUI v$RESOLVED_VERSION'
 tag-template: 'desktop-gpui-v$RESOLVED_VERSION'
 tag-prefix: 'desktop-gpui-v'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
@@ -131,10 +131,11 @@ template: |
 
   $CHANGES
 
-  ## Install
+  ## Install Oxide Desktop GPUI
 
-  Download the installer for your platform from the assets below. The app is
-  built for Apple Silicon, Intel and 64-bit Windows and Linux.
+  Oxide Desktop GPUI is the recommended desktop front-end. Download the
+  installer for your platform from the assets below. The app is built for Apple
+  Silicon, Intel and 64-bit Windows and Linux.
 
   - **macOS, Apple Silicon** — `Oxide-macos-arm64.dmg`
   - **macOS, Intel** — `Oxide-macos-x64.dmg`

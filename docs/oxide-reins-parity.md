@@ -1,5 +1,11 @@
 # Computer Use parity review — GPUI Desktop, the helper and the runtime
 
+> **Distribution warning:** the current `Oxide Computer Use` helper is an
+> ad-hoc development build unless a builder supplies and validates a Developer
+> ID identity. It is not Apple Developer ID-signed or Apple-notarized for
+> release. It is not a verified production distribution, and macOS may treat it
+> as an unidentified or damaged app.
+
 Target: the user-visible behavior in the supplied screenshots and the
 [official Computer Use documentation](https://learn.chatgpt.com/docs/computer-use),
 checked on 2026-11-08. Codex's private implementation is not available here.

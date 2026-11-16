@@ -111,7 +111,7 @@ pub fn layer(
             path,
             name,
             pinned,
-        } => project_actions(theme, id, path, name, pinned, cx),
+        } => project_actions(root, theme, id, path, name, pinned, cx),
         Overlay::Approvals => approvals(root, theme, cx),
         Overlay::ComputerUse => computer_use(root, theme, cx),
         Overlay::Worktrees => worktrees(root, theme, cx),
@@ -2449,6 +2449,7 @@ fn session_actions(
 }
 
 fn project_actions(
+    root: &mut Root,
     theme: &Theme,
     id: String,
     path: String,
@@ -2463,9 +2464,62 @@ fn project_actions(
             .child(path.clone()),
     );
     let pin_id = id.clone();
+    let save_id = id.clone();
     let remove_id = id.clone();
     let remove_path = path.clone();
+    let name_focus = root.project_name.clone();
+    let name_value = root.project_name.clone();
     panel = panel
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .mt_2()
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme.dim())
+                        .child("Project name"),
+                )
+                .child(
+                    div()
+                        .id("project-actions-name")
+                        .role(gpui::Role::TextInput)
+                        .aria_label("Project name")
+                        .aria_value(root.project_name.read(cx).text().to_string())
+                        .on_a11y_action(gpui::AccessibleAction::Focus, move |_, window, cx| {
+                            window.focus(&name_focus.read(cx).focus_handle(cx), cx);
+                        })
+                        .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, _, cx| {
+                            if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+                                name_value
+                                    .update(cx, |editor, cx| editor.set_text(value.to_string(), cx));
+                            }
+                        })
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|root, _, window, cx| {
+                                window.focus(&root.project_name.read(cx).focus_handle(cx), cx);
+                            }),
+                        )
+                        .h(px(38.0))
+                        .px_3()
+                        .rounded(px(9.0))
+                        .border_1()
+                        .border_color(theme.border())
+                        .bg(theme.panel_2())
+                        .child(root.project_name.clone()),
+                ),
+        )
+        .child(
+            Button::new("Save").primary().render(
+                SharedString::from(format!("project-save-{id}")),
+                theme,
+                cx,
+                move |root, _, cx| root.save_project_name(save_id.clone(), cx),
+            ),
+        )
         .child(
             Button::new(if pinned { "Unpin project" } else { "Pin project" }).render(
                 SharedString::from(format!("project-pin-{id}")),

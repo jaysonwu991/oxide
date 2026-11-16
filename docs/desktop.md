@@ -1,4 +1,4 @@
-# Desktop app
+# Electron Desktop fallback
 
 The primary desktop app is the native GPUI window in `crates/desktop-gpui`,
 documented in [desktop-gpui.md](desktop-gpui.md). This file describes the
@@ -53,7 +53,7 @@ shared CLI/Desktop/VS Code configuration and sessions, project trust, explicit
 approval choices, discovered agents, commands, skills, MCP and plugins. Matching
 Codex's workflows must preserve those contracts.
 
-| Capability | Oxide Desktop evidence and remaining difference |
+| Capability | Electron desktop fallback evidence and remaining difference |
 | --- | --- |
 | Projects and chat navigation | Implemented: project tree, tabs, search, pin/archive/rename and history (`manager.rs`, `search.rs`, `ui/app.js`). Cloud-synced projects and custom sidebar sections are not implemented. |
 | Parallel conversations | Implemented: per-conversation transcript, run, queue, usage and changes. Background follow-ups now retain their own agent and reasoning overrides instead of reading the visible conversation's choices. |
@@ -1770,7 +1770,8 @@ and results for removed messages or old themes are discarded. Run
 ## Check for updates
 
 **Check for Updates…** in the macOS app menu, directly under **About**,
-opens the update dialog to report the newest **Oxide Desktop** release and
+opens the update dialog to report the newest **Oxide Desktop (Electron
+fallback)** release and
 install it. The blue update button in the navigation rail reopens that dialog
 when an update is available, downloading, or waiting for a restart. The app's own
 release train is `desktop-v*` and nothing else: the engine resolves it with the
@@ -1943,7 +1944,8 @@ Each build writes to `crates/desktop/artifacts/`, named the way
 `Oxide-linux-<arch>-Setup.tar.gz` for each Linux architecture, and a
 `Oxide-win-<arch>-Setup.exe`. None of them carries a version, exactly as the
 CLI's archives are named: the same names are republished to the
-`desktop-latest` release, and the links `install.md` publishes are those. electron-builder spells an AppImage's x64
+`desktop-electron-latest` release, while the recommended Oxide Desktop GPUI
+installers use `desktop-latest`. electron-builder spells an AppImage's x64
 `x86_64` rather than `x64`, so the Linux x64 AppImage is
 `Oxide-linux-x86_64-Setup.AppImage` while its archive is
 `Oxide-linux-x64-Setup.tar.gz` — the spelling the build really writes,
@@ -2071,7 +2073,7 @@ shell history.
 
 ## Release assets
 
-Each `desktop-v*` release carries installers for the five platforms the app is
+Each `desktop-v*` Electron fallback release carries installers for the five platforms the app is
 built for. Pick the asset whose platform matches the machine; the name carries
 the platform and is the same from release to release, so the versioned release
 the file came from is the only place its version is written down:
@@ -2104,13 +2106,20 @@ the only job granted `contents: write`, and the one that
 runs for a `desktop-v*` tag alone — preserves the existing draft's notes, uploads
 all installers and publishes the release. If no draft exists, it creates one
 with generated notes before uploading and publishing. It then refreshes the
-`desktop-latest` alias release — the same files again, at a tag that never moves
+`desktop-electron-latest` alias release — the same files again, at a tag that never moves
 and is marked a pre-release so `/releases/latest` keeps naming a versioned
-release — which is what the installer table in `README.md` links to. A
+release. This is the Electron fallback's permanent link; the `desktop-latest`
+release used by the main installer table is published from Oxide Desktop GPUI. A
 `workflow_dispatch` build publishes nothing and needs no more than a read-only
 token.
 
 ## Computer-Use screenshots
+
+> **Distribution warning:** the optional **Oxide Computer Use** helper is a
+> development build. It has not been signed with an Apple Developer ID or
+> notarized by Apple by default, so macOS Gatekeeper and permission prompts can
+> treat it as untrusted. Installing it does not establish Apple verification of
+> the helper, its runtime, or its installer integration.
 
 Desktop carries an app-managed `oxide-computer-use` plugin in
 `crates/desktop/plugins/oxide-computer-use`. At launch the harness refreshes the

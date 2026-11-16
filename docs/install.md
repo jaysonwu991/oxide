@@ -1,8 +1,9 @@
 # Installation and updates
 
-How to install the `oxide` CLI, the desktop app, and the VS Code extension, and
-how to keep an installation current or remove it. For configuration after
-install, see [configuration.md](configuration.md).
+How to install the `oxide` CLI, Oxide Desktop GPUI, the Electron desktop
+fallback, and the VS Code extension, and how to keep an installation current or
+remove it. For configuration after install, see
+[configuration.md](configuration.md).
 
 ## Prebuilt binary
 
@@ -64,20 +65,22 @@ both names.
 ## From source
 
 Requires a stable Rust toolchain (edition 2021). The workspace splits the shared
-agent core (`crates/core`), the terminal CLI (`crates/cli`), and the desktop app
-(`crates/desktop`); the VS Code extension in `editors/vscode` is a separate pnpm
+agent core (`crates/core`) and terminal CLI (`crates/cli`). Oxide Desktop GPUI
+(`crates/desktop-gpui`) and the Electron fallback (`crates/desktop`) are separate
+Cargo workspaces; the VS Code extension in `editors/vscode` is a separate pnpm
 package.
 
 ```sh
 cargo install --path crates/cli
 ```
 
-## Desktop app
+## Oxide Desktop GPUI
 
-The primary desktop app is the native GPUI window in `crates/desktop-gpui`.
-Prebuilt packages are drafted under `desktop-gpui-v*` releases on the
-[releases page](https://github.com/jaysonwu991/oxide/releases), and the newest
-of each platform is also on the `desktop-latest`
+The primary desktop app is the native GPUI window in `crates/desktop-gpui`. Use
+it instead of the Electron fallback unless you specifically need an
+Electron-only compatibility path. Prebuilt packages are drafted under
+**Oxide Desktop GPUI v...** releases on the `desktop-gpui-v*` train, and the
+newest of each platform is also on the `desktop-latest`
 [release](https://github.com/jaysonwu991/oxide/releases/tag/desktop-latest),
 whose files are replaced on every publish. Since `/releases/latest` names the
 newest release of the repository as a whole — which may be a CLI or extension
@@ -86,8 +89,8 @@ one — `desktop-latest` is what a permanent link is built on.
 The native app ships a disk image for macOS (Apple Silicon and Intel), and
 `tar.gz` packages for Windows x64 and Linux x64/arm64. [README.md](../README.md#installers)
 links each of them; [desktop-gpui.md](desktop-gpui.md) explains the packaging.
-The Electron window remains available from versioned `desktop-v*` releases as a
-fallback during the transition.
+The Electron window remains available from versioned `desktop-v*` releases and
+the separate `desktop-electron-latest` alias as a compatibility fallback.
 
 On macOS, an app that was not notarized — a build made without both the
 Developer ID certificate and the App Store Connect key — opens as **damaged**
@@ -121,6 +124,16 @@ tree, managed with pnpm, and is built from its own directory.
 
 See [desktop-gpui.md](desktop-gpui.md) for the native app and
 [desktop.md](desktop.md) for the Electron fallback.
+
+### Oxide Computer Use distribution warning
+
+`Oxide Computer Use` is an experimental macOS helper. It has **not** received
+Apple Developer ID signing or Apple notarization unless you build it yourself
+with a valid identity; the documented default is an ad-hoc development
+signature. Gatekeeper can therefore block or warn about it, and rebuilding the
+ad-hoc bundle can invalidate previously granted Accessibility or Screen
+Recording permissions. See
+[the helper guide](../crates/desktop/computer-use/README.md).
 
 ## VS Code extension
 
@@ -159,8 +172,8 @@ oxide update --check --json     # the same report for a front-end
 
 `oxide update` resolves the newest release of its own train — the `Oxide-manifest`
 the installers read, falling back to GitHub's release list filtered to the tags
-that belong to the CLI — so a release for the desktop app or the VS Code
-extension is never installed as the CLI, and verifies the archive's SHA-256
+that belong to the CLI — so a release for either desktop front-end or the VS
+Code extension is never installed as the CLI, and verifies the archive's SHA-256
 checksum (warning when a release carries none). It replaces the running binary
 only after the unpacked one reports its version, so a truncated download or a
 wrong-platform archive is refused instead of taking the place of a working
@@ -195,16 +208,16 @@ overrides both for one launch). Only the TUI shows it — a `-p`/`--mode json`/
 changelog and the day it went out, which a dialog draws so the reader reads what
 changed without leaving it) and the `asset` (its `name`, `url` and the `digest`
 GitHub reports) — which is what a front-end reads instead of parsing the prose.
-`--component <cli|desktop|extension>` and `--current <VERSION>` decide which
-release train the report is about and what it is compared against: the CLI's own
-train (`v*`) by default, and the desktop app's (`desktop-v*`) or the VS Code
-extension's (`extension-v*`) when asked for, with each component's artifact for
-this platform in `asset`. That is how the desktop app's **Check for Updates…**
-resolves its own release and how the extension resolves the `.vsix` it installs,
-through the same resolution this command uses (`oxide_core::updates`) rather
-than a second copy of the rules. Only `--check` takes these two flags — an
-install of anything but the CLI belongs to the front-end that can put that
-release in place.
+`--component <cli|desktop-gpui|desktop|extension>` and `--current <VERSION>`
+decide which release train the report is about and what it is compared against:
+the CLI's own train (`v*`) by default, Oxide Desktop GPUI's (`desktop-gpui-v*`),
+the Electron fallback's (`desktop-v*`), or the VS Code extension's
+(`extension-v*`), with each component's artifact for this platform in `asset`.
+That is how each desktop front-end resolves its own release and how the
+extension resolves the `.vsix` it installs, through the same resolution this
+command uses (`oxide_core::updates`) rather than a second copy of the rules.
+Only `--check` takes these two flags — an install of anything but the CLI
+belongs to the front-end that can put that release in place.
 
 ## Uninstalling
 

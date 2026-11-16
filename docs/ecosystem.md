@@ -74,9 +74,9 @@ Slash commands are expanded from the ecosystem and also include built-ins:
 `/plugins`, `/marketplaces`, `/notify`, `/permissions`, `/usage`, `/spend`,
 `/updates`, `/undo`, `/redo`, `/compact`, `/attach`, `/copy [all]`, and a skill
 by its own name (`/rust-conventions`, whose other spelling is `/skill:<name>`).
-The names the desktop app and the VS Code panel also perform (`/mcp`, `/model`,
+The names both desktop front-ends and the VS Code panel also perform (`/mcp`, `/model`,
 `/reasoning`, `/permissions`, `/trust`, `/session`, `/new`, `/usage`, `/attach`,
-`/language`, `/connect` and `/logout` — `/theme` in the desktop app, `/agent` in
+`/language`, `/connect` and `/logout` — `/theme` in the desktop front-ends, `/agent` in
 the panel)
 are declared once in `crate::commands`, so each front-end lists the commands it
 actually answers.
@@ -99,7 +99,7 @@ the same name. Use `/marketplaces` to browse marketplaces and install, enable, o
 remove their plugins interactively. See
 [Plugins and hooks](cli.md#plugins-and-hooks).
 
-The desktop app also ships managed plugin packages under
+The desktop front-ends also ship managed plugin packages under
 `crates/desktop/plugins/`. Desktop refreshes these packages from its installed
 resources and records them as built-in plugins. A managed plugin can be enabled
 or disabled like any other plugin, but it cannot be uninstalled from the plugin

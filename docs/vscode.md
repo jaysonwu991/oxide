@@ -1355,7 +1355,8 @@ the pinned, self-contained Mermaid browser bundle under `media/vendor/` — no C
 and no network at run time, loaded on the first diagram.
 
 `media/main.js` renders the transcript in the webview; it is adapted from the
-desktop app (`crates/desktop/ui/app.js`), so a reply reads the same in both.
+Electron fallback's page (`crates/desktop/ui/app.js`), so a reply reads the same
+in the two webview front-ends.
 User messages and assistant replies are Markdown (headings, lists, tables, fenced code with
 lightweight syntax highlighting, inline emphasis/code/links, and auto-linked
 bare URLs). Tool calls are collapsible cards colored by state, with a spinner

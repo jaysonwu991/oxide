@@ -1,5 +1,10 @@
 # Computer-Use session review — 2026-11-08
 
+> Historical review. This records the evidence available on the date above; it
+> is not a current product or parity claim. See
+> [oxide-reins-parity.md](oxide-reins-parity.md) for current Computer Use status,
+> including the helper's lack of Apple Developer ID signing and notarization.
+
 Reviewed the root `sessions/593979a6232cf3be/1794104897151_18e5f0e5fc7d68e8.jsonl`
 (the sole JSONL file). It records a publisher-form task in Oxide Desktop with
 `deepseek-flash`, followed by requests to use Computer-Use and see a preview.

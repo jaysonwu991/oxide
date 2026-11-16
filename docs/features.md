@@ -2,29 +2,33 @@
 
 The full feature list. The [README](../README.md) keeps a short summary; this
 page is the detail behind it, and the task-by-task guides live in
-[cli.md](cli.md), [desktop.md](desktop.md), and [vscode.md](vscode.md).
+[cli.md](cli.md), [desktop-gpui.md](desktop-gpui.md), [desktop.md](desktop.md),
+and [vscode.md](vscode.md).
 
 ## Interfaces
 
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
   TUI, `/connect` and `/logout` manage provider credentials.
-- Desktop app (`oxide-desktop`, an Electron window over the same Rust engine) that
-  manages multiple projects
-  and shows the shared session store, using the same configuration as the CLI —
-  with chat tabs, a draft that follows the tab it was typed in, and a run that
-  keeps going while the reader opens another conversation (see
-  [desktop.md](desktop.md)).
+- **Oxide Desktop GPUI** (`crates/desktop-gpui`) is the recommended and primary
+  desktop app: a native GPUI window that links the desktop engine in-process,
+  manages multiple projects, and shares the CLI's configuration and session
+  store. It includes chat tabs, independent drafts and runs, streamed Markdown,
+  reviews, worktrees, terminals, MCP servers, plugins, Computer Use controls,
+  and AccessKit accessibility (see [desktop-gpui.md](desktop-gpui.md)).
+- The Electron desktop app (`crates/desktop`) remains a compatibility fallback.
+  It drives the same Rust engine over its JSON bridge and shares the same
+  configuration and session store (see [desktop.md](desktop.md)).
 - VS Code extension (`editors/vscode`) that drives the same `oxide` binary from
   a chat panel in the activity bar, with editor actions for the selection and
   the CLI's own sessions and configuration (see [vscode.md](vscode.md)).
 - Interface language: British English (the default) or Simplified Chinese, chosen
-  once for the terminal, the desktop app and the panel through the shared
+  once for the terminal, both desktop front-ends and the panel through the shared
   `language` setting, `--language`, `OXIDE_LANG`, `oxide language` or
   `/language` (see [Language](configuration.md#language)).
 - Mermaid diagrams: a fenced `mermaid` block in a reply renders as a diagram in
-  the desktop app and the VS Code panel, following the theme, with its source one
-  click away. The terminal keeps the fence as readable code. The repository's
+  both desktop front-ends and the VS Code panel, following the theme, with its
+  source one click away. The terminal keeps the fence as readable code. The repository's
   `atlassian` skill routes Confluence diagrams through native Mermaid or the
   deferred draw.io MCP server, where Mermaid can open as an editable draw.io
   diagram.
@@ -109,7 +113,7 @@ repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies`) rather than as on
 general comment on the pull request; `gh pr comment` is for a new top-level
 comment. A summary about a pull or merge request names it with a link the user
 can click — `[#123](https://github.com/owner/repo/pull/123)`, the URL the forge
-CLI printed, not a bare `#123` — beside its state, since the desktop app and the
+CLI printed, not a bare `#123` — beside its state, since both desktop front-ends and the
 VS Code panel open a Markdown link in the browser and a terminal links the URL
 printed after the label. A commit is named that way too — `[<short sha>](<url>)`
 in a report, a reply to a review comment or any other summary — with the URL
@@ -157,7 +161,7 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
   selected with `--use-theme` or `/theme`. The built-in palettes are shared with
-  the desktop app, so the CLI and desktop render the same colors.
+  both desktop front-ends, so the CLI and desktops render the same colors.
 
 ## Sessions and context
 
@@ -171,7 +175,7 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   `--fork <path|id>`, plus TUI commands `/new`, `/session`, `/name`, `/model`,
   `/reasoning`, `/export`, `/reload`, and `/hotkeys`.
 - Git worktrees: a conversation can run in its own `git worktree` — made by
-  `--worktree`, `oxide worktree create`, the desktop app's checkout picker or the
+  `--worktree`, `oxide worktree create`, a desktop checkout picker or the
   panel's **Worktrees** listing — so a task edits a copy of the project on an
   `oxide/<name>` branch while the folder you have open stays as it was, and the
   chat can be handed between the local folder and its checkout without losing its
