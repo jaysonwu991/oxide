@@ -18,7 +18,7 @@ in `~/Library/Application Support/Oxide/sessions`:
 
 | Time | Session | Observed outcome |
 | --- | --- | --- |
-| 10:28 | `18e5f0e5fc7d68e8` (root dump) | Permission diagnosis and preview request; previously reviewed in `session-review-2026-11-08.md`. |
+| 10:28 | `18e5f0e5fc7d68e8` (root dump) | Permission diagnosis and preview request. |
 | 11:59 | `18e5f5da885dc8f0` | Tool searches returned unrelated MCP integrations; the assistant reported GUI control unavailable. Why the server was absent from these results is not established. |
 | 12:00 | `18e5f5f01d158f18` | Actual MCP permissions report both grants for Oxide.app. AX calls locate the Create Publisher form. Four results retain image parts (two state calls and two explicit screenshots). Later AX-only results contain no fresh screenshot. |
 

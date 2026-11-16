@@ -230,7 +230,15 @@ falls back to a parallel built-in walker that skips binary files. Patterns are
 regexes by default (`literal: true` searches plain text); invalid regex syntax is
 searched literally with a note. Content mode's default limit is 100 output rows,
 with the shared 2000-line / 50 KB output budget. Shell searches redirected to
-`grep` explicitly select content mode to preserve their output.
+`grep` explicitly select content mode to preserve their output. A standalone
+shell grep whose pattern, one path, file filters, case mode, output mode and
+context can be represented faithfully is rewritten to the typed `grep` call
+before permissions, events and execution see it, so the transcript paints
+`Search` rather than a failed `Command`. Grep's `-A`, `-B`, `-C`,
+`--after-context`, `--before-context` and `--context` windows map to the tool's
+symmetric `context` argument; a search of one named file is converted too.
+Pipes, mutations, expansions and shell-dependent behavior are never discarded:
+those commands retain their real shell semantics.
 
 A `read` the platform refuses — macOS keeps the
 Desktop, Documents and Downloads folders behind a per-app grant — is reported

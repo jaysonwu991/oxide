@@ -4,6 +4,23 @@ Detailed implementation notes, moved from AGENTS.md to keep startup context smal
 Search for the relevant path or symbol and read only the matching region.
 These notes describe existing contracts; confirm current behavior in code and tests.
 
+## Shared tool-use contract
+
+`Config::compose_system_prompt` in `oxide-core` supplies the same tool-use rules
+to the CLI, VS Code extension, Electron desktop and GPUI desktop. A multi-item
+request is one change set: inspect the related code for every item before the
+first edit, apply independent fixes before a broad build/test pass, and run that
+full verifier again only when a later edit or an unresolved failure invalidates
+its result. This keeps four-item UI work from becoming four separate
+edit-and-full-suite cycles.
+
+The same shared layer rewrites a standalone shell `grep` to the typed `grep`
+tool when its pattern, single path, filters and context can be represented
+faithfully. This happens before permissions and agent events, so every
+front-end paints `Search` rather than a failed `Command`. Shell pipelines,
+mutations, expansions and other behavior the tool cannot preserve still run as
+the shell wrote them or receive the explicit refusal.
+
 ## Layout
 
 The repository is a Cargo workspace. Shared agent code lives in

@@ -86,6 +86,14 @@ and [vscode.md](vscode.md).
   preserving model order, `bash` output streams into the UI as it arrives, and
   typing while the agent works can queue or steer it between steps. Enter steers
   the active response while busy; Alt+Enter queues a follow-up for after it.
+  A shell grep that the typed search can represent faithfully is routed to
+  `grep` before permissions and events, including `-A`/`-B`/`-C` context and
+  searches of one named file, so every front-end paints `Search` instead of a
+  failed `Command`.
+  The shared prompt treats a multi-item request as one change set, so the CLI,
+  VS Code extension and both desktop front-ends inspect all related code before
+  applying independent fixes and reserve broad build/test passes for after the
+  last related edit.
 - Read-only runs via the tool allowlist, e.g.
   `oxide -t read,grep,find,ls -p "review this"`.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x` disables
@@ -206,7 +214,8 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   colored line-numbered diff, user and assistant turns are named by a mark alone
   (`❯` and `◆` in the speaker's color, drawn inline before the text, since Pi's
   transcript names no speaker), and the system prompt nudges the model to batch
-  reads instead of re-reading the same paths.
+  independent reads, complete a multi-item change set, and reserve broad
+  verification for after the last related edit.
 - Visible work in progress: reasoning streams into the transcript as a muted
   italic `✦ Thinking` block that closes with `✦ Thought for 1.4s`, so work done
   before the answer is no longer invisible. Ctrl+T collapses reasoning blocks to
