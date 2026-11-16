@@ -390,6 +390,7 @@ function threadRecord(key) {
       pendingSends: [],
       tools: [],
       computerUse: null,
+      computerActive: false,
       currentAssistant: null,
       currentThinking: null,
       runError: "",
@@ -3278,6 +3279,7 @@ function clearPaintIdle() {
 }
 
 function resetTurn() {
+  paintingThread().computerActive = false;
   clearPaint();
   // A run that ended took its requests with it, so a question it left waiting
   // is not answerable any more: the dialog goes away, as the extension settles
@@ -4042,6 +4044,7 @@ function setIdle() {
   const record = paintingThread();
   finishRunClock(record);
   record.busy = false;
+  record.computerActive = false;
   record.runId = null;
   record.runSession = null;
   record.runProject = null;
@@ -4561,6 +4564,7 @@ async function startPrompt(prompt, attachments, showBubble = true, thread = null
   const turnOptions = record.turnOptions || { agent: null, reasoning: null };
   const project = record.worktree || record.project || view.project;
   if (!project) return;
+  record.computerActive = false;
   const session = record.session;
   record.project ||= project;
   record.runProject = project;
@@ -5237,17 +5241,48 @@ function updateComputerUse(tool, images = []) {
   const record = tool.owner;
   const previous = record.computerUse;
   const app = typeof args?.app === "string" ? args.app : "";
+  const action = tool.name.split("__").at(-1).replaceAll("_", " ");
   record.computerUse = {
     app,
-    action: tool.name.split("__").at(-1).replaceAll("_", " "),
+    action,
     isError: Boolean(tool.isError),
     image: images.at(-1) || previous?.image || null,
     imageApp: images.length ? app : previous?.imageApp || "",
+    permissions: action === "permissions" && tool.done
+      ? parseComputerPermissions(tool.full)
+      : previous?.permissions || null,
   };
+  record.computerActive = true;
   // Background events update their owner; shared controls describe only the
   // visible conversation, including when another thread is being replayed.
   if (record === visibleThread()) paintComputerUse();
-  syncComputerLive();
+}
+
+function parseComputerPermissions(output) {
+  try {
+    const status = JSON.parse(String(output || "").trim());
+    if (typeof status?.accessibility !== "boolean" || typeof status?.screen_recording !== "boolean") return null;
+    return {
+      accessibility: status.accessibility,
+      screenRecording: status.screen_recording,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function computerUsePermissionCaption(activity) {
+  const permissions = activity?.permissions;
+  if (!permissions) return t("computerUse.permissionCheckNoScreenshot", "Permission checks do not capture the screen.");
+  if (permissions.accessibility && permissions.screenRecording) {
+    return t("computerUse.permissionsReady", "App control and screen capture permissions are available.");
+  }
+  if (!permissions.accessibility && !permissions.screenRecording) {
+    return t("computerUse.permissionsMissing", "Enable Oxide under both Device Control & Data Access and Screen & System Audio Recording in System Settings → Privacy & Security.");
+  }
+  return !permissions.accessibility
+    ? t("computerUse.accessibilityMissing", "Enable Oxide under System Settings → Privacy & Security → Device Control & Data Access.")
+    : t("computerUse.screenRecordingMissing", "Enable Oxide under System Settings → Privacy & Security → Screen & System Audio Recording.");
 }
 
 // While a Computer Use task runs, the window follows it: the screen is read
@@ -5260,9 +5295,17 @@ const computerLive = { timer: null, overlay: false, reading: false };
 function runningComputerThread() {
   let found = null;
   for (const record of threads.values()) {
-    if (record.busy && !record.stopRequested && record.tools?.some((tool) => isComputerTool(tool.name) && !tool.done)) found = record;
+    if (record.busy && !record.stopRequested && record.computerActive) found = record;
   }
   return found;
+}
+
+/// Codex gives Computer Use the Escape key while its task is running. An
+/// unrelated dialog keeps its own Escape behavior, so only the Computer Use
+/// dialog or the bare conversation hands the key to cancellation.
+function escapeStopsComputer() {
+  return Boolean(runningComputerThread())
+    && ![...OVERLAYS, "question"].some((id) => !el(id).hidden);
 }
 
 function syncComputerLive() {
@@ -5302,6 +5345,7 @@ async function readComputerScreen() {
 }
 
 function paintComputerUse() {
+  syncComputerLive();
   if (paintThread && paintThread !== visibleThread()) return;
   const record = visibleThread();
   const activity = record.computerUse;
@@ -5315,6 +5359,7 @@ function paintComputerUse() {
     toggle.title = t("computerUse.settingsTitle", "Computer use settings");
     toggle.setAttribute("aria-label", toggle.title);
     toggle.setAttribute("aria-expanded", String(!el("computer-use-modal").hidden));
+    toggle.removeAttribute("aria-keyshortcuts");
     if (!el("computer-use-modal").hidden) {
       for (const prefix of ["computer-use-dialog"]) {
         el(`${prefix}-status`).textContent = t("computerUse.noSession", "No active Computer Use session.");
@@ -5326,17 +5371,29 @@ function paintComputerUse() {
   }
   const active = record.tools.filter((tool) => isComputerTool(tool.name) && !tool.done);
   const running = record.busy && active.length > 0;
+  const taskRunning = runningComputerThread() === record;
+  const permissionsMissing = Boolean(activity.permissions)
+    && (!activity.permissions.accessibility || !activity.permissions.screenRecording);
+  const permissionsReady = activity.action === "permissions"
+    && activity.permissions?.accessibility
+    && activity.permissions?.screenRecording;
   const label = record.stopRequested
     ? record.busy ? t("computerUse.stopping", "Stopping…") : t("computerUse.stopped", "Stopped")
+    : permissionsMissing && (activity.action === "permissions" || activity.isError || record.runError)
+      ? t("computerUse.permissionsNeeded", "Permissions needed")
     : activity.isError || record.runError ? t("computerUse.failed", "Action failed")
     : running ? t("computerUse.working", "Using computer")
     : record.busy ? t("computerUse.waiting", "Waiting for next action")
+    : permissionsReady ? t("computerUse.ready", "Ready")
     : t("computerUse.finished", "Finished");
-  toggle.classList.toggle("computer-active", running);
+  toggle.classList.toggle("computer-active", taskRunning);
   toggle.innerHTML = ICONS.pointer;
-  toggle.title = `${t("computerUse.title", "Computer use")} · ${label}`;
+  const escapeHint = taskRunning ? ` · ${t("computerUse.escapeToStop", "Esc to stop")}` : "";
+  toggle.title = `${t("computerUse.title", "Computer use")} · ${label}${escapeHint}`;
   toggle.setAttribute("aria-label", toggle.title);
   toggle.setAttribute("aria-expanded", String(!el("computer-use-modal").hidden));
+  if (taskRunning) toggle.setAttribute("aria-keyshortcuts", "Escape");
+  else toggle.removeAttribute("aria-keyshortcuts");
   for (const prefix of ["computer-use", "computer-use-dialog"]) {
     const status = el(`${prefix}-status`);
     status.textContent = label;
@@ -5349,11 +5406,15 @@ function paintComputerUse() {
       if (activity.image) preview.appendChild(openableImage(activity.image.dataUrl, activity.image.name || activity.imageApp));
       preview.computerImage = activity.image;
     }
-    el(`${prefix}-snapshot`).textContent = activity.image && activity.live
+    const caption = activity.action === "permissions"
+      || permissionsMissing && (activity.isError || record.runError)
+      ? computerUsePermissionCaption(activity)
+      : activity.image && activity.live
       ? t("computerUse.liveScreen", "Live screen · refreshed every {value0}s", { value0: COMPUTER_LIVE_MS / 1000 })
       : activity.image
       ? `${t("computerUse.snapshot", "Last captured screenshot")}${activity.imageApp ? ` · ${activity.imageApp}` : ""}`
       : t("computerUse.noScreenshot", "No screenshot captured yet. Accessibility actions do not always return an image.");
+    el(`${prefix}-snapshot`).textContent = `${caption}${escapeHint}`;
     const stopButton = el(`${prefix}-stop`);
     stopButton.hidden = !record.busy;
     stopButton.disabled = record.stopRequested;
@@ -12743,6 +12804,10 @@ function init() {
     }
     if (event.key === "Escape") {
       closePalette();
+      if (escapeStopsComputer()) {
+        event.preventDefault();
+        void stopThread(runningComputerThread());
+      }
       return;
     }
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -12774,6 +12839,8 @@ function init() {
       el("message-preview").hidden = true;
       const computerOpen = !el("computer-use-modal").hidden;
       const modalOpen = OVERLAYS.some((id) => !el(id).hidden);
+      const computer = escapeStopsComputer() ? runningComputerThread() : null;
+      if (computer) void stopThread(computer);
       closeSidebarCards();
       closeImage();
       closeReasoning();

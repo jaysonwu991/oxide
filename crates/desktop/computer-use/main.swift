@@ -126,8 +126,8 @@ final class Helper: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         for (title, action) in [
             ("Check permissions", #selector(permissions)),
-            ("Grant Accessibility…", #selector(accessibility)),
-            ("Grant Screen Recording…", #selector(screenRecording)),
+            ("Grant app-control permission…", #selector(accessibility)),
+            ("Grant screen-capture permission…", #selector(screenRecording)),
             ("Stop computer use and quit", #selector(stop))
         ] {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
@@ -181,7 +181,7 @@ final class Helper: NSObject, NSApplicationDelegate {
     @objc func permissions() {
         let alert = NSAlert()
         alert.messageText = "Oxide Computer Use permissions"
-        alert.informativeText = "Accessibility: \(AXIsProcessTrusted() ? "granted" : "missing")\nScreen Recording: \(CGPreflightScreenCaptureAccess() ? "granted" : "missing")\n\nThese grants belong to this helper. Existing Oxide.app grants are separate. Reconnect the MCP server after changing grants."
+        alert.informativeText = "App control: \(AXIsProcessTrusted() ? "granted" : "missing")\nScreen capture: \(CGPreflightScreenCaptureAccess() ? "granted" : "missing")\n\nOn macOS 27 and later these appear under Privacy & Security as Device Control & Data Access and Screen & System Audio Recording. These grants belong to this helper. Existing Oxide.app grants are separate. Reconnect the MCP server after changing grants."
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
