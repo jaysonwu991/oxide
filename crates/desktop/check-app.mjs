@@ -4648,7 +4648,7 @@ computerThread.busy = true;
 computerThread.runError = "";
 computerThread.stopRequested = false;
 check("recognized local computer-use server names without matching unrelated tools",
-  app.isComputerTool("computer-use-local__click") && app.isComputerTool("computer_use__screenshot") && !app.isComputerTool("other__computer-use"));
+  app.isComputerTool("computer-use-local__click") && app.isComputerTool("oxide-computer-use__get_app_state") && app.isComputerTool("computer_use__screenshot") && !app.isComputerTool("other__computer-use"));
 const pointerCard = app.startTool("computer-use__click", '{"app":"Edge"}');
 check("showed a mouse icon and active computer-use status",
   Boolean(pointerCard.block.querySelector(".computer-tool-icon")) &&

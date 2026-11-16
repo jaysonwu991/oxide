@@ -1372,6 +1372,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .create-project-name-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .create-project-name-field > span { display: flex; align-items: center; justify-content: center; width: 40px; height: 100%; flex: none; border-right: 1px solid var(--border); color: var(--dim); }
 #create-project-name { flex: 1; min-width: 0; height: 100%; padding: 0 10px; border: 0; border-radius: 12px; background: transparent; font-size: 13.5px; }
+#create-project-name:focus-visible { outline: none; }
 #create-project-sources { gap: 8px; margin: 0; }
 .create-project-sources-label { font-size: 13px; }
 .create-project-source-box { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 104px; padding: 16px; border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 12px; }
@@ -1384,6 +1385,7 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .create-project-source-options .path-row { margin-top: 12px; }
 .create-project-source-options .path-input { min-width: 0; }
 button.create-project-add { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 3px 10px; border-radius: 20px; background: var(--panel-3); font-size: 13px; }
+button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, var(--panel-3) 82%, var(--text)); }
 .create-project-dialog .dialog-actions { margin-top: 32px; gap: 16px; }
 .create-project-dialog .dialog-actions button { padding: 7px 18px; font-size: 13.5px; border-radius: 10px; }
 

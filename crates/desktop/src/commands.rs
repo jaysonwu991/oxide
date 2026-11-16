@@ -466,6 +466,52 @@ pub async fn computer_use_policy(
     }))
 }
 
+/// The server's live view of the screen, read from the connection the project's
+/// last turn already holds. Nothing is started for it: with no connected
+/// session there is nothing to follow, and the answer says so.
+pub async fn computer_use_screen(project: String, state: &DesktopState) -> CmdResult<Value> {
+    let path = PathBuf::from(&project);
+    let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let Some(environment) = state.environments.lock().await.get(&key).cloned() else {
+        return Ok(json!({ "live": false }));
+    };
+    let config = {
+        let manager = state.manager.lock().await;
+        manager.config_for(&path).map_err(err)?
+    };
+    let names = config
+        .ecosystem
+        .mcp
+        .iter()
+        .filter(|server| server.enabled)
+        .map(|server| server.name.as_str())
+        .collect::<Vec<_>>();
+    let Some(name) = computer_use_server_name(names.iter().copied())
+        .or_else(|| names.iter().copied().find(|name| *name == "computer-use"))
+    else {
+        return Ok(json!({ "live": false }));
+    };
+    let Ok(result) = environment
+        .mcp
+        .read_resource(name, "computer-use://screen")
+        .await
+    else {
+        return Ok(json!({ "live": false }));
+    };
+    let image = result.media.iter().find_map(|part| match part {
+        ContentPart::ImageUrl { image_url } => Some(image_url.url.clone()),
+        _ => None,
+    });
+    Ok(match image {
+        Some(url) if !result.is_error => json!({
+            "live": true,
+            "server": name,
+            "image": { "name": "screen", "dataUrl": url },
+        }),
+        _ => json!({ "live": false }),
+    })
+}
+
 /// The MCP servers visible from `project` with their connection state: what
 /// `/mcp` lists. The view is the same one the CLI prints and the VS Code
 /// extension draws, so all three agree on names, transports and statuses.
@@ -2149,6 +2195,9 @@ pub async fn dispatch(
             )
             .await,
         ),
+        "computer_use_screen" => {
+            command_value(computer_use_screen(arg(&args, "project")?, &state).await)
+        }
         "set_mcp_server" => command_value(
             set_mcp_server(
                 arg(&args, "project")?,

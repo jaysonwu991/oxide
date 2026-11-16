@@ -951,6 +951,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("computerUse.waiting", "Waiting for next action", "等待下一步操作"),
     ("computerUse.finished", "Finished", "已结束"),
     ("computerUse.snapshot", "Last captured screenshot", "最近截取的屏幕截图"),
+    ("computerUse.liveScreen", "Live screen · refreshed every {value0}s", "实时屏幕 · 每 {value0} 秒刷新"),
     ("computerUse.noScreenshot", "No screenshot captured yet. Accessibility actions do not always return an image.", "尚未截取屏幕截图。辅助功能操作不一定返回图片。"),
     ("computerUse.settingsTitle", "Computer use settings", "电脑操作设置"),
     ("computerUse.settings", "App access", "应用权限"),

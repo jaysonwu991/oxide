@@ -91,3 +91,12 @@ overlay, automatic unlock/display covering, and a built-in browser remain
 client features. Native permission prompts, actual capture/input,
 helper-crash recovery, install/update paths and notarization still need
 end-to-end validation. See [the parity review](../../../docs/oxide-reins-parity.md).
+
+## Electron Desktop live view
+
+While a Computer Use tool is running, Electron Desktop reads
+`computer-use://screen` from the turn's own MCP session every 1.5 seconds and
+shows it as the live preview, and draws a click-through overlay (an edge frame
+on every display and a ring on the pointer) that is excluded from screen
+capture. Both end with the task. Browser integration and unlock/relock remain
+outside Desktop; they belong to the runtime.
