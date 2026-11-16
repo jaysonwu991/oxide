@@ -2667,16 +2667,8 @@ fn conversation(
                 .mx_auto()
                 .flex_none()
                 .child({
-                    let mut view = entry_view(
-                        root,
-                        entry,
-                        index,
-                        position,
-                        theme,
-                        reading_width,
-                        window,
-                        cx,
-                    );
+                    let mut view =
+                        entry_view(root, entry, index, position, reading_width, window, cx);
                     if let Entry::Assistant {
                         text,
                         streaming: false,
@@ -3383,11 +3375,12 @@ fn entry_view(
     entry: &Entry,
     chat: usize,
     position: usize,
-    theme: &Theme,
     width: f32,
     window: &mut Window,
     cx: &mut Context<Root>,
 ) -> gpui::Div {
+    let theme = root.theme.clone();
+    let theme = &theme;
     match entry {
         Entry::User { text, attachments } => {
             let mut card = div()
