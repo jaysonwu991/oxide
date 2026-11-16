@@ -263,9 +263,13 @@ function exerciseEditor() {
       editor.value = list;
       end();
       lineBreak();
-      check(`one newline leaves ${JSON.stringify(list)}`, editor.value === `${list}\n\n`);
+      const carried = editor.value.slice(list.length);
+      const expected = { "- one": "- ", "* star": "* ", "1. ordered": "2. ", "- [ ] task": "- [ ] ", "- outer\n  - inner": "  - " }[list];
+      check(`a newline continues ${JSON.stringify(list)}`, carried === `\n${expected}`);
+      lineBreak();
+      check(`a newline on the empty item leaves ${JSON.stringify(list)}`, editor.value === `${list}${carried}\n\n`);
       type("plain");
-      check(`typing after ${JSON.stringify(list)} is outside the list`, editor.value === `${list}\n\nplain` && editor.lastElementChild?.tagName === "P");
+      check(`typing after ${JSON.stringify(list)} is outside the list`, editor.value.endsWith("\n\nplain") && editor.lastElementChild?.tagName === "P");
     }
     editor.value = "- one";
     editor.setSelectionRange(3, 3);

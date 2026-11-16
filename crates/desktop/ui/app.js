@@ -3640,9 +3640,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     const quote = /^([ \t]*>[ \t]?)/.exec(line);
     if (quote) return `\n${quote[1]}`;
     if (source.slice(start).trim() !== "") return "\n";
-    // A list is a block in Markdown. Leaving its final item in one gesture
-    // therefore takes the blank line that closes the block too.
-    return LIST_ITEM.test(line) ? "\n\n" : "\n";
+    // A list item carries on into the next one, the way the native composer
+    // does; an item with nothing in it is the way out, and leaving takes the
+    // blank line that closes the block too.
+    const item = /^([ \t]*(?:[-*+]|(\d+)[.)])[ \t]+)(\[[ xX]\][ \t]+)?(.*)$/.exec(line);
+    if (!item) return "\n";
+    if (!item[4].trim()) return "\n\n";
+    const prefix = item[2] == null ? item[1] : item[1].replace(/\d+/, String(Number(item[2]) + 1));
+    return `\n${prefix}${item[3] ? "[ ] " : ""}`;
   }
   function indentList(direction) {
     const start = selectionOffset(false);
@@ -5084,7 +5089,7 @@ function renderStoredTranscript(container, messages) {
 // ---------- computer use ----------
 
 function isComputerTool(name) {
-  return /^computer[-_]use(?:[-_][\w-]+)?__/.test(name);
+  return /^(?:[\w-]*[-_])?computer[-_]use(?:[-_][\w-]+)?__/.test(name);
 }
 
 const computerPolicy = {
@@ -5242,6 +5247,58 @@ function updateComputerUse(tool, images = []) {
   // Background events update their owner; shared controls describe only the
   // visible conversation, including when another thread is being replayed.
   if (record === visibleThread()) paintComputerUse();
+  syncComputerLive();
+}
+
+// While a Computer Use task runs, the window follows it: the screen is read
+// from the session the turn holds every couple of seconds so the preview is the
+// screen as it is rather than as the last tool call left it, and an overlay
+// window marks every display and the pointer. Both end with the task.
+const COMPUTER_LIVE_MS = 1500;
+const computerLive = { timer: null, overlay: false, reading: false };
+
+function runningComputerThread() {
+  let found = null;
+  for (const record of threads.values()) {
+    if (record.busy && !record.stopRequested && record.tools?.some((tool) => isComputerTool(tool.name) && !tool.done)) found = record;
+  }
+  return found;
+}
+
+function syncComputerLive() {
+  const owner = runningComputerThread();
+  if (Boolean(owner) !== computerLive.overlay) {
+    computerLive.overlay = Boolean(owner);
+    void invoke("computer_use_overlay", { active: computerLive.overlay }).catch(() => {});
+  }
+  if (!owner) {
+    if (computerLive.timer) clearInterval(computerLive.timer);
+    computerLive.timer = null;
+    return;
+  }
+  if (!computerLive.timer) computerLive.timer = setInterval(() => void readComputerScreen(), COMPUTER_LIVE_MS);
+}
+
+async function readComputerScreen() {
+  const owner = runningComputerThread();
+  if (!owner || !owner.project || computerLive.reading) {
+    syncComputerLive();
+    return;
+  }
+  computerLive.reading = true;
+  try {
+    const answer = await invoke("computer_use_screen", { project: owner.project });
+    const image = answer?.live ? answer.image : null;
+    if (!image || runningComputerThread() !== owner || !owner.computerUse) return;
+    if (owner.computerUse.image?.dataUrl === image.dataUrl) return;
+    owner.computerUse.image = image;
+    owner.computerUse.live = true;
+    if (owner === visibleThread()) paintComputerUse();
+  } catch {
+    // A session that cannot show its screen keeps the last captured one.
+  } finally {
+    computerLive.reading = false;
+  }
 }
 
 function paintComputerUse() {
@@ -5292,7 +5349,9 @@ function paintComputerUse() {
       if (activity.image) preview.appendChild(openableImage(activity.image.dataUrl, activity.image.name || activity.imageApp));
       preview.computerImage = activity.image;
     }
-    el(`${prefix}-snapshot`).textContent = activity.image
+    el(`${prefix}-snapshot`).textContent = activity.image && activity.live
+      ? t("computerUse.liveScreen", "Live screen · refreshed every {value0}s", { value0: COMPUTER_LIVE_MS / 1000 })
+      : activity.image
       ? `${t("computerUse.snapshot", "Last captured screenshot")}${activity.imageApp ? ` · ${activity.imageApp}` : ""}`
       : t("computerUse.noScreenshot", "No screenshot captured yet. Accessibility actions do not always return an image.");
     const stopButton = el(`${prefix}-stop`);
@@ -8705,9 +8764,18 @@ function atOpen() {
 
 /// Asks the app what the caret is sitting in. Nothing is asked of a value with
 /// no `@` in it at all, which is most of them.
+// A reference starts at a word boundary at or before the caret; without one the
+// core has no token to complete, so the round trip is skipped.
+function atReferenceBeforeCaret(value, caret) {
+  for (let index = value.indexOf("@"); index >= 0 && index < caret; index = value.indexOf("@", index + 1)) {
+    if (index === 0 || /\s/.test(value[index - 1])) return true;
+  }
+  return false;
+}
+
 async function requestAt() {
   const prompt = el("prompt");
-  if (!prompt || !prompt.value.includes("@") || !state.project) {
+  if (!prompt || !state.project || !atReferenceBeforeCaret(prompt.value, prompt.selectionStart || 0)) {
     closeAt();
     return;
   }
@@ -12523,8 +12591,7 @@ function init() {
     );
   });
 
-  el("prompt").addEventListener("input", (event) => {
-    if (event.isComposing) return;
+  const onPromptInput = () => {
     el("prompt").style.height = "auto";
     el("prompt").style.height = `${Math.min(el("prompt").scrollHeight, 220)}px`;
     updateSendState();
@@ -12542,7 +12609,14 @@ function init() {
     } else {
       closePalette();
     }
+  };
+  el("prompt").addEventListener("input", (event) => {
+    if (event.isComposing) return;
+    onPromptInput();
   });
+  // The last input of an input-method session arrives while it is still
+  // composing, so the commit is what sizes the box and enables Send.
+  el("prompt").addEventListener("compositionend", () => onPromptInput());
   // The caret moves without the value changing, which a reference the caret has
   // been moved into needs. While the list is up the arrows walk it instead, so
   // the click is what re-asks from there.

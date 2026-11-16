@@ -360,9 +360,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     const quote = /^([ \t]*>[ \t]?)/.exec(line);
     if (quote) return `\n${quote[1]}`;
     if (source.slice(start).trim() !== "") return "\n";
-    // A list is a block in Markdown. Leaving its final item in one gesture
-    // therefore takes the blank line that closes the block too.
-    return LIST_ITEM.test(line) ? "\n\n" : "\n";
+    // A list item carries on into the next one, the way the native composer
+    // does; an item with nothing in it is the way out, and leaving takes the
+    // blank line that closes the block too.
+    const item = /^([ \t]*(?:[-*+]|(\d+)[.)])[ \t]+)(\[[ xX]\][ \t]+)?(.*)$/.exec(line);
+    if (!item) return "\n";
+    if (!item[4].trim()) return "\n\n";
+    const prefix = item[2] == null ? item[1] : item[1].replace(/\d+/, String(Number(item[2]) + 1));
+    return `\n${prefix}${item[3] ? "[ ] " : ""}`;
   }
   function indentList(direction) {
     const start = selectionOffset(false);
