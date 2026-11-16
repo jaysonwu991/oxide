@@ -85,6 +85,8 @@ export function parseSessionHistory(json: string): SessionHistory | null {
       continue;
     }
     if (role === "assistant") {
+      const thinking = str(message.thinking);
+      if (thinking.trim()) entries.push({ kind: "thinking", text: thinking });
       // A step that only called tools carries no text, and an empty bubble says
       // nothing about the thread.
       if (text.trim()) entries.push({ kind: "assistant", text });

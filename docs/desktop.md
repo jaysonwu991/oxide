@@ -860,7 +860,9 @@ sidebar shows two kinds of project:
 Each row shows its session count. Clicking a project selects it and reveals its
 sessions nested underneath; clicking a session opens that thread (switching to
 its project first when the selection differs). The transcript is loaded with
-`session_messages` (`SessionLog::open_ref`).
+`session_messages` (`SessionLog::open_ref`). Stored thinking is replayed as the
+same finished thinking block a live turn paints, before the assistant text and
+tool cards produced by that step.
 
 The rows are the reader's to arrange: a project's row is what the order is
 dragged by, and the whole row moves — the project and the threads under it — to

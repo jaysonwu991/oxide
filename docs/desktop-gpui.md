@@ -178,7 +178,9 @@ reveal rather than two frames of the wrong page.
   `agent-event` packets paint the same cards the stable window paints: the user's
   message, the answer with its markdown, thinking blocks with their duration,
   tool cards with their call, output and diff, errors, compaction notices, and
-  a context ring beside the composer controls. Its top row names the project and
+  a context ring beside the composer controls. Opening a saved thread restores
+  the reasoning already stored on each assistant step before that step's answer
+  and tool cards. Its top row names the project and
   the branch `git_info` reports (and leaves the branch out when the folder is not
   a repository); that branch is read again when a turn ends, when the window
   becomes active again, and just after a command is typed into the dock's own

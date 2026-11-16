@@ -218,9 +218,11 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   verification for after the last related edit.
 - Visible work in progress: reasoning streams into the transcript as a muted
   italic `✦ Thinking` block that closes with `✦ Thought for 1.4s`, so work done
-  before the answer is no longer invisible. Ctrl+T collapses reasoning blocks to
-  their label (`· Ctrl+T to expand`); set `hideThinkingBlock` in `settings.json`
-  to start collapsed, as in Pi. A running `task` subagent reports its own
+  before the answer is no longer invisible. Reopening a saved thread replays
+  its stored reasoning before the answer and tool steps it produced. Ctrl+T
+  collapses reasoning blocks to their label (`· Ctrl+T to expand`); set
+  `hideThinkingBlock` in `settings.json` to start collapsed, as in Pi. A running
+  `task` subagent reports its own
   progress — a live `Elapsed` on any tool panel, a
   `↳ <agent> · <activity> · <n> call(s)` line, and a status row naming the
   subagent and its current tool. The status row also reports the phase of the

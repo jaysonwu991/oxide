@@ -7012,7 +7012,7 @@ pub fn customize_page(
                                     MouseButton::Left,
                                     cx.listener(|root, _, window, cx| {
                                         window.focus(
-                                            &root.marketplace_source.read(cx).focus_handle(cx),
+                                            &root.plugin_query.read(cx).focus_handle(cx),
                                             cx,
                                         );
                                     }),
@@ -7081,7 +7081,7 @@ pub fn customize_page(
                                     MouseButton::Left,
                                     cx.listener(|root, _, window, cx| {
                                         window.focus(
-                                            &root.plugin_query.read(cx).focus_handle(cx),
+                                            &root.marketplace_source.read(cx).focus_handle(cx),
                                             cx,
                                         );
                                     }),

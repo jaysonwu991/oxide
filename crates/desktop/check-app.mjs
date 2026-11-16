@@ -4633,10 +4633,13 @@ check("opened the tool screenshot at full size", !app.el("image-modal").hidden);
 app.closeOverlays();
 const replayScreen = document.createElement("div");
 app.renderStoredTranscript(replayScreen, [
-  { role: "assistant", toolCalls: [{ id: "shot", name: "computer-use__screenshot", arguments: "{}" }] },
+  { role: "assistant", thinking: "Capture the app before deciding.",
+    toolCalls: [{ id: "shot", name: "computer-use__screenshot", arguments: "{}" }] },
   { role: "tool", toolCallId: "shot", content: "Captured screenshot",
     attachments: [{ name: "Edge", dataUrl: toolShot }] },
 ]);
+check("restored stored thinking before the assistant step",
+  replayScreen.querySelector(".thinking")?.textContent === "✦ Capture the app before deciding.");
 check("restored MCP screenshot previews from session history", Boolean(replayScreen.querySelector(".att-open")));
 check("restored the persistent computer-use screenshot from session history",
   app.visibleThread().computerUse?.image?.dataUrl === toolShot &&

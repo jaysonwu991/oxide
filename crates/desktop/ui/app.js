@@ -5111,6 +5111,12 @@ function renderStoredTranscript(container, messages) {
     if (message.role === "user") {
       container.appendChild(bubble("user", message.content, message.attachments || []));
     } else if (message.role === "assistant") {
+      if (typeof message.thinking === "string" && message.thinking.trim()) {
+        const thinking = document.createElement("div");
+        thinking.className = "thinking";
+        thinking.textContent = `✦ ${message.thinking}`;
+        container.appendChild(thinking);
+      }
       if (message.content) {
         container.appendChild(bubble("assistant", message.content, []));
       }

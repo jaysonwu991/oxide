@@ -803,6 +803,14 @@ impl Chat {
                         self.entries.push(Entry::User { text, attachments });
                     }
                     "assistant" => {
+                        let thinking = message["thinking"].as_str().unwrap_or_default();
+                        if !thinking.trim().is_empty() {
+                            self.entries.push(Entry::Thinking {
+                                text: thinking.to_string(),
+                                seconds: None,
+                                done: true,
+                            });
+                        }
                         if !text.is_empty() {
                             self.entries.push(Entry::Assistant {
                                 blocks: markdown::parse(&text),
@@ -1206,5 +1214,29 @@ mod tests {
             }
             other => panic!("expected a user message, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stored_thinking_is_replayed_before_the_assistant_text() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.load(&json!({
+            "messages": [{
+                "role": "assistant",
+                "content": "Done.",
+                "thinking": "Inspect the files first.",
+                "toolCalls": []
+            }]
+        }));
+        assert!(matches!(
+            &chat.entries[..],
+            [
+                Entry::Thinking {
+                    text,
+                    seconds: None,
+                    done: true
+                },
+                Entry::Assistant { text: answer, .. }
+            ] if text == "Inspect the files first." && answer == "Done."
+        ));
     }
 }

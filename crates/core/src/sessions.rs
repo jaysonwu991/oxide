@@ -310,6 +310,7 @@ fn message_view(message: &Message) -> Value {
             .map(MessageContent::display)
             .unwrap_or_default(),
         "attachments": message_attachments(message),
+        "thinking": message.reasoning_content().unwrap_or_default(),
         "toolCalls": calls,
         "toolCallId": message.tool_call_id,
     })
@@ -657,6 +658,22 @@ mod tests {
         // A message with no media carries an empty list rather than nothing, so
         // a reader can tell the two apart without guessing.
         assert_eq!(view["messages"][1]["attachments"], json!([]));
+    }
+
+    #[test]
+    fn a_stored_message_reports_its_thinking_for_replay() {
+        let mut conversation = conversation();
+        conversation[1] = conversation[1].clone().with_thinking(vec![json!({
+            "type": "thinking",
+            "thinking": "read the file before deciding"
+        })]);
+        let out = render_show(&conversation, &summary(), totals(), 0, &[], None, true);
+        let view: Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(
+            view["messages"][1]["thinking"],
+            "read the file before deciding"
+        );
+        assert_eq!(view["messages"][2]["thinking"], "");
     }
 
     #[test]

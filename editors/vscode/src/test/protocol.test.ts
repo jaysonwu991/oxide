@@ -634,6 +634,7 @@ describe("Transcript", () => {
         output: "fn test() {}",
         isError: false,
       },
+      { kind: "thinking", text: "The clock is read before the assertion." },
       { kind: "assistant", text: "it polls the clock" },
     ]);
     // No message per entry: the controller repaints the whole list from one
@@ -651,7 +652,8 @@ describe("Transcript", () => {
         isError: false,
         unknown: true,
       },
-      { id: 3, kind: "assistant", text: "it polls the clock" },
+      { id: 3, kind: "thinking", text: "The clock is read before the assertion." },
+      { id: 4, kind: "assistant", text: "it polls the clock" },
     ]);
   });
 

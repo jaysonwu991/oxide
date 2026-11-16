@@ -21,6 +21,12 @@ front-end paints `Search` rather than a failed `Command`. Shell pipelines,
 mutations, expansions and other behavior the tool cannot preserve still run as
 the shell wrote them or receive the explicit refusal.
 
+Stored assistant messages retain their provider reasoning blocks. The shared
+session JSON exposes their visible text as `thinking`; the Electron page, GPUI
+transcript and VS Code replay model convert that field into a finished thinking
+item before the message's answer and tool calls, matching the order painted
+while the turn was live.
+
 ## Layout
 
 The repository is a Cargo workspace. Shared agent code lives in
