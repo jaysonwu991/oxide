@@ -38,7 +38,12 @@ pub enum Block {
     Quote(Vec<Inline>),
     Bullet {
         depth: usize,
+        checked: Option<bool>,
         spans: Vec<Inline>,
+    },
+    Table {
+        header: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
     },
     Numbered {
         depth: usize,
@@ -53,6 +58,7 @@ pub fn parse(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut lines = text.lines().peekable();
     let mut paragraph: Vec<String> = Vec::new();
+    let mut quote_open = false;
 
     fn flush(paragraph: &mut Vec<String>, blocks: &mut Vec<Block>) {
         if paragraph.is_empty() {
@@ -65,12 +71,16 @@ pub fn parse(text: &str) -> Vec<Block> {
 
     while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
-        if let Some(fence) = trimmed.strip_prefix("```") {
+        let fence_run = ["```", "~~~"]
+            .into_iter()
+            .find(|run| trimmed.starts_with(run));
+        if let Some(run) = fence_run {
+            let fence = &trimmed[run.len()..];
             flush(&mut paragraph, &mut blocks);
             let language = fence.trim().to_string();
             let mut code = String::new();
             for line in lines.by_ref() {
-                if line.trim_start().starts_with("```") {
+                if line.trim_start().starts_with(run) {
                     break;
                 }
                 if !code.is_empty() {
@@ -87,42 +97,63 @@ pub fn parse(text: &str) -> Vec<Block> {
 
         if trimmed.is_empty() {
             flush(&mut paragraph, &mut blocks);
+            quote_open = false;
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("### ") {
-            flush(&mut paragraph, &mut blocks);
-            blocks.push(Block::Heading {
-                level: 3,
-                spans: parse_inline(rest),
-            });
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("## ") {
-            flush(&mut paragraph, &mut blocks);
-            blocks.push(Block::Heading {
-                level: 2,
-                spans: parse_inline(rest),
-            });
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("# ") {
-            flush(&mut paragraph, &mut blocks);
-            blocks.push(Block::Heading {
-                level: 1,
-                spans: parse_inline(rest),
-            });
-            continue;
+        let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&hashes) {
+            if let Some(rest) = trimmed[hashes..].strip_prefix(' ') {
+                flush(&mut paragraph, &mut blocks);
+                blocks.push(Block::Heading {
+                    level: hashes,
+                    spans: parse_inline(rest.trim().trim_end_matches('#').trim_end()),
+                });
+                continue;
+            }
         }
         if trimmed == "---" || trimmed == "***" || trimmed == "___" {
             flush(&mut paragraph, &mut blocks);
             blocks.push(Block::Rule);
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("> ") {
+        if let Some(rest) = trimmed
+            .strip_prefix("> ")
+            .or_else(|| trimmed.strip_prefix('>'))
+        {
             flush(&mut paragraph, &mut blocks);
-            blocks.push(Block::Quote(parse_inline(rest)));
+            match blocks.last_mut() {
+                Some(Block::Quote(spans)) if quote_open => {
+                    spans.push(Inline {
+                        text: "\n".to_string(),
+                        ..Inline::new()
+                    });
+                    spans.extend(parse_inline(rest));
+                }
+                _ => blocks.push(Block::Quote(parse_inline(rest))),
+            }
+            quote_open = true;
             continue;
+        }
+        quote_open = false;
+        if trimmed.contains('|') && paragraph.is_empty() {
+            if let Some(separator) = lines.peek() {
+                if is_table_separator(separator) {
+                    let header: Vec<Vec<Inline>> =
+                        split_row(trimmed).iter().map(|c| parse_inline(c)).collect();
+                    lines.next();
+                    let mut rows = Vec::new();
+                    while let Some(row) = lines.peek() {
+                        if row.trim().is_empty() || !row.contains('|') {
+                            break;
+                        }
+                        rows.push(split_row(row).iter().map(|c| parse_inline(c)).collect());
+                        lines.next();
+                    }
+                    blocks.push(Block::Table { header, rows });
+                    continue;
+                }
+            }
         }
         let indent = line.len() - trimmed.len();
         let depth = (indent / 2).min(3);
@@ -131,8 +162,19 @@ pub fn parse(text: &str) -> Vec<Block> {
             .or_else(|| trimmed.strip_prefix("* "))
         {
             flush(&mut paragraph, &mut blocks);
+            let (checked, rest) = if let Some(rest) = rest.strip_prefix("[ ] ") {
+                (Some(false), rest)
+            } else if let Some(rest) = rest
+                .strip_prefix("[x] ")
+                .or_else(|| rest.strip_prefix("[X] "))
+            {
+                (Some(true), rest)
+            } else {
+                (None, rest)
+            };
             blocks.push(Block::Bullet {
                 depth,
+                checked,
                 spans: parse_inline(rest),
             });
             continue;
@@ -151,6 +193,24 @@ pub fn parse(text: &str) -> Vec<Block> {
     }
     flush(&mut paragraph, &mut blocks);
     blocks
+}
+
+fn split_row(line: &str) -> Vec<String> {
+    let line = line.trim();
+    let line = line.strip_prefix('|').unwrap_or(line);
+    let line = line.strip_suffix('|').unwrap_or(line);
+    line.split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let line = line.trim();
+    line.contains('-')
+        && line.contains('|') | line.contains(':')
+        && line
+            .chars()
+            .all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
 }
 
 fn numbered(line: &str) -> Option<(String, &str)> {
@@ -327,5 +387,27 @@ mod tests {
         assert!(matches!(blocks[2], Block::Numbered { .. }));
         assert!(matches!(blocks[3], Block::Quote(_)));
         assert!(matches!(blocks[4], Block::Rule));
+    }
+
+    #[test]
+    fn tables_tasks_and_deep_headings_parse() {
+        let blocks = parse("| a | b |\n|---|---|\n| 1 | **2** |\n\n- [x] done\n\n#### Four\n\n~~~mermaid\ngraph TD\n~~~");
+        match &blocks[0] {
+            Block::Table { header, rows } => {
+                assert_eq!(header.len(), 2);
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0][1][0].bold);
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+        assert!(matches!(
+            blocks[1],
+            Block::Bullet {
+                checked: Some(true),
+                ..
+            }
+        ));
+        assert!(matches!(blocks[2], Block::Heading { level: 4, .. }));
+        assert!(matches!(&blocks[3], Block::Code { language, .. } if language == "mermaid"));
     }
 }

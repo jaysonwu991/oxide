@@ -11,6 +11,7 @@ mod editor;
 mod engine;
 mod icons;
 mod markdown;
+mod mermaid;
 mod model;
 mod overlays;
 mod terminal;
