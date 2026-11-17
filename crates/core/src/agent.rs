@@ -46,6 +46,11 @@ pub enum UsageSource {
 /// the user has added messages goes looking for input it has already answered.
 const CUMULATIVE_INPUT_REMINDER: &str = "The user has added one or more messages while you were working. They are in this conversation, after the request that started the run; treat them as cumulative with every earlier request unless the user explicitly says to cancel, replace, or supersede one. Before finishing, verify that you have addressed every still-applicable user message, not only the most recent one.";
 
+/// Rides on each request after a re-check's tool call. The summary it checks
+/// was already shown and committed, so a restated summary would read as a
+/// second copy of the same answer below the tool cards.
+const RECHECK_AFTER_TOOLS_REMINDER: &str = "Your earlier summary is already shown to the user above these tool calls. Do not restate it. Finish with only what this check established or changed, in one or two sentences, or correct the specific claim it disproved.";
+
 pub type RunFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 pub type Approver =
@@ -828,6 +833,9 @@ async fn run_loop(
     // Whether the held summary is still the newest message, which is what lets
     // the re-check merge into it rather than start a second one.
     let mut held_is_tail = false;
+    // Whether a re-check used a tool, which committed the summary it checks:
+    // the answer that ends it must then add to that summary, not repeat it.
+    let mut rechecked_with_tools = false;
     // Whether a summary the user already read is being re-checked. The re-check
     // is internal: an answer with nothing to add ends the run there instead of
     // reporting the check, so the summary stays the last thing the user reads.
@@ -894,6 +902,7 @@ async fn run_loop(
                     record_usage(&runtime.session, depth, &held, held_usage);
                     held_is_tail = false;
                 }
+                rechecked_with_tools = false;
                 let _ = tx.send(AgentEvent::Steered {
                     message: steered.clone(),
                     label,
@@ -1105,6 +1114,9 @@ async fn run_loop(
         request.extend(messages.iter().cloned());
         if std::mem::take(&mut mid_run_input_reminder) {
             request.push(Message::system(CUMULATIVE_INPUT_REMINDER));
+        }
+        if rechecked_with_tools {
+            request.push(Message::system(RECHECK_AFTER_TOOLS_REMINDER));
         }
         // A reminder makes this request the hidden nudge: it asks the model to
         // confirm work it already summarized, so a provider that answers it
@@ -1491,6 +1503,7 @@ async fn run_loop(
             };
             held_is_tail = false;
             recheck_open = false;
+            rechecked_with_tools = false;
             record_usage(&runtime.session, depth, &assistant, usage);
             messages.push(assistant);
             if let Some(context) = response_context {
@@ -1547,6 +1560,7 @@ async fn run_loop(
         if let Some((prior, prior_usage)) = held_summary.take() {
             record_usage(&runtime.session, depth, &prior, prior_usage);
             send_usage(&tx, depth, prior_usage);
+            rechecked_with_tools = recheck_open;
         }
         held_is_tail = false;
         record_usage(&runtime.session, depth, &assistant, usage);
@@ -7009,6 +7023,14 @@ mod tests {
             "{}",
             requests[2]
         );
+        // After the check's tool call, the model is told the summary is already
+        // shown, so its closing answer adds to it rather than repeating it.
+        assert!(
+            !requests[2].contains("Do not restate it"),
+            "{}",
+            requests[2]
+        );
+        assert!(requests[3].contains("Do not restate it"), "{}", requests[3]);
 
         std::fs::remove_dir_all(&dir).ok();
     }
