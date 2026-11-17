@@ -6594,23 +6594,41 @@ fn save_tool_image_in(dir: &Path, image: &crate::llm::ImageUrl) -> Option<PathBu
         "image/webp" => "webp",
         _ => return None,
     };
-    std::fs::create_dir_all(dir).ok()?;
-    cleanup_truncated(dir);
-    let stamp = now_millis();
-    let id = TRUNCATION_ID.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("image_{stamp}_{id}.{extension}"));
-    std::fs::write(&path, bytes).ok()?;
+    let path = dir.join(format!("image_{}.{extension}", content_digest(&bytes)));
+    store_saved_output(dir, &path, &bytes)?;
     Some(path)
 }
 
+/// The path is a digest of the content, so shortening the same stale result
+/// again yields the same pointer text. A pointer that changed between runs
+/// would rewrite the history and discard the provider's cached prefix.
 fn save_truncated(dir: &Path, text: &str) -> Option<PathBuf> {
+    let path = dir.join(format!("tool_{}.txt", content_digest(text.as_bytes())));
+    store_saved_output(dir, &path, text.as_bytes())?;
+    Some(path)
+}
+
+fn content_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn store_saved_output(dir: &Path, path: &Path, bytes: &[u8]) -> Option<()> {
     std::fs::create_dir_all(dir).ok()?;
     cleanup_truncated(dir);
-    let stamp = now_millis();
-    let id = TRUNCATION_ID.fetch_add(1, Ordering::Relaxed);
-    let path = dir.join(format!("tool_{stamp}_{id}.txt"));
-    std::fs::write(&path, text).ok()?;
-    Some(path)
+    let existing = std::fs::OpenOptions::new().write(true).open(path).ok();
+    if let Some(file) = existing {
+        if file.metadata().ok()?.len() == bytes.len() as u64
+            && file.set_modified(std::time::SystemTime::now()).is_ok()
+        {
+            return Some(());
+        }
+    }
+    std::fs::write(path, bytes).ok()
 }
 
 fn cleanup_truncated(dir: &Path) {
@@ -6639,6 +6657,17 @@ mod tests {
     use crate::llm::FunctionCall;
 
     #[test]
+    fn saved_tool_output_has_a_stable_path_per_content() {
+        let dir = std::env::temp_dir().join(format!("oxide_saved_output_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = save_truncated(&dir, "alpha").unwrap();
+        assert_eq!(save_truncated(&dir, "alpha").unwrap(), first);
+        assert_ne!(save_truncated(&dir, "beta").unwrap(), first);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "alpha");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn saved_tool_images_restore_the_original_bytes_and_reject_unrecoverable_urls() {
         let dir = std::env::temp_dir().join(format!("oxide_image_history_{}", std::process::id()));
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -6659,7 +6688,7 @@ mod tests {
             }]
         );
         let second = save_tool_image_in(&dir, &image).unwrap();
-        assert_ne!(saved, second);
+        assert_eq!(saved, second);
         assert_eq!(std::fs::read(&saved).unwrap(), png);
         for url in [
             "https://example.org/image.png",

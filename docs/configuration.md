@@ -705,6 +705,7 @@ win. Defaults enable read reuse and stale-output shortening, with no run budget:
     "toolHistory": {
       "enabled": true,
       "pruneAboveTokens": 32000,
+      "pruneAboveWindowPercent": 60,
       "keepRecent": 8,
       "maxResultBytes": 2048,
       "keepRecentImages": 8
@@ -733,8 +734,8 @@ last request can exceed it. A model with no known price pauses before making a
 request when a cost limit is configured. Failed requests with no reported usage
 cannot be priced. Idle cache warming is outside the active run budget. All limits
 must be positive, or `null` for unlimited. `maxDeclaredMcpTools` accepts 1–64;
-`keepRecent` and `pruneAboveTokens` must be positive, and `maxResultBytes` at least
-256. Invalid values are reported instead of silently disabling limits.
+`keepRecent` and `pruneAboveTokens` must be positive, `pruneAboveWindowPercent`
+at most 100, and `maxResultBytes` at least 256. Invalid values are reported instead of silently disabling limits.
 
 Unchanged text-file reads return a short reference to an earlier result still
 in context. The file's bytes and canonical path are checked, so external edits
@@ -745,14 +746,23 @@ writes and shell commands: each read checks the file's current digest, so change
 content is returned in full. Compaction drops references to removed or shortened
 results.
 
-Once history reaches `pruneAboveTokens`, large tool results older than the
-last `keepRecent` results are shortened to a head/tail excerpt. A pointer lets the
+Once history reaches `pruneAboveTokens` and `pruneAboveWindowPercent` of the
+usable context window (the window minus the compaction reserve; whichever is
+larger), large tool results older than the last `keepRecent` results are
+shortened to a head/tail excerpt. A pointer lets the
 model retrieve the full saved evidence. User requests, assistant decisions,
 documents and recent results remain intact. Older failures keep an explicit
 failure label and their head/tail diagnostics, including the shell exit status;
 the full output is saved before shortening. Session storage retains
 the original transcript. This reduces context without another summarizer call.
-Disable `toolHistory.enabled` to retain all tool results until ordinary compaction.
+Shortening an old result rewrites the conversation from that point, so the
+provider's prompt cache no longer matches and the whole tail is billed as a
+cache write. That costs more than the reads the shorter text saves, so shortening
+waits until history fills a real share of the window, then shortens every
+eligible result at once; the saved-output path is a digest of the content, so
+repeating the shortening produces identical text. Set
+`pruneAboveWindowPercent` to `0` to shorten as soon as `pruneAboveTokens` is
+reached. Disable `toolHistory.enabled` to retain all tool results until ordinary compaction.
 
 Tool screenshots are reclaimed separately from text: once more than twice
 `keepRecentImages` images accumulate, older tool images are saved locally and

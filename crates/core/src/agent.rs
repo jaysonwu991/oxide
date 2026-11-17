@@ -929,6 +929,7 @@ async fn run_loop(
             &mut messages,
             measured_at,
             &config.token_efficiency.tool_history,
+            context_window.saturating_sub(compaction_budget.reserve_tokens),
             tools::save_tool_output,
         );
         if reclaimed > 0 {

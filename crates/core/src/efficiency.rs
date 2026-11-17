@@ -34,6 +34,7 @@ impl Default for TokenEfficiency {
 pub struct ToolHistory {
     pub enabled: bool,
     pub prune_above_tokens: usize,
+    pub prune_above_window_percent: usize,
     pub keep_recent: usize,
     pub max_result_bytes: usize,
     pub keep_recent_images: usize,
@@ -44,6 +45,7 @@ impl Default for ToolHistory {
         Self {
             enabled: true,
             prune_above_tokens: 32_000,
+            prune_above_window_percent: 60,
             keep_recent: 8,
             max_result_bytes: 2048,
             keep_recent_images: 8,
@@ -90,8 +92,9 @@ fn load_paths(paths: &[PathBuf]) -> Result<TokenEfficiency> {
     anyhow::ensure!(
         config.tool_history.keep_recent > 0
             && config.tool_history.max_result_bytes >= 256
-            && config.tool_history.prune_above_tokens > 0,
-        "tokenEfficiency.toolHistory requires positive keepRecent/pruneAboveTokens and maxResultBytes >= 256"
+            && config.tool_history.prune_above_tokens > 0
+            && config.tool_history.prune_above_window_percent <= 100,
+        "tokenEfficiency.toolHistory requires positive keepRecent/pruneAboveTokens, pruneAboveWindowPercent <= 100 and maxResultBytes >= 256"
     );
     anyhow::ensure!(
         config.turn_budget.max_model_calls != Some(0)
@@ -392,14 +395,28 @@ pub(crate) fn recorded_reads(messages: &[Message], limit: usize) -> Vec<Recorded
     reads
 }
 
+/// The history size at which stale results are shortened. Rewriting an old
+/// result invalidates the provider's cached prefix from that point on, and a
+/// cache write costs far more than the reads the shortened text would save, so
+/// shortening waits until the history is a real share of the usable window.
+fn prune_threshold(config: &ToolHistory, window_tokens: u64) -> usize {
+    let pressure = window_tokens.saturating_mul(config.prune_above_window_percent as u64) / 100;
+    config
+        .prune_above_tokens
+        .max(usize::try_from(pressure).unwrap_or(usize::MAX))
+}
+
 /// Only reclaim from the measured prefix; new results already shrink in the growth estimate.
 pub(crate) fn prune_tool_history(
     messages: &mut [Message],
     measured_at: usize,
     config: &ToolHistory,
+    window_tokens: u64,
     mut save: impl FnMut(&str) -> Option<PathBuf>,
 ) -> usize {
-    if !config.enabled || crate::compact::estimate_tokens(messages) < config.prune_above_tokens {
+    if !config.enabled
+        || crate::compact::estimate_tokens(messages) < prune_threshold(config, window_tokens)
+    {
         return 0;
     }
     let recent = messages
@@ -577,6 +594,7 @@ mod tests {
             json!({"turnBudget":{"maxCostUsd":-1}}),
             json!({"maxDeclaredMcpTools":0}),
             json!({"toolHistory":{"keepRecent":0}}),
+            json!({"toolHistory":{"pruneAboveWindowPercent":101}}),
         ] {
             std::fs::write(&project, json!({"tokenEfficiency":invalid}).to_string()).unwrap();
             assert!(load_paths(std::slice::from_ref(&project)).is_err());
@@ -748,7 +766,7 @@ mod tests {
             ..Default::default()
         };
         let mut saved = Vec::new();
-        let reclaimed = prune_tool_history(&mut messages, usize::MAX, &config, |text| {
+        let reclaimed = prune_tool_history(&mut messages, usize::MAX, &config, 0, |text| {
             let path = dir.join(format!("full-{}.txt", saved.len()));
             std::fs::write(&path, text).unwrap();
             saved.push(path.clone());
@@ -771,12 +789,46 @@ mod tests {
         assert_eq!(messages[0].display().unwrap(), "keep this request");
         assert_eq!(messages[5].display().unwrap(), "decision");
         assert_eq!(
-            prune_tool_history(&mut messages, usize::MAX, &config, |_| panic!(
+            prune_tool_history(&mut messages, usize::MAX, &config, 0, |_| panic!(
                 "already pruned"
             )),
             0
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_results_stay_intact_until_history_fills_the_window() {
+        let build = || {
+            vec![
+                Message::tool("old", "x".repeat(10_000)),
+                Message::tool("recent", "ok"),
+            ]
+        };
+        let config = ToolHistory {
+            prune_above_tokens: 1,
+            keep_recent: 1,
+            prune_above_window_percent: 50,
+            ..Default::default()
+        };
+        let mut roomy = build();
+        assert_eq!(
+            prune_tool_history(&mut roomy, usize::MAX, &config, 100_000, |_| panic!(
+                "history fits comfortably"
+            )),
+            0
+        );
+        assert_eq!(roomy[0].display().unwrap().len(), 10_000);
+        let mut crowded = build();
+        assert!(
+            prune_tool_history(&mut crowded, usize::MAX, &config, 4_000, |_| Some(
+                "/tmp/evidence".into()
+            )) > 0
+        );
+        assert!(crowded[0]
+            .display()
+            .unwrap()
+            .starts_with("[tool output compacted;"));
     }
 
     #[test]
@@ -790,8 +842,9 @@ mod tests {
             keep_recent: 1,
             ..Default::default()
         };
-        let measured_reclaimed =
-            prune_tool_history(&mut messages, 0, &config, |_| Some("/tmp/evidence".into()));
+        let measured_reclaimed = prune_tool_history(&mut messages, 0, &config, 0, |_| {
+            Some("/tmp/evidence".into())
+        });
         assert_eq!(measured_reclaimed, 0);
         assert!(messages[0]
             .display()
@@ -811,7 +864,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            prune_tool_history(&mut messages, usize::MAX, &config, |_| None),
+            prune_tool_history(&mut messages, usize::MAX, &config, 0, |_| None),
             0
         );
         assert_eq!(messages[0].display().unwrap().len(), 10_000);
