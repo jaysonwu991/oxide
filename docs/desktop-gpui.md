@@ -225,8 +225,9 @@ reveal rather than two frames of the wrong page.
   from the keyboard as ⌘.). A run is steerable from the moment it is reserved, so
   a message typed while a cold start is still loading servers waits in the run's
   own queue for its first step; a message whose run has already gone back
-  answers `false`, and the window then puts it back in the composer instead of
-  painting a row the model never read. Attachments are picked
+  answers `false`, and the window keeps it out of that turn's transcript and
+  starts it as the next turn of the same chat, even if the reader has moved to
+  another tab. Attachments are picked
   from disk or pasted from the system clipboard and sent as the data URLs the
   core's own attachment rules accept — the same images, PDFs and text the
   terminal and the stable window attach, under the same size and count limits.

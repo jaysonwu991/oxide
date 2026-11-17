@@ -1582,25 +1582,27 @@ pub async fn steer_run(
     attachments: Option<Vec<AttachmentInput>>,
     state: &DesktopState,
 ) -> CmdResult<bool> {
-    let runs = state.runs.clone();
-    let runs = runs.lock().await;
-    if let Some(run) = runs.get(&run_id) {
+    let (queue, cwd) = {
+        let runs = state.runs.lock().await;
+        let Some(run) = runs.get(&run_id) else {
+            return Ok(false);
+        };
         if run.cancel.is_cancelled() {
             return Ok(false);
         }
         let queue = if follow_up.unwrap_or(false) {
-            &run.follow_ups
+            run.follow_ups.clone()
         } else {
-            &run.steering
+            run.steering.clone()
         };
-        let parts = attachment_parts(attachments, &message, &run.cwd)?;
-        return Ok(queue.push(if parts.is_empty() {
-            Message::user(message)
-        } else {
-            Message::user_parts(message, parts)
-        }));
-    }
-    Ok(false)
+        (queue, run.cwd.clone())
+    };
+    let parts = attachment_parts(attachments, &message, &cwd)?;
+    Ok(queue.push(if parts.is_empty() {
+        Message::user(message)
+    } else {
+        Message::user_parts(message, parts)
+    }))
 }
 
 /// Answers the composer's `@path` completion: the project's own files and
@@ -2635,6 +2637,9 @@ mod tests {
             .await
             .unwrap());
         cancel_run(id, &state).await.unwrap();
+        assert!(!steer_run(id, "too late".into(), None, None, &state)
+            .await
+            .unwrap());
         {
             let runs = state.runs.lock().await;
             assert!(runs.get(&id).unwrap().cancel.is_cancelled());

@@ -9,7 +9,7 @@
 use crate::app::{Button, ChangeScope, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
-use crate::model::{Attachment, EditedFile, Entry, Status};
+use crate::model::{Attachment, EditedFile, Entry, QueueDelivery, Status};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
@@ -5092,14 +5092,15 @@ fn composer_tool_item(
     cx: &mut Context<Root>,
     on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
 ) -> Stateful<gpui::Div> {
-    let mut item = div()
-        .id(id)
-        .role(gpui::Role::MenuItem)
-        .aria_label(if active {
+    let mut item = div().id(id).role(gpui::Role::MenuItem).aria_label(
+        if active && label == "Project access" {
+            "Project access: trusted \u{00b7} click to review".to_string()
+        } else if active {
             format!("{label}: active")
         } else {
             label.to_string()
-        });
+        },
+    );
     if active {
         item = item.aria_selected(true);
     }
@@ -5571,12 +5572,22 @@ fn composer(
                             .flex_none()
                             .text_size(px(10.5))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(if message.follow_up {
+                            .text_color(if message.delivery == QueueDelivery::Rejected {
+                                theme.dim()
+                            } else if message.follow_up {
                                 theme.faint()
                             } else {
                                 theme.accent()
                             })
-                            .child(if message.follow_up { "Queued" } else { "Steer" }),
+                            .child(match message.delivery {
+                                QueueDelivery::Rejected => "Next turn",
+                                QueueDelivery::Waiting | QueueDelivery::Accepted
+                                    if message.follow_up =>
+                                {
+                                    "Queued"
+                                }
+                                QueueDelivery::Waiting | QueueDelivery::Accepted => "Steer",
+                            }),
                     )
                     .child(
                         div()

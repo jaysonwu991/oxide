@@ -10,9 +10,7 @@
 
 use crate::editor::{self, Editor, EditorEvent};
 use crate::engine::Engine;
-use crate::model::{
-    Attachment, Chat, EditedCard, EditedFile, Entry, ProjectRow, QueuedMessage, SessionRow,
-};
+use crate::model::{Attachment, Chat, EditedCard, EditedFile, Entry, ProjectRow, SessionRow};
 use crate::overlays;
 use crate::terminal::TerminalPane;
 use crate::theme::Theme;
@@ -2956,11 +2954,7 @@ impl Root {
             let follow_up = self.prefs["follow_up"].as_str() != Some("steer");
             let queued_attachments = self.chats[index].attachments.clone();
             let chat = &mut self.chats[index];
-            chat.queued.push(QueuedMessage {
-                text: prompt.clone(),
-                attachments: queued_attachments.clone(),
-                follow_up,
-            });
+            let queued_id = chat.queue_steer(prompt.clone(), queued_attachments.clone(), follow_up);
             chat.attachments.clear();
             chat.scroll_to_end = true;
             let attachments: Vec<Value> = queued_attachments
@@ -2969,7 +2963,6 @@ impl Root {
                     |attachment| json!({ "dataUrl": attachment.data_url, "name": attachment.name }),
                 )
                 .collect();
-            let prompt_for_error = prompt.clone();
             self.call(
                 "steer_run",
                 json!({
@@ -2983,33 +2976,15 @@ impl Root {
                     },
                 }),
                 cx,
-                move |root, result, cx| match result {
-                    // The turn read the message; `false` is the engine saying the
-                    // run it belonged to is no longer there.
-                    Ok(value) if value.as_bool().unwrap_or(false) => {}
-                    Ok(_) => {
-                        if let Some(chat) = root.chats.get_mut(index) {
-                            chat.queued
-                                .retain(|message| message.text != prompt_for_error);
-                        }
-                        if root.chats.get(index).is_some_and(Chat::running) {
-                            root.restore_draft(
-                                index,
-                                prompt_for_error.clone(),
-                                queued_attachments,
-                                cx,
-                            );
-                        } else {
-                            root.start_turn(prompt_for_error, queued_attachments, cx);
-                        }
-                    }
-                    Err(error) => {
-                        if let Some(chat) = root.chats.get_mut(index) {
-                            chat.queued
-                                .retain(|message| message.text != prompt_for_error);
-                        }
+                move |root, result, cx| {
+                    let accepted = matches!(&result, Ok(value) if value.as_bool() == Some(true));
+                    if let Err(error) = result {
                         root.toast(error, true, cx);
                     }
+                    if let Some(chat) = root.chats.get_mut(index) {
+                        chat.finish_steer(queued_id, accepted);
+                    }
+                    root.settle_steers(index, cx);
                 },
             );
             editor.update(cx, |editor, cx| editor.clear(cx));
@@ -3019,51 +2994,31 @@ impl Root {
             return;
         }
         let attachments = std::mem::take(&mut self.chats[index].attachments);
-        self.start_turn(prompt, attachments, cx);
+        self.start_turn(index, prompt, attachments, cx);
 
         editor.update(cx, |editor, cx| editor.clear(cx));
     }
 
-    /// Puts a message the run never read back in the composer, with its
-    /// attachments, so it is not lost when it arrives as the turn finishes.
-    fn restore_draft(
+    /// Settles steering replies for one chat, then starts its first rejected
+    /// message in that same chat. The turn-end packet and the command reply can
+    /// arrive in either order; neither one is allowed to paint a second copy or
+    /// move the message to whichever tab happens to be active.
+    fn settle_steers(&mut self, index: usize, cx: &mut Context<Self>) {
+        let next = self.chats.get_mut(index).and_then(Chat::settle_steers);
+        if let Some(message) = next {
+            self.start_turn(index, message.text, message.attachments, cx);
+        }
+    }
+
+    /// Starts a turn in `index`: the message is painted, that tab is marked as
+    /// waiting for its run, and the engine is asked for it.
+    fn start_turn(
         &mut self,
         index: usize,
         prompt: String,
         attachments: Vec<Attachment>,
         cx: &mut Context<Self>,
     ) {
-        let Some(chat) = self.chats.get_mut(index) else {
-            return;
-        };
-        for attachment in attachments {
-            if !chat
-                .attachments
-                .iter()
-                .any(|current| current.data_url == attachment.data_url)
-            {
-                chat.attachments.push(attachment);
-            }
-        }
-        let Some(editor) = self.editors.get(&chat.id).cloned() else {
-            return;
-        };
-        editor.update(cx, |editor, cx| {
-            if editor.text().trim().is_empty() {
-                editor.set_text(prompt, cx);
-            }
-        });
-        self.toast(
-            "The response finished before this message arrived \u{2014} it is back in the composer.",
-            false,
-            cx,
-        );
-    }
-
-    /// Starts a turn in the active tab: the message is painted, the tab is marked
-    /// as waiting for its run, and the engine is asked for it.
-    fn start_turn(&mut self, prompt: String, attachments: Vec<Attachment>, cx: &mut Context<Self>) {
-        let index = self.active;
         let Some(chat) = self.chats.get_mut(index) else {
             return;
         };
@@ -3114,17 +3069,19 @@ impl Root {
                 Ok(value) => {
                     let run = value.as_u64().unwrap_or_default();
                     if let Some(chat) = root.chats.get_mut(index) {
-                        if chat.run.is_none() {
+                        if chat.awaiting_run && chat.run.is_none() {
                             chat.run = Some(run);
+                            chat.awaiting_run = false;
                         }
-                        chat.awaiting_run = false;
                     }
                 }
                 Err(error) => {
                     if let Some(chat) = root.chats.get_mut(index) {
-                        chat.finish_run();
-                        chat.awaiting_run = false;
-                        chat.entries.push(Entry::Error(error));
+                        if chat.awaiting_run {
+                            chat.finish_run();
+                            chat.awaiting_run = false;
+                            chat.entries.push(Entry::Error(error));
+                        }
                     }
                 }
             }
@@ -3271,6 +3228,7 @@ impl Root {
                 if let Some(chat) = root.chats.get_mut(index) {
                     chat.run = None;
                     chat.queued.clear();
+                    chat.steer_requests = 0;
                 }
                 cx.notify();
             },
@@ -4044,12 +4002,6 @@ impl Root {
                     chat.changes = payload.get("changes").cloned();
                     chat.baseline = payload["baseline"].as_str().map(str::to_string);
                     chat.after = payload["after"].as_str().map(str::to_string);
-                    for queued in std::mem::take(&mut chat.queued) {
-                        chat.entries.push(Entry::User {
-                            text: queued.text,
-                            attachments: queued.attachments,
-                        });
-                    }
                     chat.record_turn(&payload);
                     for entry in chat.entries.iter_mut() {
                         if let Entry::Approval(card) = entry {
@@ -4059,6 +4011,9 @@ impl Root {
                         }
                     }
                 }
+                if let Some(index) = ended {
+                    self.settle_steers(index, cx);
+                }
                 self.refresh_sessions(cx);
                 let index = self.active;
                 // A run may have switched branch, so the composer's own row is
@@ -4066,7 +4021,7 @@ impl Root {
                 self.load_git(cx);
                 self.refresh_repository(index, cx);
                 self.refresh_live_changes(cx);
-                if ended_active {
+                if ended_active && self.chats.get(index).is_some_and(|chat| !chat.running()) {
                     self.maybe_predict(cx);
                 }
             }
