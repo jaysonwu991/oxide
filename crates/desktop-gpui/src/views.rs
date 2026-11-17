@@ -5000,6 +5000,9 @@ fn composer_tools_menu(
     cx: &mut Context<Root>,
 ) -> Stateful<gpui::Div> {
     let project = root.current_project().unwrap_or_default();
+    // The page marks this row active while the folder's own resources are
+    // trusted, so the reader can see the answer without opening the dialog.
+    let trusted = !project.is_empty() && root.info["trust"]["trusted"].as_bool().unwrap_or(false);
     div()
         .id("composer-tools-menu")
         .role(gpui::Role::Menu)
@@ -5026,6 +5029,7 @@ fn composer_tools_menu(
             "composer-tool-connect",
             Icon::Globe,
             "Connect a provider",
+            false,
             theme,
             cx,
             |root, _, cx| {
@@ -5037,6 +5041,7 @@ fn composer_tools_menu(
             "composer-tool-project-access",
             Icon::Lock,
             "Project access",
+            trusted,
             theme,
             cx,
             move |root, _, cx| {
@@ -5056,6 +5061,7 @@ fn composer_tools_menu(
             "composer-tool-agents",
             Icon::Chat,
             "Agents",
+            false,
             theme,
             cx,
             |root, _, cx| {
@@ -5067,6 +5073,7 @@ fn composer_tools_menu(
             "composer-tool-shortcuts",
             Icon::Keyboard,
             "Keyboard shortcuts",
+            false,
             theme,
             cx,
             |root, _, cx| {
@@ -5080,15 +5087,23 @@ fn composer_tool_item(
     id: &'static str,
     mark: Icon,
     label: &'static str,
+    active: bool,
     theme: &Theme,
     cx: &mut Context<Root>,
     on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
 ) -> Stateful<gpui::Div> {
-    div()
+    let mut item = div()
         .id(id)
         .role(gpui::Role::MenuItem)
-        .aria_label(label)
-        .flex()
+        .aria_label(if active {
+            format!("{label}: active")
+        } else {
+            label.to_string()
+        });
+    if active {
+        item = item.aria_selected(true);
+    }
+    item.flex()
         .flex_row()
         .items_center()
         .gap(px(9.0))
@@ -5096,16 +5111,41 @@ fn composer_tool_item(
         .px(px(10.0))
         .py(px(6.0))
         .rounded(px(6.0))
+        .when(active, move |style| style.bg(theme.wash("accent", 0.16)))
         .cursor_pointer()
         .hover(move |style| style.bg(theme.panel_2()))
-        .child(icons::icon(mark, 14.0, theme.dim()))
+        .child(icons::icon(
+            mark,
+            14.0,
+            if active { theme.accent() } else { theme.dim() },
+        ))
         .child(
             div()
                 .text_size(px(12.5))
-                .text_color(theme.text())
+                .text_color(if active { theme.accent() } else { theme.text() })
                 .child(label),
         )
         .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
+/// Which round control the composer offers, as the page decides it: Stop while a
+/// turn runs and the box is empty, and otherwise the message's own action —
+/// steering it into the running turn, or queueing it for the next one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerAction {
+    Send,
+    Steer,
+    Queue,
+    Stop,
+}
+
+pub(crate) fn composer_action(running: bool, has_text: bool, steers: bool) -> ComposerAction {
+    match (running, has_text) {
+        (true, false) => ComposerAction::Stop,
+        (true, true) if steers => ComposerAction::Steer,
+        (true, true) => ComposerAction::Queue,
+        (false, _) => ComposerAction::Send,
+    }
 }
 
 fn composer(
@@ -5714,31 +5754,12 @@ fn composer(
     ));
 
     let has_text = !editor_text.trim().is_empty();
-    if running {
-        if has_text {
-            footer = footer.child(
-                div()
-                    .id("composer-send")
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .flex_none()
-                    .w(px(30.0))
-                    .h(px(30.0))
-                    .rounded(px(15.0))
-                    .cursor_pointer()
-                    .bg(theme.panel_3())
-                    .hover(move |style| style.bg(theme.accent()))
-                    .tooltip(tip("Queue \u{00b7} \u{23ce}", theme))
-                    .child(icons::icon(Icon::ArrowUp, 15.0, theme.text()))
-                    .on_click(cx.listener(|root, _, window, cx| {
-                        root.send(window, cx);
-                        if root.overlay.is_none() {
-                            root.focus_composer(window, cx);
-                        }
-                    })),
-            );
-        }
+    let steers = root.prefs["follow_up"].as_str() == Some("steer");
+    // One round control, the way the page has one: while a turn runs it stops
+    // that turn only when there is nothing to send. A composer with text in it
+    // offers the message's own action — steering it into the turn, or queueing
+    // it — so reaching for the bright circle does what the typed message means.
+    if composer_action(running, has_text, steers) == ComposerAction::Stop {
         footer = footer.child(
             div()
                 .id("composer-stop")
@@ -5753,7 +5774,7 @@ fn composer(
                 .cursor_pointer()
                 .bg(theme.text())
                 .hover(move |style| style.opacity(0.85))
-                .tooltip(tip("Stop the turn", theme))
+                .tooltip(tip("Stop the turn \u{00b7} \u{2318}.", theme))
                 .child(
                     div()
                         .absolute()
@@ -5777,6 +5798,11 @@ fn composer(
                 .on_click(cx.listener(|root, _, _, cx| root.stop(cx))),
         );
     } else {
+        let tooltip = match composer_action(running, has_text, steers) {
+            ComposerAction::Steer => "Steer the response \u{00b7} \u{23ce}",
+            ComposerAction::Queue => "Queue as the next turn \u{00b7} \u{23ce}",
+            ComposerAction::Send | ComposerAction::Stop => "Send \u{00b7} \u{23ce}",
+        };
         footer = footer.child(
             div()
                 .id("composer-send")
@@ -5794,7 +5820,7 @@ fn composer(
                     theme.panel_3()
                 })
                 .hover(move |style| style.bg(theme.accent()))
-                .tooltip(tip("Send \u{00b7} \u{23ce}", theme))
+                .tooltip(tip(tooltip, theme))
                 .child(icons::icon(
                     Icon::ArrowUp,
                     15.0,
@@ -7997,6 +8023,21 @@ mod transcript_scroll_tests {
             -1.0, -499.0, 500.0, false
         ));
         assert!(transcript_following_after_scroll(0.0, 0.0, 0.0, false));
+    }
+}
+
+#[cfg(test)]
+mod composer_action_tests {
+    use super::{composer_action, ComposerAction};
+
+    #[test]
+    fn a_running_turn_is_stopped_only_from_an_empty_composer() {
+        assert_eq!(composer_action(true, false, true), ComposerAction::Stop);
+        assert_eq!(composer_action(true, false, false), ComposerAction::Stop);
+        assert_eq!(composer_action(true, true, true), ComposerAction::Steer);
+        assert_eq!(composer_action(true, true, false), ComposerAction::Queue);
+        assert_eq!(composer_action(false, true, false), ComposerAction::Send);
+        assert_eq!(composer_action(false, false, true), ComposerAction::Send);
     }
 }
 

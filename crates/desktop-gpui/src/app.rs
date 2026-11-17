@@ -2544,29 +2544,38 @@ impl Root {
         });
         self.subscriptions
             .push(cx.subscribe(&editor, move |root, editor, event, cx| {
-                if let EditorEvent::AttachmentPasted { name, data_url } = event {
-                    let result = root
-                        .chats
-                        .iter_mut()
-                        .find(|chat| chat.id == id)
-                        .map(|chat| {
-                            add_attachment(chat, Attachment::new(name.clone(), data_url.clone()))
-                        })
-                        .unwrap_or(Ok(()));
-                    if let Err(error) = result {
-                        root.toast(error, true, cx);
+                match event {
+                    EditorEvent::AttachmentPasted { name, data_url } => {
+                        let result = root
+                            .chats
+                            .iter_mut()
+                            .find(|chat| chat.id == id)
+                            .map(|chat| {
+                                add_attachment(
+                                    chat,
+                                    Attachment::new(name.clone(), data_url.clone()),
+                                )
+                            })
+                            .unwrap_or(Ok(()));
+                        if let Err(error) = result {
+                            root.toast(error, true, cx);
+                        }
                     }
-                } else {
-                    let (text, caret) = {
-                        let editor = editor.read(cx);
-                        (editor.text().to_string(), editor.cursor_utf16())
-                    };
-                    if !text.is_empty() && root.prediction_chat == Some(id) {
-                        root.prediction.clear();
-                        root.prediction_chat = None;
-                        root.prediction_generation = root.prediction_generation.wrapping_add(1);
+                    EditorEvent::PasteRefused { reason } => {
+                        root.toast(reason.clone(), true, cx);
                     }
-                    root.refresh_at_suggestions(id, text, caret, cx);
+                    EditorEvent::Changed => {
+                        let (text, caret) = {
+                            let editor = editor.read(cx);
+                            (editor.text().to_string(), editor.cursor_utf16())
+                        };
+                        if !text.is_empty() && root.prediction_chat == Some(id) {
+                            root.prediction.clear();
+                            root.prediction_chat = None;
+                            root.prediction_generation = root.prediction_generation.wrapping_add(1);
+                        }
+                        root.refresh_at_suggestions(id, text, caret, cx);
+                    }
                 }
                 cx.notify();
             }));
@@ -2939,20 +2948,22 @@ impl Root {
             return;
         }
         self.model_menu_open = false;
-        let Some(chat) = self.chats.get_mut(index) else {
-            return;
-        };
-        if let Some(run) = chat.run {
+        let run = self.chats.get(index).and_then(|chat| chat.run);
+        if let Some(run) = run {
+            // A message typed while a turn streams is guidance for that turn: it
+            // goes into the run's steering queue, and the row above the editor
+            // holds it until the turn reads it.
             let follow_up = self.prefs["follow_up"].as_str() != Some("steer");
-            let queue = chat.attachments.clone();
+            let queued_attachments = self.chats[index].attachments.clone();
+            let chat = &mut self.chats[index];
             chat.queued.push(QueuedMessage {
                 text: prompt.clone(),
-                attachments: queue.clone(),
+                attachments: queued_attachments.clone(),
                 follow_up,
             });
             chat.attachments.clear();
             chat.scroll_to_end = true;
-            let attachments: Vec<Value> = queue
+            let attachments: Vec<Value> = queued_attachments
                 .iter()
                 .map(
                     |attachment| json!({ "dataUrl": attachment.data_url, "name": attachment.name }),
@@ -2972,8 +2983,27 @@ impl Root {
                     },
                 }),
                 cx,
-                move |root, result, cx| {
-                    if let Err(error) = result {
+                move |root, result, cx| match result {
+                    // The turn read the message; `false` is the engine saying the
+                    // run it belonged to is no longer there.
+                    Ok(value) if value.as_bool().unwrap_or(false) => {}
+                    Ok(_) => {
+                        if let Some(chat) = root.chats.get_mut(index) {
+                            chat.queued
+                                .retain(|message| message.text != prompt_for_error);
+                        }
+                        if root.chats.get(index).is_some_and(Chat::running) {
+                            root.restore_draft(
+                                index,
+                                prompt_for_error.clone(),
+                                queued_attachments,
+                                cx,
+                            );
+                        } else {
+                            root.start_turn(prompt_for_error, queued_attachments, cx);
+                        }
+                    }
+                    Err(error) => {
                         if let Some(chat) = root.chats.get_mut(index) {
                             chat.queued
                                 .retain(|message| message.text != prompt_for_error);
@@ -2985,6 +3015,58 @@ impl Root {
             editor.update(cx, |editor, cx| editor.clear(cx));
             return;
         }
+        if self.chats.get(index).is_some_and(|chat| chat.awaiting_run) {
+            return;
+        }
+        let attachments = std::mem::take(&mut self.chats[index].attachments);
+        self.start_turn(prompt, attachments, cx);
+
+        editor.update(cx, |editor, cx| editor.clear(cx));
+    }
+
+    /// Puts a message the run never read back in the composer, with its
+    /// attachments, so it is not lost when it arrives as the turn finishes.
+    fn restore_draft(
+        &mut self,
+        index: usize,
+        prompt: String,
+        attachments: Vec<Attachment>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(chat) = self.chats.get_mut(index) else {
+            return;
+        };
+        for attachment in attachments {
+            if !chat
+                .attachments
+                .iter()
+                .any(|current| current.data_url == attachment.data_url)
+            {
+                chat.attachments.push(attachment);
+            }
+        }
+        let Some(editor) = self.editors.get(&chat.id).cloned() else {
+            return;
+        };
+        editor.update(cx, |editor, cx| {
+            if editor.text().trim().is_empty() {
+                editor.set_text(prompt, cx);
+            }
+        });
+        self.toast(
+            "The response finished before this message arrived \u{2014} it is back in the composer.",
+            false,
+            cx,
+        );
+    }
+
+    /// Starts a turn in the active tab: the message is painted, the tab is marked
+    /// as waiting for its run, and the engine is asked for it.
+    fn start_turn(&mut self, prompt: String, attachments: Vec<Attachment>, cx: &mut Context<Self>) {
+        let index = self.active;
+        let Some(chat) = self.chats.get_mut(index) else {
+            return;
+        };
         if chat.awaiting_run {
             return;
         }
@@ -2992,16 +3074,16 @@ impl Root {
         let session = chat.session.clone();
         let reasoning = chat.reasoning.clone();
         let agent = chat.agent.clone();
-        let attachments: Vec<Value> = chat
-            .attachments
+        let parts: Vec<Value> = attachments
             .iter()
             .map(|attachment| json!({ "dataUrl": attachment.data_url, "name": attachment.name }))
             .collect();
-        let history_attachments = chat.attachments.clone();
 
+        // The message carries the attachments it was sent with, so the row in
+        // the transcript shows the same thumbnails the composer did.
         chat.entries.push(Entry::User {
             text: prompt.clone(),
-            attachments: history_attachments,
+            attachments,
         });
         chat.attachments.clear();
         chat.scroll_to_end = true;
@@ -3012,8 +3094,13 @@ impl Root {
         let mut args = json!({
             "project": project,
             "prompt": prompt,
-            "session": session,
-            "attachments": if attachments.is_empty() { Value::Null } else { Value::Array(attachments) },
+            // A tab with no thread is a reader starting one, so the engine is
+            // asked for a new session by name. Its own default is `latest`,
+            // which would append this message to whichever thread the project
+            // used last — one this tab never chose, still listed in the sidebar
+            // as that thread, with no new one to show for the send.
+            "session": session_reference(&session),
+            "attachments": if parts.is_empty() { Value::Null } else { Value::Array(parts) },
         });
         if let Some(reasoning) = reasoning {
             args["reasoning"] = json!(reasoning);
@@ -3044,8 +3131,6 @@ impl Root {
             cx.notify();
         });
         self.start_run_clock_ticker(cx);
-
-        editor.update(cx, |editor, cx| editor.clear(cx));
     }
 
     fn start_run_clock_ticker(&mut self, cx: &mut Context<Self>) {
@@ -4776,6 +4861,14 @@ fn performs_slash_command(name: &str, args: &str) -> bool {
     }
 }
 
+/// The session reference a send names: the tab's own thread once it has one,
+/// and `new` while it is starting one. The engine defaults to `latest`, which
+/// would append the message to whichever thread the project used last, so a
+/// tab that has no thread of its own has to say so.
+fn session_reference(session: &Option<String>) -> String {
+    session.clone().unwrap_or_else(|| "new".to_string())
+}
+
 fn can_reuse_new_chat(chat: &Chat, composer_text: &str) -> bool {
     chat.session.is_none()
         && chat.entries.is_empty()
@@ -4818,7 +4911,7 @@ mod sidebar_resize_tests {
     use super::{
         add_attachment, can_reuse_new_chat, clamp_sidebar_width, composer_has_content,
         details_visible, draft_follows_project, performs_slash_command, resized_changes_width,
-        slash_command, synchronize_session_titles, toggled_details, Rail,
+        session_reference, slash_command, synchronize_session_titles, toggled_details, Rail,
     };
     use crate::model::{Attachment, Chat, SessionRow};
     use crate::views::{customize_destination, effort_position, model_display_name};
@@ -4909,6 +5002,15 @@ mod sidebar_resize_tests {
             "DeepSeek V4.1 Flash"
         );
         assert_eq!(model_display_name("gpt-5"), "GPT 5");
+    }
+
+    #[test]
+    fn a_tab_without_a_thread_asks_the_engine_for_a_new_one() {
+        assert_eq!(session_reference(&None), "new");
+        assert_eq!(
+            session_reference(&Some("saved-thread".to_string())),
+            "saved-thread"
+        );
     }
 
     #[test]

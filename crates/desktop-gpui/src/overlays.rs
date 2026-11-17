@@ -68,7 +68,11 @@ pub fn layer(
             .pl(px(56.0))
             .bg(gpui::transparent_black())
     } else {
-        scrim.items_center().justify_center().bg(hsla(
+        // Nothing behind a dialog is reachable while it is up. The scrim is
+        // what holds that line: without a hitbox of its own the rows and cards
+        // it covers still light up under the pointer, and a wheel over the
+        // dialog would scroll the transcript behind it.
+        scrim.occlude().items_center().justify_center().bg(hsla(
             0.0,
             0.0,
             0.0,
