@@ -1251,6 +1251,12 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .setting-chip svg { flex: none; }
 .chip.setting-chip { border-color: transparent; border-radius: 6px; font-family: inherit; padding: 0 5px; color: var(--text); }
 .setting-chip .selector-caret { width: 12px; height: 12px; color: var(--faint); }
+/* The model and its thinking level read as one control, "model · Level ⌄", the way the GPUI composer draws it. */
+.model-settings { gap: 0; }
+.model-settings .chip.setting-chip { font-size: 11.5px; color: var(--dim); height: 30px; padding: 0 5px; }
+.model-settings .chip.setting-chip:hover { color: var(--text); }
+.model-settings:has(#reasoning:not([hidden])) #model .selector-caret { display: none; }
+#reasoning-value::before { content: "\00b7\00a0"; }
 .settings-dropdown {
   position: fixed;
   z-index: 50;
@@ -3391,7 +3397,7 @@ textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 75%
   border-bottom-color: var(--border);
   padding-right: 10px;
 }
-.topbar-leading { flex-basis: calc(var(--sidebar-width, 300px) + var(--rail-width)); padding-left: 10px; }
+.topbar-leading { flex-basis: calc(var(--sidebar-width, 300px) + var(--rail-width) + 6px); padding-left: 10px; }
 .platform-mac .topbar-leading { padding-left: 86px; }
 .topbar-content { gap: 9px; padding-left: 12px; }
 .thread-title { font-size: 14px; font-weight: 500; }

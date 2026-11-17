@@ -66,7 +66,7 @@ both names.
 
 Requires a stable Rust toolchain (edition 2021). The workspace splits the shared
 agent core (`crates/core`) and terminal CLI (`crates/cli`). Oxide Desktop GPUI
-(`crates/desktop-gpui`) and the Electron fallback (`crates/desktop`) are separate
+(`crates/desktop-gpui`) and the Electron app (`crates/desktop`) are separate
 Cargo workspaces; the VS Code extension in `editors/vscode` is a separate pnpm
 package.
 
@@ -77,7 +77,7 @@ cargo install --path crates/cli
 ## Oxide Desktop GPUI
 
 The primary desktop app is the native GPUI window in `crates/desktop-gpui`. Use
-it instead of the Electron fallback unless you specifically need an
+it instead of the Electron app unless you specifically need an
 Electron-only compatibility path. Prebuilt packages are drafted under
 **Oxide Desktop GPUI v...** releases on the `desktop-gpui-v*` train, and the
 newest of each platform is also on the `desktop-latest`
@@ -109,7 +109,7 @@ To build the primary app from source:
 cd crates/desktop-gpui && cargo run
 ```
 
-To build the Electron fallback:
+To build the Electron app:
 
 ```sh
 cd crates/desktop
@@ -123,7 +123,7 @@ talks to is the Rust binary this package compiles. The package keeps its own
 tree, managed with pnpm, and is built from its own directory.
 
 See [desktop-gpui.md](desktop-gpui.md) for the native app and
-[desktop.md](desktop.md) for the Electron fallback.
+[desktop.md](desktop.md) for the Electron app.
 
 ### Oxide Computer Use distribution warning
 
@@ -211,7 +211,7 @@ GitHub reports) — which is what a front-end reads instead of parsing the prose
 `--component <cli|desktop-gpui|desktop|extension>` and `--current <VERSION>`
 decide which release train the report is about and what it is compared against:
 the CLI's own train (`v*`) by default, Oxide Desktop GPUI's (`desktop-gpui-v*`),
-the Electron fallback's (`desktop-v*`), or the VS Code extension's
+Electron's (`desktop-v*`), or the VS Code extension's
 (`extension-v*`), with each component's artifact for this platform in `asset`.
 That is how each desktop front-end resolves its own release and how the
 extension resolves the `.vsix` it installs, through the same resolution this

@@ -6,7 +6,7 @@ projects, chats, configuration, session store, approvals and themes — with a
 native renderer. The Electron window in `crates/desktop` remains the fallback
 during the migration ([desktop.md](desktop.md)).
 
-Both windows are clients of one engine. The Electron fallback starts
+Both windows are clients of one engine. The Electron starts
 `oxide-desktop` as a child process and speaks one JSON packet per line to it;
 GPUI links the same engine in-process — `oxide_desktop::commands::dispatch`
 is the command contract, `oxide_desktop::bridge::Host` is the pipe — so a change
@@ -15,7 +15,7 @@ windows without being written twice.
 
 ```mermaid
 graph TD
-    subgraph fallback["crates/desktop — Electron fallback"]
+    subgraph fallback["crates/desktop — Electron"]
         Electron["Electron window<br/>(TypeScript + ui/app.js)"] -->|JSON packet per line| Harness["oxide-desktop binary"]
     end
     subgraph primary["crates/desktop-gpui — primary"]
@@ -33,7 +33,7 @@ mounted application keeps the product name **Oxide**, its bundle is `Oxide.app`,
 and its bundle identifier is `dev.oxide.desktop`. It installs from the permanent
 `desktop-latest` alias and releases on the `desktop-gpui-v*` train with titles
 such as **Oxide Desktop GPUI v0.14.0**. The window's functional surfaces and
-accessibility semantics mirror the Electron fallback. Both windows write the
+accessibility semantics mirror the Electron app. Both windows write the
 same stores: projects, sessions, approvals, trust decisions, themes, language
 and preferences.
 
@@ -82,7 +82,7 @@ directly.
 
 Each bundle carries `plugins/` beside the app (macOS: `Contents/Resources/plugins`),
 which the front-end installs into the shared plugin store at launch the way the
-Electron fallback does, through `OXIDE_DESKTOP_PLUGINS` or the bundle's own layout.
+Electron does, through `OXIDE_DESKTOP_PLUGINS` or the bundle's own layout.
 
 `.github/workflows/desktop-gpui.yml` is the same shape as `desktop.yml`: the same
 five hosts (macOS arm64 and x64, Linux x64 and arm64, Windows x64), the same
@@ -344,7 +344,7 @@ reveal rather than two frames of the wrong page.
   card before it is applied. `language`/`set_language` read and write the shared
   language setting, and the catalog it answers with supplies the composer's
   placeholder; the window's other labels are English for now, so switching
-  language changes what the terminal and the Electron fallback say before it changes
+  language changes what the terminal and the Electron app say before it changes
   this window's own furniture.
 - **Preferences** — `read_prefs`/`write_prefs` for the send key, follow-up
   behaviour, sidebar visibility, predictions, notifications, what they announce,
@@ -396,7 +396,7 @@ glyph, and targets are 30px or larger (40px on the rail; the switch's hit area i
 
 ### Desktop coverage
 
-GPUI covers the same desktop workflow as the Electron fallback: projects,
+GPUI covers the same desktop workflow as the Electron app: projects,
 threads and thread search; streamed turns, approvals and questions; models,
 thinking and providers; trust; reviews, hunk staging and undo; the PTY, pull
 requests and file viewer; plugin marketplaces, skills and MCP controls;

@@ -759,6 +759,21 @@ impl Editor {
         let bounds = self.line_bounds();
         let range = &bounds[line];
         let before = &self.content[range.start..cursor];
+        if cursor == range.end && empty_list_item(before) {
+            self.remember();
+            self.content = format!(
+                "{}{}",
+                &self.content[..range.start],
+                &self.content[cursor..]
+            )
+            .into();
+            self.selected_range = range.start..range.start;
+            self.selection_reversed = false;
+            self.marked_range = None;
+            cx.emit(EditorEvent::Changed);
+            cx.notify();
+            return;
+        }
         let insertion = match continuation_prefix(before) {
             Some(prefix) => format!("\n{prefix}"),
             None if column > 0
@@ -2112,9 +2127,20 @@ fn task_marker(text: &str) -> Option<(usize, bool)> {
     None
 }
 
+/// A list item or quote line that holds only its marker: Enter on it ends the
+/// list rather than starting another empty item.
+fn empty_list_item(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let listed = trimmed.starts_with(['-', '*', '+', '>'])
+        || trimmed.starts_with(|ch: char| ch.is_ascii_digit());
+    listed
+        && marker_content_start(text)
+            .is_some_and(|start| start > 0 && text[start..].trim().is_empty())
+}
+
 fn continuation_prefix(text: &str) -> Option<String> {
     let start = marker_content_start(text)?;
-    if start >= text.len() {
+    if text[start..].trim().is_empty() {
         return None;
     }
     let indent = &text[..text.len() - text.trim_start().len()];
@@ -2172,6 +2198,16 @@ mod tests {
         assert_eq!(continuation_prefix("  > quote"), Some("  > ".to_string()));
         assert_eq!(continuation_prefix("9. item"), Some("10. ".to_string()));
         assert_eq!(continuation_prefix("- "), None);
+    }
+
+    #[test]
+    fn an_empty_list_item_ends_the_list() {
+        assert!(super::empty_list_item("- "));
+        assert!(super::empty_list_item("  1. "));
+        assert!(super::empty_list_item("> "));
+        assert!(!super::empty_list_item("- item"));
+        assert!(!super::empty_list_item("# "));
+        assert_eq!(continuation_prefix("-   "), None);
     }
 
     #[test]

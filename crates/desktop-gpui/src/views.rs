@@ -829,6 +829,18 @@ pub fn rail(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl Into
                 })),
         )
         .child(div().flex_1())
+        .children(root.update_notice().map(|notice| {
+            icon_button("rail-update", Icon::Download, 40.0, theme, false)
+                .tooltip(tip(notice, theme))
+                .on_click(cx.listener(|root, _, _, cx| {
+                    if matches!(root.overlay, Some(Overlay::Updates)) {
+                        root.overlay = None;
+                        cx.notify();
+                    } else {
+                        root.check_for_updates(cx);
+                    }
+                }))
+        }))
         .child(
             icon_button("rail-settings", Icon::Settings, 40.0, theme, settings)
                 .tooltip(tip("Settings \u{00b7} \u{2318},", theme))
@@ -2875,24 +2887,33 @@ fn empty_state(
                 .child(div().pt(px(22.0)).w_full().child(suggestions(theme, cx)));
         }
         None => {
-            invite = invite
-                .child(
-                    div()
-                        .pt(px(8.0))
-                        .text_size(px(12.5))
-                        .text_color(theme.dim())
-                        .child("Open a folder to start a chat in it."),
-                )
-                .child(
-                    div()
-                        .pt(px(22.0))
-                        .child(Button::new("Add project").primary().render(
+            let any = !root.projects.is_empty();
+            invite = invite.child(
+                div()
+                    .pt(px(8.0))
+                    .text_size(px(12.5))
+                    .text_color(theme.dim())
+                    .child(if any {
+                        "Pick a folder with the project chip below, or open a recent thread."
+                    } else {
+                        "Add a folder to run in \u{2014} the project chip below, or the + beside Projects."
+                    }),
+            );
+            let recent = recent_threads(root);
+            if recent.is_empty() {
+                if !any {
+                    invite = invite.child(div().pt(px(22.0)).child(
+                        Button::new("Add project").primary().render(
                             "empty-add",
                             theme,
                             cx,
                             |root, window, cx| root.open_new_project(window, cx),
-                        )),
-                );
+                        ),
+                    ));
+                }
+            } else {
+                invite = invite.child(recent_list(recent, theme, cx));
+            }
         }
     }
 
@@ -2902,6 +2923,114 @@ fn empty_state(
         |invite, delta| invite.opacity(delta),
     ))
     .into_any_element()
+}
+
+const MAX_RECENT_THREADS: usize = 5;
+
+/// The newest threads across every folder the sidebar lists, which is where a
+/// window that opened on no project picks one up again.
+fn recent_threads(root: &Root) -> Vec<crate::model::SessionRow> {
+    let mut seen = std::collections::HashSet::new();
+    let mut threads: Vec<crate::model::SessionRow> = root
+        .projects
+        .iter()
+        .flat_map(|project| root.sessions_of(&project.path))
+        .filter(|session| seen.insert(session.id.clone()))
+        .cloned()
+        .collect();
+    threads.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
+    threads.truncate(MAX_RECENT_THREADS);
+    threads
+}
+
+fn session_age(seconds: u64) -> String {
+    if seconds == 0 {
+        return String::new();
+    }
+    let elapsed = Root::unix_now().saturating_sub(seconds);
+    match elapsed {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{}m ago", elapsed / 60),
+        3600..=86_399 => format!("{}h ago", elapsed / 3600),
+        _ => format!("{}d ago", elapsed / 86_400),
+    }
+}
+
+fn recent_list(
+    threads: Vec<crate::model::SessionRow>,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let mut list = div().flex().flex_col().w_full().mt(px(22.0)).child(
+        div()
+            .pb(px(6.0))
+            .text_size(px(11.0))
+            .text_color(theme.faint())
+            .child("RECENT THREADS"),
+    );
+    for session in threads {
+        let meta = [
+            Some(session.project.clone()).map(|path| {
+                std::path::Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or(path)
+            }),
+            session
+                .worktree
+                .as_ref()
+                .map(|worktree| format!("worktree {worktree}")),
+            Some(session_age(session.modified_at)),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" \u{00b7} ");
+        let id = session.id.clone();
+        let title = session.title.clone();
+        list = list.child(
+            div()
+                .id(SharedString::from(format!("recent-{id}")))
+                .role(gpui::Role::Button)
+                .aria_label(format!("{title} \u{2014} {meta}"))
+                .flex()
+                .flex_row()
+                .items_baseline()
+                .gap(px(10.0))
+                .w_full()
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel()).border_color(theme.border()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(12.5))
+                        .text_color(theme.text())
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .text_size(px(11.0))
+                        .text_color(theme.faint())
+                        .child(meta),
+                )
+                .on_click(cx.listener(move |root, _, window, cx| {
+                    root.open_session(window, session.clone(), cx)
+                })),
+        );
+    }
+    list
 }
 
 fn suggestions(theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {

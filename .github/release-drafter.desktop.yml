@@ -1,5 +1,5 @@
-# Release Drafter configuration for the Electron desktop fallback. It drafts the
-# next versioned fallback release on every push to `main`, alongside the CLI draft
+# Release Drafter configuration for the Electron desktop app. It drafts the
+# next versioned Electron release on every push to `main`, alongside the CLI draft
 # (`release-drafter.cli.yml`) and the VS Code extension draft
 # (`release-drafter.vscode.yml`); all three are run by
 # .github/workflows/release-drafter.yml.
@@ -19,7 +19,7 @@
 # The categories, replacers, and change templates are shared with the CLI and
 # VS Code configs; keep the three files in sync.
 
-name-template: 'Oxide Desktop v$RESOLVED_VERSION'
+name-template: 'Oxide Desktop Electron v$RESOLVED_VERSION'
 tag-template: 'desktop-v$RESOLVED_VERSION'
 tag-prefix: 'desktop-v'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'

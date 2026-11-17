@@ -3,7 +3,7 @@
 //! One native process draws the whole window, and the desktop engine
 //! (`oxide-desktop`'s library: projects, sessions, turns, approvals, updates)
 //! runs inside it. The engine, the configuration, the session store and the
-//! approval store are the ones the Electron fallback and the terminal use, so
+//! approval store are the ones the Electron app and the terminal use, so
 //! this is the same app with the primary native renderer.
 
 mod app;

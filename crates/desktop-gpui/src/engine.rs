@@ -69,6 +69,11 @@ impl Engine {
         ));
 
         sync_plugins();
+        runtime.spawn(oxide_desktop::commands::auto_update_component(
+            Arc::clone(&state),
+            oxide_core::updates::Component::DesktopGpui,
+            env!("CARGO_PKG_VERSION").to_string(),
+        ));
         runtime.spawn(oxide_desktop::commands::auto_catalog(Arc::clone(&state)));
 
         Ok((

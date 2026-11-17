@@ -896,7 +896,7 @@ check(
   /name: publish release/.test(releaseJob) &&
     /needs: build/.test(releaseJob) &&
     /if: startsWith\(github.ref, 'refs\/tags\/desktop-v'\)/.test(releaseJob) &&
-    releaseJob.includes('--title "Oxide Desktop ${GITHUB_REF_NAME#desktop-}" --generate-notes') &&
+    releaseJob.includes('--title "Oxide Desktop Electron ${GITHUB_REF_NAME#desktop-}" --generate-notes') &&
     releaseJob.includes('gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false') &&
     releaseJob.indexOf("gh release upload") < releaseJob.indexOf("gh release edit") &&
     releaseJob.includes("set -euo pipefail"),
@@ -1068,7 +1068,7 @@ check(
     /pub fn cancel\(token: &str\)/.test(update) &&
     /fn cancelled\(token: &str\) -> bool/.test(update) &&
     /pub fn new_token\(\) -> String/.test(update) &&
-    /install_reporting\(&token, move \|progress\|/.test(commands) &&
+    /install_(component_)?reporting\([^)]*&token, move \|progress\|/s.test(commands) &&
     /"token": named/.test(commands) &&
     /install_update\(&state, optional_arg\(&args, "token"\)\?\)/.test(commands) &&
     /cancel_update\(arg\(&args, "token"\)\?\)/.test(commands) &&
