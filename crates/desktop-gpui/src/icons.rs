@@ -203,6 +203,12 @@ const GLYPHS: &[(&str, &str)] = &[
             r##"<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>"##
         ),
     ),
+    (
+        "copy",
+        glyph!(
+            r##"<rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/>"##
+        ),
+    ),
 ];
 
 /// The drawing an element paints.
@@ -238,6 +244,7 @@ pub enum Icon {
     Changes,
     Image,
     File,
+    Copy,
     Globe,
     Bell,
     Activity,
@@ -282,6 +289,7 @@ impl Icon {
             Icon::Changes => "Changes",
             Icon::Image => "Image",
             Icon::File => "File",
+            Icon::Copy => "Copy",
             Icon::Globe => "Provider",
             Icon::Bell => "Notifications",
             Icon::Activity => "Activity",
@@ -326,6 +334,7 @@ impl Icon {
             Icon::Changes => "icons/changes.svg",
             Icon::Image => "icons/image.svg",
             Icon::File => "icons/file.svg",
+            Icon::Copy => "icons/copy.svg",
             Icon::Globe => "icons/globe.svg",
             Icon::Bell => "icons/bell.svg",
             Icon::Activity => "icons/activity.svg",

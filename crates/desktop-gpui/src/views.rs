@@ -3573,7 +3573,7 @@ fn entry_view(
         }
         Entry::Assistant {
             blocks,
-            streaming: _,
+            streaming,
             text,
         } => {
             let mut column = div()
@@ -3594,7 +3594,7 @@ fn entry_view(
                 );
             }
             for block in blocks {
-                column = column.child(block_view(block, theme, width - 22.0, window));
+                column = column.child(block_view(block, theme, width - 22.0, *streaming, window));
             }
             column
         }
@@ -3651,6 +3651,12 @@ fn entry_view(
             let expandable = !card.output.trim().is_empty() || card.diff.is_some();
             let show_output =
                 !card.output.trim().is_empty() && (expanded || card.status == Status::Failed);
+            let copy_text = card.copy_text.clone();
+            let copy_label = if card.name == "bash" {
+                "Copy command"
+            } else {
+                "Copy tool call"
+            };
             let mut block = div()
                 .flex()
                 .flex_col()
@@ -3739,6 +3745,22 @@ fn entry_view(
                         .text_color(theme.faint())
                         .child(card.detail.clone()),
                 )
+                .children((!copy_text.is_empty()).then(|| {
+                    icon_button(
+                        SharedString::from(format!("tool-copy-{}", card.id)),
+                        Icon::Copy,
+                        22.0,
+                        theme,
+                        false,
+                    )
+                    .aria_label(copy_label)
+                    .tooltip(tip(copy_label, theme))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()));
+                        root.toast("Copied tool call", false, cx);
+                    }))
+                }))
                 .child(
                     div()
                         .flex_none()
@@ -4188,7 +4210,13 @@ fn assistant_actions(
     actions
 }
 
-fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> gpui::Div {
+fn block_view(
+    block: &Block,
+    theme: &Theme,
+    width: f32,
+    streaming: bool,
+    window: &mut Window,
+) -> gpui::Div {
     match block {
         Block::Paragraph(spans) => {
             let lines = inline_lines(spans);
@@ -4231,7 +4259,7 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
             .font_weight(FontWeight::SEMIBOLD)
             .child(styled(theme, spans)),
         Block::Code { language, text } => {
-            if language.eq_ignore_ascii_case("mermaid") {
+            if language.eq_ignore_ascii_case("mermaid") && !streaming {
                 if let Some(diagram) = crate::mermaid::render(text, theme.background().l < 0.5) {
                     let available = (width - 2.0).max(80.0);
                     let scale = (available / diagram.width).min(1.0);
@@ -4254,7 +4282,11 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
                 }
             }
             let label = if language.eq_ignore_ascii_case("mermaid") {
-                "Mermaid diagram \u{00b7} source".to_string()
+                if streaming {
+                    "Mermaid diagram \u{00b7} rendering when complete".to_string()
+                } else {
+                    "Mermaid diagram \u{00b7} source".to_string()
+                }
             } else if language.is_empty() {
                 "code".to_string()
             } else {
@@ -4443,7 +4475,7 @@ pub(crate) fn markdown_document(
         .gap_3()
         .text_color(theme.text());
     for block in blocks {
-        document = document.child(block_view(&block, theme, width, window));
+        document = document.child(block_view(&block, theme, width, false, window));
     }
     document
 }

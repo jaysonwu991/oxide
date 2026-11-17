@@ -119,6 +119,9 @@ pub struct ToolCard {
     pub id: u64,
     pub name: String,
     pub detail: String,
+    /// The invocation a reader can copy. Unlike `detail`, this keeps a full
+    /// multi-line shell command instead of the one-line transcript summary.
+    pub copy_text: String,
     pub app: Option<String>,
     pub status: Status,
     pub output: String,
@@ -762,14 +765,19 @@ impl Chat {
                 }
             }
             "tool_call" => {
+                if let Some(Entry::Assistant { streaming, .. }) = self.entries.last_mut() {
+                    *streaming = false;
+                }
                 let name = payload["toolName"].as_str().unwrap_or_default().to_string();
                 let args = argument(&payload["arguments"]);
                 let detail = describe_call(&name, &args);
+                let copy_text = tool_copy_text(&name, &args, &detail);
                 let id = self.entries.len() as u64;
                 self.entries.push(Entry::Tool(ToolCard {
                     id,
                     name,
                     detail,
+                    copy_text,
                     app: args["app"].as_str().map(str::to_string),
                     status: Status::Running,
                     output: String::new(),
@@ -835,8 +843,10 @@ impl Chat {
                 }
             }
             "agent_end" => {
-                if let Some(Entry::Assistant { streaming, .. }) = self.entries.last_mut() {
-                    *streaming = false;
+                for entry in &mut self.entries {
+                    if let Entry::Assistant { streaming, .. } = entry {
+                        *streaming = false;
+                    }
                 }
             }
             _ => {}
@@ -924,10 +934,13 @@ impl Chat {
                                 let output =
                                     result["content"].as_str().unwrap_or_default().to_string();
                                 let failed = output.starts_with("error:");
+                                let detail = describe_call(&name, &args);
+                                let copy_text = tool_copy_text(&name, &args, &detail);
                                 self.entries.push(Entry::Tool(ToolCard {
                                     id: self.entries.len() as u64,
-                                    detail: describe_call(&name, &args),
+                                    detail,
                                     name,
+                                    copy_text,
                                     app: args["app"].as_str().map(str::to_string),
                                     status: if failed { Status::Failed } else { Status::Done },
                                     output: output
@@ -954,6 +967,7 @@ impl Chat {
                             id,
                             name: "tool".to_string(),
                             detail: String::new(),
+                            copy_text: String::new(),
                             app: None,
                             status: Status::Done,
                             output,
@@ -1010,6 +1024,18 @@ pub fn describe_call(_name: &str, args: &Value) -> String {
         }
     }
     String::new()
+}
+
+fn tool_copy_text(name: &str, args: &Value, detail: &str) -> String {
+    if name == "bash" {
+        args["command"]
+            .as_str()
+            .filter(|command| !command.trim().is_empty())
+            .unwrap_or(detail)
+            .to_string()
+    } else {
+        detail.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1241,6 +1267,45 @@ mod tests {
             Entry::User { text, .. } if text == "same prompt"
         ));
         assert!(chat.queued.is_empty());
+    }
+
+    #[test]
+    fn a_tool_card_keeps_the_whole_command_for_copying() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "bash",
+            "arguments": { "command": "cargo test\ncargo clippy --all-targets" },
+        }));
+        let Entry::Tool(card) = &chat.entries[0] else {
+            panic!("expected a tool card");
+        };
+        assert_eq!(card.detail, "cargo test");
+        assert_eq!(card.copy_text, "cargo test\ncargo clippy --all-targets");
+    }
+
+    #[test]
+    fn a_tool_call_completes_the_markdown_step_before_it() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.apply(&json!({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_delta",
+                "delta": "```mermaid\nflowchart LR\n  A --> B\n```"
+            }
+        }));
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "bash",
+            "arguments": { "command": "true" }
+        }));
+        assert!(matches!(
+            &chat.entries[0],
+            Entry::Assistant {
+                streaming: false,
+                ..
+            }
+        ));
     }
 
     #[test]
