@@ -3397,7 +3397,7 @@ textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 75%
   border-bottom-color: var(--border);
   padding-right: 10px;
 }
-.topbar-leading { flex-basis: calc(var(--sidebar-width, 300px) + var(--rail-width) + 7px); padding-left: 10px; }
+.topbar-leading { flex-basis: calc(var(--sidebar-width, 300px) + var(--rail-width) + 6px); padding-left: 10px; }
 .platform-mac .topbar-leading { padding-left: 86px; }
 .topbar-content { gap: 9px; padding-left: 12px; }
 .thread-title { font-size: 14px; font-weight: 500; }
