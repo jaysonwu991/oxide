@@ -468,12 +468,13 @@ The regions, top to bottom:
   platform-specific input path is installed — the page's own preload is the one
   thing it adds, and it installs the packet bridge and nothing else — and every
   control is wired to a plain `onclick`.
-- **Conversation** — a centered 780px column, the width the composer and the
+- **Conversation** — a centered 820px column, the width the composer and the
   popovers above it share, so the window's edges line up rather than each row
   measuring itself. User messages are right-aligned
   bubbles; user messages and assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
-  showing the call (e.g. `bash cargo test --all`) — a finished call is a line of
+  showing the call with Codex's label and mark (e.g. `Command cargo test
+  --all`) — a finished call is a line of
   the transcript rather than a box around it, so a long run reads as a log, and
   only the card still being written and the one that failed keep a surface, each
   carrying its state on its left edge (accent, error) with the reply's own text

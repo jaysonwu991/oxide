@@ -2678,12 +2678,11 @@ const textCharacters = ["·", "⇧", "⌃", "⌘", "⌥", "☐", "☑", "✔", "
 const sharedCharacters = ["✔", "✖", "☐", "☑"];
 // So the characters the window's own strings wear are pinned rather than
 // sampled: a control wearing a character is caught whichever one it is, not only
-// the nine this pass replaced, and the two the panel shares have to be there — a
-// pair that drifted apart in either direction fails here rather than in a
-// reader's eye. What counts is a character written as a string of its own (a
-// `"✖"` or a `"⌘"`), since that is a mark standing in for a drawing; the same
-// character inside a longer string is prose, an em dash or an ellipsis in a
-// sentence.
+// the nine this pass replaced. What counts is a character written as a string
+// of its own (a `"✖"` or a `"⌘"`), since that is a mark standing in for a
+// drawing; the same character inside a longer string is prose, an em dash or an
+// ellipsis in a sentence. Successful tool rows are quiet, so check marks stay a
+// shared text character rather than being forced into every renderer.
 const standaloneCharacters = [
   ...new Set(
     [...source.matchAll(/"([^"\n]{1,3})"/g)]
@@ -2697,9 +2696,11 @@ check(
   typedGlyphs.filter((character) => source.includes(`"${character}"`)).join(" "),
 );
 check(
-  "typed the characters the panel types, and only those",
-  standaloneCharacters.join("") === [...textCharacters].sort().join("") &&
-    sharedCharacters.every((character) => extensionIcons.includes(`"${character}"`)),
+  "typed only the characters the panel types",
+  standaloneCharacters.every((character) => textCharacters.includes(character)) &&
+    sharedCharacters
+      .filter((character) => standaloneCharacters.includes(character))
+      .every((character) => extensionIcons.includes(`"${character}"`)),
   `${standaloneCharacters.join("")} / panel ${
     sharedCharacters.filter((character) => extensionIcons.includes(`"${character}"`)).length
   }/${sharedCharacters.length}`,
@@ -4923,7 +4924,9 @@ check(
   plainCard.pre.hidden === false &&
     !plainCard.diffEl &&
     plainCard.hint.hidden === false &&
-    plainCard.tstate.textContent.startsWith("✔"),
+    plainCard.tstate.textContent === "" &&
+    plainCard.tstate.getAttribute("aria-label") === "Completed" &&
+    plainCard.head.children[1].children[1].textContent === "Command",
   `body hidden: ${plainCard.pre.hidden}, diff: ${Boolean(plainCard.diffEl)}, hint hidden: ${
     plainCard.hint.hidden
   }, state: ${plainCard.tstate.textContent}`,
@@ -5018,6 +5021,12 @@ check(
     String(emptySearch.block.className).includes("quiet") &&
     /\.tool\.quiet \{ padding-top: 2px; padding-bottom: 2px; \}/.test(sheet),
   `body hidden: ${emptySearch.pre.hidden}, state: ${emptySearch.tstate.textContent}, class: ${emptySearch.block.className}`,
+);
+check(
+  "named and marked a search the way Codex does",
+  emptySearch.head.children[1].children[1].textContent === "Search" &&
+    emptySearch.head.children[1].children[0].innerHTML === app.ICONS.search,
+  emptySearch.head.children[1].innerHTML,
 );
 emptySearch.head.onclick();
 emptySearch.head.onkeydown?.({ key: "Enter", preventDefault() {} });

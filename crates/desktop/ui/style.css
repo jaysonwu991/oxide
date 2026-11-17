@@ -570,7 +570,11 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 .tool.foldable .thead { cursor: pointer; }
 .tool.foldable .tool-caret { visibility: visible; }
 .tool.expanded .tool-caret { transform: rotate(0deg); }
-.tool .thead .tname { flex: none; }
+.tool .thead .tname { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.tool .tool-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--faint); }
+.tool .tool-icon svg { display: block; width: 14px; height: 14px; }
+.tool.running .tool-icon { color: var(--accent); }
+.tool.error .tool-icon { color: var(--error); }
 .tool .thead .targ { flex: 1 1 auto; min-width: 0; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .thead .tstate { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font-size: 11px; font-weight: 400; }
 .tool.error .tstate { color: var(--error); }
@@ -3349,8 +3353,7 @@ body.projects-open :is(.chat-tabs, .thread-title, .topbar-folder, #changes-toggl
 .search-categories button:hover, .search-categories button.active { color: var(--text); background: var(--panel-3); }
 .search-box button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-.computer-tool-icon { display: inline-flex; flex: none; color: var(--accent); }
-.computer-tool-icon svg { width: 16px; height: 16px; }
+.computer-tool-icon { color: inherit; }
 .computer-use-card { margin-top: 14px; }
 .computer-use-card h3 { margin: 0 0 12px; font-size: 13px; font-weight: 500; }
 .computer-use-status { color: var(--accent); font-size: 12px; }

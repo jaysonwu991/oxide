@@ -329,12 +329,14 @@ reveal rather than two frames of the wrong page.
   reading surface, and the viewer reports truncated files instead of silently
   cutting them.
 - **Project details** — the topbar's details toggle opens the right-hand column
-  from `repository_changes`, `git_info` and `mcp_servers`: the project and its
-  actions, `View changes` with the live tree totals used by the composer's
-  change pill, the repository's branch (or
-  `Local checkout`), the repository's pull request for the current branch when
-  `pull_requests` finds one, and the sources the thread can reach with their
-  state (`Connected`, `Needs auth`, `Off`) and a way into the Customize page.
+  from the current transcript, `repository_changes`, `git_info` and
+  `mcp_servers`: the project and its actions, `View changes` with the live tree
+  totals used by the composer's change pill (including `+0 −0` when the tree is
+  clean), the repository's branch (or `Local checkout`), the repository's pull
+  request for the current branch when `pull_requests` finds one, and the sources
+  the thread can reach. Sources list the chat's attachments and web search
+  before the project's MCP servers, keep the server state (`Connected`, `Needs
+  auth`, `Off`), and provide a way into the Customize page.
   Like Codex Desktop, the toggle and ⌘J are available only while a chat is
   open, report whether the panel is expanded, and show or hide the same panel
   without leaving a stale dock behind. Opening a dock tab temporarily gives the
