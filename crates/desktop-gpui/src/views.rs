@@ -9,7 +9,7 @@
 use crate::app::{Button, ChangeScope, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
-use crate::model::{Attachment, EditedFile, Entry, Status};
+use crate::model::{Attachment, EditedFile, Entry, QueueDelivery, Status};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
@@ -3439,19 +3439,37 @@ fn tool_label(name: &str) -> &str {
     }
 }
 
-fn compact_tool_output(output: &str) -> (String, bool) {
-    let pretty = serde_json::from_str::<serde_json::Value>(output.trim())
+fn readable_tool_output(output: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(output.trim())
         .ok()
         .and_then(|value| serde_json::to_string_pretty(&value).ok())
-        .unwrap_or_else(|| output.to_string());
+        .unwrap_or_else(|| output.to_string())
+}
+
+fn compact_tool_output(output: &str, limit: usize) -> (String, usize) {
+    let pretty = readable_tool_output(output);
     let lines = pretty.lines().collect::<Vec<_>>();
     let shown = lines
         .iter()
-        .take(10)
+        .take(limit)
         .copied()
         .collect::<Vec<_>>()
         .join("\n");
-    (shown, lines.len() > 10)
+    (shown, lines.len().saturating_sub(limit))
+}
+
+fn tool_icon(name: &str) -> Icon {
+    if crate::model::is_computer_tool(name) {
+        return Icon::Pointer;
+    }
+    match name {
+        "bash" => Icon::Changes,
+        "read" => Icon::File,
+        "edit" => Icon::Pencil,
+        "find" | "grep" => Icon::Search,
+        "web_search" | "web_fetch" => Icon::Globe,
+        _ => Icon::More,
+    }
 }
 
 fn entry_accessibility_label(entry: &Entry) -> String {
@@ -3476,7 +3494,7 @@ fn entry_accessibility_label(entry: &Entry) -> String {
             "{} {}: {}",
             tool_label(&card.name),
             card.detail,
-            compact_tool_output(&card.output).0
+            compact_tool_output(&card.output, 3).0
         ),
         Entry::Edited(card) => format!(
             "Edited {} file{}: {}",
@@ -3555,7 +3573,7 @@ fn entry_view(
         }
         Entry::Assistant {
             blocks,
-            streaming: _,
+            streaming,
             text,
         } => {
             let mut column = div()
@@ -3576,7 +3594,7 @@ fn entry_view(
                 );
             }
             for block in blocks {
-                column = column.child(block_view(block, theme, width - 22.0, window));
+                column = column.child(block_view(block, theme, width - 22.0, *streaming, window));
             }
             column
         }
@@ -3627,141 +3645,237 @@ fn entry_view(
                 Status::Done => (theme.success(), ""),
                 Status::Failed => (theme.error(), "Failed"),
             };
+            let chat_id = root.chats.get(chat).map(|chat| chat.id).unwrap_or_default();
+            let key = (chat_id, card.id);
+            let expanded = root.expanded_tools.contains(&key);
+            let expandable = !card.output.trim().is_empty() || card.diff.is_some();
+            let show_output =
+                !card.output.trim().is_empty() && (expanded || card.status == Status::Failed);
+            let copy_text = card.copy_text.clone();
+            let copy_label = if card.name == "bash" {
+                "Copy command"
+            } else {
+                "Copy tool call"
+            };
             let mut block = div()
                 .flex()
                 .flex_col()
                 .w_full()
                 .min_w(px(0.0))
                 .flex_none()
-                .gap_2()
-                .px(px(12.0))
-                .py(px(10.0))
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(if card.status == Status::Failed {
-                    theme.error()
-                } else if computer_use && card.status == Status::Running {
-                    theme.accent()
-                } else {
-                    theme.border()
-                })
-                .bg(if card.status == Status::Failed {
-                    theme.color("tool_error_bg")
-                } else if card.status == Status::Running {
-                    theme.color("tool_pending_bg")
-                } else {
-                    theme.panel()
+                .gap_1()
+                .rounded(px(8.0))
+                .when(card.status == Status::Failed, |style| {
+                    style
+                        .border_l_2()
+                        .border_color(theme.error())
+                        .bg(theme.color("tool_error_bg"))
                 });
-            block = block.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .flex_none()
-                            .w(px(22.0))
-                            .h(px(22.0))
-                            .rounded(px(6.0))
-                            .bg(theme.panel_2())
-                            .child(icons::icon(
-                                if computer_use {
-                                    Icon::Pointer
-                                } else {
-                                    Icon::More
-                                },
-                                13.0,
-                                if computer_use {
-                                    theme.accent()
-                                } else {
-                                    theme.faint()
-                                },
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(12.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text())
-                            .child(tool_label(&card.name).to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .font_family("Menlo")
-                            .text_size(px(11.5))
-                            .text_color(theme.faint())
-                            .child(card.detail.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(11.0))
-                            .text_color(color)
-                            .child(state.to_string()),
-                    ),
-            );
-            if !card.output.trim().is_empty() {
-                let (output, hidden) = compact_tool_output(&card.output);
-                let output_height =
-                    plain_text_height(window, &output, width - 46.0, 11.5, 17.0, "Menlo")
-                        + if hidden { 17.0 } else { 0.0 };
-                block = block.child(
+            let mut header = div()
+                .id(SharedString::from(format!("tool-head-{}", card.id)))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(7.0))
+                .min_h(px(32.0))
+                .px(px(6.0))
+                .rounded(px(7.0))
+                .when(expandable, move |style| {
+                    style
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(theme.panel_2()))
+                })
+                .child({
+                    let mut caret = div().flex_none().w(px(12.0)).h(px(14.0));
+                    if expandable {
+                        caret = caret.child(icons::icon(
+                            if expanded {
+                                Icon::ChevronDown
+                            } else {
+                                Icon::ChevronRight
+                            },
+                            12.0,
+                            theme.faint(),
+                        ));
+                    }
+                    caret
+                })
+                .child(
                     div()
-                        .id(SharedString::from(format!("tool-output-{}", card.id)))
                         .flex()
-                        .flex_col()
-                        .gap_1()
-                        .w_full()
-                        .px(px(10.0))
-                        .py(px(8.0))
-                        .rounded(px(7.0))
-                        .bg(theme.background())
-                        .border_1()
-                        .border_color(theme.border())
-                        .text_size(px(11.5))
-                        .line_height(px(17.0))
-                        .font_family("Menlo")
-                        .min_h(px(output_height + 16.0))
-                        .whitespace_normal()
+                        .items_center()
+                        .justify_center()
+                        .flex_none()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .child(icons::icon(
+                            tool_icon(&card.name),
+                            13.0,
+                            if computer_use && card.status == Status::Running {
+                                theme.accent()
+                            } else if card.status == Status::Done {
+                                theme.success()
+                            } else if card.status == Status::Failed {
+                                theme.error()
+                            } else {
+                                theme.faint()
+                            },
+                        )),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if card.status == Status::Failed {
+                            theme.error()
+                        } else {
+                            theme.text()
+                        })
+                        .child(tool_label(&card.name).to_string()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
                         .overflow_hidden()
-                        .text_color(theme.dim())
-                        .child(output)
-                        .children(hidden.then(|| {
-                            div()
-                                .pt_1()
-                                .text_size(px(10.5))
-                                .text_color(theme.faint())
-                                .child("Output truncated")
-                        })),
+                        .whitespace_nowrap()
+                        .font_family("Menlo")
+                        .text_size(px(11.0))
+                        .text_color(theme.faint())
+                        .child(card.detail.clone()),
+                )
+                .children((!copy_text.is_empty()).then(|| {
+                    icon_button(
+                        SharedString::from(format!("tool-copy-{}", card.id)),
+                        Icon::Copy,
+                        22.0,
+                        theme,
+                        false,
+                    )
+                    .aria_label(copy_label)
+                    .tooltip(tip(copy_label, theme))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()));
+                        root.toast("Copied tool call", false, cx);
+                    }))
+                }))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.5))
+                        .text_color(color)
+                        .child(state.to_string()),
                 );
+            if expandable {
+                header = header
+                    .role(gpui::Role::Button)
+                    .aria_label(format!(
+                        "{} {}. {}",
+                        tool_label(&card.name),
+                        card.detail,
+                        if expanded {
+                            "Collapse result"
+                        } else {
+                            "Expand result"
+                        }
+                    ))
+                    .aria_expanded(expanded)
+                    .tooltip(tip(
+                        if expanded {
+                            "Collapse result"
+                        } else {
+                            "Show result"
+                        },
+                        theme,
+                    ))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        if !root.expanded_tools.remove(&key) {
+                            root.expanded_tools.insert(key);
+                        }
+                        cx.notify();
+                    }));
             }
-            if let Some(diff) = &card.diff {
-                if let Some(text) = diff["text"].as_str().or_else(|| diff.as_str()) {
-                    block = block.child(diff_block(text, theme));
+            block = block.child(header);
+            if show_output {
+                let full = readable_tool_output(&card.output);
+                let (output, hidden_lines) = if expanded {
+                    (full, 0)
+                } else {
+                    compact_tool_output(&card.output, 3)
+                };
+                let mut result = div()
+                    .id(SharedString::from(format!("tool-output-{}", card.id)))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .w_full()
+                    .px(px(25.0))
+                    .pb(px(7.0))
+                    .text_size(px(11.0))
+                    .line_height(px(17.0))
+                    .font_family("Menlo")
+                    .whitespace_normal()
+                    .overflow_hidden()
+                    .text_color(theme.dim())
+                    .child(output);
+                if hidden_lines > 0 {
+                    result =
+                        result.child(div().text_size(px(10.5)).text_color(theme.faint()).child(
+                            format!(
+                                "{hidden_lines} more line{} \u{00b7} show output",
+                                if hidden_lines == 1 { "" } else { "s" }
+                            ),
+                        ));
+                }
+                if expandable && !expanded {
+                    result = result
+                        .role(gpui::Role::Button)
+                        .aria_label("Show full tool output")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            root.expanded_tools.insert(key);
+                            cx.notify();
+                        }));
+                }
+                block = block.child(result);
+            }
+            if expanded {
+                if let Some(diff) = &card.diff {
+                    if let Some(text) = diff["text"].as_str().or_else(|| diff.as_str()) {
+                        block = block.child(
+                            div()
+                                .pl(px(25.0))
+                                .pb(px(6.0))
+                                .child(diff_block(text, theme)),
+                        );
+                    }
                 }
             }
             if !card.media.is_empty() {
-                block = block.child(div().flex().flex_row().flex_wrap().gap_2().children(
-                    card.media.iter().enumerate().map(|(position, attachment)| {
-                        attachment_thumbnail(
-                            SharedString::from(format!("tool-attachment-{}-{position}", card.id)),
-                            attachment,
-                            180.0,
-                            9.0,
-                            theme,
-                            cx,
-                        )
-                    }),
-                ));
+                block = block.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_2()
+                        .pl(px(25.0))
+                        .pb(px(6.0))
+                        .children(card.media.iter().enumerate().map(|(position, attachment)| {
+                            attachment_thumbnail(
+                                SharedString::from(format!(
+                                    "tool-attachment-{}-{position}",
+                                    card.id
+                                )),
+                                attachment,
+                                160.0,
+                                8.0,
+                                theme,
+                                cx,
+                            )
+                        })),
+                );
             }
             block
         }
@@ -4096,7 +4210,13 @@ fn assistant_actions(
     actions
 }
 
-fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> gpui::Div {
+fn block_view(
+    block: &Block,
+    theme: &Theme,
+    width: f32,
+    streaming: bool,
+    window: &mut Window,
+) -> gpui::Div {
     match block {
         Block::Paragraph(spans) => {
             let lines = inline_lines(spans);
@@ -4139,7 +4259,7 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
             .font_weight(FontWeight::SEMIBOLD)
             .child(styled(theme, spans)),
         Block::Code { language, text } => {
-            if language.eq_ignore_ascii_case("mermaid") {
+            if language.eq_ignore_ascii_case("mermaid") && !streaming {
                 if let Some(diagram) = crate::mermaid::render(text, theme.background().l < 0.5) {
                     let available = (width - 2.0).max(80.0);
                     let scale = (available / diagram.width).min(1.0);
@@ -4162,7 +4282,11 @@ fn block_view(block: &Block, theme: &Theme, width: f32, window: &mut Window) -> 
                 }
             }
             let label = if language.eq_ignore_ascii_case("mermaid") {
-                "Mermaid diagram \u{00b7} source".to_string()
+                if streaming {
+                    "Mermaid diagram \u{00b7} rendering when complete".to_string()
+                } else {
+                    "Mermaid diagram \u{00b7} source".to_string()
+                }
             } else if language.is_empty() {
                 "code".to_string()
             } else {
@@ -4351,7 +4475,7 @@ pub(crate) fn markdown_document(
         .gap_3()
         .text_color(theme.text());
     for block in blocks {
-        document = document.child(block_view(&block, theme, width, window));
+        document = document.child(block_view(&block, theme, width, false, window));
     }
     document
 }
@@ -5000,6 +5124,9 @@ fn composer_tools_menu(
     cx: &mut Context<Root>,
 ) -> Stateful<gpui::Div> {
     let project = root.current_project().unwrap_or_default();
+    // The page marks this row active while the folder's own resources are
+    // trusted, so the reader can see the answer without opening the dialog.
+    let trusted = !project.is_empty() && root.info["trust"]["trusted"].as_bool().unwrap_or(false);
     div()
         .id("composer-tools-menu")
         .role(gpui::Role::Menu)
@@ -5026,6 +5153,7 @@ fn composer_tools_menu(
             "composer-tool-connect",
             Icon::Globe,
             "Connect a provider",
+            false,
             theme,
             cx,
             |root, _, cx| {
@@ -5037,6 +5165,7 @@ fn composer_tools_menu(
             "composer-tool-project-access",
             Icon::Lock,
             "Project access",
+            trusted,
             theme,
             cx,
             move |root, _, cx| {
@@ -5056,6 +5185,7 @@ fn composer_tools_menu(
             "composer-tool-agents",
             Icon::Chat,
             "Agents",
+            false,
             theme,
             cx,
             |root, _, cx| {
@@ -5067,6 +5197,7 @@ fn composer_tools_menu(
             "composer-tool-shortcuts",
             Icon::Keyboard,
             "Keyboard shortcuts",
+            false,
             theme,
             cx,
             |root, _, cx| {
@@ -5080,15 +5211,24 @@ fn composer_tool_item(
     id: &'static str,
     mark: Icon,
     label: &'static str,
+    active: bool,
     theme: &Theme,
     cx: &mut Context<Root>,
     on_click: impl Fn(&mut Root, &mut Window, &mut Context<Root>) + 'static,
 ) -> Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .role(gpui::Role::MenuItem)
-        .aria_label(label)
-        .flex()
+    let mut item = div().id(id).role(gpui::Role::MenuItem).aria_label(
+        if active && label == "Project access" {
+            "Project access: trusted \u{00b7} click to review".to_string()
+        } else if active {
+            format!("{label}: active")
+        } else {
+            label.to_string()
+        },
+    );
+    if active {
+        item = item.aria_selected(true);
+    }
+    item.flex()
         .flex_row()
         .items_center()
         .gap(px(9.0))
@@ -5096,16 +5236,41 @@ fn composer_tool_item(
         .px(px(10.0))
         .py(px(6.0))
         .rounded(px(6.0))
+        .when(active, move |style| style.bg(theme.wash("accent", 0.16)))
         .cursor_pointer()
         .hover(move |style| style.bg(theme.panel_2()))
-        .child(icons::icon(mark, 14.0, theme.dim()))
+        .child(icons::icon(
+            mark,
+            14.0,
+            if active { theme.accent() } else { theme.dim() },
+        ))
         .child(
             div()
                 .text_size(px(12.5))
-                .text_color(theme.text())
+                .text_color(if active { theme.accent() } else { theme.text() })
                 .child(label),
         )
         .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))
+}
+
+/// Which round control the composer offers, as the page decides it: Stop while a
+/// turn runs and the box is empty, and otherwise the message's own action —
+/// steering it into the running turn, or queueing it for the next one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerAction {
+    Send,
+    Steer,
+    Queue,
+    Stop,
+}
+
+pub(crate) fn composer_action(running: bool, has_text: bool, steers: bool) -> ComposerAction {
+    match (running, has_text) {
+        (true, false) => ComposerAction::Stop,
+        (true, true) if steers => ComposerAction::Steer,
+        (true, true) => ComposerAction::Queue,
+        (false, _) => ComposerAction::Send,
+    }
 }
 
 fn composer(
@@ -5531,12 +5696,22 @@ fn composer(
                             .flex_none()
                             .text_size(px(10.5))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(if message.follow_up {
+                            .text_color(if message.delivery == QueueDelivery::Rejected {
+                                theme.dim()
+                            } else if message.follow_up {
                                 theme.faint()
                             } else {
                                 theme.accent()
                             })
-                            .child(if message.follow_up { "Queued" } else { "Steer" }),
+                            .child(match message.delivery {
+                                QueueDelivery::Rejected => "Next turn",
+                                QueueDelivery::Waiting | QueueDelivery::Accepted
+                                    if message.follow_up =>
+                                {
+                                    "Queued"
+                                }
+                                QueueDelivery::Waiting | QueueDelivery::Accepted => "Steer",
+                            }),
                     )
                     .child(
                         div()
@@ -5714,31 +5889,12 @@ fn composer(
     ));
 
     let has_text = !editor_text.trim().is_empty();
-    if running {
-        if has_text {
-            footer = footer.child(
-                div()
-                    .id("composer-send")
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .flex_none()
-                    .w(px(30.0))
-                    .h(px(30.0))
-                    .rounded(px(15.0))
-                    .cursor_pointer()
-                    .bg(theme.panel_3())
-                    .hover(move |style| style.bg(theme.accent()))
-                    .tooltip(tip("Queue \u{00b7} \u{23ce}", theme))
-                    .child(icons::icon(Icon::ArrowUp, 15.0, theme.text()))
-                    .on_click(cx.listener(|root, _, window, cx| {
-                        root.send(window, cx);
-                        if root.overlay.is_none() {
-                            root.focus_composer(window, cx);
-                        }
-                    })),
-            );
-        }
+    let steers = root.prefs["follow_up"].as_str() == Some("steer");
+    // One round control, the way the page has one: while a turn runs it stops
+    // that turn only when there is nothing to send. A composer with text in it
+    // offers the message's own action — steering it into the turn, or queueing
+    // it — so reaching for the bright circle does what the typed message means.
+    if composer_action(running, has_text, steers) == ComposerAction::Stop {
         footer = footer.child(
             div()
                 .id("composer-stop")
@@ -5753,7 +5909,7 @@ fn composer(
                 .cursor_pointer()
                 .bg(theme.text())
                 .hover(move |style| style.opacity(0.85))
-                .tooltip(tip("Stop the turn", theme))
+                .tooltip(tip("Stop the turn \u{00b7} \u{2318}.", theme))
                 .child(
                     div()
                         .absolute()
@@ -5777,6 +5933,11 @@ fn composer(
                 .on_click(cx.listener(|root, _, _, cx| root.stop(cx))),
         );
     } else {
+        let tooltip = match composer_action(running, has_text, steers) {
+            ComposerAction::Steer => "Steer the response \u{00b7} \u{23ce}",
+            ComposerAction::Queue => "Queue as the next turn \u{00b7} \u{23ce}",
+            ComposerAction::Send | ComposerAction::Stop => "Send \u{00b7} \u{23ce}",
+        };
         footer = footer.child(
             div()
                 .id("composer-send")
@@ -5794,7 +5955,7 @@ fn composer(
                     theme.panel_3()
                 })
                 .hover(move |style| style.bg(theme.accent()))
-                .tooltip(tip("Send \u{00b7} \u{23ce}", theme))
+                .tooltip(tip(tooltip, theme))
                 .child(icons::icon(
                     Icon::ArrowUp,
                     15.0,
@@ -7997,6 +8158,43 @@ mod transcript_scroll_tests {
             -1.0, -499.0, 500.0, false
         ));
         assert!(transcript_following_after_scroll(0.0, 0.0, 0.0, false));
+    }
+}
+
+#[cfg(test)]
+mod tool_card_tests {
+    use super::{compact_tool_output, tool_icon};
+    use crate::icons::Icon;
+
+    #[test]
+    fn a_collapsed_tool_output_keeps_only_its_first_lines() {
+        let (preview, hidden) = compact_tool_output("one\ntwo\nthree\nfour\nfive", 3);
+        assert_eq!(preview, "one\ntwo\nthree");
+        assert_eq!(hidden, 2);
+    }
+
+    #[test]
+    fn a_tool_row_carries_the_mark_of_what_it_did() {
+        assert_eq!(tool_icon("bash"), Icon::Changes);
+        assert_eq!(tool_icon("read"), Icon::File);
+        assert_eq!(tool_icon("grep"), Icon::Search);
+        assert_eq!(tool_icon("web_fetch"), Icon::Globe);
+        assert_eq!(tool_icon("computer-use__screenshot"), Icon::Pointer);
+    }
+}
+
+#[cfg(test)]
+mod composer_action_tests {
+    use super::{composer_action, ComposerAction};
+
+    #[test]
+    fn a_running_turn_is_stopped_only_from_an_empty_composer() {
+        assert_eq!(composer_action(true, false, true), ComposerAction::Stop);
+        assert_eq!(composer_action(true, false, false), ComposerAction::Stop);
+        assert_eq!(composer_action(true, true, true), ComposerAction::Steer);
+        assert_eq!(composer_action(true, true, false), ComposerAction::Queue);
+        assert_eq!(composer_action(false, true, false), ComposerAction::Send);
+        assert_eq!(composer_action(false, false, true), ComposerAction::Send);
     }
 }
 

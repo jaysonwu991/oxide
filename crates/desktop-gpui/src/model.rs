@@ -119,6 +119,9 @@ pub struct ToolCard {
     pub id: u64,
     pub name: String,
     pub detail: String,
+    /// The invocation a reader can copy. Unlike `detail`, this keeps a full
+    /// multi-line shell command instead of the one-line transcript summary.
+    pub copy_text: String,
     pub app: Option<String>,
     pub status: Status,
     pub output: String,
@@ -432,9 +435,21 @@ fn parse_permissions(text: &str) -> Option<ComputerUsePermissions> {
 
 #[derive(Clone, Debug)]
 pub struct QueuedMessage {
+    pub id: u64,
     pub text: String,
     pub attachments: Vec<Attachment>,
     pub follow_up: bool,
+    pub delivery: QueueDelivery,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueDelivery {
+    /// Waiting for the engine to answer `steer_run`.
+    Waiting,
+    /// The running turn holds the message and will read it.
+    Accepted,
+    /// The running turn had already closed its queue; start this after it.
+    Rejected,
 }
 
 pub struct Chat {
@@ -454,6 +469,12 @@ pub struct Chat {
     pub agent: Option<String>,
     pub attachments: Vec<Attachment>,
     pub queued: Vec<QueuedMessage>,
+    /// The engine replies to `steer_run` independently of the event stream, so
+    /// the turn can end before the answer arrives. Holding the queue until every
+    /// answer is known prevents a rejected message from briefly becoming a
+    /// transcript entry and then starting again.
+    pub steer_requests: usize,
+    next_queued_id: u64,
     pub usage: Option<Usage>,
     pub changes: Option<Value>,
     pub baseline: Option<String>,
@@ -485,6 +506,8 @@ impl Chat {
             agent: None,
             attachments: Vec::new(),
             queued: Vec::new(),
+            steer_requests: 0,
+            next_queued_id: 1,
             usage: None,
             changes: None,
             baseline: None,
@@ -503,6 +526,75 @@ impl Chat {
 
     pub fn running(&self) -> bool {
         self.run.is_some() || self.awaiting_run
+    }
+
+    /// Adds a message to the visible steering queue and returns the local id
+    /// its result will settle by.
+    pub fn queue_steer(
+        &mut self,
+        text: String,
+        attachments: Vec<Attachment>,
+        follow_up: bool,
+    ) -> u64 {
+        let id = self.next_queued_id;
+        self.next_queued_id = self.next_queued_id.wrapping_add(1);
+        self.steer_requests += 1;
+        self.queued.push(QueuedMessage {
+            id,
+            text,
+            attachments,
+            follow_up,
+            delivery: QueueDelivery::Waiting,
+        });
+        id
+    }
+
+    /// Records what the engine said about one queued message. A missing id means
+    /// Stop already removed the row; the request still has to leave the in-flight
+    /// count so a later result can settle the remaining queue.
+    pub fn finish_steer(&mut self, id: u64, accepted: bool) {
+        self.steer_requests = self.steer_requests.saturating_sub(1);
+        if let Some(message) = self.queued.iter_mut().find(|message| message.id == id) {
+            message.delivery = if accepted {
+                QueueDelivery::Accepted
+            } else {
+                QueueDelivery::Rejected
+            };
+        }
+    }
+
+    /// Paints messages the running turn really consumed and returns the first
+    /// message whose run had already finished. Waiting for every reply is what
+    /// keeps a turn-end packet from committing a message `steer_run` later
+    /// rejects.
+    pub fn settle_steers(&mut self) -> Option<QueuedMessage> {
+        if self.running() || self.steer_requests != 0 {
+            return None;
+        }
+        let mut accepted = Vec::new();
+        self.queued.retain(|message| {
+            if message.delivery == QueueDelivery::Accepted {
+                accepted.push(message.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for message in accepted {
+            self.entries.push(Entry::User {
+                text: message.text,
+                attachments: message.attachments,
+            });
+        }
+        if self
+            .queued
+            .first()
+            .is_some_and(|message| message.delivery == QueueDelivery::Rejected)
+        {
+            Some(self.queued.remove(0))
+        } else {
+            None
+        }
     }
 
     /// The latest Computer Use call and the latest screenshot any Computer Use
@@ -673,14 +765,19 @@ impl Chat {
                 }
             }
             "tool_call" => {
+                if let Some(Entry::Assistant { streaming, .. }) = self.entries.last_mut() {
+                    *streaming = false;
+                }
                 let name = payload["toolName"].as_str().unwrap_or_default().to_string();
                 let args = argument(&payload["arguments"]);
                 let detail = describe_call(&name, &args);
+                let copy_text = tool_copy_text(&name, &args, &detail);
                 let id = self.entries.len() as u64;
                 self.entries.push(Entry::Tool(ToolCard {
                     id,
                     name,
                     detail,
+                    copy_text,
                     app: args["app"].as_str().map(str::to_string),
                     status: Status::Running,
                     output: String::new(),
@@ -746,8 +843,10 @@ impl Chat {
                 }
             }
             "agent_end" => {
-                if let Some(Entry::Assistant { streaming, .. }) = self.entries.last_mut() {
-                    *streaming = false;
+                for entry in &mut self.entries {
+                    if let Entry::Assistant { streaming, .. } = entry {
+                        *streaming = false;
+                    }
                 }
             }
             _ => {}
@@ -835,10 +934,13 @@ impl Chat {
                                 let output =
                                     result["content"].as_str().unwrap_or_default().to_string();
                                 let failed = output.starts_with("error:");
+                                let detail = describe_call(&name, &args);
+                                let copy_text = tool_copy_text(&name, &args, &detail);
                                 self.entries.push(Entry::Tool(ToolCard {
                                     id: self.entries.len() as u64,
-                                    detail: describe_call(&name, &args),
+                                    detail,
                                     name,
+                                    copy_text,
                                     app: args["app"].as_str().map(str::to_string),
                                     status: if failed { Status::Failed } else { Status::Done },
                                     output: output
@@ -865,6 +967,7 @@ impl Chat {
                             id,
                             name: "tool".to_string(),
                             detail: String::new(),
+                            copy_text: String::new(),
                             app: None,
                             status: Status::Done,
                             output,
@@ -921,6 +1024,18 @@ pub fn describe_call(_name: &str, args: &Value) -> String {
         }
     }
     String::new()
+}
+
+fn tool_copy_text(name: &str, args: &Value, detail: &str) -> String {
+    if name == "bash" {
+        args["command"]
+            .as_str()
+            .filter(|command| !command.trim().is_empty())
+            .unwrap_or(detail)
+            .to_string()
+    } else {
+        detail.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1129,6 +1244,82 @@ mod tests {
         }));
         assert!(matches!(chat.entries[0], Entry::RunTime { .. }));
         assert!(matches!(chat.entries[1], Entry::Edited(_)));
+    }
+
+    #[test]
+    fn steer_replies_settle_after_the_run_by_id_not_by_prompt() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.run = Some(7);
+        let rejected = chat.queue_steer("same prompt".to_string(), Vec::new(), false);
+        let accepted = chat.queue_steer("same prompt".to_string(), Vec::new(), true);
+
+        chat.finish_steer(rejected, false);
+        chat.finish_steer(accepted, true);
+        assert!(chat.settle_steers().is_none());
+
+        chat.run = None;
+        let next = chat.settle_steers().expect("the rejected message starts");
+        assert_eq!(next.text, "same prompt");
+        assert!(next.attachments.is_empty());
+        assert_eq!(chat.entries.len(), 1);
+        assert!(matches!(
+            &chat.entries[0],
+            Entry::User { text, .. } if text == "same prompt"
+        ));
+        assert!(chat.queued.is_empty());
+    }
+
+    #[test]
+    fn a_tool_card_keeps_the_whole_command_for_copying() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "bash",
+            "arguments": { "command": "cargo test\ncargo clippy --all-targets" },
+        }));
+        let Entry::Tool(card) = &chat.entries[0] else {
+            panic!("expected a tool card");
+        };
+        assert_eq!(card.detail, "cargo test");
+        assert_eq!(card.copy_text, "cargo test\ncargo clippy --all-targets");
+    }
+
+    #[test]
+    fn a_tool_call_completes_the_markdown_step_before_it() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.apply(&json!({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "text_delta",
+                "delta": "```mermaid\nflowchart LR\n  A --> B\n```"
+            }
+        }));
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "bash",
+            "arguments": { "command": "true" }
+        }));
+        assert!(matches!(
+            &chat.entries[0],
+            Entry::Assistant {
+                streaming: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_run_end_waits_for_the_steer_reply_before_painting_anything() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.run = Some(9);
+        let id = chat.queue_steer("keep this".to_string(), Vec::new(), false);
+        chat.run = None;
+
+        assert!(chat.settle_steers().is_none());
+        chat.finish_steer(id, false);
+        let next = chat.settle_steers().expect("it becomes the next turn");
+        assert_eq!(next.text, "keep this");
+        assert!(chat.entries.is_empty());
     }
 
     #[test]

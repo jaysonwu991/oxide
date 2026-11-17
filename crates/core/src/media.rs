@@ -1082,9 +1082,27 @@ pub fn clipboard() -> Clipboard {
 /// link the crate — the VS Code panel, whose webview can refuse a copied file
 /// the same way — and the desktop app reaches through its own command.
 pub fn clipboard_media() -> Option<(String, String)> {
-    let Clipboard::Attached { part, path } = clipboard() else {
-        return None;
-    };
+    clipboard_media_outcome().ok().flatten()
+}
+
+/// [`clipboard_media`] with the reason a copy it found could not be attached.
+///
+/// A front-end in its own process is the one that has to say the reason: the
+/// pasteboard can name a file macOS keeps behind a per-app grant, so the copy
+/// finds a file, cannot read it and attaches nothing — and a window that folds
+/// that into `None` leaves the reader with a paste that did nothing at all.
+/// `Err` is that reason, worded for the reader (it names the grant to give);
+/// `Ok(None)` is a pasteboard with nothing to attach.
+pub fn clipboard_media_outcome() -> Result<Option<(String, String)>, String> {
+    match clipboard() {
+        Clipboard::Attached { part, path } => Ok(media_name_and_url(part, path)),
+        Clipboard::Refused(reason) => Err(reason),
+        Clipboard::Nothing { .. } | Clipboard::Unreadable => Ok(None),
+    }
+}
+
+/// The attachment a pasteboard part and the file it is named by make.
+fn media_name_and_url(part: ContentPart, path: Option<PathBuf>) -> Option<(String, String)> {
     let name = path
         .as_ref()
         .and_then(|path| path.file_name())
@@ -1724,6 +1742,39 @@ fn run_stdout(command: &str, args: &[&str]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pasted_file_is_named_by_the_file_and_a_picture_by_what_it_is() {
+        let part = ContentPart::ImageUrl {
+            image_url: ImageUrl {
+                url: "data:image/png;base64,AAAA".to_string(),
+                detail: None,
+            },
+        };
+        assert_eq!(
+            media_name_and_url(part.clone(), Some(PathBuf::from("/tmp/shots/paste.png"))),
+            Some((
+                "paste.png".to_string(),
+                "data:image/png;base64,AAAA".to_string()
+            ))
+        );
+        assert_eq!(
+            media_name_and_url(part, None),
+            Some((
+                "image (png)".to_string(),
+                "data:image/png;base64,AAAA".to_string()
+            ))
+        );
+        assert_eq!(
+            media_name_and_url(
+                ContentPart::Text {
+                    text: "plain".to_string()
+                },
+                None
+            ),
+            None
+        );
+    }
 
     #[test]
     fn editor_paste_saves_original_image_without_resizing_or_encoding() {

@@ -104,7 +104,16 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 #[derive(Clone, Debug)]
 pub enum EditorEvent {
     Changed,
-    AttachmentPasted { name: String, data_url: String },
+    AttachmentPasted {
+        name: String,
+        data_url: String,
+    },
+    /// A paste found a copy it could not attach, with the reason to show: a
+    /// window that stays silent leaves the reader with a paste that did
+    /// nothing at all.
+    PasteRefused {
+        reason: String,
+    },
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -702,19 +711,30 @@ impl Editor {
                 return;
             }
         }
-        let pasted = cx
-            .background_executor()
-            .spawn(async move { oxide_core::media::clipboard_media().or(picture) });
+        let pasted = cx.background_executor().spawn(async move {
+            oxide_core::media::clipboard_media_outcome().map(|found| found.or(picture))
+        });
         cx.spawn(async move |this, cx| {
-            let Some((name, data_url)) = pasted.await else {
-                if let Some(text) = text {
-                    let _ = this.update(cx, |editor, cx| editor.insert(&text, cx));
+            match pasted.await {
+                Ok(Some((name, data_url))) => {
+                    let _ = this.update(cx, |_editor, cx| {
+                        cx.emit(EditorEvent::AttachmentPasted { name, data_url });
+                    });
                 }
-                return;
-            };
-            let _ = this.update(cx, |_editor, cx| {
-                cx.emit(EditorEvent::AttachmentPasted { name, data_url });
-            });
+                Ok(None) => {
+                    if let Some(text) = text {
+                        let _ = this.update(cx, |editor, cx| editor.insert(&text, cx));
+                    }
+                }
+                // The copy names a file this app may not read — macOS keeps the
+                // Desktop, Documents and Downloads folders behind a per-app
+                // grant — so the reason is the paste, and it names the grant.
+                Err(reason) => {
+                    let _ = this.update(cx, |_editor, cx| {
+                        cx.emit(EditorEvent::PasteRefused { reason });
+                    });
+                }
+            }
         })
         .detach();
     }

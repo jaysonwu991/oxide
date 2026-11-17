@@ -84,6 +84,14 @@ Each bundle carries `plugins/` beside the app (macOS: `Contents/Resources/plugin
 which the front-end installs into the shared plugin store at launch the way the
 Electron does, through `OXIDE_DESKTOP_PLUGINS` or the bundle's own layout.
 
+The macOS bundle also declares why it reads the Desktop, Documents and Downloads
+folders (`NSDesktopFolderUsageDescription` and its two siblings). Those folders
+sit behind a per-app grant, and a copied image from one of them reaches the app
+as a file URL the app has to open itself: without the keys the system has no
+purpose to show and the read is refused, which a paste reports by naming the
+grant to give (System Settings → Privacy & Security → Files and Folders, or
+copy the file into the project).
+
 `.github/workflows/desktop-gpui.yml` is the same shape as `desktop.yml`: the same
 five hosts (macOS arm64 and x64, Linux x64 and arm64, Windows x64), the same
 certificate import and App Store Connect key steps, a `--check` of the built
@@ -180,16 +188,28 @@ reveal rather than two frames of the wrong page.
   tool cards with their call, output and diff, errors, compaction notices, and
   a context ring beside the composer controls. Opening a saved thread restores
   the reasoning already stored on each assistant step before that step's answer
-  and tool cards. Its top row names the project and
+  and tool cards. A tool is one compact row by default; a successful result stays
+  folded, a failure previews its first three lines, and the row or preview
+  expands and collapses the full output and diff without making every result
+  compete with the answer. The row's copy control keeps a shell command's full
+  text, including later lines the one-line transcript summary does not show.
+  Mermaid fences become native diagrams once their assistant step is complete;
+  a large diagram is fitted to the raster ceiling instead of being rejected.
+  Its top row names the project and
   the branch `git_info` reports (and leaves the branch out when the folder is not
   a repository); that branch is read again when a turn ends, when the window
   becomes active again, and just after a command is typed into the dock's own
   terminal, so one switched outside this window's knowledge shows up here; its
   footer carries the attach and tools controls, the approvals
   dialog, one combined model-and-thinking chip, and the round send/stop
-  button. The
+  button. A send from a tab that has no thread of its own asks the engine for a
+  `new` session rather than leaving the field out: the engine's own default is
+  `latest`, which would append the message to whichever thread the project used
+  last and leave the sidebar showing that thread unchanged. The
   three-dot tools control opens Electron's compact menu above the composer with
-  Connect a provider, Project access, Agents and Keyboard shortcuts; it does not
+  Connect a provider, Project access, Agents and Keyboard shortcuts; Project
+  access carries the selected folder's state, so it reads in the accent while
+  that folder's own resources are trusted, and the menu does not
   dim the conversation or replace the composer with a centered dialog. The
   combined model-and-effort chip opens one compact composer-anchored popover:
   the current effort sits above the model row and a horizontal effort slider,
@@ -205,7 +225,16 @@ reveal rather than two frames of the wrong page.
   `cancel_run`. A message typed while a turn is running is steered into it
   through `steer_run` (queued for the turn's end unless `follow_up` is `steer`,
   the same preference the stable window reads), and the queued or steering rows
-  stay above the editor until the turn consumes them. Attachments are picked
+  stay above the editor until the turn consumes them. The composer has one round
+  control, as the page does: while a turn runs it stops that turn only when the
+  box is empty, and a box with text in it offers that message's own action —
+  steering, or queueing — with a hover label that names which (`Stop` also works
+  from the keyboard as ⌘.). A run is steerable from the moment it is reserved, so
+  a message typed while a cold start is still loading servers waits in the run's
+  own queue for its first step; a message whose run has already gone back
+  answers `false`, and the window keeps it out of that turn's transcript and
+  starts it as the next turn of the same chat, even if the reader has moved to
+  another tab. Attachments are picked
   from disk or pasted from the system clipboard and sent as the data URLs the
   core's own attachment rules accept — the same images, PDFs and text the
   terminal and the stable window attach, under the same size and count limits.
@@ -216,7 +245,9 @@ reveal rather than two frames of the wrong page.
   ordinary text immediately, while a picture or a path that names a file waits
   for the shared media reader on the background task and lands as an attachment
   when it answers, instead of holding the window still or inserting the file
-  path as prose.
+  path as prose. A copy the reader cannot attach — a file macOS keeps behind a
+  per-app grant, for one — answers with its reason and the window says it, since
+  a refused read that said nothing would leave the paste invisible.
   Image attachments show a thumbnail in the composer, a larger preview in the
   sent message, and open in a full-size viewer when clicked. An attachment can
   be sent without text. The composer lists
@@ -260,7 +291,9 @@ reveal rather than two frames of the wrong page.
   servers and hooks exactly as the terminal does. A project that still needs a
   decision opens the trust dialog when its info arrives, including directly
   after the folder is added; the dialog lists the gated resources and both
-  decisions write through the shared `set_project_trust`.
+  decisions write through the shared `set_project_trust`. A modal's scrim is a
+  hitbox of its own, so while the dialog is up nothing behind it hovers, clicks
+  or scrolls: the rows and cards under the wash stay still until it closes.
 - **Pinning** — a thread's right-click menu pins it through
   `set_session_pinned`, and a project's `⋯` menu pins the project through
   `set_project_pinned` or removes it.

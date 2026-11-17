@@ -1032,7 +1032,10 @@ event channel serializes events with
   its own row. Queue is the safe
   default: it waits until the current response finishes, then becomes the next
   turn. Steer injects a course correction before the agent's next model step. `steer_run` pushes into the
-  selected follow-up or interleaved steering queue, and answering a queued row's
+  selected follow-up or interleaved steering queue — from the moment the run is
+  reserved, not only once its agent exists, so a message typed while a cold start
+  is still loading servers waits in the queue the runner is handed when it
+  starts — and answering a queued row's
   own **Steer** moves just that message rather than changing the choice a later
   one follows ([Queue and Steer](#queue-and-steer)).
 - **Reading another thread while a turn runs** — a turn belongs to the thread

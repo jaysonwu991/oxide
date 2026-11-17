@@ -1568,6 +1568,13 @@ pub async fn cancel_run(run_id: u64, state: &DesktopState) -> CmdResult<()> {
 
 /// Queues a message into a running turn: interleaved guidance, or a follow-up
 /// for after the current turn finishes.
+///
+/// A run is steerable from the moment it is reserved, not only once its agent
+/// exists: the queue is the one the runner is handed when it starts, so a
+/// message typed while a cold start is still loading servers waits there for
+/// the first step rather than being turned away. Only a run that has been
+/// cancelled — or one this window no longer has — answers `false`, which is what
+/// a front-end reads as "the response finished".
 pub async fn steer_run(
     run_id: u64,
     message: String,
@@ -1575,25 +1582,27 @@ pub async fn steer_run(
     attachments: Option<Vec<AttachmentInput>>,
     state: &DesktopState,
 ) -> CmdResult<bool> {
-    let runs = state.runs.clone();
-    let runs = runs.lock().await;
-    if let Some(run) = runs.get(&run_id) {
-        if run.abort.is_none() || run.cancel.is_cancelled() {
+    let (queue, cwd) = {
+        let runs = state.runs.lock().await;
+        let Some(run) = runs.get(&run_id) else {
+            return Ok(false);
+        };
+        if run.cancel.is_cancelled() {
             return Ok(false);
         }
         let queue = if follow_up.unwrap_or(false) {
-            &run.follow_ups
+            run.follow_ups.clone()
         } else {
-            &run.steering
+            run.steering.clone()
         };
-        let parts = attachment_parts(attachments, &message, &run.cwd)?;
-        return Ok(queue.push(if parts.is_empty() {
-            Message::user(message)
-        } else {
-            Message::user_parts(message, parts)
-        }));
-    }
-    Ok(false)
+        (queue, run.cwd.clone())
+    };
+    let parts = attachment_parts(attachments, &message, &cwd)?;
+    Ok(queue.push(if parts.is_empty() {
+        Message::user(message)
+    } else {
+        Message::user_parts(message, parts)
+    }))
 }
 
 /// Answers the composer's `@path` completion: the project's own files and
@@ -2622,10 +2631,15 @@ mod tests {
         .await
         .unwrap();
         assert!(state.runs.lock().await.contains_key(&id));
-        assert!(!steer_run(id, "later".into(), None, None, &state)
+        // A run that has not spawned its agent yet still takes the message:
+        // it waits in the queue the runner is handed when it starts.
+        assert!(steer_run(id, "later".into(), None, None, &state)
             .await
             .unwrap());
         cancel_run(id, &state).await.unwrap();
+        assert!(!steer_run(id, "too late".into(), None, None, &state)
+            .await
+            .unwrap());
         {
             let runs = state.runs.lock().await;
             assert!(runs.get(&id).unwrap().cancel.is_cancelled());

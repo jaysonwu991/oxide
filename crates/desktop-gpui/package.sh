@@ -122,6 +122,16 @@ if [ "$platform" = "macos" ]; then
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <!-- The folders macOS keeps behind a per-app grant. A copy of an image from
+       one of them reaches this app as a file URL, and the grant is the app's
+       to hold: without a purpose string the system has nothing to show, and a
+       paste of a file in these folders answers nothing at all. -->
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Oxide attaches the images, PDFs and files you copy from your Desktop.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Oxide attaches the images, PDFs and files you copy from your Documents folder.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Oxide attaches the images, PDFs and files you copy from your Downloads folder.</string>
 </dict>
 </plist>
 PLIST

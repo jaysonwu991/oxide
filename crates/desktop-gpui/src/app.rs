@@ -10,9 +10,7 @@
 
 use crate::editor::{self, Editor, EditorEvent};
 use crate::engine::Engine;
-use crate::model::{
-    Attachment, Chat, EditedCard, EditedFile, Entry, ProjectRow, QueuedMessage, SessionRow,
-};
+use crate::model::{Attachment, Chat, EditedCard, EditedFile, Entry, ProjectRow, SessionRow};
 use crate::overlays;
 use crate::terminal::TerminalPane;
 use crate::theme::Theme;
@@ -376,6 +374,7 @@ pub struct Root {
     pub(crate) project_actions_dismiss_armed: bool,
     pub assistant_actions: Option<(usize, usize)>,
     pub edited_actions: Option<(usize, usize)>,
+    pub expanded_tools: HashSet<(u64, u64)>,
     pub(crate) composer_tools_dismiss_armed: bool,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
@@ -624,6 +623,7 @@ impl Root {
             project_actions_dismiss_armed: false,
             assistant_actions: None,
             edited_actions: None,
+            expanded_tools: HashSet::new(),
             composer_tools_dismiss_armed: false,
             resizing: None,
             show_changes: false,
@@ -2544,29 +2544,38 @@ impl Root {
         });
         self.subscriptions
             .push(cx.subscribe(&editor, move |root, editor, event, cx| {
-                if let EditorEvent::AttachmentPasted { name, data_url } = event {
-                    let result = root
-                        .chats
-                        .iter_mut()
-                        .find(|chat| chat.id == id)
-                        .map(|chat| {
-                            add_attachment(chat, Attachment::new(name.clone(), data_url.clone()))
-                        })
-                        .unwrap_or(Ok(()));
-                    if let Err(error) = result {
-                        root.toast(error, true, cx);
+                match event {
+                    EditorEvent::AttachmentPasted { name, data_url } => {
+                        let result = root
+                            .chats
+                            .iter_mut()
+                            .find(|chat| chat.id == id)
+                            .map(|chat| {
+                                add_attachment(
+                                    chat,
+                                    Attachment::new(name.clone(), data_url.clone()),
+                                )
+                            })
+                            .unwrap_or(Ok(()));
+                        if let Err(error) = result {
+                            root.toast(error, true, cx);
+                        }
                     }
-                } else {
-                    let (text, caret) = {
-                        let editor = editor.read(cx);
-                        (editor.text().to_string(), editor.cursor_utf16())
-                    };
-                    if !text.is_empty() && root.prediction_chat == Some(id) {
-                        root.prediction.clear();
-                        root.prediction_chat = None;
-                        root.prediction_generation = root.prediction_generation.wrapping_add(1);
+                    EditorEvent::PasteRefused { reason } => {
+                        root.toast(reason.clone(), true, cx);
                     }
-                    root.refresh_at_suggestions(id, text, caret, cx);
+                    EditorEvent::Changed => {
+                        let (text, caret) = {
+                            let editor = editor.read(cx);
+                            (editor.text().to_string(), editor.cursor_utf16())
+                        };
+                        if !text.is_empty() && root.prediction_chat == Some(id) {
+                            root.prediction.clear();
+                            root.prediction_chat = None;
+                            root.prediction_generation = root.prediction_generation.wrapping_add(1);
+                        }
+                        root.refresh_at_suggestions(id, text, caret, cx);
+                    }
                 }
                 cx.notify();
             }));
@@ -2739,6 +2748,8 @@ impl Root {
         }
         let chat = self.chats.remove(index);
         self.editors.remove(&chat.id);
+        self.expanded_tools
+            .retain(|(chat_id, _)| *chat_id != chat.id);
         if self.active >= self.chats.len() {
             self.active = self.chats.len().saturating_sub(1);
         }
@@ -2939,26 +2950,23 @@ impl Root {
             return;
         }
         self.model_menu_open = false;
-        let Some(chat) = self.chats.get_mut(index) else {
-            return;
-        };
-        if let Some(run) = chat.run {
+        let run = self.chats.get(index).and_then(|chat| chat.run);
+        if let Some(run) = run {
+            // A message typed while a turn streams is guidance for that turn: it
+            // goes into the run's steering queue, and the row above the editor
+            // holds it until the turn reads it.
             let follow_up = self.prefs["follow_up"].as_str() != Some("steer");
-            let queue = chat.attachments.clone();
-            chat.queued.push(QueuedMessage {
-                text: prompt.clone(),
-                attachments: queue.clone(),
-                follow_up,
-            });
+            let queued_attachments = self.chats[index].attachments.clone();
+            let chat = &mut self.chats[index];
+            let queued_id = chat.queue_steer(prompt.clone(), queued_attachments.clone(), follow_up);
             chat.attachments.clear();
             chat.scroll_to_end = true;
-            let attachments: Vec<Value> = queue
+            let attachments: Vec<Value> = queued_attachments
                 .iter()
                 .map(
                     |attachment| json!({ "dataUrl": attachment.data_url, "name": attachment.name }),
                 )
                 .collect();
-            let prompt_for_error = prompt.clone();
             self.call(
                 "steer_run",
                 json!({
@@ -2973,18 +2981,51 @@ impl Root {
                 }),
                 cx,
                 move |root, result, cx| {
+                    let accepted = matches!(&result, Ok(value) if value.as_bool() == Some(true));
                     if let Err(error) = result {
-                        if let Some(chat) = root.chats.get_mut(index) {
-                            chat.queued
-                                .retain(|message| message.text != prompt_for_error);
-                        }
                         root.toast(error, true, cx);
                     }
+                    if let Some(chat) = root.chats.get_mut(index) {
+                        chat.finish_steer(queued_id, accepted);
+                    }
+                    root.settle_steers(index, cx);
                 },
             );
             editor.update(cx, |editor, cx| editor.clear(cx));
             return;
         }
+        if self.chats.get(index).is_some_and(|chat| chat.awaiting_run) {
+            return;
+        }
+        let attachments = std::mem::take(&mut self.chats[index].attachments);
+        self.start_turn(index, prompt, attachments, cx);
+
+        editor.update(cx, |editor, cx| editor.clear(cx));
+    }
+
+    /// Settles steering replies for one chat, then starts its first rejected
+    /// message in that same chat. The turn-end packet and the command reply can
+    /// arrive in either order; neither one is allowed to paint a second copy or
+    /// move the message to whichever tab happens to be active.
+    fn settle_steers(&mut self, index: usize, cx: &mut Context<Self>) {
+        let next = self.chats.get_mut(index).and_then(Chat::settle_steers);
+        if let Some(message) = next {
+            self.start_turn(index, message.text, message.attachments, cx);
+        }
+    }
+
+    /// Starts a turn in `index`: the message is painted, that tab is marked as
+    /// waiting for its run, and the engine is asked for it.
+    fn start_turn(
+        &mut self,
+        index: usize,
+        prompt: String,
+        attachments: Vec<Attachment>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(chat) = self.chats.get_mut(index) else {
+            return;
+        };
         if chat.awaiting_run {
             return;
         }
@@ -2992,16 +3033,16 @@ impl Root {
         let session = chat.session.clone();
         let reasoning = chat.reasoning.clone();
         let agent = chat.agent.clone();
-        let attachments: Vec<Value> = chat
-            .attachments
+        let parts: Vec<Value> = attachments
             .iter()
             .map(|attachment| json!({ "dataUrl": attachment.data_url, "name": attachment.name }))
             .collect();
-        let history_attachments = chat.attachments.clone();
 
+        // The message carries the attachments it was sent with, so the row in
+        // the transcript shows the same thumbnails the composer did.
         chat.entries.push(Entry::User {
             text: prompt.clone(),
-            attachments: history_attachments,
+            attachments,
         });
         chat.attachments.clear();
         chat.scroll_to_end = true;
@@ -3012,8 +3053,13 @@ impl Root {
         let mut args = json!({
             "project": project,
             "prompt": prompt,
-            "session": session,
-            "attachments": if attachments.is_empty() { Value::Null } else { Value::Array(attachments) },
+            // A tab with no thread is a reader starting one, so the engine is
+            // asked for a new session by name. Its own default is `latest`,
+            // which would append this message to whichever thread the project
+            // used last — one this tab never chose, still listed in the sidebar
+            // as that thread, with no new one to show for the send.
+            "session": session_reference(&session),
+            "attachments": if parts.is_empty() { Value::Null } else { Value::Array(parts) },
         });
         if let Some(reasoning) = reasoning {
             args["reasoning"] = json!(reasoning);
@@ -3027,25 +3073,25 @@ impl Root {
                 Ok(value) => {
                     let run = value.as_u64().unwrap_or_default();
                     if let Some(chat) = root.chats.get_mut(index) {
-                        if chat.run.is_none() {
+                        if chat.awaiting_run && chat.run.is_none() {
                             chat.run = Some(run);
+                            chat.awaiting_run = false;
                         }
-                        chat.awaiting_run = false;
                     }
                 }
                 Err(error) => {
                     if let Some(chat) = root.chats.get_mut(index) {
-                        chat.finish_run();
-                        chat.awaiting_run = false;
-                        chat.entries.push(Entry::Error(error));
+                        if chat.awaiting_run {
+                            chat.finish_run();
+                            chat.awaiting_run = false;
+                            chat.entries.push(Entry::Error(error));
+                        }
                     }
                 }
             }
             cx.notify();
         });
         self.start_run_clock_ticker(cx);
-
-        editor.update(cx, |editor, cx| editor.clear(cx));
     }
 
     fn start_run_clock_ticker(&mut self, cx: &mut Context<Self>) {
@@ -3186,6 +3232,7 @@ impl Root {
                 if let Some(chat) = root.chats.get_mut(index) {
                     chat.run = None;
                     chat.queued.clear();
+                    chat.steer_requests = 0;
                 }
                 cx.notify();
             },
@@ -3959,12 +4006,6 @@ impl Root {
                     chat.changes = payload.get("changes").cloned();
                     chat.baseline = payload["baseline"].as_str().map(str::to_string);
                     chat.after = payload["after"].as_str().map(str::to_string);
-                    for queued in std::mem::take(&mut chat.queued) {
-                        chat.entries.push(Entry::User {
-                            text: queued.text,
-                            attachments: queued.attachments,
-                        });
-                    }
                     chat.record_turn(&payload);
                     for entry in chat.entries.iter_mut() {
                         if let Entry::Approval(card) = entry {
@@ -3974,6 +4015,9 @@ impl Root {
                         }
                     }
                 }
+                if let Some(index) = ended {
+                    self.settle_steers(index, cx);
+                }
                 self.refresh_sessions(cx);
                 let index = self.active;
                 // A run may have switched branch, so the composer's own row is
@@ -3981,7 +4025,7 @@ impl Root {
                 self.load_git(cx);
                 self.refresh_repository(index, cx);
                 self.refresh_live_changes(cx);
-                if ended_active {
+                if ended_active && self.chats.get(index).is_some_and(|chat| !chat.running()) {
                     self.maybe_predict(cx);
                 }
             }
@@ -4776,6 +4820,14 @@ fn performs_slash_command(name: &str, args: &str) -> bool {
     }
 }
 
+/// The session reference a send names: the tab's own thread once it has one,
+/// and `new` while it is starting one. The engine defaults to `latest`, which
+/// would append the message to whichever thread the project used last, so a
+/// tab that has no thread of its own has to say so.
+fn session_reference(session: &Option<String>) -> String {
+    session.clone().unwrap_or_else(|| "new".to_string())
+}
+
 fn can_reuse_new_chat(chat: &Chat, composer_text: &str) -> bool {
     chat.session.is_none()
         && chat.entries.is_empty()
@@ -4818,7 +4870,7 @@ mod sidebar_resize_tests {
     use super::{
         add_attachment, can_reuse_new_chat, clamp_sidebar_width, composer_has_content,
         details_visible, draft_follows_project, performs_slash_command, resized_changes_width,
-        slash_command, synchronize_session_titles, toggled_details, Rail,
+        session_reference, slash_command, synchronize_session_titles, toggled_details, Rail,
     };
     use crate::model::{Attachment, Chat, SessionRow};
     use crate::views::{customize_destination, effort_position, model_display_name};
@@ -4909,6 +4961,15 @@ mod sidebar_resize_tests {
             "DeepSeek V4.1 Flash"
         );
         assert_eq!(model_display_name("gpt-5"), "GPT 5");
+    }
+
+    #[test]
+    fn a_tab_without_a_thread_asks_the_engine_for_a_new_one() {
+        assert_eq!(session_reference(&None), "new");
+        assert_eq!(
+            session_reference(&Some("saved-thread".to_string())),
+            "saved-thread"
+        );
     }
 
     #[test]
