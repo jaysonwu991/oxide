@@ -374,6 +374,7 @@ pub struct Root {
     pub(crate) project_actions_dismiss_armed: bool,
     pub assistant_actions: Option<(usize, usize)>,
     pub edited_actions: Option<(usize, usize)>,
+    pub expanded_tools: HashSet<(u64, u64)>,
     pub(crate) composer_tools_dismiss_armed: bool,
     /// The pointer position and sidebar width when a resize drag began.
     pub resizing: Option<(f32, f32)>,
@@ -622,6 +623,7 @@ impl Root {
             project_actions_dismiss_armed: false,
             assistant_actions: None,
             edited_actions: None,
+            expanded_tools: HashSet::new(),
             composer_tools_dismiss_armed: false,
             resizing: None,
             show_changes: false,
@@ -2746,6 +2748,8 @@ impl Root {
         }
         let chat = self.chats.remove(index);
         self.editors.remove(&chat.id);
+        self.expanded_tools
+            .retain(|(chat_id, _)| *chat_id != chat.id);
         if self.active >= self.chats.len() {
             self.active = self.chats.len().saturating_sub(1);
         }

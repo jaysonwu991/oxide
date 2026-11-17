@@ -206,7 +206,7 @@ const GLYPHS: &[(&str, &str)] = &[
 ];
 
 /// The drawing an element paints.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
     Back,
     Forward,

@@ -3439,19 +3439,37 @@ fn tool_label(name: &str) -> &str {
     }
 }
 
-fn compact_tool_output(output: &str) -> (String, bool) {
-    let pretty = serde_json::from_str::<serde_json::Value>(output.trim())
+fn readable_tool_output(output: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(output.trim())
         .ok()
         .and_then(|value| serde_json::to_string_pretty(&value).ok())
-        .unwrap_or_else(|| output.to_string());
+        .unwrap_or_else(|| output.to_string())
+}
+
+fn compact_tool_output(output: &str, limit: usize) -> (String, usize) {
+    let pretty = readable_tool_output(output);
     let lines = pretty.lines().collect::<Vec<_>>();
     let shown = lines
         .iter()
-        .take(10)
+        .take(limit)
         .copied()
         .collect::<Vec<_>>()
         .join("\n");
-    (shown, lines.len() > 10)
+    (shown, lines.len().saturating_sub(limit))
+}
+
+fn tool_icon(name: &str) -> Icon {
+    if crate::model::is_computer_tool(name) {
+        return Icon::Pointer;
+    }
+    match name {
+        "bash" => Icon::Changes,
+        "read" => Icon::File,
+        "edit" => Icon::Pencil,
+        "find" | "grep" => Icon::Search,
+        "web_search" | "web_fetch" => Icon::Globe,
+        _ => Icon::More,
+    }
 }
 
 fn entry_accessibility_label(entry: &Entry) -> String {
@@ -3476,7 +3494,7 @@ fn entry_accessibility_label(entry: &Entry) -> String {
             "{} {}: {}",
             tool_label(&card.name),
             card.detail,
-            compact_tool_output(&card.output).0
+            compact_tool_output(&card.output, 3).0
         ),
         Entry::Edited(card) => format!(
             "Edited {} file{}: {}",
@@ -3627,141 +3645,215 @@ fn entry_view(
                 Status::Done => (theme.success(), ""),
                 Status::Failed => (theme.error(), "Failed"),
             };
+            let chat_id = root.chats.get(chat).map(|chat| chat.id).unwrap_or_default();
+            let key = (chat_id, card.id);
+            let expanded = root.expanded_tools.contains(&key);
+            let expandable = !card.output.trim().is_empty() || card.diff.is_some();
+            let show_output =
+                !card.output.trim().is_empty() && (expanded || card.status == Status::Failed);
             let mut block = div()
                 .flex()
                 .flex_col()
                 .w_full()
                 .min_w(px(0.0))
                 .flex_none()
-                .gap_2()
-                .px(px(12.0))
-                .py(px(10.0))
-                .rounded(px(10.0))
-                .border_1()
-                .border_color(if card.status == Status::Failed {
-                    theme.error()
-                } else if computer_use && card.status == Status::Running {
-                    theme.accent()
-                } else {
-                    theme.border()
-                })
-                .bg(if card.status == Status::Failed {
-                    theme.color("tool_error_bg")
-                } else if card.status == Status::Running {
-                    theme.color("tool_pending_bg")
-                } else {
-                    theme.panel()
+                .gap_1()
+                .rounded(px(8.0))
+                .when(card.status == Status::Failed, |style| {
+                    style
+                        .border_l_2()
+                        .border_color(theme.error())
+                        .bg(theme.color("tool_error_bg"))
                 });
-            block = block.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .flex_none()
-                            .w(px(22.0))
-                            .h(px(22.0))
-                            .rounded(px(6.0))
-                            .bg(theme.panel_2())
-                            .child(icons::icon(
-                                if computer_use {
-                                    Icon::Pointer
-                                } else {
-                                    Icon::More
-                                },
-                                13.0,
-                                if computer_use {
-                                    theme.accent()
-                                } else {
-                                    theme.faint()
-                                },
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(12.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text())
-                            .child(tool_label(&card.name).to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .font_family("Menlo")
-                            .text_size(px(11.5))
-                            .text_color(theme.faint())
-                            .child(card.detail.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(11.0))
-                            .text_color(color)
-                            .child(state.to_string()),
-                    ),
-            );
-            if !card.output.trim().is_empty() {
-                let (output, hidden) = compact_tool_output(&card.output);
-                let output_height =
-                    plain_text_height(window, &output, width - 46.0, 11.5, 17.0, "Menlo")
-                        + if hidden { 17.0 } else { 0.0 };
-                block = block.child(
+            let mut header = div()
+                .id(SharedString::from(format!("tool-head-{}", card.id)))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(7.0))
+                .min_h(px(32.0))
+                .px(px(6.0))
+                .rounded(px(7.0))
+                .when(expandable, move |style| {
+                    style
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(theme.panel_2()))
+                })
+                .child({
+                    let mut caret = div().flex_none().w(px(12.0)).h(px(14.0));
+                    if expandable {
+                        caret = caret.child(icons::icon(
+                            if expanded {
+                                Icon::ChevronDown
+                            } else {
+                                Icon::ChevronRight
+                            },
+                            12.0,
+                            theme.faint(),
+                        ));
+                    }
+                    caret
+                })
+                .child(
                     div()
-                        .id(SharedString::from(format!("tool-output-{}", card.id)))
                         .flex()
-                        .flex_col()
-                        .gap_1()
-                        .w_full()
-                        .px(px(10.0))
-                        .py(px(8.0))
-                        .rounded(px(7.0))
-                        .bg(theme.background())
-                        .border_1()
-                        .border_color(theme.border())
-                        .text_size(px(11.5))
-                        .line_height(px(17.0))
-                        .font_family("Menlo")
-                        .min_h(px(output_height + 16.0))
-                        .whitespace_normal()
+                        .items_center()
+                        .justify_center()
+                        .flex_none()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .child(icons::icon(
+                            tool_icon(&card.name),
+                            13.0,
+                            if computer_use && card.status == Status::Running {
+                                theme.accent()
+                            } else if card.status == Status::Done {
+                                theme.success()
+                            } else if card.status == Status::Failed {
+                                theme.error()
+                            } else {
+                                theme.faint()
+                            },
+                        )),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if card.status == Status::Failed {
+                            theme.error()
+                        } else {
+                            theme.text()
+                        })
+                        .child(tool_label(&card.name).to_string()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
                         .overflow_hidden()
-                        .text_color(theme.dim())
-                        .child(output)
-                        .children(hidden.then(|| {
-                            div()
-                                .pt_1()
-                                .text_size(px(10.5))
-                                .text_color(theme.faint())
-                                .child("Output truncated")
-                        })),
+                        .whitespace_nowrap()
+                        .font_family("Menlo")
+                        .text_size(px(11.0))
+                        .text_color(theme.faint())
+                        .child(card.detail.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.5))
+                        .text_color(color)
+                        .child(state.to_string()),
                 );
+            if expandable {
+                header = header
+                    .role(gpui::Role::Button)
+                    .aria_label(format!(
+                        "{} {}. {}",
+                        tool_label(&card.name),
+                        card.detail,
+                        if expanded {
+                            "Collapse result"
+                        } else {
+                            "Expand result"
+                        }
+                    ))
+                    .aria_expanded(expanded)
+                    .tooltip(tip(
+                        if expanded {
+                            "Collapse result"
+                        } else {
+                            "Show result"
+                        },
+                        theme,
+                    ))
+                    .on_click(cx.listener(move |root, _, _, cx| {
+                        if !root.expanded_tools.remove(&key) {
+                            root.expanded_tools.insert(key);
+                        }
+                        cx.notify();
+                    }));
             }
-            if let Some(diff) = &card.diff {
-                if let Some(text) = diff["text"].as_str().or_else(|| diff.as_str()) {
-                    block = block.child(diff_block(text, theme));
+            block = block.child(header);
+            if show_output {
+                let full = readable_tool_output(&card.output);
+                let (output, hidden_lines) = if expanded {
+                    (full, 0)
+                } else {
+                    compact_tool_output(&card.output, 3)
+                };
+                let mut result = div()
+                    .id(SharedString::from(format!("tool-output-{}", card.id)))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .w_full()
+                    .px(px(25.0))
+                    .pb(px(7.0))
+                    .text_size(px(11.0))
+                    .line_height(px(17.0))
+                    .font_family("Menlo")
+                    .whitespace_normal()
+                    .overflow_hidden()
+                    .text_color(theme.dim())
+                    .child(output);
+                if hidden_lines > 0 {
+                    result =
+                        result.child(div().text_size(px(10.5)).text_color(theme.faint()).child(
+                            format!(
+                                "{hidden_lines} more line{} \u{00b7} show output",
+                                if hidden_lines == 1 { "" } else { "s" }
+                            ),
+                        ));
+                }
+                if expandable && !expanded {
+                    result = result
+                        .role(gpui::Role::Button)
+                        .aria_label("Show full tool output")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            root.expanded_tools.insert(key);
+                            cx.notify();
+                        }));
+                }
+                block = block.child(result);
+            }
+            if expanded {
+                if let Some(diff) = &card.diff {
+                    if let Some(text) = diff["text"].as_str().or_else(|| diff.as_str()) {
+                        block = block.child(
+                            div()
+                                .pl(px(25.0))
+                                .pb(px(6.0))
+                                .child(diff_block(text, theme)),
+                        );
+                    }
                 }
             }
             if !card.media.is_empty() {
-                block = block.child(div().flex().flex_row().flex_wrap().gap_2().children(
-                    card.media.iter().enumerate().map(|(position, attachment)| {
-                        attachment_thumbnail(
-                            SharedString::from(format!("tool-attachment-{}-{position}", card.id)),
-                            attachment,
-                            180.0,
-                            9.0,
-                            theme,
-                            cx,
-                        )
-                    }),
-                ));
+                block = block.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_2()
+                        .pl(px(25.0))
+                        .pb(px(6.0))
+                        .children(card.media.iter().enumerate().map(|(position, attachment)| {
+                            attachment_thumbnail(
+                                SharedString::from(format!(
+                                    "tool-attachment-{}-{position}",
+                                    card.id
+                                )),
+                                attachment,
+                                160.0,
+                                8.0,
+                                theme,
+                                cx,
+                            )
+                        })),
+                );
             }
             block
         }
@@ -8034,6 +8126,28 @@ mod transcript_scroll_tests {
             -1.0, -499.0, 500.0, false
         ));
         assert!(transcript_following_after_scroll(0.0, 0.0, 0.0, false));
+    }
+}
+
+#[cfg(test)]
+mod tool_card_tests {
+    use super::{compact_tool_output, tool_icon};
+    use crate::icons::Icon;
+
+    #[test]
+    fn a_collapsed_tool_output_keeps_only_its_first_lines() {
+        let (preview, hidden) = compact_tool_output("one\ntwo\nthree\nfour\nfive", 3);
+        assert_eq!(preview, "one\ntwo\nthree");
+        assert_eq!(hidden, 2);
+    }
+
+    #[test]
+    fn a_tool_row_carries_the_mark_of_what_it_did() {
+        assert_eq!(tool_icon("bash"), Icon::Changes);
+        assert_eq!(tool_icon("read"), Icon::File);
+        assert_eq!(tool_icon("grep"), Icon::Search);
+        assert_eq!(tool_icon("web_fetch"), Icon::Globe);
+        assert_eq!(tool_icon("computer-use__screenshot"), Icon::Pointer);
     }
 }
 

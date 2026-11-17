@@ -188,7 +188,10 @@ reveal rather than two frames of the wrong page.
   tool cards with their call, output and diff, errors, compaction notices, and
   a context ring beside the composer controls. Opening a saved thread restores
   the reasoning already stored on each assistant step before that step's answer
-  and tool cards. Its top row names the project and
+  and tool cards. A tool is one compact row by default; a successful result stays
+  folded, a failure previews its first three lines, and the row or preview
+  expands and collapses the full output and diff without making every result
+  compete with the answer. Its top row names the project and
   the branch `git_info` reports (and leaves the branch out when the folder is not
   a repository); that branch is read again when a turn ends, when the window
   becomes active again, and just after a command is typed into the dock's own
