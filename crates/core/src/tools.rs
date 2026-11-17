@@ -5352,6 +5352,7 @@ fn bash_failure_hint(output: &str) -> Option<&'static str> {
 /// The stages of a `gh pr checks` run, optionally piped through text filters, or
 /// `None` for any other command. Only this shape can explain a
 /// [`GH_PENDING_EXIT`]; `8` from anything else is that command's own failure.
+#[cfg(unix)]
 fn gh_pr_checks_pipeline(command: &str) -> Option<Vec<&str>> {
     gh_pr_checks_pipeline_with(command, GH_PENDING_EXIT)
 }
@@ -9162,10 +9163,14 @@ mod tests {
             "cat README.md; grep -rln \"blurb\\|contentBlurb\" jobs tests | head",
             "git status --short; grep -rn needle jobs/schemas",
             "cd jobs && ls; grep -rn needle schemas | head -5",
-            "git status; grep -rn needle /dev/null",
         ] {
             assert!(!uses_recursive_shell_grep(command, &root), "{command}");
         }
+        #[cfg(unix)]
+        assert!(!uses_recursive_shell_grep(
+            "git status; grep -rn needle /dev/null",
+            &root
+        ));
         for command in [
             "grep -rn needle jobs",
             "cd jobs && grep -rn needle schemas | head -5",
