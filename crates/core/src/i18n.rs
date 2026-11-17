@@ -1156,8 +1156,11 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("dialog.trust.deny", "Don't trust", "不信任"),
     ("dialog.trust.allow", "Trust project", "信任项目"),
     ("dialog.models.title", "Model", "模型"),
+    ("dialog.models.list", "Models", "模型列表"),
     ("dialog.models.filter", "Filter models…", "筛选模型…"),
     ("dialog.reasoning.title", "Reasoning effort", "推理强度"),
+    ("dialog.modelMenu.title", "Model and effort", "模型与推理强度"),
+    ("dialog.modelMenu.reset", "Reset to Auto", "重置为自动"),
     ("dialog.themes.title", "Theme", "主题"),
     (
         "dialog.themes.subtitle",

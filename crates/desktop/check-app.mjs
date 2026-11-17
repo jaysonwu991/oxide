@@ -1813,7 +1813,7 @@ await app.openModels();
 check(
   "told the reader a model needs a folder first, and asked for one",
   calls.length === 0 &&
-    elementFor("models-modal").hidden === true &&
+    elementFor("model-menu").hidden === true &&
     elementFor("projects-modal").hidden === false &&
     status() === "Select a project first.",
   `${status()} / ${elementFor("projects-modal").hidden} / ${JSON.stringify(calls.map(([name]) => name))}`,
@@ -2482,7 +2482,7 @@ check(
     ["connect", "trust", "permissions", "help"].every((id) =>
       composerLeft.includes(`id="${id}"`),
     ) &&
-    shellAt('id="reasoning"') > shellAt('id="connect"'),
+    shellAt('id="model"') > shellAt('id="connect"'),
   `rail: ${idsIn(railUtilities)} · composer: ${idsIn(composerLeft)}`,
 );
 check(
@@ -2526,17 +2526,20 @@ const footerSource = readFileSync(
   "utf8",
 );
 
-// Model and reasoning are visible selectors beside the single action icon.
-for (const [id, value] of [["model", "deepseek-flash"], ["reasoning", "Auto"]]) {
-  check(
-    `showed the current ${id} beside the action`,
-    buttonFor(id).includes(`id="${id}-value"`) &&
-      shellAt(`id="${id}"`) > shellAt('class="composer-right"') &&
-      shellAt(`id="${id}"`) < shellAt('id="stop"') &&
-      elementFor(`${id}-value`).textContent === value,
-    elementFor(`${id}-value`).textContent,
-  );
-}
+// Model and reasoning are one visible selector beside the single action icon,
+// "Model · Effort", the control the GPUI composer draws: the model by its
+// display name, and the effort half left off while the model offers only Auto.
+check(
+  "showed the current model and effort in one chip beside the action",
+  buttonFor("model").includes('id="model-value"') &&
+    buttonFor("model").includes('id="reasoning-value"') &&
+    !shell.includes('id="reasoning"') &&
+    shellAt('id="model"') > shellAt('class="composer-right"') &&
+    shellAt('id="model"') < shellAt('id="stop"') &&
+    elementFor("model-value").textContent === "DeepSeek Flash" &&
+    elementFor("reasoning-value").textContent === "Auto",
+  `${elementFor("model-value").textContent} · ${elementFor("reasoning-value").textContent}`,
+);
 check(
   "sized an icon chip a circle of the row's own height, its glyph centered",
   /\.chip-icon \{[^}]*display: inline-flex;[^}]*align-items: center;[^}]*justify-content: center;[^}]*\}/.test(
@@ -5888,174 +5891,117 @@ check(
   elementFor("project-meta").textContent === "" && elementFor("project-meta").hidden === true,
   elementFor("project-meta").textContent,
 );
-// The chip is a glyph, so the value it carries is the tooltip the row shows and
-// the name a screen reader reads — the way the extension's own chips carry it.
+// The chip carries the model and its effort as one control, and names both to
+// a screen reader.
 check(
   "named the composer's chip for the model it would run",
   elementFor("model").getAttribute("aria-label") === "model: deepseek-flash · 128k" &&
     elementFor("model").title === "model: deepseek-flash · 128k\nSwitch model" &&
-    elementFor("model-value").textContent === "deepseek-flash",
+    elementFor("model-value").textContent === "DeepSeek Flash",
   `${elementFor("model").getAttribute("aria-label")} / ${JSON.stringify(elementFor("model").title)}`,
 );
 app.state.reasoning = "high";
 app.updateChips();
 check(
-  "named the thinking chip for the level it would think at",
-  elementFor("reasoning").getAttribute("aria-label") === "thinking: high" &&
-    elementFor("reasoning").title === "thinking: high\nChoose the reasoning level (Shift+Tab cycles)" &&
-    elementFor("reasoning-value").textContent === "High",
-  `${elementFor("reasoning").getAttribute("aria-label")} / ${JSON.stringify(elementFor("reasoning").title)}`,
+  "named the same chip for the level it would think at",
+  elementFor("model").getAttribute("aria-label") === "model: deepseek-flash · 128k · thinking: high" &&
+    elementFor("reasoning-value").textContent === "High" &&
+    elementFor("reasoning-value").hidden === false,
+  `${elementFor("model").getAttribute("aria-label")} / ${elementFor("reasoning-value").textContent}`,
 );
 app.state.reasoning = "auto";
 app.updateChips();
 
-// The level a turn thinks at is a choice among five rather than a step, so the
-// chip opens a picker instead of walking the cycle: the levels it lists are the
-// same cycle the terminal's Shift+Tab walks, read out of the panel's own source
-// rather than restated here, so the two front-ends cannot drift apart.
 const extensionLevels = [
   ...((footerSource.match(/REASONING_LEVELS = \[([^\]]*)\]/) || [])[1] || "").matchAll(/"([a-z]+)"/g),
 ].map((match) => match[1]);
-const reasoningRows = () => elementFor("reasoning-list").children;
-const reasoningNames = () => reasoningRows().map((row) => row.children[0]?.textContent);
-const currentReasoning = () =>
-  reasoningRows()
-    .filter((row) => row.classList.contains("active"))
-    .map((row) => row.children[0]?.textContent)
-    .join(" ");
-const pressedReasoning = () =>
-  reasoningRows()
-    .filter((row) => row.getAttribute("aria-pressed") === "true")
-    .map((row) => row.children[0]?.textContent)
-    .join(" ");
-const reasoningRow = (level) => reasoningRows().find((row) => row.children[0].textContent === level);
-// The chip has the keyboard when a reader clicks it, which is what the picker
-// gives back when it closes.
+const stops = () => elementFor("effort-slider").children.filter((node) => node.className.includes("effort-stop"));
+const stopNames = () => stops().map((stop) => stop.dataset.level);
+const activeStop = () => stops().filter((stop) => stop.classList.contains("active")).map((stop) => stop.dataset.level).join(" ");
+const menuOpen = () => elementFor("model-menu").hidden === false;
 const reasoningPickedBeforeOpening = app.state.reasoningPicked;
-elementFor("reasoning").focus();
-elementFor("reasoning").click();
-// A cold picker reads the model's own levels from the host before it opens, so
-// the rows arrive a task later rather than in the click.
+elementFor("model").focus();
+elementFor("model").click();
 await nextTick();
 check(
-  "opened a picker for the level instead of stepping through it",
-  elementFor("reasoning-modal").hidden === false &&
-    reasoningNames().join(" ") === extensionLevels.join(" ") &&
-    reasoningRows().every((row) => row.children[1]?.textContent) &&
-    currentReasoning() === "auto" &&
-    pressedReasoning() === "auto",
-  `${elementFor("reasoning-modal").hidden} / ${reasoningNames().join(" ")} / ${extensionLevels.join(" ")} / ${currentReasoning()} / ${pressedReasoning()}`,
+  "opened one menu for the level and the model",
+  menuOpen() && elementFor("model-summary").hidden === false && elementFor("model-picker").hidden === true &&
+    stopNames().join(" ") === extensionLevels.join(" ") && activeStop() === "auto" &&
+    elementFor("effort-name").textContent === "Auto" &&
+    elementFor("model-page-name").textContent === "DeepSeek Flash" &&
+    elementFor("model").getAttribute("aria-expanded") === "true",
+  `${menuOpen()} / ${stopNames().join(" ")} / ${extensionLevels.join(" ")} / ${activeStop()}`,
 );
-// A model that always thinks still does at `off`: GLM 5.3 and later are asked for
-// their lowest effort instead of for none at all (`llm::client::glm_forces_thinking`),
-// so the row asks for no thinking rather than promising an answer without any.
 check(
   "did not promise an answer without any thinking",
-  /^Turn thinking off where the model allows it$/.test(reasoningRow("off")?.children[1]?.textContent),
-  reasoningRow("off")?.children[1]?.textContent,
+  /^Off \u2014 Turn thinking off where the model allows it$/.test(stops().find((s) => s.dataset.level === "off")?.title),
+  stops().find((s) => s.dataset.level === "off")?.title,
 );
-// Opening starts the keyboard on the level in use.
+check("put the keyboard on the slider", document.activeElement === elementFor("effort-slider"), String(document.activeElement?.id));
 check(
-  "put the keyboard on the level in use",
-  document.activeElement === reasoningRow("auto"),
-  document.activeElement === reasoningRow("auto") ? "auto" : String(document.activeElement?.id),
-);
-// The row in use wears a drawn check rather than a `✓` character, and only that
-// row wears one.
-check(
-  "drew the picker's check on the row in use and nowhere else",
-  reasoningRow("auto").children[2].innerHTML === app.ICONS.check &&
-    reasoningRow("high").children[2].innerHTML === "",
-  `${reasoningRow("auto").children[2].innerHTML} / ${reasoningRow("high").children[2].innerHTML}`,
-);
-// Arrows walk the dropdown's controls without changing the chosen level.
-const tabbedReasoning = (shiftKey = false) =>
-  elementFor("reasoning-modal").fire("keydown", { key: shiftKey ? "ArrowUp" : "ArrowDown", preventDefault() {} });
-tabbedReasoning();
-const tabbedOnward = document.activeElement === reasoningRow("off");
-elementFor("reasoning-close").focus();
-tabbedReasoning();
-const tabbedRound = document.activeElement === reasoningRow("auto");
-tabbedReasoning(true);
-const shiftTabbedRound = document.activeElement === elementFor("reasoning-close");
-check(
-  "walked dropdown rows with arrows, wrapping at the ends",
-  tabbedOnward && tabbedRound && shiftTabbedRound,
-  `${tabbedOnward} / ${tabbedRound} / ${shiftTabbedRound} / ${document.activeElement?.id}`,
-);
-// Shift+Tab is the levels' own shortcut, and while the picker is up it walks the
-// rows instead: the page's cycle must not take the same key, or a reader walking
-// the list would watch the mark move under them and the dialog shut.
-const heldLevel = app.state.reasoning;
-document.fire("keydown", { key: "Tab", shiftKey: true, preventDefault() {} });
-check(
-  "left the level alone while Shift+Tab walked the picker",
-  app.state.reasoning === heldLevel && elementFor("reasoning-modal").hidden === false,
-  `${app.state.reasoning} / ${heldLevel} / ${elementFor("reasoning-modal").hidden}`,
-);
-// Opening the picker must not change how the next turn selects its effort.
-check(
-  "left the effort override unchanged until a row was picked",
+  "left the effort override unchanged until a level was chosen",
   app.state.reasoningPicked === reasoningPickedBeforeOpening,
   String(app.state.reasoningPicked),
 );
-// A shortcut that does change the level with the picker up moves its mark rather
-// than leaving the dialog showing the level it just left — and leaves the
-// keyboard on the mark, since the list is rebuilt to do it.
+elementFor("effort-slider").fire("keydown", { key: "ArrowRight", preventDefault() {} });
+check(
+  "stepped one level on the arrow key and kept the menu up",
+  app.state.reasoning === "off" && app.state.reasoningPicked === true && menuOpen() && activeStop() === "off" &&
+    elementFor("effort-name").textContent === "Off",
+  `${app.state.reasoning} / ${menuOpen()} / ${activeStop()}`,
+);
+elementFor("effort-slider").fire("keydown", { key: "End", preventDefault() {} });
+elementFor("effort-slider").fire("keydown", { key: "ArrowRight", preventDefault() {} });
+check("stopped at the last level rather than wrapping", app.state.reasoning === "max", app.state.reasoning);
+elementFor("effort-slider").fire("keydown", { key: "Home", preventDefault() {} });
+check("went to the first level on Home", app.state.reasoning === "auto", app.state.reasoning);
+const heldLevel = app.state.reasoning;
+document.fire("keydown", { key: "Tab", shiftKey: true, preventDefault() {} });
+check("left the level alone while Shift+Tab was in the menu", app.state.reasoning === heldLevel && menuOpen(), `${app.state.reasoning} / ${menuOpen()}`);
 document.fire("keydown", { key: "r", ctrlKey: true, preventDefault() {} });
 check(
-  "moved the picker's mark when a shortcut changed the level under it",
-  app.state.reasoning === "off" &&
-    elementFor("reasoning-modal").hidden === false &&
-    currentReasoning() === "off" &&
-    pressedReasoning() === "off" &&
-    document.activeElement === reasoningRow("off"),
-  `${app.state.reasoning} / ${currentReasoning()} / ${document.activeElement?.id}`,
+  "moved the slider when a shortcut changed the level under it",
+  app.state.reasoning === "off" && activeStop() === "off" && menuOpen(),
+  `${app.state.reasoning} / ${activeStop()}`,
 );
-reasoningRow("medium").click();
+stops().find((s) => s.dataset.level === "medium").click();
 check(
-  "took the level a row named and put the picker away",
-  app.state.reasoning === "medium" &&
-    app.state.reasoningPicked === true &&
-    elementFor("reasoning-modal").hidden === true &&
-    elementFor("reasoning").getAttribute("aria-label") === "thinking: medium",
-  `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
+  "took the level a stop named and kept the menu up",
+  app.state.reasoning === "medium" && activeStop() === "medium" && menuOpen() &&
+    elementFor("model").getAttribute("aria-label").endsWith("thinking: medium") &&
+    elementFor("reasoning-value").textContent === "Medium",
+  `${app.state.reasoning} / ${activeStop()}`,
 );
-// Every close path hands the keyboard back — the row here, Escape below — so a
-// reader who picked a level is not left at the top of the page.
+elementFor("effort-reset").click();
+check("reset the level to Auto", app.state.reasoning === "auto" && activeStop() === "auto" && elementFor("effort-reset").disabled === true, app.state.reasoning);
+elementFor("model-page").click();
+await nextTick();
 check(
-  "handed the keyboard back to the chip a pick was made from",
-  document.activeElement === elementFor("reasoning"),
-  document.activeElement?.id,
+  "opened the catalog from the model's name",
+  elementFor("model-picker").hidden === false && elementFor("model-summary").hidden === true && menuOpen(),
+  `${elementFor("model-picker").hidden} / ${elementFor("model-summary").hidden}`,
 );
-elementFor("reasoning").click();
-check(
-  "marked the level it is on when the picker is opened again",
-  currentReasoning() === "medium" &&
-    pressedReasoning() === "medium" &&
-    document.activeElement === reasoningRow("medium"),
-  `${currentReasoning()} / ${pressedReasoning()} / ${document.activeElement?.id}`,
-);
-// A picker that is not in `OVERLAYS` stays over the app through the key that
-// closes every dialog — and Escape puts the keyboard back where it was too.
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 check(
-  "closed the picker on Escape like every other dialog",
-  elementFor("reasoning-modal").hidden === true &&
-    document.activeElement === elementFor("reasoning"),
-  `${elementFor("reasoning-modal").hidden} / ${document.activeElement?.id}`,
+  "stepped back to the summary on the first Escape",
+  menuOpen() && elementFor("model-summary").hidden === false && elementFor("model-picker").hidden === true,
+  `${menuOpen()} / ${elementFor("model-summary").hidden}`,
 );
-// A model whose listing advertised its own levels narrows the picker to those,
-// so it never offers a level the run would clamp away. The window reads the
-// levels the host warmed from the listing before painting the rows.
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+check(
+  "closed the menu on the second Escape and gave the keyboard back",
+  !menuOpen() && document.activeElement === elementFor("model") && elementFor("model").getAttribute("aria-expanded") === "false",
+  `${menuOpen()} / ${document.activeElement?.id}`,
+);
+elementFor("model").click();
+await nextTick();
+elementFor("model-menu").fire("keydown", { key: "Tab", stopPropagation() {} });
+check("closed the menu on Tab without cycling the level", !menuOpen() && app.state.reasoning === "auto", app.state.reasoning);
+
 reasoningAnswer.reasoningLevels = ["off", "low", "high", "max"];
 app.state.reasoningLevels = null;
 await app.openReasoning();
-check(
-  "narrowed the picker to the levels the model advertised",
-  reasoningNames().join(" ") === "auto off low high max",
-  `${reasoningNames().join(" ")} / reasoningAnswer=${JSON.stringify(reasoningAnswer.reasoningLevels)}`,
-);
+check("narrowed the slider to the levels the model advertised", stopNames().join(" ") === "auto off low high max", stopNames().join(" "));
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 reasoningAnswer.reasoningLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 app.state.reasoningLevels = null;
@@ -6065,8 +6011,8 @@ reasoningAnswer.reasoningLevels = [];
 app.state.reasoning = "high";
 await app.openReasoning();
 check("offered Auto without clearing an explicit effort when reasoning is unsupported",
-  !elementFor("reasoning").hidden && app.state.reasoning === "high" && !elementFor("reasoning-modal").hidden && reasoningNames().join(" ") === "auto",
-  `${elementFor("reasoning").hidden} / ${app.state.reasoning} / ${reasoningNames()}`);
+  menuOpen() && app.state.reasoning === "high" && stopNames().join(" ") === "auto" && elementFor("reasoning-value").hidden === false,
+  `${app.state.reasoning} / ${stopNames()}`);
 await app.runSlashCommand("/reasoning high");
 check("refused a hidden selector without changing the explicit effort", app.state.reasoning === "high", app.state.reasoning);
 document.fire("keydown", { key: "Escape", preventDefault() {} });
@@ -6077,40 +6023,33 @@ await app.openReasoning();
 const effortWritesBefore = projectCalls("set_reasoning").length;
 await nextTick();
 check("offered only Auto when a support flag had no effort metadata",
-  !elementFor("reasoning").hidden && !elementFor("reasoning-modal").hidden && reasoningNames().join(" ") === "auto" &&
-    app.state.reasoning === "high" && projectCalls("set_reasoning").length === effortWritesBefore);
+  menuOpen() && stopNames().join(" ") === "auto" && app.state.reasoning === "high" &&
+    projectCalls("set_reasoning").length === effortWritesBefore);
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 Object.assign(reasoningAnswer, savedReasoningAnswer);
 app.state.reasoningLevels = null;
 await app.openReasoning();
-check("restored the new model's own reasoning choices", !elementFor("reasoning").hidden && reasoningNames().includes("high"), reasoningNames().join(" "));
+check("restored the new model's own reasoning choices", stopNames().includes("high"), stopNames().join(" "));
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 app.state.reasoningLevels = null;
-// There is nothing to pick before a project is open — the level would be
-// replaced by the one that project's config resolves to — so the chip gives the
-// answer the app's other project-bound commands give.
 const holdingProject = app.state.project;
 app.state.project = null;
-elementFor("reasoning").click();
+elementFor("model").click();
+await nextTick();
 check(
   "gave the app's own answer when no project is open",
-  elementFor("reasoning-modal").hidden === true && status() === "Select a project first.",
-  `${elementFor("reasoning-modal").hidden} / ${status()}`,
+  !menuOpen() && status() === "Select a project first.",
+  `${menuOpen()} / ${status()}`,
 );
 app.state.project = holdingProject;
 await app.runSlashCommand("/reasoning");
-check(
-  "opened the picker from the bare command",
-  elementFor("reasoning-modal").hidden === false,
-  String(elementFor("reasoning-modal").hidden),
-);
+check("opened the menu from the bare command", menuOpen(), String(menuOpen()));
 await app.runSlashCommand("/reasoning low");
 check(
   "took a level typed after the command",
-  app.state.reasoning === "low" &&
-    elementFor("reasoning-modal").hidden === true &&
-    elementFor("reasoning").getAttribute("aria-label") === "thinking: low",
-  `${app.state.reasoning} / ${elementFor("reasoning-modal").hidden} / ${elementFor("reasoning").getAttribute("aria-label")}`,
+  app.state.reasoning === "low" && !menuOpen() &&
+    elementFor("model").getAttribute("aria-label").endsWith("thinking: low"),
+  `${app.state.reasoning} / ${menuOpen()}`,
 );
 await app.runSlashCommand("/reasoning nope");
 check(
@@ -6118,41 +6057,23 @@ check(
   status() === "Reasoning must be one of auto, off, minimal, low, medium, high, xhigh, max.",
   status(),
 );
-elementFor("reasoning").click();
-// The keyboard is moved off the opener first, so the check reads the restore
-// rather than an element that was still focused for another reason.
-reasoningRow("high").focus();
-elementFor("reasoning-close").click();
-check(
-  "shipped the picker in the markup with a way out of it",
-  shellAt('id="reasoning-modal"') > 0 &&
-    shellAt('id="reasoning-list"') > shellAt('id="reasoning-modal"') &&
-    /id="reasoning-close"[^>]*>Close<\/button>/.test(shell) &&
-    elementFor("reasoning-modal").hidden === true &&
-    /\.reasoning-option \{[^}]*\}/.test(sheet),
-  `${shellAt('id="reasoning-modal"')} / ${shellAt('id="reasoning-list"')} / ${elementFor("reasoning-modal").hidden}`,
-);
-// The third way out, and the last one that has to give the keyboard back.
-check(
-  "handed the keyboard back when the Close button was used",
-  document.activeElement === elementFor("reasoning"),
-  document.activeElement?.id,
-);
-// ...and the shortcut still walks the levels when no picker is up.
+app.state.reasoning = "medium";
+app.updateChips();
 document.fire("keydown", { key: "Tab", shiftKey: true, preventDefault() {} });
 check(
-  "walked the levels on Shift+Tab when no picker is up",
-  app.state.reasoning === "medium" &&
-    elementFor("reasoning").getAttribute("aria-label") === "thinking: medium",
-  `${app.state.reasoning} / ${elementFor("reasoning").getAttribute("aria-label")}`,
+  "walked the levels on Shift+Tab when no menu is up",
+  app.state.reasoning === "high" && elementFor("model").getAttribute("aria-label").endsWith("thinking: high"),
+  `${app.state.reasoning} / ${elementFor("model").getAttribute("aria-label")}`,
 );
-// A named, nonmodal dropdown keeps the rest of the app available.
 check(
-  "shipped a named dropdown without a modal backdrop",
-  /id="reasoning-modal"[^>]*role="dialog"[^>]*aria-labelledby="reasoning-title"/.test(
-    shell,
-  ) && !/id="reasoning-modal"[^>]*aria-modal="true"/.test(shell) && /<h2 id="reasoning-title"[^>]*>Reasoning effort<\/h2>/.test(shell),
-  shellAt('aria-labelledby="reasoning-title"'),
+  "shipped one named menu without a modal backdrop",
+  /id="model-menu"[^>]*role="dialog"[^>]*aria-label="Model and effort"/.test(shell) &&
+    !/id="model-menu"[^>]*aria-modal="true"/.test(shell) &&
+    !/id="(reasoning-modal|models-modal|reasoning-list)"/.test(shell) &&
+    shellAt('id="effort-slider"') > shellAt('id="model-menu"') &&
+    shellAt('id="model-filter"') > shellAt('id="model-picker"') &&
+    /\.effort-slider \{[^}]*\}/.test(sheet),
+  shellAt('id="model-menu"'),
 );
 app.state.reasoning = "auto";
 app.updateChips();
@@ -8939,7 +8860,7 @@ el("login-model").value = "";
 await app.saveConnect();
 check(
   "named the model a login landed on with no folder open",
-  el("model-value").textContent === "claude-sonnet-4-5" &&
+  el("model-value").textContent === "Claude Sonnet 4 5" &&
     String(el("model").title).includes("model: claude-sonnet-4-5"),
   `${el("model-value").textContent} / ${el("model").title}`,
 );
@@ -9368,20 +9289,20 @@ projectInfo = { ...projectFacts(128000), model: "gpt-5", reasoning: "high", supp
 await app.loadInfo();
 check("kept the initial model's configured effort", app.state.reasoning === "high", app.state.reasoning);
 check("loaded project details without a header error",
-  elementFor("project-meta").hidden && elementFor("model-value").textContent === "gpt-5",
+  elementFor("project-meta").hidden && elementFor("model-value").textContent === "GPT 5",
   `${elementFor("project-meta").textContent} / ${elementFor("model-value").textContent}`);
 let releaseReasoningReply;
 reasoningReplyGate = new Promise((resolve) => { releaseReasoningReply = resolve; });
 projectInfo = { ...projectInfo, reasoning: "high", supportsReasoning: false, reasoningLevels: null };
 await app.loadInfo();
 check("kept saved effort while cold metadata was pending and exposed Auto recovery",
-  app.state.reasoning === "high" && !app.state.reasoningPicked && !elementFor("reasoning").hidden);
+  app.state.reasoning === "high" && !app.state.reasoningPicked && !elementFor("reasoning-value").hidden);
 releaseReasoningReply({ reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high"] });
 await nextTick();
 await nextTick();
 reasoningReplyGate = null;
 check("restored the saved high effort after metadata confirmed it",
-  app.state.reasoning === "high" && !app.state.reasoningPicked && !elementFor("reasoning").hidden);
+  app.state.reasoning === "high" && !app.state.reasoningPicked && !elementFor("reasoning-value").hidden);
 reasoningReplyGate = new Promise((resolve) => { releaseReasoningReply = resolve; });
 app.state.reasoningLevels = null;
 const pendingReasoningOpen = app.openReasoning();
@@ -9401,7 +9322,7 @@ await nextTick();
 check("loaded advertised reasoning levels for a cold project without opening the picker",
   projectCalls("reasoning_levels").length === levelsReadsBefore + 1 &&
     app.state.reasoningLevels?.join(" ") === `auto ${reasoningAnswer.reasoningLevels.join(" ")}` &&
-    elementFor("reasoning-modal").hidden && elementFor("project-meta").hidden,
+    elementFor("model-menu").hidden && elementFor("project-meta").hidden,
   `${app.state.reasoningLevels} / ${elementFor("project-meta").textContent}`);
 app.state.supportsReasoning = false;
 app.state.reasoningLevels = ["auto"];
@@ -9409,10 +9330,8 @@ app.state.reasoning = "medium";
 app.updateChips();
 await app.openReasoning();
 check("offered Auto to recover from a saved effort the backend rejects",
-  !elementFor("reasoning").hidden && !elementFor("reasoning-modal").hidden &&
-    elementFor("reasoning-list").children.length === 1 &&
-    elementFor("reasoning-list").children[0].children[0].textContent === "auto");
-elementFor("reasoning-list").children[0].click();
+  !elementFor("reasoning-value").hidden && menuOpen() && stopNames().join(" ") === "auto");
+stops()[0].click();
 await nextTick();
 check("saved Auto explicitly without silently disabling the selected effort",
   app.state.reasoning === "auto" && app.state.reasoningPicked &&
@@ -9420,18 +9339,18 @@ check("saved Auto explicitly without silently disabling the selected effort",
 projectInfo = { ...projectInfo, model: "gpt-4o-mini", reasoning: "auto", supportsReasoning: false, reasoningLevels: [] };
 await app.loadInfo();
 check("reset effort after switching to a model without reasoning",
-  app.state.reasoning === "auto" && app.state.reasoningPicked && elementFor("reasoning").hidden,
-  `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning").hidden}`);
+  app.state.reasoning === "auto" && app.state.reasoningPicked && elementFor("reasoning-value").hidden,
+  `${app.state.reasoning} / ${app.state.reasoningPicked} / ${elementFor("reasoning-value").hidden}`);
 projectInfo = { ...projectInfo, model: "deepseek-reasoner", reasoning: "high", supportsReasoning: true, reasoningLevels: ["low", "high", "max"] };
 const cachedLevelsReadsBefore = projectCalls("reasoning_levels").length;
 await app.loadInfo();
 check("read the shared effort when the model changed elsewhere",
-  app.state.reasoning === "high" && !elementFor("reasoning").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",
+  app.state.reasoning === "high" && !elementFor("reasoning-value").hidden && app.state.reasoningLevels.join(" ") === "auto low high max",
   `${app.state.reasoning} / ${app.state.reasoningLevels.join(" ")}`);
 await app.openReasoning();
 check("showed cached effort levels after a model switch and opened its picker without a metadata request",
   projectCalls("reasoning_levels").length === cachedLevelsReadsBefore &&
-    !elementFor("reasoning-modal").hidden && elementFor("reasoning-list").children.length === 4);
+    menuOpen() && stopNames().length === 4);
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 
 calls.length = 0;
@@ -9446,14 +9365,14 @@ console.log("composer dropdowns");
 modelCatalog = { providers: [{ provider: "openai", active: true, current: projectInfo.model, models: [projectInfo.model, "gpt-5"] }] };
 await app.openModels();
 check("opened a searchable model dropdown at the composer",
-  !elementFor("models-modal").hidden && document.activeElement === elementFor("model-filter") &&
+  menuOpen() && document.activeElement === elementFor("model-filter") &&
     elementFor("model").getAttribute("aria-expanded") === "true" &&
-    /id="models-modal" class="settings-dropdown"/.test(shell) &&
-    elementFor("models-modal").style.bottom.endsWith("px"));
+    /id="model-menu" class="settings-dropdown model-menu"/.test(shell) &&
+    elementFor("model-menu").style.bottom.endsWith("px"));
 const modelRows = elementFor("model-list").children.filter((row) => row.tagName === "BUTTON");
 check("marked the model currently selected by the active provider",
   modelRows[0]?.getAttribute("aria-pressed") === "true" && modelRows[1]?.getAttribute("aria-pressed") === "false");
-elementFor("models-modal").fire("keydown", { key: "ArrowDown", preventDefault() {} });
+elementFor("model-menu").fire("keydown", { key: "ArrowDown", preventDefault() {} });
 check("walked the model dropdown with the keyboard", document.activeElement === modelRows[0]);
 elementFor("model-filter").value = "gpt-5";
 elementFor("model-filter").fire("input", {});
@@ -9461,7 +9380,7 @@ check("filtered the model dropdown", elementFor("model-list").children.filter((r
 projectInfo = { ...projectInfo, model: "gpt-5" };
 await modelRows[1].onclick();
 check("selected a model and refreshed its visible name",
-  elementFor("models-modal").hidden && elementFor("model-value").textContent === "gpt-5" &&
+  !menuOpen() && elementFor("model-value").textContent === "GPT 5" &&
     projectCalls("set_model").at(-1)?.[1].model === "gpt-5");
 await app.openModels();
 await elementFor("models-refresh").onclick();
@@ -9490,17 +9409,17 @@ check("retried missing effort metadata when refreshing the model catalog",
 elementFor("prompt").focus();
 document.fire("click", { target: elementFor("prompt") });
 check("dismissed the model dropdown outside without taking focus",
-  elementFor("models-modal").hidden && document.activeElement === elementFor("prompt") &&
+  !menuOpen() && document.activeElement === elementFor("prompt") &&
     elementFor("model").getAttribute("aria-expanded") === "false");
 await app.openReasoning();
-check("announced the reasoning dropdown as expanded", elementFor("reasoning").getAttribute("aria-expanded") === "true");
-elementFor("reasoning-modal").fire("keydown", { key: "Tab", stopPropagation() {} });
-check("dismissed reasoning on Tab without cycling the level",
-  elementFor("reasoning-modal").hidden && app.state.reasoning === "high" &&
-    elementFor("reasoning").getAttribute("aria-expanded") === "false");
+check("announced the menu as expanded from the one chip", elementFor("model").getAttribute("aria-expanded") === "true");
+elementFor("model-menu").fire("keydown", { key: "Tab", stopPropagation() {} });
+check("dismissed the menu on Tab without cycling the level",
+  !menuOpen() && app.state.reasoning === "high" &&
+    elementFor("model").getAttribute("aria-expanded") === "false");
 await app.openReasoning();
 document.fire("click", { target: elementFor("prompt") });
-check("dismissed the reasoning dropdown on an outside click", elementFor("reasoning-modal").hidden);
+check("dismissed the menu on an outside click", !menuOpen());
 
 console.log("composer agents");
 projectInfo = { ...projectFacts(128000), agents: [{ name: "review", description: "Review changes" }] };

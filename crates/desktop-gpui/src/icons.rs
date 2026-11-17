@@ -93,6 +93,16 @@ const GLYPHS: &[(&str, &str)] = &[
         glyph!(r##"<path d="M5 3v15l4-4 3.5 7 3-1.7-3.5-6.8H18Z"/><path d="m13.5 15.5 4 4"/>"##),
     ),
     (
+        "bolt",
+        glyph!(r##"<path d="M13 2.5 5 13.5h6l-1 8 8-11h-6l1-8Z" stroke-width="1.8"/>"##),
+    ),
+    (
+        "reset",
+        glyph!(
+            r##"<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" stroke-width="1.8"/><path d="M4.5 3.8v3.4h3.4" stroke-width="1.8"/>"##
+        ),
+    ),
+    (
         "download",
         glyph!(r##"<path d="M12 4v10m-4-4 4 4 4-4M5 14v5h14v-5"/>"##),
     ),
@@ -235,6 +245,8 @@ pub enum Icon {
     Keyboard,
     Pointer,
     Download,
+    Bolt,
+    Reset,
 }
 
 impl Icon {
@@ -277,6 +289,8 @@ impl Icon {
             Icon::Keyboard => "Keyboard shortcuts",
             Icon::Pointer => "Computer Use",
             Icon::Download => "Update available",
+            Icon::Bolt => "Effort",
+            Icon::Reset => "Reset to Auto",
         }
     }
 
@@ -319,6 +333,8 @@ impl Icon {
             Icon::Keyboard => "icons/keyboard.svg",
             Icon::Pointer => "icons/pointer.svg",
             Icon::Download => "icons/download.svg",
+            Icon::Bolt => "icons/bolt.svg",
+            Icon::Reset => "icons/reset.svg",
         }
     }
 }
@@ -471,6 +487,8 @@ mod tests {
             Icon::Keyboard,
             Icon::Pointer,
             Icon::Download,
+            Icon::Bolt,
+            Icon::Reset,
         ] {
             let body = Assets.load(mark.path()).unwrap().unwrap();
             assert!(body.starts_with(b"<svg"));
@@ -523,6 +541,8 @@ mod tests {
             Icon::Keyboard,
             Icon::Pointer,
             Icon::Download,
+            Icon::Bolt,
+            Icon::Reset,
         ] {
             assert!(!mark.label().is_empty());
         }
