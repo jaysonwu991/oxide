@@ -2442,7 +2442,6 @@ fn batch_runs(calls: Vec<ToolCall>) -> Vec<Vec<ToolCall>> {
 /// batches several of them. Anything that mutates the workspace (`write`,
 /// `edit`, `bash`), spawns work (`task`), or has unknown remote effects (MCP)
 /// stays on the sequential path so result ordering and side effects are stable.
-/// `code_search` also stays sequential because it refreshes an on-disk index.
 fn concurrency_safe(name: &str) -> bool {
     matches!(
         name,
@@ -7564,7 +7563,6 @@ for line in sys.stdin:
             "bash",
             "task",
             "command",
-            "code_search",
             "mcp__server__tool",
         ] {
             assert!(!concurrency_safe(name), "{name} must stay sequential");
@@ -7647,15 +7645,7 @@ for line in sys.stdin:
         for name in ["write", "edit", "bash", "task", "server__tool"] {
             assert!(tool_may_mutate_workspace(name), "{name} may mutate");
         }
-        for name in [
-            "read",
-            "ls",
-            "find",
-            "grep",
-            "webfetch",
-            "diagnostics",
-            "code_search",
-        ] {
+        for name in ["read", "ls", "find", "grep", "webfetch", "diagnostics"] {
             assert!(!tool_may_mutate_workspace(name), "{name} is read-only");
         }
     }
