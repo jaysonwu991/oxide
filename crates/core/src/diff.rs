@@ -6,6 +6,7 @@
 
 const CONTEXT: usize = 3;
 const MAX_DIFF_LINES: usize = 2_000;
+const MAX_COUNT_WORK: usize = 50_000_000;
 
 /// What one line of a change is: text both sides have, or text only one does.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -136,6 +137,78 @@ fn align(old: &[&str], new: &[&str]) -> Vec<Line> {
     ops
 }
 
+/// The added and removed line counts of the change from `old` to `new`, with no
+/// size limit: a file too large to preview still counts its lines, the way
+/// `git diff --numstat` does. The count is the minimal edit script (Myers), which
+/// is what the preview's alignment reports for a file small enough to align. A
+/// rewrite too large to search within the work budget falls back to matching
+/// lines regardless of order, which never counts more lines than changed.
+pub fn counts(old: &str, new: &str) -> (usize, usize) {
+    let old: Vec<&str> = old.lines().collect();
+    let new: Vec<&str> = new.lines().collect();
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let old = &old[prefix..old.len() - suffix];
+    let new = &new[prefix..new.len() - suffix];
+    let common = common_lines(old, new);
+    (new.len() - common, old.len() - common)
+}
+
+fn common_lines(old: &[&str], new: &[&str]) -> usize {
+    let (n, m) = (old.len(), new.len());
+    if n == 0 || m == 0 {
+        return 0;
+    }
+    let max = n + m;
+    let offset = max as isize + 1;
+    let mut furthest = vec![0usize; 2 * max + 3];
+    for d in 0..=max {
+        if d.saturating_mul(max) > MAX_COUNT_WORK {
+            return unordered_common_lines(old, new);
+        }
+        let d = d as isize;
+        for k in (-d..=d).step_by(2) {
+            let index = (k + offset) as usize;
+            let mut x = if k == -d || (k != d && furthest[index - 1] < furthest[index + 1]) {
+                furthest[index + 1]
+            } else {
+                furthest[index - 1] + 1
+            };
+            let mut y = (x as isize - k) as usize;
+            while x < n && y < m && old[x] == new[y] {
+                x += 1;
+                y += 1;
+            }
+            furthest[index] = x;
+            if x >= n && y >= m {
+                return (n + m - d as usize) / 2;
+            }
+        }
+    }
+    0
+}
+
+fn unordered_common_lines(old: &[&str], new: &[&str]) -> usize {
+    let mut remaining = std::collections::HashMap::new();
+    for line in old {
+        *remaining.entry(*line).or_insert(0usize) += 1;
+    }
+    new.iter()
+        .filter(|line| match remaining.get_mut(*line) {
+            Some(left) if *left > 0 => {
+                *left -= 1;
+                true
+            }
+            _ => false,
+        })
+        .count()
+}
+
 fn render(ops: &[Line], total: usize) -> String {
     let width = total.to_string().len().max(3);
     let mut keep = vec![false; ops.len()];
@@ -252,5 +325,45 @@ mod tests {
         // digits, which is what the terminal's columns are aligned by.
         let diff = preview("a\nb\nc\n", "a\n").unwrap();
         assert!(diff.contains("-  2      b"), "{diff}");
+    }
+
+    #[test]
+    fn counts_agree_with_the_aligned_preview() {
+        let cases = [
+            ("", ""),
+            ("", "one\ntwo\n"),
+            ("one\ntwo\n", ""),
+            ("a\nb\nc\n", "a\nB\nc\n"),
+            ("a\nb\nc\nd\n", "b\na\nd\nc\ne\n"),
+            ("x\ny\nx\ny\n", "y\nx\ny\nx\n"),
+        ];
+        for (old, new) in cases {
+            let aligned = match lines(old, new) {
+                Diff::Lines(lines) => (
+                    lines.iter().filter(|l| l.kind == LineKind::Add).count(),
+                    lines.iter().filter(|l| l.kind == LineKind::Remove).count(),
+                ),
+                _ => (0, 0),
+            };
+            assert_eq!(counts(old, new), aligned, "{old:?} -> {new:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_too_large_to_preview_still_counts_its_lines() {
+        let old: String = (0..8_000).map(|n| format!("line {n}\n")).collect();
+        let new = old
+            .replace("line 10\n", "line ten\n")
+            .replace("line 4000\n", "")
+            .replace("line 7000\n", "line 7000\nextra a\nextra b\n");
+        assert!(matches!(lines(&old, &new), Diff::Omitted { .. }));
+        assert_eq!(counts(&old, &new), (3, 2));
+    }
+
+    #[test]
+    fn a_rewrite_past_the_work_budget_falls_back_to_unordered_matching() {
+        let old: String = (0..40_000).map(|n| format!("old {n}\n")).collect();
+        let new: String = (0..40_000).map(|n| format!("new {n}\n")).collect();
+        assert_eq!(counts(&old, &new), (40_000, 40_000));
     }
 }

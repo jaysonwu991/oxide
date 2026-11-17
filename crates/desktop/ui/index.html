@@ -428,18 +428,8 @@
                   aria-label="Model" data-i18n-aria="dialog.models.title"
                   aria-haspopup="dialog"
                   aria-expanded="false"
-                  aria-controls="models-modal"
-                ><span id="model-value">Model</span><svg class="selector-caret" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-                <button
-                  id="reasoning"
-                  hidden
-                  class="chip setting-chip"
-                  title="Thinking level" data-i18n-title="composer.thinking"
-                  aria-label="Thinking level" data-i18n-aria="composer.thinking"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                  aria-controls="reasoning-modal"
-                ><span id="reasoning-value">Auto</span><svg class="selector-caret" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                  aria-controls="model-menu"
+                ><span id="model-value">Model</span><span id="reasoning-value" hidden>Auto</span><svg class="selector-caret" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
               </div>
               <span id="usage" class="spend"></span>
             <span id="context-ring" class="context-ring" role="img" hidden
@@ -669,25 +659,26 @@
       </div>
     </div>
 
-    <div id="models-modal" class="settings-dropdown" role="dialog" aria-labelledby="models-title" hidden>
-      <div class="dropdown-content">
-        <h2 id="models-title" data-i18n="dialog.models.title">Model</h2>
-        <input id="model-filter" class="search" placeholder="Filter models…" spellcheck="false" data-i18n-placeholder="dialog.models.filter" />
-        <div id="model-list" class="model-list"></div>
-        <div class="dialog-actions">
-          <button id="models-close" class="ghost" data-i18n="common.close">Close</button>
+    <div id="model-menu" class="settings-dropdown model-menu" role="dialog" aria-label="Model and effort" data-i18n-aria="dialog.modelMenu.title" hidden>
+      <div id="model-summary" class="model-summary">
+        <div class="effort-head">
+          <span id="effort-icon" class="effort-icon" aria-hidden="true"></span>
+          <div class="effort-title">
+            <span id="effort-name" class="effort-name"></span>
+            <button id="model-page" class="model-page" title="Switch model" data-i18n-title="ui.switchModel"><span id="model-page-name">Model</span><span id="model-page-caret" class="model-page-caret" aria-hidden="true"></span></button>
+          </div>
+          <button id="effort-reset" class="effort-reset ghost" title="Reset to Auto" aria-label="Reset to Auto" data-i18n-title="dialog.modelMenu.reset" data-i18n-aria="dialog.modelMenu.reset"></button>
+        </div>
+        <div id="effort-slider" class="effort-slider" role="slider" tabindex="0" aria-label="Reasoning effort" data-i18n-aria="dialog.reasoning.title"></div>
+      </div>
+      <div id="model-picker" class="model-picker" hidden>
+        <div class="model-picker-head">
+          <button id="models-back" class="ghost model-picker-back" title="Back" aria-label="Back" data-i18n-title="common.back" data-i18n-aria="common.back"></button>
+          <h2 id="models-title" data-i18n="dialog.models.list">Models</h2>
           <button id="models-refresh" class="ghost" data-i18n="common.refresh">Refresh</button>
         </div>
-      </div>
-    </div>
-
-    <div id="reasoning-modal" class="settings-dropdown" role="dialog" aria-labelledby="reasoning-title" hidden>
-      <div class="dropdown-content">
-        <h2 id="reasoning-title" data-i18n="dialog.reasoning.title">Reasoning effort</h2>
-        <div id="reasoning-list" class="reasoning-list"></div>
-        <div class="dialog-actions">
-          <button id="reasoning-close" class="ghost" data-i18n="common.close">Close</button>
-        </div>
+        <input id="model-filter" class="search" placeholder="Filter models…" spellcheck="false" data-i18n-placeholder="dialog.models.filter" />
+        <div id="model-list" class="model-list"></div>
       </div>
     </div>
 

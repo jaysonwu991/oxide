@@ -29,11 +29,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "ti
 unicode-segmentation = "1"
 vt100 = "0.18.1"
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
-resvg = "0.45"
-usvg = "0.45"
+# Keep these on the version GPUI paints with, so the SVG stack is built once.
+resvg = "0.46"
+usvg = "0.46"
 
-# The window's glyphs are SVG, and the tests rasterise each one to prove it
-# draws something: these are the same versions GPUI paints them with.
 [dev-dependencies]
 
 [[bin]]

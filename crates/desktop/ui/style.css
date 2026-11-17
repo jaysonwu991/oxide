@@ -98,7 +98,7 @@ input:focus, textarea:focus { outline: none; }
 .attachment .att-remove svg { display: block; width: 11px; height: 11px; }
 .changes-icon svg { display: block; width: 20px; height: 20px; }
 .change-chev svg, .changes-more-caret svg { display: block; width: 12px; height: 12px; }
-.reasoning-option-check svg, .theme-option-check svg { display: block; width: 14px; height: 14px; }
+.theme-option-check svg { display: block; width: 14px; height: 14px; }
 
 /* ---------- sidebar ---------- */
 
@@ -1251,11 +1251,11 @@ tone, with tabular figures so a count that grows does not shift the row it ends.
 .setting-chip svg { flex: none; }
 .chip.setting-chip { border-color: transparent; border-radius: 6px; font-family: inherit; padding: 0 5px; color: var(--text); }
 .setting-chip .selector-caret { width: 12px; height: 12px; color: var(--faint); }
-/* The model and its thinking level read as one control, "model · Level ⌄", the way the GPUI composer draws it. */
+/* The model and its thinking level are one control, "Model · Level ⌄", the way the GPUI composer draws it. */
 .model-settings { gap: 0; }
 .model-settings .chip.setting-chip { font-size: 11.5px; color: var(--dim); height: 30px; padding: 0 5px; }
 .model-settings .chip.setting-chip:hover { color: var(--text); }
-.model-settings:has(#reasoning:not([hidden])) #model .selector-caret { display: none; }
+#reasoning-value { flex: none; white-space: nowrap; }
 #reasoning-value::before { content: "\00b7\00a0"; }
 .settings-dropdown {
   position: fixed;
@@ -1573,37 +1573,48 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 
 .search { width: 100%; margin-bottom: 10px; }
 .model-list { max-height: 380px; overflow-y: auto; padding-right: 14px; display: flex; flex-direction: column; gap: 2px; }
-.model-provider { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin: 10px 0 2px; }
-.model { text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
-.model:hover { background: var(--panel-2); }
-.model.active { color: var(--accent); }
+.model-provider { color: var(--faint); font-size: 10.5px; font-weight: 600; margin: 8px 8px 2px; }
+.model-provider.active { color: var(--accent); }
+.model-error { margin: 2px 8px; color: var(--error); font-size: 11.5px; text-align: left; }
+.model-connect { align-self: flex-start; margin: 4px 8px; color: var(--accent); font-size: 11.5px; }
+.model { display: grid; grid-template-columns: minmax(0, 1fr) 14px; align-items: center; column-gap: 8px; min-height: 32px; padding: 4px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--text); text-align: left; font-size: 11.5px; }
+.model:hover, .model.active { background: var(--panel-2); }
+.model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.model-id { grid-row: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 10.5px; }
+.model-check { grid-row: 1 / span 2; grid-column: 2; color: var(--accent); }
+.model-check svg { display: block; width: 14px; height: 14px; }
 
-.reasoning-list { display: flex; flex-direction: column; gap: 6px; }
-.reasoning-option {
-  position: relative;
-  display: block;
-  width: 100%;
-  padding: 10px 34px 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-.reasoning-option:hover { background: var(--panel-2); border-color: var(--dim); }
-.reasoning-option.active { background: var(--panel-2); border-color: var(--accent); }
-.reasoning-option-name { display: block; font-weight: 500; }
-.reasoning-option.active .reasoning-option-name { color: var(--accent); }
-.reasoning-option-detail { display: block; color: var(--faint); font-size: 11.5px; }
-.reasoning-option-check {
-  position: absolute;
-  right: 13px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--accent);
-}
+/* The model menu, shared with the GPUI window: a summary card — the effort's
+   mark, its name over the model's, a reset — above a slider with a dot for each
+   level, and the catalog as a second page. */
+.settings-dropdown.model-menu { width: 310px; padding: 10px; }
+.model-summary { display: flex; flex-direction: column; gap: 10px; }
+.effort-head { display: grid; grid-template-columns: 26px minmax(0, 1fr) 26px; align-items: center; gap: 6px; padding: 8px 6px; border-radius: 8px; background: var(--panel-2); }
+.effort-icon { display: flex; justify-content: center; color: var(--accent); }
+.effort-icon svg { display: block; width: 16px; height: 16px; }
+.effort-title { grid-column: 2; display: flex; flex-direction: column; align-items: center; min-width: 0; gap: 1px; }
+.effort-name { color: var(--accent); font-size: 13px; font-weight: 600; }
+.model-page { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 1px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--dim); font-size: 11.5px; }
+.model-page:hover { color: var(--text); background: var(--panel-3); }
+.model-page #model-page-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-page-caret svg { display: block; width: 12px; height: 12px; }
+.effort-reset { grid-column: 3; display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border-radius: 6px; color: var(--dim); }
+.effort-reset:hover:not(:disabled) { color: var(--text); background: var(--panel-3); }
+.effort-reset:disabled { opacity: 0.35; }
+.effort-reset svg { display: block; width: 14px; height: 14px; }
+.effort-slider { --knob: 26px; position: relative; height: 32px; margin: 0 2px 2px; border-radius: 16px; cursor: pointer; touch-action: none; }
+.effort-slider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.effort-track { position: absolute; left: 0; right: 0; top: 11px; height: 10px; border-radius: 5px; background: var(--panel-3); }
+.effort-stop { position: absolute; top: 0; width: 28px; height: 32px; left: calc(var(--knob) / 2 + var(--at) * (100% - var(--knob))); transform: translateX(-50%); }
+.effort-stop::after { content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: var(--faint); }
+.effort-stop:hover::after { background: var(--text); }
+.effort-stop.active::after { display: none; }
+.effort-knob { position: absolute; top: 3px; width: var(--knob); height: var(--knob); left: calc(var(--at) * (100% - var(--knob))); border: 2px solid var(--accent); border-radius: 50%; background: var(--text); box-sizing: border-box; transition: left 0.12s ease-out; }
+.model-picker-head { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 4px; margin-bottom: 8px; }
+.model-picker-head h2 { margin: 0; text-align: center; font-size: 12.5px; }
+.model-picker-back { display: flex; align-items: center; justify-content: center; width: 28px; height: 26px; padding: 0; }
+.model-picker-back svg { display: block; width: 14px; height: 14px; }
+#models-refresh { font-size: 10.5px; padding: 3px 8px; }
 
 .theme-list { display: flex; flex-direction: column; gap: 6px; }
 .theme { text-align: left; }

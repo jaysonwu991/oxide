@@ -4452,50 +4452,108 @@ fn model_summary_page(
     let levels = reasoning_levels(root);
     let show_effort = root.info["supportsReasoning"].as_bool().unwrap_or(false) && levels.len() > 1;
 
-    let model_row = div()
+    let at_auto = current_effort.eq_ignore_ascii_case("auto");
+    let model_button = div()
         .id("composer-model-page")
+        .role(gpui::Role::Button)
+        .aria_label(format!("Switch model: {current_model}"))
         .flex()
         .flex_row()
         .items_center()
-        .justify_center()
-        .gap(px(6.0))
-        .h(px(36.0))
-        .px(px(12.0))
-        .rounded(px(8.0))
-        .bg(theme.panel_2())
+        .gap(px(2.0))
+        .max_w_full()
+        .px(px(4.0))
+        .py(px(1.0))
+        .rounded(px(5.0))
         .cursor_pointer()
-        .text_size(px(12.5))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.text())
-        .hover(move |style| style.bg(theme.panel_3()))
-        .child(div().cursor_pointer().child(model_label))
+        .text_size(px(11.5))
+        .text_color(theme.dim())
+        .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
         .child(
             div()
-                .cursor_pointer()
-                .child(icons::icon(Icon::ChevronRight, 13.0, theme.faint())),
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(model_label),
         )
-        .on_click(cx.listener(|root, _, _, cx| {
+        .child(icons::icon(Icon::ChevronRight, 12.0, theme.faint()))
+        .on_click(cx.listener(|root, _, window, cx| {
             root.model_menu_show_models = true;
+            root.model_filter.update(cx, |editor, cx| editor.clear(cx));
+            window.focus(&root.model_filter.read(cx).focus_handle(cx), cx);
             cx.notify();
         }));
 
-    let mut panel = panel.p(px(10.0));
+    let mut panel = panel.p(px(10.0)).gap(px(10.0));
     if show_effort {
+        let reset = div()
+            .id("composer-effort-reset")
+            .role(gpui::Role::Button)
+            .aria_label("Reset to Auto")
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(26.0))
+            .h(px(26.0))
+            .rounded(px(6.0))
+            .child(icons::icon(
+                Icon::Reset,
+                14.0,
+                if at_auto { theme.faint() } else { theme.dim() },
+            ));
+        let reset = if at_auto {
+            reset.opacity(0.35)
+        } else {
+            reset
+                .cursor_pointer()
+                .hover(move |style| style.bg(theme.panel_3()))
+                .on_click(cx.listener(|root, _, _, cx| root.set_reasoning("auto".to_string(), cx)))
+        };
         panel = panel
             .child(
                 div()
                     .flex()
-                    .justify_center()
-                    .pt(px(2.0))
-                    .text_size(px(13.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.accent())
-                    .child(capitalised(&current_effort)),
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .px(px(6.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(theme.panel_2())
+                    .child(div().flex().justify_center().w(px(26.0)).child(icons::icon(
+                        Icon::Bolt,
+                        16.0,
+                        theme.accent(),
+                    )))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(1.0))
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.accent())
+                                    .child(capitalised(&current_effort)),
+                            )
+                            .child(model_button),
+                    )
+                    .child(reset),
             )
-            .child(model_row)
             .child(effort_slider(theme, cx, &levels, &current_effort));
     } else {
-        panel = panel.child(model_row);
+        panel = panel.child(
+            div()
+                .flex()
+                .justify_center()
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .bg(theme.panel_2())
+                .child(model_button),
+        );
     }
     panel
 }
@@ -4568,14 +4626,46 @@ fn model_picker_page(
                     );
                 })),
         );
+    let filter = root.model_filter.clone();
+    let search = div()
+        .id("composer-model-filter")
+        .role(gpui::Role::SearchInput)
+        .aria_label("Filter models")
+        .mx(px(8.0))
+        .mt(px(8.0))
+        .h(px(32.0))
+        .px_2()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .rounded(px(8.0))
+        .bg(theme.background())
+        .border_1()
+        .border_color(theme.border())
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|root, _, window, cx| {
+                window.focus(&root.model_filter.read(cx).focus_handle(cx), cx);
+            }),
+        )
+        .child(icons::icon(Icon::Search, 13.0, theme.faint()))
+        .child(div().flex_1().min_w(px(0.0)).h_full().child(filter));
     panel
         .child(header)
+        .child(search)
         .child(model_picker_body(root, theme, cx))
 }
 
 fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stateful<gpui::Div> {
     let data = root.models.clone();
     let current_model = root.info["model"].as_str().unwrap_or_default().to_string();
+    let query = root
+        .model_filter
+        .read(cx)
+        .text()
+        .trim()
+        .to_ascii_lowercase();
 
     let mut body = div()
         .id("composer-model-list")
@@ -4702,6 +4792,12 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
                     }),
                 ),
             };
+            if !query.is_empty()
+                && !id.to_ascii_lowercase().contains(&query)
+                && !label.to_ascii_lowercase().contains(&query)
+            {
+                continue;
+            }
             let selected = active && id == current_model;
             let provider_choice = provider_name.clone();
             let model_choice = id.clone();

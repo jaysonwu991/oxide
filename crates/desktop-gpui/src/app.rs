@@ -317,6 +317,7 @@ pub struct Root {
     pub plugin_query: Entity<Editor>,
     pub marketplace_source: Entity<Editor>,
     pub provider_filter: Entity<Editor>,
+    pub model_filter: Entity<Editor>,
     pub provider_key: Entity<Editor>,
     pub provider_model: Entity<Editor>,
     pub provider_url: Entity<Editor>,
@@ -514,6 +515,7 @@ impl Root {
         let plugin_query = field_editor("Search plugins", cx);
         let marketplace_source = field_editor("Marketplace URL or owner/repo", cx);
         let provider_filter = field_editor("Search providers", cx);
+        let model_filter = field_editor("Filter models…", cx);
         let provider_key = field_editor("Paste your API key", cx);
         let provider_model = field_editor("Model (optional)", cx);
         let provider_url = field_editor("Base URL (optional)", cx);
@@ -534,6 +536,7 @@ impl Root {
             &plugin_query,
             &marketplace_source,
             &provider_filter,
+            &model_filter,
             &provider_key,
             &provider_model,
             &provider_url,
@@ -567,6 +570,7 @@ impl Root {
             plugin_query,
             marketplace_source,
             provider_filter,
+            model_filter,
             provider_key,
             provider_model,
             provider_url,
@@ -1376,6 +1380,7 @@ impl Root {
         self.composer_tools_open = false;
         self.model_menu_open = true;
         self.model_menu_show_models = false;
+        self.model_filter.update(cx, |editor, cx| editor.clear(cx));
         self.load_models(cx);
         cx.notify();
     }
@@ -2760,6 +2765,7 @@ impl Root {
             &self.plugin_query,
             &self.marketplace_source,
             &self.provider_filter,
+            &self.model_filter,
             &self.provider_key,
             &self.provider_model,
             &self.provider_url,

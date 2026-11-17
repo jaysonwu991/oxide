@@ -89,7 +89,7 @@ pub fn file_change(
         return binary;
     };
     let diff = diff::preview(&old, &new).unwrap_or_default();
-    let (added, removed) = count(&diff);
+    let (added, removed) = diff::counts(&old, &new);
     FileChange {
         path,
         status,
@@ -359,6 +359,20 @@ mod tests {
         assert!(!change.binary);
         assert!(change.diff.is_empty());
         assert_eq!((change.added, change.removed), (0, 0));
+    }
+
+    #[test]
+    fn a_file_too_large_to_preview_still_counts_its_lines() {
+        let old: String = (0..8_000).map(|n| format!("dep {n}\n")).collect();
+        let new = old.replace("dep 5\n", "dep five\n");
+        let change = file_change(
+            ChangeStatus::Modified,
+            "Cargo.lock",
+            Some(old.into_bytes()),
+            Some(new.into_bytes()),
+        );
+        assert_eq!((change.added, change.removed), (1, 1));
+        assert!(change.diff.starts_with("(diff omitted"), "{}", change.diff);
     }
 
     #[test]

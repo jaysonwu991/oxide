@@ -227,6 +227,11 @@ const ICONS = {
   ),
   check: glyph('<path d="m5.6 8 1.5 1.5 3.5-3.5" ' + STROKE_16 + '/>', 16),
   caret: glyph(`<path d="M5.5 8.6 12 14.8l6.5-6.2" ${STROKE_24}/>`),
+  // The model menu's marks, drawn with the same paths the GPUI window's
+  // `icons.rs` holds, so both front-ends paint one menu.
+  chevronRight: glyph(`<path d="m8.6 5.5 6.2 6.5-6.2 6.5" ${STROKE_24}/>`),
+  bolt: glyph(`<path d="M13 2.5 5 13.5h6l-1 8 8-11h-6l1-8Z" ${STROKE_24}/>`),
+  reset: glyph(`<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" ${STROKE_24}/><path d="M4.5 3.8v3.4h3.4" ${STROKE_24}/>`),
   power: glyph(
     '<path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
       '<path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
@@ -699,7 +704,7 @@ function repaintLanguage() {
     el("create-project-title").textContent = createProjectState.editing ? t("ui.editProject", "Edit project") : t("dialog.createProject.title", "Create project");
     el("create-project-save").textContent = createProjectState.editing ? t("common.save", "Save") : t("dialog.createProject.title", "Create project");
   }
-  if (!el("reasoning-modal").hidden) renderReasoning();
+  if (modelMenuOpen()) renderModelMenu();
   updateChips();
   updateSendState();
   updateTrustButton();
@@ -2457,7 +2462,7 @@ function renderProjectMeta(info) {
   state.currentProvider = info.provider || "";
   const window = state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "";
   labelControl("model", t("ui.model", "model: {value0}{value1}", { value0: info.model, value1: window }), t("ui.switchModel", "Switch model"));
-  el("model-value").textContent = info.model;
+  el("model-value").textContent = modelDisplayName(info.model);
   const notes = [];
   if (!info.hasKey) notes.push(t("ui.noAPIKey", "no API key"));
   if (info.trust && info.trust.required && !info.trust.trusted) {
@@ -2540,16 +2545,18 @@ function reasoningLabel(level) {
   return t(`reasoning.${level}`, level.charAt(0).toUpperCase() + level.slice(1));
 }
 
+/// The composer's one model control, `Model · Effort ⌄`, which the GPUI window
+/// draws from the same rules: the effort half is left off for a model that
+/// offers nothing but Auto.
 function updateChips() {
-  el("model-value").textContent = state.currentModel || t("composer.model", "Model");
-  labelControl("model", state.currentModel ? t("ui.model", "model: {value0}{value1}", { value0: state.currentModel, value1: state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "" }) : t("composer.model", "Model"), t("ui.switchModel", "Switch model"));
-  labelControl("reasoning", t("ui.thinking", "thinking: {value0}", { value0: t(`reasoning.${state.reasoning}`, state.reasoning) }), t("ui.chooseTheReasoningLevelShiftTabCycles", "Choose the reasoning level (Shift+Tab cycles)"));
-  el("reasoning").hidden = !hasReasoningLevels();
-  if (!hasReasoningLevels()) {
-    closeReasoning(false);
-    el("reasoning-list").innerHTML = "";
-  }
+  const effort = hasReasoningLevels();
+  el("model-value").textContent = state.currentModel ? modelDisplayName(state.currentModel) : t("composer.model", "Model");
+  const model = state.currentModel ? t("ui.model", "model: {value0}{value1}", { value0: state.currentModel, value1: state.contextWindow ? ` · ${formatTokens(state.contextWindow)}` : "" }) : t("composer.model", "Model");
+  const thinking = effort ? ` · ${t("ui.thinking", "thinking: {value0}", { value0: t(`reasoning.${state.reasoning}`, state.reasoning) })}` : "";
+  labelControl("model", model + thinking, t("ui.switchModel", "Switch model"));
+  el("reasoning-value").hidden = !effort;
   el("reasoning-value").textContent = reasoningLabel(state.reasoning);
+  if (modelMenuOpen()) renderModelSummary();
   updateProjectChip();
   paintWorktreeChip();
   // A folder switch resets the transcript, which is where the header's own
@@ -6614,8 +6621,7 @@ const OVERLAYS = [
   "create-project-modal",
   "projects-modal",
   "worktrees-modal",
-  "models-modal",
-  "reasoning-modal",
+  "model-menu",
   "themes-modal",
   "language-modal",
   "permissions-modal",
@@ -6685,7 +6691,7 @@ function toggleRailPanel(control) {
   }
 }
 
-const SETTINGS_DROPDOWNS = { "models-modal": "model", "reasoning-modal": "reasoning" };
+const SETTINGS_DROPDOWNS = { "model-menu": "model" };
 
 function syncSettingsDropdowns() {
   for (const [id, control] of Object.entries(SETTINGS_DROPDOWNS)) {
@@ -6704,12 +6710,18 @@ function positionSettingsDropdowns() {
   }
 }
 
-function closeModels(restoreFocus = true) {
-  if (el("models-modal").hidden) return;
+/// Closing hands the keyboard back to whatever opened the menu. Every path goes
+/// through here — a model, Escape, Tab, or the chip — so a reader who chose is
+/// not left at the top of the page behind it.
+function closeModelMenu(restoreFocus = true) {
+  if (!modelMenuOpen()) return;
   modelCatalogEpoch += 1;
-  el("models-modal").hidden = true;
+  effortDragging = false;
+  el("model-menu").hidden = true;
   syncSettingsDropdowns();
-  if (restoreFocus) el("model").focus();
+  const target = modelMenuReturnFocus || el("model");
+  modelMenuReturnFocus = null;
+  if (restoreFocus) target?.focus?.();
 }
 
 // macOS's WKWebView does not implement `window.confirm`/`window.prompt`, so
@@ -6882,7 +6894,7 @@ async function saveConnect() {
       // No folder to read a window off, so the chip names the model alone.
       labelControl("model", t("model.label", "model: {value0}", { value0: outcome.model }), t("ui.switchModel", "Switch model"));
       state.currentModel = outcome.model;
-      el("model-value").textContent = outcome.model;
+      el("model-value").textContent = modelDisplayName(outcome.model);
     }
     showToast(t("provider.connected", "Connected {value0}", { value0: provider.label }));
   } catch (error) {
@@ -6892,68 +6904,286 @@ async function saveConnect() {
   }
 }
 
-// ---------- models ----------
+// ---------- model and effort ----------
+//
+// One menu, the one the GPUI window draws: the composer's model chip opens it on
+// a summary page — the effort in use above the model it runs on, a slider across
+// the model's levels and a reset to Auto — and the model's name opens the second
+// page, the catalog. A level is applied as the slider moves and the menu stays
+// up; a model is applied and puts the menu away. Escape steps back from the
+// catalog to the summary, then closes; Tab or a press outside closes.
 
 let modelCatalogEpoch = 0;
+// Where the keyboard was before the menu took it.
+let modelMenuReturnFocus = null;
+// A press on one of the slider's stops is held until the button comes up, so a
+// drag across the track walks the levels the way the GPUI slider does.
+let effortDragging = false;
+// The newest read of the model's levels. A response that arrives after the
+// project or model moved on is dropped rather than painting its levels over the
+// new selection's.
+let reasoningEpoch = 0;
 
-async function openModels(refresh = false) {
-  // The catalog is read from this project's config, and the request would
-  // otherwise resolve against the directory the app was launched in — the same
-  // reason the message box asks for a folder before it sends anything.
+const MODEL_WORDS = {
+  gpt: "GPT",
+  deepseek: "DeepSeek",
+  claude: "Claude",
+  gemini: "Gemini",
+  qwen: "Qwen",
+  codex: "Codex",
+};
+
+/// A model id the way the chip and the catalog name it, by the rules the GPUI
+/// window's `model_display_name` follows: `gpt-5` reads as `GPT 5`.
+function modelDisplayName(model) {
+  return String(model || "")
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => MODEL_WORDS[part.toLowerCase()] || part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+/// A catalog entry is an id, or an object carrying one and the provider's own
+/// name for it.
+function modelEntry(model) {
+  if (model && typeof model === "object") {
+    const id = String(model.id || model.name || "");
+    const named = model.name && model.name !== id;
+    return { id, name: modelDisplayName(model.name || id), detail: named ? id : "" };
+  }
+  return { id: String(model), name: modelDisplayName(model), detail: "" };
+}
+
+function modelMenuOpen() {
+  return !el("model-menu").hidden;
+}
+
+function modelPickerShown() {
+  return modelMenuOpen() && !el("model-picker").hidden;
+}
+
+/// The levels the slider walks: Auto, then the model's own advertised levels.
+function reasoningChoices() {
+  return state.supportsReasoning !== false && Array.isArray(state.reasoningLevels)
+    ? state.reasoningLevels : ["auto"];
+}
+
+/// Whether the effort half of the menu is drawn: a model with a level beyond
+/// Auto, or a saved level the model no longer offers, which the slider's Auto
+/// stop and the reset recover from.
+function hasReasoningLevels() {
+  return reasoningChoices().some((level) => level !== "auto") || state.reasoning !== "auto";
+}
+
+function reasoningHint(level) {
+  return t(`reasoning.hint.${level}`, REASONING_HINTS[level] || "");
+}
+
+async function openModelMenu(page = "summary", refresh = false) {
+  // The catalog and the levels are read from this project's config, and the
+  // request would otherwise resolve against the directory the app was launched
+  // in — the same reason the message box asks for a folder before it sends.
   if (!state.project) {
     setStatus(t("composer.selectProject", "Select a project first."));
     askForProject();
     return;
   }
-  closeOverlays("models-modal");
-  el("models-modal").hidden = false;
+  if (!modelMenuOpen()) modelMenuReturnFocus = document.activeElement || null;
+  if (!state.reasoningLevels) await ensureReasoningLevels();
+  closeOverlays("model-menu");
+  el("model-menu").hidden = false;
   syncSettingsDropdowns();
+  if (page === "models") await showModelPicker(refresh);
+  else showModelSummary();
+}
+
+function openModels(refresh = false) {
+  return openModelMenu("models", refresh);
+}
+
+function openReasoning() {
+  return openModelMenu("summary");
+}
+
+/// The summary page, with the keyboard on the slider — the control a reader
+/// who opened the menu is there for — or on the model when there is no effort.
+function showModelSummary() {
+  modelCatalogEpoch += 1;
+  el("model-picker").hidden = true;
+  el("model-summary").hidden = false;
+  renderModelSummary();
   positionSettingsDropdowns();
+  (hasReasoningLevels() ? el("effort-slider") : el("model-page")).focus();
+}
+
+async function showModelPicker(refresh = false) {
+  el("model-summary").hidden = true;
+  el("model-picker").hidden = false;
   el("model-list").innerHTML = `<div class="empty" style="margin:14px">${escapeHtml(t("desktop.empty.loadingModels", "Loading\u2026"))}</div>`;
   el("model-filter").value = "";
+  positionSettingsDropdowns();
   el("model-filter").focus();
   const project = state.project;
   const epoch = ++modelCatalogEpoch;
+  const stale = () => epoch !== modelCatalogEpoch || state.project !== project || !modelPickerShown();
   try {
     const models = await invoke("list_models", { project, refresh: refresh === true });
-    if (epoch !== modelCatalogEpoch || state.project !== project || el("models-modal").hidden) return;
+    if (stale()) return;
     state.models = models;
     renderModels();
     if (refresh === true) await ensureReasoningLevels(true);
   } catch (error) {
-    if (epoch !== modelCatalogEpoch || state.project !== project || el("models-modal").hidden) return;
-    el("model-list").innerHTML = `<div class="empty" style="margin:14px">${escapeHtml(String(error))}</div>`;
+    if (stale()) return;
+    renderCatalogError(String(error));
   }
+}
+
+/// A catalog that could not be read says why and offers the way to fix it.
+function renderCatalogError(message) {
+  const box = el("model-list");
+  box.innerHTML = "";
+  const text = document.createElement("div");
+  text.className = "empty model-error";
+  text.textContent = message;
+  box.appendChild(text);
+  const connect = document.createElement("button");
+  connect.className = "ghost model-connect";
+  connect.textContent = t("composer.connect", "Connect a provider");
+  connect.onclick = () => {
+    closeModelMenu(false);
+    void openConnect();
+  };
+  box.appendChild(connect);
+}
+
+function renderModelMenu() {
+  if (modelPickerShown()) renderModels();
+  else renderModelSummary();
+}
+
+function renderModelSummary() {
+  const effort = hasReasoningLevels();
+  for (const id of ["effort-icon", "effort-name", "effort-reset", "effort-slider"]) el(id).hidden = !effort;
+  el("effort-icon").innerHTML = ICONS.bolt;
+  el("effort-name").textContent = reasoningLabel(state.reasoning);
+  el("model-page-name").textContent = state.currentModel ? modelDisplayName(state.currentModel) : t("composer.model", "Model");
+  el("model-page").setAttribute("aria-label", `${t("ui.switchModel", "Switch model")}: ${state.currentModel || t("composer.model", "Model")}`);
+  el("model-page-caret").innerHTML = ICONS.chevronRight;
+  el("effort-reset").innerHTML = ICONS.reset;
+  el("effort-reset").disabled = state.reasoning === "auto";
+  renderEffortSlider(reasoningChoices());
+}
+
+function effortOffset(index, count) {
+  return String(count > 1 ? index / (count - 1) : 0);
+}
+
+/// The slider: a dot for each level and the knob on the one in use, drawn first
+/// so the stops above it take every press. A saved level the model no longer
+/// offers has no stop, so the knob is left off until one is chosen.
+function renderEffortSlider(levels) {
+  const slider = el("effort-slider");
+  const at = levels.indexOf(state.reasoning);
+  slider.innerHTML = "";
+  const track = document.createElement("span");
+  track.className = "effort-track";
+  slider.appendChild(track);
+  if (at >= 0) {
+    const knob = document.createElement("span");
+    knob.className = "effort-knob";
+    knob.style.setProperty("--at", effortOffset(at, levels.length));
+    slider.appendChild(knob);
+  }
+  levels.forEach((level, index) => {
+    const stop = document.createElement("span");
+    stop.className = "effort-stop" + (index === at ? " active" : "");
+    stop.dataset.level = level;
+    stop.title = `${reasoningLabel(level)} \u2014 ${reasoningHint(level)}`;
+    stop.style.setProperty("--at", effortOffset(index, levels.length));
+    stop.onpointerdown = (event) => {
+      event.preventDefault?.();
+      effortDragging = true;
+      chooseEffort(level);
+    };
+    stop.onpointerenter = () => {
+      if (effortDragging) chooseEffort(level);
+    };
+    stop.onclick = () => chooseEffort(level);
+    slider.appendChild(stop);
+  });
+  slider.setAttribute("aria-valuemin", "0");
+  slider.setAttribute("aria-valuemax", String(Math.max(0, levels.length - 1)));
+  slider.setAttribute("aria-valuenow", String(Math.max(0, at)));
+  slider.setAttribute("aria-valuetext", `${reasoningLabel(state.reasoning)}, ${reasoningHint(state.reasoning)}`);
+}
+
+/// One press can reach a stop twice (the press, then its click), and a drag
+/// crosses the stop it started on: a level already in use is not saved again.
+function chooseEffort(level) {
+  if (level !== state.reasoning) setReasoning(level);
+}
+
+/// The slider's keys: Left/Down for less, Right/Up for more, Home and End for
+/// either end. They stop at the ends rather than wrapping, as a slider does.
+function stepEffort(key) {
+  const levels = reasoningChoices();
+  const at = Math.max(0, levels.indexOf(state.reasoning));
+  const step = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[key];
+  let next = null;
+  if (step) next = Math.min(levels.length - 1, Math.max(0, at + step));
+  else if (key === "Home") next = 0;
+  else if (key === "End") next = levels.length - 1;
+  if (next === null) return false;
+  chooseEffort(levels[next]);
+  return true;
 }
 
 function renderModels() {
   const box = el("model-list");
   box.innerHTML = "";
   if (!state.models) return;
+  if (state.models.error) {
+    renderCatalogError(String(state.models.error));
+    return;
+  }
   const filter = el("model-filter").value.trim().toLowerCase();
-  for (const provider of state.models.providers) {
+  for (const provider of state.models.providers || []) {
+    const models = (provider.models || [])
+      .map(modelEntry)
+      .filter((model) => !filter || model.id.toLowerCase().includes(filter) || model.name.toLowerCase().includes(filter));
+    if (!models.length && !provider.error) continue;
+    const header = document.createElement("div");
+    header.className = "model-provider" + (provider.active ? " active" : "");
+    header.textContent = provider.provider + (provider.active ? t("ui.active", " (active)") : "");
+    box.appendChild(header);
     if (provider.error) {
       const error = document.createElement("div");
-      error.className = "empty";
+      error.className = "empty model-error";
       error.textContent = `${provider.provider}: ${provider.error}`;
       box.appendChild(error);
     }
-    const models = provider.models.filter((model) => !filter || model.toLowerCase().includes(filter));
-    if (!models.length) continue;
-    const header = document.createElement("div");
-    header.className = "model-provider";
-    header.textContent = provider.provider + (provider.active ? t("ui.active", " (active)") : "");
-    box.appendChild(header);
     for (const model of models) {
       const row = document.createElement("button");
-      const current = provider.active && model === provider.current;
+      const current = Boolean(provider.active && model.id === provider.current);
       row.className = "model" + (current ? " active" : "");
-      row.setAttribute("aria-pressed", String(Boolean(current)));
-      row.textContent = model;
+      row.dataset.model = model.id;
+      row.title = model.id;
+      row.setAttribute("aria-pressed", String(current));
+      const name = document.createElement("span");
+      name.className = "model-name";
+      name.textContent = model.name;
+      const id = document.createElement("span");
+      id.className = "model-id";
+      id.textContent = model.detail;
+      const check = document.createElement("span");
+      check.className = "model-check";
+      check.setAttribute("aria-hidden", "true");
+      setCheck(check, current);
+      row.append(name, ...(model.detail ? [id] : []), check);
       row.onclick = async () => {
         await reasoningSave;
-        await invoke("set_model", { provider: provider.provider, model });
-        closeModels();
+        await invoke("set_model", { provider: provider.provider, model: model.id });
+        closeModelMenu();
         await loadInfo();
       };
       box.appendChild(row);
@@ -6964,49 +7194,10 @@ function renderModels() {
   }
 }
 
-// ---------- reasoning ----------
-
-// Where the keyboard was before the picker took it, the way the full-size
-// preview keeps its own.
-let reasoningReturnFocus = null;
-// The newest read of the model's levels. A response that arrives after the
-// project or model moved on is dropped rather than painting its levels over the
-// new selection's.
-let reasoningEpoch = 0;
-
-/// The picker the thinking chip opens: the level a turn thinks at is a choice
-/// rather than a step, and the panel's own chip offers the same list. A level
-/// is applied to the turns this window sends, the way the chip's cycle applied
-/// it — `updateChips` is what says which one it is now.
-function reasoningChoices() {
-  return state.supportsReasoning !== false && Array.isArray(state.reasoningLevels)
-    ? state.reasoningLevels : ["auto"];
-}
-
-function hasReasoningLevels() {
-  return reasoningChoices().some((level) => level !== "auto") || state.reasoning !== "auto";
-}
-
-async function openReasoning() {
-  if (!state.project) {
-    setStatus(t("composer.selectProject", "Select a project first."));
-    return Promise.resolve();
-  }
-  reasoningReturnFocus = document.activeElement || null;
-  if (!state.reasoningLevels) await ensureReasoningLevels();
-  if (!hasReasoningLevels()) return;
-  closeOverlays("reasoning-modal");
-  renderReasoning();
-  el("reasoning-modal").hidden = false;
-  syncSettingsDropdowns();
-  positionSettingsDropdowns();
-  focusReasoning();
-}
-
 function ensureReasoningLevels(refresh = false) {
   // A cold model cache has no advertised levels yet; ask the host, which warms
-  // it from the provider's listing, and repaint the open picker with the model's
-  // own levels. The selector stays hidden until metadata arrives, and a late
+  // it from the provider's listing, and repaint the open menu with the model's
+  // own levels. The effort stays hidden until metadata arrives, and a late
   // answer for a project or model the reader has left is dropped.
   if (!state.project || (!refresh && state.reasoningLevels)) return Promise.resolve();
   const epoch = ++reasoningEpoch;
@@ -7026,78 +7217,11 @@ function ensureReasoningLevels(refresh = false) {
           state.reasoningPicked = true;
         }
         updateChips();
-        if (!el("reasoning-modal").hidden) {
-          renderReasoning();
-          focusReasoning();
-        }
       }
     })
     .catch(() => {
       updateChips();
     });
-}
-
-/// The keyboard starts on the level in use — the row a reader who opened the
-/// picker is looking for — rather than staying where it was, which is what a
-/// dialog that never moved focus left behind the overlay.
-function focusReasoning() {
-  const rows = [...el("reasoning-list").children];
-  const target =
-    rows.find((row) => row.classList.contains("active")) || rows[0] || el("reasoning-close");
-  target.focus();
-}
-
-/// Arrow keys walk the dropdown's rows and Close button.
-function stepReasoningFocus(step) {
-  const controls = [...el("reasoning-list").children, el("reasoning-close")];
-  const at = controls.indexOf(document.activeElement);
-  controls[at === -1 ? 0 : (at + step + controls.length) % controls.length].focus();
-}
-
-/// Closing hands the keyboard back to whatever opened the picker. Every path
-/// goes through here — a row, the Close button, or Escape — so a reader who
-/// chose a level is not left at the top of the page behind the dialog.
-function closeReasoning(restoreFocus = true) {
-  if (el("reasoning-modal").hidden) return;
-  el("reasoning-modal").hidden = true;
-  syncSettingsDropdowns();
-  const target = reasoningReturnFocus;
-  reasoningReturnFocus = null;
-  if (restoreFocus) target?.focus?.();
-}
-
-function renderReasoning() {
-  const box = el("reasoning-list");
-  box.innerHTML = "";
-  const levels = reasoningChoices();
-  for (const level of levels) {
-    const current = level === state.reasoning;
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "reasoning-option" + (current ? " active" : "");
-    // The glyph and the color say which level is in use; a screen reader is told
-    // the same thing in a word it can read out.
-    row.setAttribute("aria-pressed", String(current));
-
-    const name = document.createElement("span");
-    name.className = "reasoning-option-name";
-    name.textContent = t(`reasoning.${level}`, level);
-    row.appendChild(name);
-
-    const hint = document.createElement("span");
-    hint.className = "reasoning-option-detail";
-    hint.textContent = t(`reasoning.hint.${level}`, REASONING_HINTS[level] || "");
-    row.appendChild(hint);
-
-    const check = document.createElement("span");
-    check.className = "reasoning-option-check";
-    setCheck(check, current);
-    check.setAttribute("aria-hidden", "true");
-    row.appendChild(check);
-
-    row.onclick = () => pickReasoning(level);
-    box.appendChild(row);
-  }
 }
 
 // ---------- themes ----------
@@ -11572,20 +11696,13 @@ function setReasoning(level) {
     showToast(t("ui.couldNotSaveReasoning", "Could not save reasoning: {value0}", { value0: error }), "error");
   });
   updateChips();
-  // A level set while the picker is up — `Ctrl+R`, or a row — moves the mark, so
-  // the dialog never shows the level it has just left. The list is rebuilt to do
-  // it, which is why the keyboard is put back on the level in use: a rebuild
-  // leaves focus on a row that is no longer in the document.
-  if (!el("reasoning-modal").hidden) {
-    renderReasoning();
-    focusReasoning();
-  }
 }
 
-/// A pick is the one thing that both applies a level and puts the picker away.
+/// A level named outright — `/reasoning high` — is a pick that also puts the
+/// menu away; the slider applies levels and leaves it up.
 function pickReasoning(level) {
   setReasoning(level);
-  closeReasoning();
+  closeModelMenu();
 }
 
 function cycleReasoning() {
@@ -12297,33 +12414,38 @@ function init() {
     removeProject(project);
   };
 
-  el("reasoning").onclick = () => el("reasoning-modal").hidden ? openReasoning() : closeReasoning();
-  el("reasoning-close").onclick = closeReasoning;
-  el("reasoning-modal").addEventListener("keydown", (event) => {
+  el("model-menu").addEventListener("keydown", (event) => {
     if (event.key === "Tab") {
-      closeReasoning();
+      closeModelMenu();
       event.stopPropagation();
-    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      stepReasoningFocus(event.key === "ArrowDown" ? 1 : -1);
+      return;
     }
-  });
-  el("models-modal").addEventListener("keydown", (event) => {
-    if (event.key === "Tab") return closeModels();
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (!modelPickerShown() || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
     event.preventDefault();
     const rows = [...el("model-list").children].filter((row) => row.tagName === "BUTTON");
     const index = rows.indexOf(document.activeElement);
     const step = event.key === "ArrowDown" ? 1 : -1;
     rows[(index + step + rows.length) % rows.length]?.focus();
   });
+  el("effort-slider").addEventListener("keydown", (event) => {
+    if (stepEffort(event.key)) event.preventDefault();
+  });
+  document.addEventListener("pointerup", () => {
+    effortDragging = false;
+  });
+  el("effort-reset").onclick = () => chooseEffort("auto");
+  el("model-page").onclick = () => showModelPicker();
+  el("models-back").innerHTML = ICONS.back;
+  el("models-back").onclick = () => {
+    showModelSummary();
+    el("model-page").focus();
+  };
   document.addEventListener("click", (event) => {
     if (event.target?.closest?.(".settings-dropdown, .setting-chip")) return;
-    closeModels(false);
-    closeReasoning(false);
+    closeModelMenu(false);
   });
   window.addEventListener("resize", positionSettingsDropdowns);
-  el("model").onclick = () => el("models-modal").hidden ? openModels() : closeModels();
+  el("model").onclick = () => (modelMenuOpen() ? closeModelMenu() : openModelMenu());
   el("settings-language").onchange = async () => {
     const select = el("settings-language");
     select.disabled = true;
@@ -12515,9 +12637,8 @@ function init() {
   el("login-cancel").onclick = () => (el("connect-modal").hidden = true);
   el("login-save").onclick = saveConnect;
   el("provider-filter").addEventListener("input", renderProviders);
-  el("models-close").onclick = () => closeModels();
   el("model-filter").addEventListener("input", renderModels);
-  el("models-refresh").onclick = () => openModels(true);
+  el("models-refresh").onclick = () => showModelPicker(true);
   el("themes-close").onclick = () => (el("themes-modal").hidden = true);
   el("permissions-close").onclick = () => (el("permissions-modal").hidden = true);
   el("permissions-clear").onclick = clearApprovals;
@@ -12878,6 +12999,13 @@ function init() {
     }
     if (event.defaultPrevented) return;
     if (event.key === "Escape") {
+      // The catalog is the menu's second page: Escape steps back to the
+      // summary first, the way the GPUI window's does.
+      if (modelPickerShown()) {
+        event.preventDefault();
+        showModelSummary();
+        return;
+      }
       const railControl = Object.entries(RAIL_PANELS).find(([, [id]]) => !el(id).hidden && el(id).classList.contains("rail-panel"))?.[0];
       el("message-preview").hidden = true;
       const computerOpen = !el("computer-use-modal").hidden;
@@ -12886,8 +13014,7 @@ function init() {
       if (computer) void stopThread(computer);
       closeSidebarCards();
       closeImage();
-      closeReasoning();
-      closeModels();
+      closeModelMenu();
       closeSettings();
       closeCommandMenu();
       closeActivity();
@@ -12911,10 +13038,9 @@ function init() {
     }
     if (event.key === "Tab" && event.shiftKey) {
       if (event.target?.closest?.(".changes-pane, .details-pane")) return;
-      // Shift+Tab belongs to the picker while it is up: it walks the rows, which
-      // is what the dialog's own handler does with it, rather than cycling the
-      // levels under a reader who is choosing one.
-      if (!el("reasoning-modal").hidden) return;
+      // Shift+Tab belongs to the model menu while it is up, which Tab closes,
+      // rather than cycling the levels under a reader who is choosing one.
+      if (modelMenuOpen()) return;
       event.preventDefault();
       cycleReasoning();
       return;
