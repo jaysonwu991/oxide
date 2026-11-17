@@ -622,11 +622,26 @@ async fn discover(
             continue;
         };
         let base = parsed.origin().ascii_serialization();
-        for suffix in [
-            "/.well-known/oauth-authorization-server",
-            "/.well-known/openid-configuration",
-        ] {
-            let Ok(value) = get_json(client, &format!("{base}{suffix}")).await else {
+        let issuer_path = parsed.path().trim_end_matches('/');
+        let mut urls = Vec::new();
+        if !issuer_path.is_empty() {
+            urls.push(format!(
+                "{base}/.well-known/oauth-authorization-server{issuer_path}"
+            ));
+            urls.push(format!(
+                "{base}/.well-known/openid-configuration{issuer_path}"
+            ));
+            urls.push(format!(
+                "{base}{issuer_path}/.well-known/oauth-authorization-server"
+            ));
+            urls.push(format!(
+                "{base}{issuer_path}/.well-known/openid-configuration"
+            ));
+        }
+        urls.push(format!("{base}/.well-known/oauth-authorization-server"));
+        urls.push(format!("{base}/.well-known/openid-configuration"));
+        for url in urls {
+            let Ok(value) = get_json(client, &url).await else {
                 continue;
             };
             let (Some(authorization_endpoint), Some(token_endpoint)) = (
