@@ -1167,10 +1167,7 @@ mod tests {
             "preview": "The gap is so large between GPUI desktop and Electron desktop"
         }))
         .expect("a session row");
-        assert_eq!(
-            session.title,
-            "Align GPUI window with the Electron app"
-        );
+        assert_eq!(session.title, "Align GPUI window with the Electron app");
         assert!(session.named);
         let unnamed = SessionRow::from_value(&json!({
             "cwd": "/tmp",
