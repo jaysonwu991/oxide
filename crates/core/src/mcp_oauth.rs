@@ -73,7 +73,7 @@ impl OAuthState {
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
-        let token_file = token_path(name);
+        let token_file = token_path(name, resource_url);
         Self {
             name: name.to_string(),
             config: config.clone(),
@@ -1030,9 +1030,22 @@ fn parse_token(value: &Value, status: reqwest::StatusCode) -> Result<StoredAuth>
     })
 }
 
-fn token_path(name: &str) -> Option<PathBuf> {
+/// The credentials file for a server. `<name>.json` is kept while it is free or
+/// already belongs to this URL; a same-named server at another URL (a project
+/// entry beside a global one, say) gets its own file, so the two never read,
+/// refresh or erase each other's tokens.
+fn token_path(name: &str, resource_url: &str) -> Option<PathBuf> {
     let dir = crate::config::config_dir()?.join("mcp-oauth");
-    Some(dir.join(format!("{}.json", sanitize(name))))
+    let base = sanitize(name);
+    let shared = dir.join(format!("{base}.json"));
+    let owned_elsewhere = load_stored(&shared)
+        .and_then(|auth| auth.resource_url)
+        .is_some_and(|url| url != resource_url);
+    if !owned_elsewhere {
+        return Some(shared);
+    }
+    let digest = base64url(&Sha256::digest(resource_url.as_bytes())[..6]);
+    Some(dir.join(format!("{base}-{digest}.json")))
 }
 
 fn load_stored(path: &Path) -> Option<StoredAuth> {

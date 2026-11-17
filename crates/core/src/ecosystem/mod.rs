@@ -678,14 +678,13 @@ fn load_plugin_dir(
         for (server_name, config) in servers {
             if let Some(mut server) = mcp_from_claude(server_name, config) {
                 resolve_mcp_cwd(&mut server, dir);
-                upsert_mcp(ecosystem, server);
-                contribution.mcp += 1;
+                contribution.mcp += add_plugin_mcp(ecosystem, server);
             }
         }
     }
     // Claude Code plugins may also ship MCP servers as a `.mcp.json` at the
     // plugin root instead of listing them in the manifest.
-    contribution.mcp += load_mcp(ecosystem, &dir.join(".mcp.json"), false);
+    contribution.mcp += load_plugin_mcp_file(ecosystem, &dir.join(".mcp.json"));
 
     // JS/TS hook files shipped inside the plugin package.
     let hooks = hook_files(&dir.join("plugins"));
@@ -1370,6 +1369,30 @@ fn upsert_prompt_template(ecosystem: &mut Ecosystem, template: PromptTemplate) {
     ecosystem.prompt_templates.push(template);
 }
 
+/// A plugin's server never replaces one the user configured under the same
+/// name; the user's URL and credentials win.
+fn add_plugin_mcp(ecosystem: &mut Ecosystem, server: McpServer) -> usize {
+    if ecosystem
+        .mcp
+        .iter()
+        .any(|existing| existing.name == server.name)
+    {
+        return 0;
+    }
+    ecosystem.mcp.push(server);
+    1
+}
+
+fn load_plugin_mcp_file(ecosystem: &mut Ecosystem, path: &Path) -> usize {
+    let mut scratch = Ecosystem::default();
+    load_mcp(&mut scratch, path, false);
+    scratch
+        .mcp
+        .into_iter()
+        .map(|server| add_plugin_mcp(ecosystem, server))
+        .sum()
+}
+
 fn upsert_mcp(ecosystem: &mut Ecosystem, server: McpServer) {
     ecosystem
         .mcp
@@ -1576,6 +1599,27 @@ mod tests {
         assert!(!ecosystem.memory.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_plugin_server_does_not_replace_a_user_server_of_the_same_name() {
+        let mut ecosystem = Ecosystem::default();
+        let user = mcp_from_claude(
+            "atlassian",
+            &serde_json::json!({"url": "https://x.test/v2/mcp"}),
+        )
+        .unwrap();
+        let plugin = mcp_from_claude(
+            "atlassian",
+            &serde_json::json!({"url": "https://x.test/v1/mcp"}),
+        )
+        .unwrap();
+        upsert_mcp(&mut ecosystem, user);
+        assert_eq!(add_plugin_mcp(&mut ecosystem, plugin), 0);
+        assert_eq!(ecosystem.mcp.len(), 1);
+        assert!(
+            matches!(&ecosystem.mcp[0].kind, McpKind::Remote { url, .. } if url.ends_with("/v2/mcp"))
+        );
     }
 
     #[test]
