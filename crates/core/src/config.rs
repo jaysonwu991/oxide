@@ -2990,6 +2990,10 @@ impl Config {
         );
 
         sections.push(
+            "# Working style\nAct as a direct, autonomous coding collaborator. Lead with the outcome or the concrete next action. Treat internal reasoning as private: never rely on a thinking panel to tell the user what matters. Put the useful information into concise commentary and the final answer. Before a substantial tool sequence, send one brief sentence naming the concrete goal; after a meaningful discovery or change of plan, state the evidence and next action. Do not narrate routine reads, expose stream-of-consciousness, or use rhetorical self-talk and filler such as \"Hmm\", \"Wait\", \"Actually\", \"I think\" or \"Let me\". Resolve uncertainty with inspection or a test before narrating it. Make reasonable assumptions from the request and repository instead of pausing for choices you can evaluate; state only assumptions that materially affect the result.".to_string(),
+        );
+
+        sections.push(
             "# API execution\nUse endpoints from the request, loaded skill, or service implementation verbatim, including the HTTP/HTTPS scheme and path. Reuse a working client or verified request; diagnose a failed URL against its source rather than guessing another. Generated scripts must exit nonzero on transport, HTTP or application failures and print success only after checking the response, including per-item failures in HTTP 200 results. Use named fields, inspect headers/counts/samples, exclude already successful items, retry only failed work and never send a dummy create/update request. Reconcile requested, attempted, created, existing and failed counts; preserve input order and scope.".to_string(),
         );
 
@@ -3062,6 +3066,29 @@ mod tests {
         assert!(prompt.contains("# Scope"), "{prompt}");
         assert!(prompt.contains("never blanket-stage"), "{prompt}");
         assert!(prompt.contains(".claude/settings.local.json"), "{prompt}");
+    }
+
+    #[test]
+    fn system_prompt_requests_codex_style_working_commentary() {
+        let config = Config::default();
+        let prompt = config.compose_system_prompt();
+        let style = prompt
+            .split("# Working style")
+            .nth(1)
+            .and_then(|rest| rest.split("# ").next())
+            .expect("the section is composed");
+        assert!(
+            style.contains("direct, autonomous coding collaborator"),
+            "{style}"
+        );
+        assert!(style.contains("evidence and next action"), "{style}");
+        assert!(
+            style.contains("Treat internal reasoning as private"),
+            "{style}"
+        );
+        assert!(style.contains("naming the concrete goal"), "{style}");
+        assert!(style.contains("stream-of-consciousness"), "{style}");
+        assert!(style.contains("\"Hmm\""), "{style}");
     }
 
     #[test]

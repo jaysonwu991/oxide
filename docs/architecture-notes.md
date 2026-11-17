@@ -21,11 +21,17 @@ front-end paints `Search` rather than a failed `Command`. Shell pipelines,
 mutations, expansions and other behavior the tool cannot preserve still run as
 the shell wrote them or receive the explicit refusal.
 
-Stored assistant messages retain their provider reasoning blocks. The shared
-session JSON exposes their visible text as `thinking`; the Electron page, GPUI
-transcript and VS Code replay model convert that field into a finished thinking
-item before the message's answer and tool calls, matching the order painted
-while the turn was live.
+Stored assistant messages retain their provider reasoning blocks because some
+protocols require them on later requests. They are never presented as transcript
+content: providers differ on whether a stream is a public summary or raw
+chain-of-thought, so no model's internal trace becomes a live `thinking_delta`
+or a reopened session's `thinking` field. What the user reads is the model's
+ordinary commentary — a concrete goal before substantial tool work, then
+evidence, decisions, risks and next actions when they change — followed by tool
+cards and the final answer. The shared prompt applies that working style to
+every provider: outcome or next action first, no rhetorical self-talk or
+`Hmm`/`Let me` filler, and no reliance on a thinking panel to carry useful
+information.
 
 ## Layout
 

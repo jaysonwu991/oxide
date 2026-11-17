@@ -216,12 +216,12 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   transcript names no speaker), and the system prompt nudges the model to batch
   independent reads, complete a multi-item change set, and reserve broad
   verification for after the last related edit.
-- Visible work in progress: reasoning streams into the transcript as a muted
-  italic `✦ Thinking` block that closes with `✦ Thought for 1.4s`, so work done
-  before the answer is no longer invisible. Reopening a saved thread replays
-  its stored reasoning before the answer and tool steps it produced. Ctrl+T
-  collapses reasoning blocks to their label (`· Ctrl+T to expand`); set
-  `hideThinkingBlock` in `settings.json` to start collapsed, as in Pi. A running
+- Valuable work in progress: the agent puts useful evidence, decisions and next
+  actions into short commentary as it works, rather than exposing a provider's
+  internal reasoning stream. That keeps the transcript readable whether the
+  provider returns a summary, raw chain-of-thought or no reasoning text. Reopening
+  a saved thread shows the same commentary, tool steps and answers without
+  replaying internal reasoning. A running
   `task` subagent reports its own
   progress — a live `Elapsed` on any tool panel, a
   `↳ <agent> · <activity> · <n> call(s)` line, and a status row naming the

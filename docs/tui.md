@@ -64,9 +64,10 @@ Chinese: `/language zh-CN` switches it for every front-end — the same
 `settings.json` key the desktop front-ends' language controls and the VS Code
 panel's command write
 — and `/language` alone reports the choice. `--language <tag>` sets it for one
-run without writing the setting. The transcript's own labels (a thinking block,
-the queued-message rows, the approval prompt) are part of the interface and
-follow the language; what the model writes and what a tool prints do not.
+run without writing the setting. The transcript's own labels (the queued-message
+rows, the approval prompt, and compatibility reasoning blocks from older streams)
+are part of the interface and follow the language; what the model writes and
+what a tool prints do not.
 
 A context compaction renders as Pi's `[compaction]` block and a branch summary
 as `[branch]`, each folded to a one-line note with `Ctrl+O to expand` until

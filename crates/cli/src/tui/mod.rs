@@ -4537,9 +4537,6 @@ fn restore_history(app: &mut App, messages: Vec<Message>, resumed: String) {
                 }
             }
             "assistant" => {
-                if let Some(text) = thinking_text(message) {
-                    app.items.push(ChatItem::Thinking { text, millis: None });
-                }
                 if let Some(content) = message.display() {
                     app.items.push(ChatItem::Assistant(content));
                 }
@@ -4549,23 +4546,6 @@ fn restore_history(app: &mut App, messages: Vec<Message>, resumed: String) {
     }
     app.history = messages;
     app.items.push(ChatItem::Info(resumed));
-}
-
-/// Reasoning text a stored assistant message carries, if any. Redacted
-/// thinking blocks hold no text and are skipped.
-fn thinking_text(message: &Message) -> Option<String> {
-    let text = message
-        .thinking
-        .as_ref()?
-        .iter()
-        .filter_map(|block| block["thinking"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text)
-    }
 }
 
 /// Tone for an MCP connection state, so the listing colors healthy servers,
@@ -6884,18 +6864,18 @@ mod tests {
     }
 
     #[test]
-    fn restored_sessions_show_their_reasoning() {
+    fn restored_sessions_keep_internal_reasoning_private() {
         let mut app = test_app();
         let message = Message::assistant("the fix is in the loader", vec![]).with_thinking(vec![
             serde_json::json!({"type": "thinking", "thinking": "the test moved"}),
             serde_json::json!({"type": "redacted_thinking", "data": "x"}),
         ]);
         restore_history(&mut app, vec![message], "resumed".to_string());
-        assert!(matches!(
-            &app.items[0],
-            ChatItem::Thinking { text, .. } if text == "the test moved"
-        ));
-        assert!(matches!(&app.items[1], ChatItem::Assistant(_)));
+        assert!(matches!(&app.items[0], ChatItem::Assistant(_)));
+        assert_eq!(
+            app.history[0].reasoning_content().as_deref(),
+            Some("the test moved")
+        );
     }
 
     #[test]

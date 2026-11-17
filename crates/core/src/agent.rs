@@ -368,7 +368,9 @@ pub enum AgentEvent {
         title: String,
     },
     Text(String),
-    /// A fragment of the model's reasoning, streamed before its answer.
+    /// A compatibility hook for a front-end that can render a public reasoning
+    /// summary. Provider reasoning is not emitted: it may be raw
+    /// chain-of-thought, and useful discoveries belong in normal commentary.
     ThinkingDelta(String),
     Thought {
         millis: u64,
@@ -1151,7 +1153,6 @@ async fn run_loop(
         let retry_text = Arc::clone(&attempt_text);
         let text_tx = tx.clone();
         let retry_tx = tx.clone();
-        let thinking_tx = tx.clone();
         let mut on_text = move |delta: String| {
             if let Ok(mut text) = text_delta.lock() {
                 text.push_str(&delta);
@@ -1163,9 +1164,11 @@ async fn run_loop(
             }
             let _ = text_tx.send(AgentEvent::Text(delta));
         };
-        let mut on_thinking = move |delta: String| {
-            let _ = thinking_tx.send(AgentEvent::ThinkingDelta(delta));
-        };
+        // Provider reasoning stays on the assistant message for the protocol,
+        // but is never presented as transcript content. Models differ on whether
+        // that stream is a summary or raw chain-of-thought; the shared commentary
+        // is the user-facing account of what matters.
+        let mut on_thinking = |_delta: String| {};
         let mut on_retry = move |retry: Retry| {
             if let Ok(mut text) = retry_text.lock() {
                 text.clear();
@@ -5687,6 +5690,14 @@ mod tests {
         ])
     }
 
+    fn reasoning_answer_body(reasoning: &str, text: &str) -> String {
+        openai_sse(&[
+            serde_json::json!({"choices": [{"delta": {"reasoning_content": reasoning}, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"delta": {"content": text}, "finish_reason": null}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ])
+    }
+
     fn empty_body() -> String {
         openai_sse(&[serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})])
     }
@@ -6683,6 +6694,60 @@ mod tests {
             Some("final".to_string())
         );
         assert_eq!(server.await.unwrap().len(), 2);
+    }
+
+    /// Provider reasoning is retained for protocol replay, but never enters the
+    /// user-facing transcript, whether it is a summary or raw chain-of-thought.
+    #[tokio::test]
+    async fn reasoning_is_replayed_but_never_painted() {
+        let reasoning = "Hmm, let me inspect this. Wait, actually the manifest has two members.";
+        for (provider, model) in [("deepseek", "deepseek-flash"), ("openai", "gpt-5.6-sol")] {
+            let (addr, server) = sse_server(vec![reasoning_answer_body(
+                reasoning,
+                "The workspace has two members.",
+            )])
+            .await;
+            let config = Config {
+                provider: provider.into(),
+                model: model.into(),
+                base_url: format!("http://{addr}"),
+                api_key: "sk-test".into(),
+                ..Config::default()
+            };
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+            run(
+                config,
+                std::env::temp_dir(),
+                vec![Message::user("Summarize the manifest")],
+                tx,
+                test_runtime().await,
+            )
+            .await;
+
+            let mut thinking = Vec::new();
+            let mut finished = None;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    AgentEvent::ThinkingDelta(delta) => thinking.push(delta),
+                    AgentEvent::Finished(messages) => finished = Some(messages),
+                    _ => {}
+                }
+            }
+            assert!(thinking.is_empty(), "{provider}: {thinking:?}");
+            let assistant = finished
+                .expect("the run finished")
+                .into_iter()
+                .rev()
+                .find(|message| message.role == "assistant")
+                .expect("the answer was recorded");
+            assert_eq!(assistant.reasoning_content().as_deref(), Some(reasoning));
+            assert_eq!(
+                assistant.display().as_deref(),
+                Some("The workspace has two members.")
+            );
+            assert_eq!(server.await.unwrap().len(), 1);
+        }
     }
 
     /// `one-at-a-time` must hand over one steering message per model call: a

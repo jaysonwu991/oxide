@@ -310,7 +310,10 @@ fn message_view(message: &Message) -> Value {
             .map(MessageContent::display)
             .unwrap_or_default(),
         "attachments": message_attachments(message),
-        "thinking": message.reasoning_content().unwrap_or_default(),
+        // Reasoning is protocol state, not transcript content. Providers differ
+        // on whether their stream is a summary or raw chain-of-thought, so the
+        // shared output never presents it as something the user should read.
+        "thinking": "",
         "toolCalls": calls,
         "toolCallId": message.tool_call_id,
     })
@@ -661,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_message_reports_its_thinking_for_replay() {
+    fn stored_reasoning_stays_out_of_the_transcript_view() {
         let mut conversation = conversation();
         conversation[1] = conversation[1].clone().with_thinking(vec![json!({
             "type": "thinking",
@@ -669,11 +672,12 @@ mod tests {
         })]);
         let out = render_show(&conversation, &summary(), totals(), 0, &[], None, true);
         let view: Value = serde_json::from_str(out.trim()).unwrap();
-        assert_eq!(
-            view["messages"][1]["thinking"],
-            "read the file before deciding"
-        );
+        assert_eq!(view["messages"][1]["thinking"], "");
         assert_eq!(view["messages"][2]["thinking"], "");
+        assert_eq!(
+            conversation[1].reasoning_content().as_deref(),
+            Some("read the file before deciding")
+        );
     }
 
     #[test]
