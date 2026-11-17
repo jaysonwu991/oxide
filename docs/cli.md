@@ -884,8 +884,9 @@ extended-thinking `budget_tokens` (scaled by level and kept below `max_tokens`).
 Thinking blocks returned by Anthropic are replayed on later turns so multi-step
 tool use keeps its reasoning context.
 
-Some providers keep reasoning private and return no thinking text. The absence
-of a visible thinking block does not mean effort was disabled. If a gateway
+Some providers keep reasoning private and return no thinking text. Oxide also
+keeps every provider's reasoning out of the user-facing transcript, so the
+absence of a visible thinking block does not mean effort was disabled. If a gateway
 rejects an explicit effort setting, Oxide reports that rejection instead of
 silently removing the setting. Choose `auto` for the provider default or a
 backend that supports the selected effort.

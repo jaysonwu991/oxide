@@ -184,11 +184,11 @@ reveal rather than two frames of the wrong page.
 - **A turn** — the composer sends through `send_prompt` with the project, the
   thread, the attachments and the chosen thinking level, and the streamed
   `agent-event` packets paint the same cards the stable window paints: the user's
-  message, the answer with its markdown, thinking blocks with their duration,
-  tool cards with their call, output and diff, errors, compaction notices, and
-  a context ring beside the composer controls. Opening a saved thread restores
-  the reasoning already stored on each assistant step before that step's answer
-  and tool cards. A tool is one compact row by default; a successful result stays
+  message, concise progress commentary, the answer with its markdown, tool cards
+  with their call, output and diff, errors, compaction notices, and a context
+  ring beside the composer controls. Provider reasoning stays private: the
+  stored blocks are retained for protocol replay but neither a live turn nor a
+  reopened thread paints them. A tool is one compact row by default; a successful result stays
   folded, a failure previews its first three lines, and the row or preview
   expands and collapses the full output and diff without making every result
   compete with the answer. The row's copy control keeps a shell command's full

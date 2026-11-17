@@ -367,8 +367,8 @@ screen is a character whose shape and size would come from the machine's fonts,
 and every control's words live in its tooltip and its `aria-label`, as the
 extension's do. The characters the window still types are text in a line rather
 than a control's drawing: a tool card's `✔`/`✖` and the `☐`/`☑` of an assistant's
-task list, which the panel's own renderer types too, the `✦` that opens a
-thinking block, which the terminal's does, the `⌘`/`⇧`/`⌃`/`⌥` naming a shortcut
+task list, which the panel's own renderer types too, a compatibility reasoning
+mark for older streams, the `⌘`/`⇧`/`⌃`/`⌥` naming a shortcut
 in words — a binding is whatever the reader recorded, so the letter beside it
 comes from the machine's font either way — the `·` a line of derived facts is
 joined with, and the image preview's head-row `✕`. Drawing one here and typing it
@@ -860,9 +860,9 @@ sidebar shows two kinds of project:
 Each row shows its session count. Clicking a project selects it and reveals its
 sessions nested underneath; clicking a session opens that thread (switching to
 its project first when the selection differs). The transcript is loaded with
-`session_messages` (`SessionLog::open_ref`). Stored thinking is replayed as the
-same finished thinking block a live turn paints, before the assistant text and
-tool cards produced by that step.
+`session_messages` (`SessionLog::open_ref`). Provider reasoning stays out of that
+view: it is kept on the stored message for protocol replay, while the transcript
+shows the model's ordinary progress commentary, tool cards and final answer.
 
 The rows are the reader's to arrange: a project's row is what the order is
 dragged by, and the whole row moves — the project and the threads under it — to
@@ -1263,7 +1263,7 @@ variables. Slots cover the surfaces (`background`, `sidebar`, `panel`,
 colors (`accent`, `user`, `assistant`, `success`, `tool`, `error`, `info`,
 `tool_pending_bg`) — the `thinking_*`, `tool_success_bg`/`tool_error_bg` and
 `usage_bar_*` slots a theme file may also carry are the terminal's own, and a
-thinking block is painted in `--faint` here. A custom theme file overrides only
+compatibility thinking block is painted in `--faint` here. A custom theme file overrides only
 the slots it sets, on top of Dark. `set_theme` writes the `theme` key in
 `config.json`, which
 the CLI already reads as its startup default, and the choice is re-applied on

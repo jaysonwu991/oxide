@@ -349,10 +349,11 @@ note saying the thread was resumed — so a resumed thread reads like the thread
 is instead of an empty panel that answers nothing. A turn is what was said and
 what was called, and a stored thread is mostly the second: an assistant step that
 only dispatched tools paints no bubble, each call it made paints the same tool
-card the live turn painted, and stored reasoning is replayed as its thinking
-block before the assistant step it produced. The result the CLI stores as a
-message of its own is folded into the card it answers rather than shown beside
-it. The tail is counted in those stored messages, so reopening a long thread
+card the live turn painted, while stored reasoning stays on the protocol message
+instead of entering the transcript. Ordinary commentary from that step remains
+visible before its tool cards and answer. The result the CLI stores as a message
+of its own is folded into the card it answers rather than shown beside it. The
+tail is counted in those stored messages, so reopening a long thread
 shows several of its turns rather than its last reply only. A replayed card
 carries the change its own
 arguments describe — an `edit`'s replacements — rather than one
@@ -1002,14 +1003,19 @@ changes undo --after`); the CLI writes it *ahead of* that run's `agent_end` on
 the same channel — so the listing lands while the run it describes is still the
 one on screen, and the turn's last frame is still `agent_end`.
 
+The panel accepts `thinking_delta` for compatibility with older CLI builds, but
+the shared core does not expose provider reasoning to any front-end. Providers
+differ on whether their stream is a public summary or raw chain-of-thought, so
+useful progress travels as ordinary assistant text and tool cards instead.
+
 The transcript is a list of items (`user`, `assistant`, `thinking`, `tool`,
 `notice`). The view applies small deltas: `push` a new item, `remove` a
 discarded one, `append` a text/output fragment, `patch` a tool card when it
 settles, and `status` / `usage` / `context` for the footer. The `state`,
 `status` and `usage` messages carry the whole `FooterState` — the controller
 attaches it, since it is the only place that knows the context window and the
-resolved settings. Reasoning and text stream into separate items, and a
-thinking block is created by its first delta, so a turn that only starts one
+resolved settings. Text streams into its own item; a compatibility thinking
+block is created only by a `thinking_delta`, so a turn that merely starts one
 never leaves an empty block in the transcript. When a stream drops and the CLI
 retries, `auto_retry_start` drops the item the failed attempt was streaming
 into, so the retry's fresh output does not extend the partial reply.
@@ -1371,8 +1377,9 @@ that handle only while something is behind it: a card with a rest to show is a
 control — a caret pointing at the output, a tab stop, and the state a screen
 reader asks a fold for — while a call that already shows everything it has is
 plain text, with no caret, no tab stop and no button that reveals nothing when
-it is pressed. Reasoning renders as a muted thinking block that
-`oxide.showThinking` can hide.
+it is pressed. Provider reasoning is not rendered; useful progress arrives as
+ordinary assistant commentary and tool cards. `oxide.showThinking` remains the
+compatibility control for reasoning deltas from an older CLI.
 
 Monospace output — a tool's body, code blocks, the diff — is set at
 `--code-size`: the panel's own text size or the editor's `editor.fontSize`,

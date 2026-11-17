@@ -128,7 +128,7 @@ fn message_view(message: &Message) -> Value {
         "role": message.role,
         "content": message.display().unwrap_or_default(),
         "attachments": message_attachments(message),
-        "thinking": message.reasoning_content().unwrap_or_default(),
+        "thinking": "",
         "toolCalls": message
             .tool_calls
             .as_ref()
@@ -883,7 +883,10 @@ pub async fn session_messages(project: String, id: String) -> CmdResult<Value> {
     Ok(json!({
         "header": session_header(&log),
         "contextLimits": log.context_limits(),
-        "messages": messages.iter().map(message_view).collect::<Vec<_>>(),
+        "messages": messages
+            .iter()
+            .map(message_view)
+            .collect::<Vec<_>>(),
         "usage": {
             "input": totals.input,
             "output": totals.output,
@@ -2919,7 +2922,7 @@ mod tests {
     }
 
     #[test]
-    fn message_view_exposes_tool_calls_and_thinking_for_replay() {
+    fn message_view_exposes_tool_calls_without_internal_reasoning() {
         let call = ToolCall {
             id: "call_1".into(),
             kind: "function".into(),
@@ -2936,7 +2939,7 @@ mod tests {
         let view = message_view(&message);
         assert_eq!(view["role"], "assistant");
         assert_eq!(view["content"], "checking");
-        assert_eq!(view["thinking"], "inspect the checkout first");
+        assert_eq!(view["thinking"], "");
         assert_eq!(view["toolCalls"][0]["id"], "call_1");
         assert_eq!(view["toolCalls"][0]["name"], "bash");
         assert_eq!(view["toolCalls"][0]["arguments"], "{\"command\":\"ls\"}");
@@ -2946,6 +2949,38 @@ mod tests {
         assert_eq!(view["role"], "tool");
         assert_eq!(view["toolCallId"], "call_1");
         assert_eq!(view["content"], "file-a\nfile-b");
+    }
+
+    #[tokio::test]
+    async fn reopening_a_session_hides_internal_reasoning() {
+        let root =
+            std::env::temp_dir().join(format!("oxide_reasoning_replay_{}", std::process::id()));
+        let sessions = root.join("sessions");
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let log = SessionLog::create_in(&sessions, &cwd).unwrap();
+        log.append(
+            &Message::assistant("The manifest has two members.", vec![]).with_thinking(vec![
+                json!({"type": "thinking", "thinking": "Hmm, let me check again."}),
+            ]),
+        )
+        .unwrap();
+        let path = log.summary().unwrap().path;
+
+        let answer = session_messages(
+            cwd.to_string_lossy().into_owned(),
+            path.to_string_lossy().into_owned(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(answer["messages"][0]["thinking"], "");
+        assert_eq!(
+            answer["messages"][0]["content"],
+            "The manifest has two members."
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// The search command's answer is the rows the window paints: the phrase the
