@@ -74,6 +74,12 @@ pub(crate) const PENDING_CHECKS_NOTE: &str = "pull request checks are still pend
 /// back later" answer [`PENDING_CHECKS_NOTE`] is, not a failure.
 pub(crate) const RUN_IN_PROGRESS_NOTE: &str = "the run is still in progress, not failed";
 
+/// Appended on its own line to a `gh pr checks` run that exited 1 because a
+/// listed check failed. The `[exit: 1]` line above it still marks CI as red for
+/// the run's verification tracker; the tool call itself succeeded.
+const FAILED_CHECKS_NOTE: &str =
+    "[pull request checks reported failing jobs; the command itself ran successfully]";
+
 /// What `gh run view` writes when asked for the logs of a run that has not
 /// finished. Its exit 1 is that message, not a failed job.
 const RUN_IN_PROGRESS_TEXT: &str = "is still in progress; logs will be available";
@@ -1480,14 +1486,16 @@ fn parse_edits_string(text: &str) -> Option<Value> {
 /// `{"oldText">"before"}` with the `:` the key was meant to have. Models that
 /// mix the tool's JSON with the tag syntax of other harnesses write the
 /// separator this way; only a `>` outside a quoted string is touched, so a
-/// replacement's own text keeps every character it was given.
+/// replacement's own text keeps every character it was given. A `>` that the
+/// value's opening quote was also lost to (`{"oldText">before"}`) gets both.
 fn repair_json_key_separators(text: &str) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut in_string = false;
     let mut escaped = false;
     let mut repaired = false;
     let mut closed_string = false;
-    for ch in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
         if in_string {
             if escaped {
                 escaped = false;
@@ -1510,6 +1518,18 @@ fn repair_json_key_separators(text: &str) -> Option<String> {
                 out.push(':');
                 repaired = true;
                 closed_string = false;
+                let rest: String = chars.clone().take(5).collect();
+                let literal = ["true", "false", "null"]
+                    .iter()
+                    .any(|word| rest.starts_with(word));
+                if !literal
+                    && chars.peek().is_some_and(|next| {
+                        !next.is_whitespace() && !matches!(next, '"' | '[' | '{' | '-' | '0'..='9')
+                    })
+                {
+                    out.push('"');
+                    in_string = true;
+                }
             }
             _ => {
                 if !ch.is_whitespace() {
@@ -1548,7 +1568,10 @@ fn unclosed_json_diagnosis(text: &str) -> &'static str {
             _ => {}
         }
     }
-    if in_string || depth > 0 {
+    // A text that still ends on its closing `}]` was written to the end, so
+    // an unbalanced quote inside it is a malformed value, not a cut-off.
+    let ends_closed = text.trim_end().ends_with("}]");
+    if (in_string || depth > 0) && !ends_closed {
         " because it stops before the JSON closes, so the arguments were cut off \
          mid-value: send fewer or smaller replacements in this call, or use `write` for a \
          whole-file rewrite. The same arguments will be cut off again"
@@ -4297,10 +4320,73 @@ fn recursive_shell_grep(command: &str, cwd: &Path) -> Option<ShellGrep> {
             if !grep.recursive || !recursive_grep_sweeps(&grep.operands, base, verified) {
                 return None;
             }
+            // Refusing one bounded search inside a script would throw away the
+            // output of every other command in it, so only a sweep is refused.
+            if verified
+                && script_runs_other_commands(command, &segments, index)
+                && grep_scope_is_bounded(&grep.operands, base)
+            {
+                return None;
+            }
             // A relative operand is restated where the grep really searched, so
             // only a directory the command moved to changes what it says.
             grep.base = (verified && base != cwd).then(|| base.to_path_buf());
             Some(grep)
+        })
+}
+
+/// Whether the script holds a command other than the grep at `index`, the
+/// filters piped after it, and `cd`s.
+fn script_runs_other_commands(command: &str, segments: &[&str], index: usize) -> bool {
+    let preceded_by_pipe = |segment: &str| {
+        let start = segment.as_ptr() as usize - command.as_ptr() as usize;
+        let before = &command[..start];
+        before.ends_with('|') && !before.ends_with("||")
+    };
+    let mut downstream = true;
+    segments.iter().enumerate().any(|(position, segment)| {
+        if position <= index {
+            return position < index && !segment.trim().is_empty() && cd_target(segment).is_none();
+        }
+        downstream &= preceded_by_pipe(segment);
+        !downstream && !segment.trim().is_empty() && cd_target(segment).is_none()
+    })
+}
+
+/// Whether every operand names an existing file, or a directory strictly below
+/// `base` that is not itself a dependency or build-output tree.
+fn grep_scope_is_bounded(operands: &[String], base: &Path) -> bool {
+    const GENERATED: [&str; 8] = [
+        "node_modules",
+        "target",
+        ".git",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "vendor",
+    ];
+    let Ok(base) = std::fs::canonicalize(base) else {
+        return false;
+    };
+    !operands.is_empty()
+        && operands.iter().all(|operand| {
+            let Some(word) = literal_grep_word(operand) else {
+                return false;
+            };
+            let Ok(path) = std::fs::canonicalize(base.join(word)) else {
+                return false;
+            };
+            if !path.is_dir() {
+                return true;
+            }
+            path != base
+                && path.starts_with(&base)
+                && !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| GENERATED.contains(&name))
+                && !GENERATED.iter().any(|name| path.join(name).exists())
         })
 }
 
@@ -4623,7 +4709,7 @@ fn recursive_grep_sweeps(operands: &[String], cwd: &Path, verified: bool) -> boo
             operand.is_empty()
                 || operand.ends_with('/')
                 || operand.contains(['*', '?', '['])
-                || !cwd.join(operand).is_file()
+                || !std::fs::metadata(cwd.join(operand)).is_ok_and(|meta| !meta.is_dir())
         })
 }
 
@@ -5162,6 +5248,14 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     #[cfg(not(unix))]
     let checks_pending = exit == GH_PENDING_EXIT && pending_pr_checks(command);
     let mut output = finish_bash_output(stdout, stderr, if reader_closed { 0 } else { exit })?;
+    #[cfg(unix)]
+    let checks_failed = exit == 1 && failed_pr_checks(command, &pipeline_status, &output);
+    #[cfg(not(unix))]
+    let checks_failed = exit == 1 && failed_pr_checks(command, "", &output);
+    if checks_failed {
+        output.push('\n');
+        output.push_str(FAILED_CHECKS_NOTE);
+    }
     if checks_pending {
         output.push_str(" (");
         output.push_str(PENDING_CHECKS_NOTE);
@@ -5183,19 +5277,31 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         output.push('\n');
         output.push_str(module_failure_hint(&output, cwd));
     }
-    if exit != 0 && !reader_closed && !no_matches {
+    if exit != 0 && !reader_closed && !no_matches && !checks_failed {
         if let Some(hint) = bash_failure_hint(&output) {
             output.push('\n');
             output.push_str(hint);
         }
     }
     Ok(ToolOutput {
-        is_error: exit != 0 && !reader_closed && !no_matches && !checks_pending && !run_pending,
+        is_error: exit != 0
+            && !reader_closed
+            && !no_matches
+            && !checks_pending
+            && !run_pending
+            && !checks_failed,
         ..ToolOutput::text(output)
     })
 }
 
 fn bash_failure_hint(output: &str) -> Option<&'static str> {
+    if output.lines().any(|line| {
+        line.strip_prefix("bash: ")
+            .and_then(|rest| rest.strip_suffix(": No such file or directory"))
+            .is_some_and(|program| program.contains("/bin/") && !program.contains(' '))
+    }) {
+        return Some("[hint: that interpreter path does not exist, so every command run through it fails the same way. List the directory once, then use an interpreter that exists (or recreate the environment) rather than retrying this path.]");
+    }
     if output.contains("nvm: command not found") || output.contains("command not found: nvm") {
         Some("[hint: nvm is a shell function and is not loaded here. Oxide adds an installed Node matching the project's .nvmrc to PATH. Check `node --version` and the installed versions under ~/.nvm/versions/node; use a matching installed binary rather than repeating nvm install/use.]")
     } else if output.contains("timeout: command not found")
@@ -5246,11 +5352,42 @@ fn bash_failure_hint(output: &str) -> Option<&'static str> {
 /// The stages of a `gh pr checks` run, optionally piped through text filters, or
 /// `None` for any other command. Only this shape can explain a
 /// [`GH_PENDING_EXIT`]; `8` from anything else is that command's own failure.
+#[cfg(unix)]
 fn gh_pr_checks_pipeline(command: &str) -> Option<Vec<&str>> {
-    let stages = status_pipeline(command, GH_PENDING_EXIT)?;
+    gh_pr_checks_pipeline_with(command, GH_PENDING_EXIT)
+}
+
+fn gh_pr_checks_pipeline_with(command: &str, status: i32) -> Option<Vec<&str>> {
+    let stages = status_pipeline(command, status)?;
     (gh_subcommand(stages[0], ["pr", "checks"])
         && stages[1..].iter().all(|stage| text_filter_command(stage)))
     .then_some(stages)
+}
+
+/// Whether an exit 1 is `gh pr checks` reporting a failing check it listed.
+/// That is CI's verdict, read successfully; the command itself did not fail.
+#[cfg(unix)]
+fn failed_pr_checks(command: &str, statuses: &str, output: &str) -> bool {
+    let Some(stages) = gh_pr_checks_pipeline_with(command, 1) else {
+        return false;
+    };
+    let Ok(statuses) = statuses
+        .lines()
+        .map(str::parse::<i32>)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    statuses.len() == stages.len() + 1
+        && statuses[0] == 1
+        && statuses[1] == 1
+        && statuses[2..].iter().all(|status| *status == 0)
+        && output.lines().any(|line| line.contains("\tfail\t"))
+}
+
+#[cfg(not(unix))]
+fn failed_pr_checks(command: &str, _statuses: &str, output: &str) -> bool {
+    unpiped_pr_checks_with(command, 1) && output.lines().any(|line| line.contains("\tfail\t"))
 }
 
 /// Whether a pipeline stage runs `gh` with the given two-word subcommand.
@@ -5307,7 +5444,12 @@ fn pending_pr_checks(command: &str, text: &str) -> bool {
 /// it for the test alone, so the rule no Unix run takes is still covered.
 #[cfg(any(not(unix), test))]
 fn unpiped_pr_checks(command: &str) -> bool {
-    gh_pr_checks_pipeline(command).is_some_and(|stages| stages.len() == 1)
+    unpiped_pr_checks_with(command, GH_PENDING_EXIT)
+}
+
+#[cfg(any(not(unix), test))]
+fn unpiped_pr_checks_with(command: &str, status: i32) -> bool {
+    gh_pr_checks_pipeline_with(command, status).is_some_and(|stages| stages.len() == 1)
 }
 
 #[cfg(not(unix))]
@@ -5474,11 +5616,12 @@ fn hides_the_next_command(segment: &str) -> bool {
             None if ch == '\'' || ch == '"' => quote = Some(ch),
             // A redirection's `&` (`2>&1`, `&>out`) and a `&&` chain are not
             // work left running beside the last command.
-            None if ch == '&'
-                && (previous == Some('>')
-                    || chars
-                        .peek()
-                        .is_some_and(|next| *next == '>' || *next == '&')) => {}
+            None if ch == '&' && chars.peek() == Some(&'&') => {
+                chars.next();
+            }
+            None if ch == '&' && (previous == Some('>') || chars.peek() == Some(&'>')) => {}
+            // `#` starts a comment only as the first character of a word.
+            None if ch == '#' && previous.is_some_and(|previous| !previous.is_whitespace()) => {}
             None if matches!(ch, '&' | '#' | '<' | '\r') => return true,
             None => {}
         }
@@ -8931,6 +9074,117 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_reads_failing_pr_checks_as_a_result() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("oxide_failed_checks_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            "#!/bin/sh\nprintf 'lint\tfail\t32s\thttps://x\nbuild\tpass\t1m\thttps://y\n'\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (suffix, failed) in [
+            ("pr checks 1", false),
+            ("pr checks 1 2>&1 | head -30", false),
+            ("pr checks 1 | grep -v pass", false),
+            ("pr view 1", true),
+            ("pr checks 1 | sh -c 'cat; exit 1'", true),
+        ] {
+            let command = format!("printf x; '{}' {suffix}", gh.display());
+            let out = execute(
+                &call("bash", json!({"command": command})),
+                &dir,
+                &McpRegistry::default(),
+                &Progress::default(),
+            )
+            .await;
+            assert_eq!(out.is_error, failed, "{command}: {}", out.text);
+            assert_eq!(
+                out.text.contains(FAILED_CHECKS_NOTE),
+                !failed,
+                "{}",
+                out.text
+            );
+            assert!(
+                out.text.lines().any(|line| line == "[exit: 1]"),
+                "{}",
+                out.text
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An `&&` chain or a mid-word `#` in an earlier command does not hide the
+    /// script's last command, so a search ending the script is still read.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_reads_a_search_ending_a_script_with_chains() {
+        let dir = std::env::temp_dir().join(format!("oxide_chain_search_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("input.txt"), "build succeeded\n").unwrap();
+        for command in [
+            "cd . && sed -n 1,2p input.txt; grep -n \"fn a\\|fn b\" input.txt | head -80",
+            "cd . && cat input.txt; grep -n missing -A40 input.txt | head -80; grep -n other input.txt",
+            "printf 'issue#1\\n'; grep -n missing input.txt",
+        ] {
+            let out = execute(
+                &call("bash", json!({ "command": command })),
+                &dir,
+                &McpRegistry::default(),
+                &Progress::default(),
+            )
+            .await;
+            assert!(!out.is_error, "{command}: {}", out.text);
+            assert!(out.text.contains("search returned no matches"), "{}", out.text);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_interpreter_path_gets_a_hint() {
+        assert!(
+            bash_failure_hint("bash: venv/bin/python: No such file or directory\n[exit: 127]")
+                .is_some_and(|hint| hint.contains("interpreter path does not exist"))
+        );
+        assert!(bash_failure_hint("bash: notes.txt: No such file or directory").is_none());
+    }
+
+    #[test]
+    fn a_bounded_recursive_grep_runs_inside_a_larger_script() {
+        let root = std::env::temp_dir().join(format!("oxide_bounded_grep_{}", std::process::id()));
+        std::fs::create_dir_all(root.join("jobs/schemas")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::create_dir_all(root.join("web/node_modules")).unwrap();
+        std::fs::write(root.join("README.md"), "x").unwrap();
+        for command in [
+            "cat README.md; grep -rln \"blurb\\|contentBlurb\" jobs tests | head",
+            "git status --short; grep -rn needle jobs/schemas",
+            "cd jobs && ls; grep -rn needle schemas | head -5",
+        ] {
+            assert!(!uses_recursive_shell_grep(command, &root), "{command}");
+        }
+        #[cfg(unix)]
+        assert!(!uses_recursive_shell_grep(
+            "git status; grep -rn needle /dev/null",
+            &root
+        ));
+        for command in [
+            "grep -rn needle jobs",
+            "cd jobs && grep -rn needle schemas | head -5",
+            "git status; grep -rn needle .",
+            "git status; grep -rn needle web",
+            "git status; grep -rn needle ..",
+            "git status; grep -rn needle missing",
+        ] {
+            assert!(uses_recursive_shell_grep(command, &root), "{command}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_run_still_in_progress_is_read_through_its_own_command() {
         let text =
@@ -10796,6 +11050,30 @@ mod tests {
         let error = format!("{error:#}");
         assert!(error.contains("cut off mid-value"), "{error}");
         assert!(error.contains("fewer or smaller replacements"), "{error}");
+
+        // The value's opening quote lost to the same `>` is restored with it.
+        std::fs::write(dir.join("a.rs"), "| `v2.json` |\n").unwrap();
+        edit(
+            &dir,
+            &json!({
+                "path": "a.rs",
+                "edits": "[{\"oldText\">| `v2.json` |\",\"newText\":\"x\"}]",
+            }),
+        )
+        .expect("a repaired separator and opening quote");
+        assert_eq!(std::fs::read_to_string(dir.join("a.rs")).unwrap(), "x\n");
+
+        // A batch written to its closing `}]` is malformed, not cut off.
+        let error = edit(
+            &dir,
+            &json!({
+                "path": "a.rs",
+                "edits": "[{\"oldText\"=x\",\"newText\":\"y\"}]",
+            }),
+        )
+        .expect_err("a malformed batch");
+        let error = format!("{error:#}");
+        assert!(!error.contains("cut off"), "{error}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
