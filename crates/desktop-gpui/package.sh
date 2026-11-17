@@ -10,7 +10,7 @@
 # releases.
 #
 # Signing and notarization happen when the corresponding secrets are configured,
-# exactly as they do for the Electron fallback: an imported Developer ID identity is
+# exactly as they do for the Electron app: an imported Developer ID identity is
 # used to sign the bundle (hardened runtime, timestamped) and the Apple API key,
 # when present, notarizes it and staples the ticket.
 #
@@ -159,7 +159,7 @@ PLIST
   # layout has been written. The trap keeps a failed Finder step from leaving a
   # mounted volume behind on a release runner.
   # This is electron-builder's default DMG background, retained for visual
-  # continuity with the Electron fallback.
+  # continuity with the Electron app.
   background="$here/assets/dmg-background.tiff"
   if [ ! -f "$background" ]; then
     echo "error: $background is missing" >&2
@@ -285,7 +285,7 @@ and approvals as the terminal and editor integrations.
 
 Unpack this folder somewhere it can stay and run oxide-desktop-gpui.
 The folder's plugins/ directory is installed into the shared plugin store at
-launch, exactly as the Electron fallback's bundled plugins are.
+launch, exactly as Electron's bundled plugins are.
 README
 
 tar -czf "$package" -C "$stage" .

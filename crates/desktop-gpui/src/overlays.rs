@@ -130,7 +130,7 @@ pub fn layer(
             | Overlay::Approval { .. }
             | Overlay::Question { .. }
             | Overlay::Trust { .. }
-    ) && !(matches!(&overlay, Overlay::Updates) && root.updating_update);
+    );
     if dismissible {
         scrim = scrim.child(
             div()
@@ -298,7 +298,7 @@ fn selectable(
 
 /// The settings sheet: the page's own two columns — the sections down the left,
 /// the active section's fields in a card on the right. Everything it writes goes
-/// through `save_prefs`, so the terminal and the Electron fallback see the same
+/// through `save_prefs`, so the terminal and the Electron app see the same
 /// values.
 pub fn settings_page(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
     let tab = root.settings_tab;
@@ -704,7 +704,7 @@ fn appearance_fields(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Vec<
     vec![
         field_tall(
             "Theme",
-            "The palette the window, the terminal and the Electron fallback all read.",
+            "The palette the window, the terminal and the Electron app all read.",
             theme,
             themes,
         ),
@@ -1141,7 +1141,7 @@ fn about_dialog(theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
                 .line_height(px(18.0))
                 .text_color(theme.dim())
                 .child(
-                    "The native GPUI desktop renderer, sharing configuration, sessions, approvals and tools with the terminal, editor and Electron fallback.",
+                    "The native GPUI desktop renderer, sharing configuration, sessions, approvals and tools with the terminal, editor and Electron.",
                 ),
         )
 }
@@ -1171,398 +1171,378 @@ fn image_preview(
     )
 }
 
-fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
-    let mut panel = if root.updating_update {
-        dialog(theme, "Updates", 560.0)
-    } else {
-        dialog_with_close(theme, "Updates", 560.0, cx)
+enum UpdateAction {
+    Page(String),
+    Dismiss(&'static str),
+    Later,
+    Cancel,
+    Background,
+    Download { primary: bool },
+    Install,
+    Restart,
+}
+
+struct UpdateView {
+    title: String,
+    note: String,
+    lines: Vec<String>,
+    paths: Vec<String>,
+    notes: Option<(String, String)>,
+    progress: Option<Option<f32>>,
+    actions: Vec<UpdateAction>,
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+}
+
+fn update_view(root: &Root) -> UpdateView {
+    let mut view = UpdateView {
+        title: "Updates".to_string(),
+        note: String::new(),
+        lines: Vec::new(),
+        paths: Vec::new(),
+        notes: None,
+        progress: None,
+        actions: vec![UpdateAction::Dismiss("Close")],
     };
+    let release_url = root
+        .update_check
+        .as_ref()
+        .and_then(|check| check["releaseUrl"].as_str())
+        .unwrap_or_default()
+        .to_string();
 
     if root.updating_update {
         let progress = root.update_progress.clone().unwrap_or_else(|| json!({}));
-        let stage = progress["stage"].as_str().unwrap_or("checking");
-        let version = progress["version"].as_str().unwrap_or_default();
-        let received = progress["received"].as_u64().unwrap_or(0);
-        let total = progress["total"].as_u64().unwrap_or(0);
-        let transfer = received as f64 / 1_048_576.0;
-        let size = total as f64 / 1_048_576.0;
-        let (heading, detail) = match stage {
-            "downloading" if version.is_empty() => (
-                "Downloading the update".to_string(),
-                "The verified installer is being downloaded.".to_string(),
-            ),
-            "downloading" => (
-                format!("Downloading Oxide {version}"),
-                if total > 0 {
-                    format!("{transfer:.1} of {size:.1} MB")
-                } else {
-                    format!("{transfer:.1} MB downloaded")
-                },
-            ),
-            "verifying" => (
-                "Verifying the download".to_string(),
-                "Checking the installer against the release’s SHA-256 checksum.".to_string(),
-            ),
-            "installing" => (
-                format!(
-                    "Installing Oxide{}",
-                    if version.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" {version}")
-                    }
-                ),
-                "Putting the new app in place.".to_string(),
-            ),
-            _ => (
-                "Checking for updates".to_string(),
-                "Looking for the newest Oxide release.".to_string(),
-            ),
+        let stage = progress["stage"].as_str().unwrap_or("downloading");
+        let version = progress["version"]
+            .as_str()
+            .filter(|version| !version.is_empty())
+            .or_else(|| {
+                root.update_check
+                    .as_ref()
+                    .and_then(|check| check["latest"].as_str())
+            })
+            .unwrap_or_default();
+        let named = if version.is_empty() {
+            "The release".to_string()
+        } else {
+            format!("Oxide {version}")
         };
-        panel = panel
-            .child(
-                div()
-                    .mt(px(2.0))
-                    .text_size(px(15.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text())
-                    .child(heading),
-            )
-            .child(
-                div()
-                    .text_size(px(12.5))
-                    .text_color(theme.dim())
-                    .child(detail),
-            );
-        if stage == "downloading" || stage == "verifying" {
-            let fraction = if total == 0 {
-                0.08
-            } else {
-                (received as f32 / total as f32).clamp(0.0, 1.0)
-            };
-            panel = panel.child(
-                div()
-                    .mt(px(4.0))
-                    .h(px(6.0))
-                    .w_full()
-                    .overflow_hidden()
-                    .rounded(px(3.0))
-                    .bg(theme.panel_3())
-                    .child(
-                        div()
-                            .h_full()
-                            .w(px((480.0 * fraction).max(6.0)))
-                            .rounded(px(3.0))
-                            .bg(theme.accent()),
-                    ),
-            );
+        let transferring = stage == "downloading";
+        let doing = match stage {
+            "checking" => format!("{named} is being looked up"),
+            "verifying" => format!("{named} is being verified"),
+            "installing" => format!("{named} is being put in place"),
+            _ if version.is_empty() => {
+                "The release is being downloaded and put in place".to_string()
+            }
+            _ => format!("Oxide {version} is being downloaded and put in place"),
+        };
+        view.title = if stage == "installing" {
+            "Installing update"
+        } else {
+            "Downloading update"
         }
-        let mut actions = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap(px(8.0))
-            .mt(px(12.0));
+        .to_string();
+        view.note = format!("{doing}. The app keeps running until it is restarted.");
+        view.actions.clear();
         if matches!(stage, "checking" | "downloading" | "verifying") {
-            actions = actions.child(Button::new("Cancel").render(
-                "updates-cancel",
-                theme,
-                cx,
-                |root, _, cx| root.cancel_update(cx),
-            ));
+            view.actions.push(UpdateAction::Cancel);
         }
-        return panel.child(actions);
+        view.actions.push(UpdateAction::Background);
+        if transferring {
+            let received = progress["received"].as_u64().unwrap_or(0);
+            let total = progress["total"].as_u64().unwrap_or(0);
+            if let Some(asset) = root
+                .update_check
+                .as_ref()
+                .and_then(|check| check["asset"]["name"].as_str())
+            {
+                view.lines.push(format!("Download {asset}"));
+            }
+            if total == 0 {
+                view.lines
+                    .push(format!("{} downloaded", megabytes(received)));
+                view.progress = Some(None);
+            } else {
+                let share = (received as f32 / total as f32).clamp(0.0, 1.0);
+                view.lines.push(format!(
+                    "{} of {} \u{00b7} {}%",
+                    megabytes(received),
+                    megabytes(total),
+                    (share * 100.0).round()
+                ));
+                view.progress = Some(Some(share));
+            }
+        } else {
+            view.lines.push(doing);
+        }
+        return view;
     }
 
-    if root.checking_updates {
-        return panel
-            .child(
-                div()
-                    .mt(px(2.0))
-                    .text_size(px(15.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text())
-                    .child("Checking for updates"),
-            )
-            .child(
-                div()
-                    .text_size(px(13.0))
-                    .text_color(theme.dim())
-                    .child("Looking for the newest Oxide release."),
-            );
-    }
     if let Some(error) = root.update_failure.as_deref() {
-        let restart_failed = root.update_restart_failed;
-        let installable = root
-            .update_check
-            .as_ref()
-            .and_then(|check| check["installable"].as_bool())
-            .unwrap_or(false);
-        return panel
-            .child(
-                div()
-                    .mt(px(2.0))
-                    .text_size(px(15.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text())
-                    .child(if restart_failed {
-                        "Couldn’t restart Oxide"
-                    } else {
-                        "Couldn’t finish the update"
-                    }),
-            )
-            .child(
-                div()
-                    .px(px(12.0))
-                    .py(px(10.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(theme.color("tool_error_bg"))
-                    .bg(theme.wash("tool_error_bg", 0.72))
-                    .text_size(px(11.5))
-                    .line_height(px(17.0))
-                    .text_color(theme.error())
-                    .child(error.to_string()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .mt(px(12.0))
-                    .child(
-                        Button::new(if restart_failed {
-                            "Restart Again"
-                        } else {
-                            "Try Again"
-                        })
-                        .primary()
-                        .render(
-                            "updates-install-retry",
-                            theme,
-                            cx,
-                            move |root, _, cx| {
-                                if restart_failed {
-                                    root.restart_for_update(cx);
-                                } else if installable {
-                                    root.install_update(cx);
-                                } else {
-                                    root.download_update(cx);
-                                }
-                            },
-                        ),
-                    ),
-            );
+        view.title = if root.update_restart_failed {
+            "Could not restart Oxide"
+        } else {
+            "Could not install the update"
+        }
+        .to_string();
+        view.lines.push(error.to_string());
+        if !release_url.is_empty() {
+            view.actions.insert(0, UpdateAction::Page(release_url));
+        }
+        return view;
     }
+
     if let Some(error) = root.update_error.as_deref() {
-        return panel
-            .child(
-                div()
-                    .mt(px(2.0))
-                    .text_size(px(15.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text())
-                    .child("Couldn’t check for updates"),
-            )
-            .child(
-                div()
-                    .text_size(px(12.5))
-                    .line_height(px(18.0))
-                    .text_color(theme.dim())
-                    .child("The release information couldn’t be loaded. Try again in a moment."),
-            )
-            .child(
-                div()
-                    .px(px(12.0))
-                    .py(px(10.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(theme.color("tool_error_bg"))
-                    .bg(theme.wash("tool_error_bg", 0.72))
-                    .text_size(px(11.5))
-                    .line_height(px(17.0))
-                    .text_color(theme.error())
-                    .child(error.to_string()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap(px(8.0))
-                    .mt(px(12.0))
-                    .child(Button::new("Try Again").primary().render(
-                        "updates-retry",
-                        theme,
-                        cx,
-                        |root, _, cx| root.check_for_updates(cx),
-                    )),
-            );
+        view.title = "Could not check for updates".to_string();
+        view.lines.push(error.to_string());
+        return view;
     }
+
     if let Some(result) = root.update_result.as_ref() {
         let version = result["version"].as_str().unwrap_or("the new release");
-        let text = result["text"].as_str().unwrap_or_default();
-        let path = result["path"].as_str().unwrap_or_default();
         let installed = result.get("pending").is_some();
         let pending = result["pending"].as_bool().unwrap_or(false);
-        let heading = if !installed {
-            format!("Oxide {version} is downloaded")
+        if !installed {
+            view.title = format!("Oxide {version} is downloaded");
+            view.note =
+                "Open the installer from your Downloads folder to finish the update.".to_string();
         } else if pending {
-            format!("The Oxide {version} installer is running")
+            view.title = "Installing update".to_string();
+            view.note = format!("The Oxide {version} installer is running.");
         } else {
-            format!("Oxide {version} is ready")
+            view.title = "Restart and install update".to_string();
+            view.note = format!("Oxide {version} is in place. Restart to run it.");
+        }
+        if let Some(path) = result["path"].as_str().filter(|path| !path.is_empty()) {
+            view.paths.push(path.to_string());
+        }
+        if let Some(text) = result["text"].as_str().filter(|text| !text.is_empty()) {
+            view.paths.push(text.to_string());
+        }
+        view.actions = if installed && !pending {
+            vec![UpdateAction::Later, UpdateAction::Restart]
+        } else {
+            vec![UpdateAction::Dismiss("Close")]
         };
-        panel = panel.child(
-            div()
-                .mt(px(2.0))
-                .text_size(px(15.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text())
-                .child(heading),
-        );
-        if !text.is_empty() {
-            panel = panel.child(
-                div()
-                    .text_size(px(12.5))
-                    .line_height(px(18.0))
-                    .text_color(theme.dim())
-                    .child(text.to_string()),
-            );
-        }
-        if !path.is_empty() {
-            panel = panel.child(
-                div()
-                    .text_size(px(11.5))
-                    .line_height(px(17.0))
-                    .text_color(theme.faint())
-                    .child(path.to_string()),
-            );
-        }
-        let mut actions = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap(px(8.0))
-            .mt(px(12.0));
-        if installed && !pending {
-            actions = actions.child(Button::new("Restart and Install").primary().render(
-                "updates-restart",
-                theme,
-                cx,
-                |root, _, cx| root.restart_for_update(cx),
-            ));
-        }
-        return panel.child(actions);
+        return view;
     }
+
     let Some(check) = root.update_check.as_ref() else {
-        return panel;
+        view.lines
+            .push("Checking the newest release\u{2026}".to_string());
+        return view;
     };
     let available = check["updateAvailable"].as_bool().unwrap_or(false);
     let installable = check["installable"].as_bool().unwrap_or(false);
     let current = check["current"].as_str().unwrap_or("unknown");
     let latest = check["latest"].as_str().unwrap_or("unknown");
-    let released = check["releasedAt"].as_str().unwrap_or_default();
     let asset = check["asset"]["name"].as_str().unwrap_or_default();
-    let advice = check["advice"].as_str().unwrap_or_default();
-    let release_url = check["releaseUrl"].as_str().unwrap_or_default().to_string();
-    let notes = check["notes"].as_str().unwrap_or_default();
-
-    panel = panel
-        .child(
-            div()
-                .text_size(px(17.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text())
-                .child(if available {
-                    format!("Oxide {latest} is available")
-                } else {
-                    "Oxide is up to date".to_string()
-                }),
-        )
-        .child(
-            div()
-                .mt(px(4.0))
-                .text_size(px(12.0))
-                .text_color(theme.dim())
-                .child(format!(
-                    "Current {current} · Latest {latest}{}",
-                    if released.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · {released}")
-                    }
-                )),
-        );
+    let downloadable = check["asset"]["url"]
+        .as_str()
+        .is_some_and(|url| !url.is_empty());
+    let notes = check["notes"].as_str().unwrap_or_default().trim();
+    view.title = if available {
+        format!("Update Available (v{latest})")
+    } else {
+        format!("Oxide {current} is up to date")
+    };
     if available {
-        if !asset.is_empty() {
-            panel = panel.child(
-                div()
-                    .mt(px(10.0))
-                    .text_size(px(12.0))
-                    .text_color(theme.dim())
-                    .child(format!("Download: {asset}")),
-            );
+        view.note = if installable {
+            "Installing downloads the release for this machine and puts it in this app's place. The app keeps running until it is restarted."
+        } else {
+            "Downloading fetches this release's installer into your Downloads folder. Open it to install the update."
         }
-        if !advice.is_empty() {
-            panel = panel.child(
-                div()
-                    .mt(px(8.0))
-                    .text_size(px(12.0))
-                    .line_height(px(18.0))
-                    .text_color(theme.dim())
-                    .child(advice.to_string()),
-            );
-        }
-        if !notes.is_empty() {
-            panel = panel.child(
-                div()
-                    .id("update-notes")
-                    .mt(px(10.0))
-                    .max_h(px(190.0))
-                    .overflow_y_scroll()
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(theme.border())
-                    .bg(theme.background())
-                    .text_size(px(11.5))
-                    .line_height(px(17.0))
-                    .text_color(theme.dim())
-                    .child(notes.to_string()),
-            );
-        }
+        .to_string();
+    }
+    view.lines.push(format!("Current {current}"));
+    view.lines.push(format!("Latest {latest}"));
+    let installation = check["installation"].as_str().unwrap_or_default();
+    let path = check["path"].as_str().unwrap_or_default();
+    if !installation.is_empty() || !path.is_empty() {
+        let installation = if installation.is_empty() {
+            "unknown"
+        } else {
+            installation
+        };
+        view.paths.push(format!("{installation} \u{00b7} {path}"));
+    }
+    if !asset.is_empty() {
+        view.lines.push(format!("Download {asset}"));
+    }
+    if let Some(advice) = check["advice"].as_str().filter(|advice| !advice.is_empty()) {
+        view.paths.push(advice.to_string());
+    }
+    if !notes.is_empty() {
+        view.notes = Some((
+            format!(
+                "Oxide {latest}{}",
+                check["releasedAt"]
+                    .as_str()
+                    .filter(|released| !released.is_empty())
+                    .map(|released| format!(" \u{00b7} {released}"))
+                    .unwrap_or_default()
+            ),
+            notes.to_string(),
+        ));
+    }
+    view.actions.clear();
+    if !release_url.is_empty() && (!(available && installable) || notes.is_empty()) {
+        view.actions.push(UpdateAction::Page(release_url));
+    }
+    view.actions.push(UpdateAction::Dismiss(if available {
+        "Dismiss"
+    } else {
+        "Close"
+    }));
+    if available && downloadable {
+        view.actions.push(UpdateAction::Download {
+            primary: !installable,
+        });
+    }
+    if available && installable {
+        view.actions.push(UpdateAction::Install);
+    }
+    view
+}
+
+fn update_dialog(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> gpui::Div {
+    let view = update_view(root);
+    let mut panel = dialog(theme, &view.title, 560.0);
+    if !view.note.is_empty() {
+        panel = panel.child(
+            div()
+                .text_size(px(13.0))
+                .line_height(px(20.0))
+                .text_color(theme.dim())
+                .child(view.note),
+        );
+    }
+    let mut body = div().flex().flex_col().gap(px(6.0));
+    for line in view.lines {
+        body = body.child(
+            div()
+                .text_size(px(13.0))
+                .line_height(px(19.0))
+                .text_color(theme.text())
+                .child(line),
+        );
+    }
+    for line in view.paths {
+        body = body.child(
+            div()
+                .text_size(px(11.5))
+                .line_height(px(17.0))
+                .text_color(theme.faint())
+                .child(line),
+        );
+    }
+    panel = panel.child(body);
+    if let Some(share) = view.progress {
+        let fill = div().h_full().rounded(px(2.0)).bg(theme.accent());
+        panel = panel.child(
+            div()
+                .w_full()
+                .h(px(4.0))
+                .rounded(px(2.0))
+                .bg(theme.panel_3())
+                .child(match share {
+                    Some(share) => fill.w(gpui::relative(share)),
+                    None => fill.w_full().opacity(0.5),
+                }),
+        );
+    }
+    if let Some((head, notes)) = view.notes {
+        panel = panel.child(
+            div()
+                .id("update-notes")
+                .max_h(px(190.0))
+                .overflow_y_scroll()
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(theme.border())
+                .bg(theme.background())
+                .child(
+                    div()
+                        .mb(px(4.0))
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text())
+                        .child(head),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .line_height(px(17.0))
+                        .text_color(theme.dim())
+                        .child(notes),
+                ),
+        );
     }
     let mut actions = div()
         .flex()
         .flex_row()
         .justify_end()
         .gap(px(8.0))
-        .mt(px(12.0));
-    if !release_url.is_empty() {
-        actions = actions.child(Button::new("Release Notes").render(
-            "updates-release",
-            theme,
-            cx,
-            move |_, _, cx| cx.open_url(&release_url),
-        ));
-    }
-    if available && !asset.is_empty() {
-        actions = actions.child(if installable {
-            Button::new("Install Update").primary().render(
+        .mt(px(8.0));
+    for action in view.actions {
+        actions = actions.child(match action {
+            UpdateAction::Page(url) => Button::new("Release notes").render(
+                "updates-release",
+                theme,
+                cx,
+                move |_, _, cx| cx.open_url(&url),
+            ),
+            UpdateAction::Dismiss(label) => {
+                Button::new(label).render("updates-close", theme, cx, |root, _, cx| {
+                    root.overlay = None;
+                    cx.notify();
+                })
+            }
+            UpdateAction::Later => {
+                Button::new("Later").render("updates-later", theme, cx, |root, _, cx| {
+                    root.overlay = None;
+                    cx.notify();
+                })
+            }
+            UpdateAction::Cancel => {
+                Button::new("Cancel").render("updates-cancel", theme, cx, |root, _, cx| {
+                    root.cancel_update(cx)
+                })
+            }
+            UpdateAction::Background => Button::new("Download in background").render(
+                "updates-background",
+                theme,
+                cx,
+                |root, _, cx| {
+                    root.overlay = None;
+                    cx.notify();
+                },
+            ),
+            UpdateAction::Download { primary } => {
+                let button = Button::new("Download");
+                let button = if primary { button.primary() } else { button };
+                button.render("updates-download", theme, cx, |root, _, cx| {
+                    root.download_update(cx)
+                })
+            }
+            UpdateAction::Install => Button::new("Update").primary().render(
                 "updates-install",
                 theme,
                 cx,
                 |root, _, cx| root.install_update(cx),
-            )
-        } else {
-            Button::new("Download").primary().render(
-                "updates-download",
+            ),
+            UpdateAction::Restart => Button::new("Restart and install update").primary().render(
+                "updates-restart",
                 theme,
                 cx,
-                |root, _, cx| root.download_update(cx),
-            )
+                |root, _, cx| root.restart_for_update(cx),
+            ),
         });
     }
     panel.child(actions)

@@ -1161,7 +1161,7 @@ mod tests {
             "id": "ce4b20dcbe82236f",
             "message_count": 469,
             "modified_at": 1794657550u64,
-            "name": "Align GPUI window with the Electron fallback",
+            "name": "Align GPUI window with the Electron app",
             "path": "sessions/1a99b86e8b6de1c6/1794656133745_ce4b20dcbe82236f.jsonl",
             "pinned": false,
             "preview": "The gap is so large between GPUI desktop and Electron desktop"
@@ -1169,7 +1169,7 @@ mod tests {
         .expect("a session row");
         assert_eq!(
             session.title,
-            "Align GPUI window with the Electron fallback"
+            "Align GPUI window with the Electron app"
         );
         assert!(session.named);
         let unnamed = SessionRow::from_value(&json!({

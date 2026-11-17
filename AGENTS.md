@@ -11,7 +11,7 @@ An optimized AI coding agent CLI written in Rust.
   separate Cargo workspace that links `oxide-desktop`'s library half (the same
   `commands::dispatch`, approvals, turns and stores) and draws it natively. It
   is packaged by `package.sh` and released by `desktop-gpui.yml`.
-- `crates/desktop/` (`oxide-desktop`): the Electron desktop fallback during the
+- `crates/desktop/` (`oxide-desktop`): the Electron desktop app during the
   native migration. `electron/` hosts the window and preload; `src/` is the Rust
   harness. The bridge uses one JSON packet per line. `ui/` holds the page shared
   behavior checks exercise.

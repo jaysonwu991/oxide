@@ -2,7 +2,7 @@
 //! calls, and the packets it paints.
 //!
 //! This is the primary GPUI front-end of the desktop app. It uses the same
-//! configuration, session store and approvals as the Electron fallback in
+//! configuration, session store and approvals as the Electron app in
 //! `crates/desktop`, drawn natively instead of by a webview. Everything the
 //! engine answers — projects, threads, turns, cards, diffs, models, themes,
 //! prefs — is read from the commands in `oxide_desktop::commands`, which is
@@ -409,6 +409,7 @@ pub struct Root {
     pub update_restart_failed: bool,
     pub updating_update: bool,
     pub update_token: Option<String>,
+    pub update_flag: bool,
     pub subscriptions: Vec<Subscription>,
 }
 
@@ -650,6 +651,7 @@ impl Root {
             update_restart_failed: false,
             updating_update: false,
             update_token: None,
+            update_flag: false,
             subscriptions,
         };
 
@@ -658,6 +660,7 @@ impl Root {
         root.load_language(cx);
         root.load_themes(cx);
         root.refresh_projects(cx);
+        root.catch_up_on_launch_update(cx);
 
         // A branch switched in a terminal is the reader's to see here, and
         // nothing in this process was told it changed: coming back to the
@@ -757,7 +760,7 @@ impl Root {
         cx.bind_keys(bindings);
     }
 
-    /// The window's menu bar, the way the Electron fallback's menu is built.
+    /// The window's menu bar, the way Electron's menu is built.
     pub fn install_menus(cx: &mut App) {
         use gpui::{Menu, MenuItem, OsAction};
         cx.set_menus(vec![
@@ -1000,8 +1003,60 @@ impl Root {
         );
     }
 
-    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+    /// The launch's own install starts before this window listens, so its first
+    /// steps were emitted to nobody; the engine keeps the newest one, and it is
+    /// heard here through the same handler an event would reach.
+    fn catch_up_on_launch_update(&mut self, cx: &mut Context<Self>) {
+        self.call("launch_update", json!({}), cx, |root, result, cx| {
+            let Ok(heard) = result else {
+                return;
+            };
+            let Some(name) = heard["event"].as_str() else {
+                return;
+            };
+            let payload = heard["payload"].clone();
+            root.event(name, payload, cx);
+            if name == "update-progress" {
+                root.overlay = Some(Overlay::Updates);
+            }
+        });
+    }
+
+    /// What the rail's update button says, or nothing when there is no update
+    /// to speak of.
+    pub fn update_notice(&self) -> Option<&'static str> {
         if self.updating_update {
+            let installing = self
+                .update_progress
+                .as_ref()
+                .and_then(|progress| progress["stage"].as_str())
+                == Some("installing");
+            return Some(if installing {
+                "Installing update"
+            } else {
+                "Downloading update"
+            });
+        }
+        if let Some(result) = self.update_result.as_ref() {
+            return Some(match result["pending"].as_bool() {
+                Some(true) => "Installing update",
+                Some(false) => "Restart and install update",
+                None => "Update Available",
+            });
+        }
+        let found = self
+            .update_check
+            .as_ref()
+            .is_some_and(|check| check["updateAvailable"].as_bool() == Some(true));
+        (found || self.update_flag).then_some("Update Available")
+    }
+
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        let installed = self
+            .update_result
+            .as_ref()
+            .is_some_and(|result| result.get("pending").is_some());
+        if self.updating_update || installed {
             self.overlay = Some(Overlay::Updates);
             cx.notify();
             return;
@@ -1023,7 +1078,10 @@ impl Root {
             |root, result, cx| {
                 root.checking_updates = false;
                 match result {
-                    Ok(value) => root.update_check = Some(value),
+                    Ok(value) => {
+                        root.update_flag = value["updateAvailable"].as_bool() == Some(true);
+                        root.update_check = Some(value);
+                    }
                     Err(error) => root.update_error = Some(error),
                 }
                 cx.notify();
@@ -1104,6 +1162,7 @@ impl Root {
         };
         self.updating_update = false;
         self.update_progress = None;
+        self.overlay = None;
         let expected = token.clone();
         self.call(
             "cancel_update",
@@ -3763,7 +3822,7 @@ impl Root {
     }
 
     /// Picks files from disk and holds them as the turn's attachments, the way
-    /// the Electron fallback's `pick_files` does — the same data URL the core reads.
+    /// Electron's `pick_files` does — the same data URL the core reads.
     pub fn attach_files(&mut self, cx: &mut Context<Self>) {
         let index = self.active;
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
@@ -3983,7 +4042,20 @@ impl Root {
                 let id = payload["terminal"].as_u64().unwrap_or_default();
                 self.terminal.exit(id);
             }
+            "update-available" => {
+                self.update_flag = true;
+                self.update_check = None;
+                self.update_error = None;
+                self.update_result = None;
+                self.update_failure = None;
+                self.updating_update = true;
+                self.update_progress = Some(json!({ "stage": "checking" }));
+                self.overlay = Some(Overlay::Updates);
+            }
             "update-progress" => {
+                if self.update_token.is_none() {
+                    self.update_token = payload["token"].as_str().map(str::to_string);
+                }
                 if payload["token"].as_str().is_none()
                     || payload["token"].as_str() == self.update_token.as_deref()
                 {
@@ -3998,6 +4070,7 @@ impl Root {
                 self.updating_update = false;
                 self.update_progress = None;
                 self.update_result = Some(payload);
+                self.update_token = None;
                 self.overlay = Some(Overlay::Updates);
             }
             "update-failed" => {
@@ -4005,12 +4078,21 @@ impl Root {
                 self.update_progress = None;
                 if payload["cancelled"].as_bool().unwrap_or(false) {
                     self.update_token = None;
+                    if matches!(self.overlay, Some(Overlay::Updates)) {
+                        self.overlay = None;
+                    }
                 } else {
+                    self.update_token = None;
                     self.update_restart_failed = false;
-                    self.update_failure = payload["message"]
+                    let message = payload["message"]
                         .as_str()
-                        .map(str::to_string)
-                        .or_else(|| Some("The update did not finish.".to_string()));
+                        .unwrap_or("The update did not finish.")
+                        .to_string();
+                    if matches!(self.overlay, Some(Overlay::Updates)) {
+                        self.update_failure = Some(message);
+                    } else {
+                        self.toast(format!("Could not install the update: {message}"), true, cx);
+                    }
                 }
             }
             "restart" => {
@@ -4477,7 +4559,7 @@ impl Render for Root {
                         this.model_menu_open = false;
                     }
                     cx.notify();
-                } else if !this.updating_update && this.overlay.take().is_some() {
+                } else if this.overlay.take().is_some() {
                     if this.file_viewer.is_some() {
                         this.file_viewer = None;
                     }

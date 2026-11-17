@@ -1902,18 +1902,42 @@ pub fn cancel_update(token: String) -> CmdResult<Value> {
 /// package, a checkout's build — is left to the dialog's own check, since only
 /// the reader can decide to install one of those.
 pub async fn auto_update(state: Arc<DesktopState>) {
+    auto_update_component(
+        state,
+        Component::Desktop,
+        update::current_version().to_string(),
+    )
+    .await
+}
+
+/// The same launch install for one desktop release train, which is how the beta
+/// GPUI app keeps itself current the way the Electron app does. The caller names
+/// the build it is running, since this library reports the stable package's own
+/// version. A train whose release is not one this copy can replace in place is
+/// left to the dialog.
+pub async fn auto_update_component(
+    state: Arc<DesktopState>,
+    component: Component,
+    current: String,
+) {
     if !update_notice::enabled_in(None) {
         return;
     }
     // A launch is not the place to report a check that could not be made — the
     // window's own Check for Updates… is — so a lookup that fails is left to the
     // next launch and to that button.
-    let Ok(notice) = update_notice::latest_notice(Component::Desktop).await else {
+    let Ok(notice) = update_notice::latest_notice(component).await else {
         return;
     };
     let installation = update::installation();
-    if !update::launch_installs(&notice, update::current_version(), &installation) {
+    if !update::launch_installs(&notice, &current, &installation) {
         return;
+    }
+    if component != Component::Desktop {
+        match update::check_component(component, &current).await {
+            Ok(check) if check.installable => {}
+            _ => return,
+        }
     }
     // A release the app is about to put in place is one the reader is told
     // about: the dialog opens on what is running, and its first step is either
@@ -1928,19 +1952,20 @@ pub async fn auto_update(state: Arc<DesktopState>) {
     let token = update::new_token();
     let steps = state.clone();
     let named = token.clone();
-    let answer = update::install_reporting(&token, move |progress| {
-        steps.announce_launch_update(
-            "update-progress",
-            json!({
-                "stage": progress.stage,
-                "version": progress.version,
-                "received": progress.received,
-                "total": progress.total,
-                "token": named,
-            }),
-        );
-    })
-    .await;
+    let answer =
+        update::install_component_reporting(component, &current, &token, move |progress| {
+            steps.announce_launch_update(
+                "update-progress",
+                json!({
+                    "stage": progress.stage,
+                    "version": progress.version,
+                    "received": progress.received,
+                    "total": progress.total,
+                    "token": named,
+                }),
+            );
+        })
+        .await;
     match answer {
         Ok(answer) => state.announce_launch_update("update-ready", answer),
         // A cancel is the reader's own doing, and the dialog it came from has

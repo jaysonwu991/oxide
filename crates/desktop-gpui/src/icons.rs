@@ -93,6 +93,10 @@ const GLYPHS: &[(&str, &str)] = &[
         glyph!(r##"<path d="M5 3v15l4-4 3.5 7 3-1.7-3.5-6.8H18Z"/><path d="m13.5 15.5 4 4"/>"##),
     ),
     (
+        "download",
+        glyph!(r##"<path d="M12 4v10m-4-4 4 4 4-4M5 14v5h14v-5"/>"##),
+    ),
+    (
         "spinner",
         glyph!(r##"<path d="M20.5 12a8.5 8.5 0 1 1-2.49-6.01" stroke-width="2"/>"##),
     ),
@@ -230,6 +234,7 @@ pub enum Icon {
     Spinner,
     Keyboard,
     Pointer,
+    Download,
 }
 
 impl Icon {
@@ -271,6 +276,7 @@ impl Icon {
             Icon::Spinner => "Working",
             Icon::Keyboard => "Keyboard shortcuts",
             Icon::Pointer => "Computer Use",
+            Icon::Download => "Update available",
         }
     }
 
@@ -312,6 +318,7 @@ impl Icon {
             Icon::Spinner => "icons/spinner.svg",
             Icon::Keyboard => "icons/keyboard.svg",
             Icon::Pointer => "icons/pointer.svg",
+            Icon::Download => "icons/download.svg",
         }
     }
 }
@@ -463,6 +470,7 @@ mod tests {
             Icon::Spinner,
             Icon::Keyboard,
             Icon::Pointer,
+            Icon::Download,
         ] {
             let body = Assets.load(mark.path()).unwrap().unwrap();
             assert!(body.starts_with(b"<svg"));
@@ -514,6 +522,7 @@ mod tests {
             Icon::Spinner,
             Icon::Keyboard,
             Icon::Pointer,
+            Icon::Download,
         ] {
             assert!(!mark.label().is_empty());
         }
