@@ -186,6 +186,7 @@ const ICONS = {
     `<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" ${STROKE_24}/>` +
       `<path d="M14 3v5h5" ${STROKE_24}/>`,
   ),
+  search: glyph(`<circle cx="10.5" cy="10.5" r="6.5" ${STROKE_24}/><path d="m15.3 15.3 4.7 4.7" ${STROKE_24}/>`),
   close: glyph(`<path d="M18 6 6 18M6 6l12 12" ${STROKE_24}/>`),
   plus: glyph('<path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>', 16),
   more: glyph('<path d="M5 12h.01M12 12h.01M19 12h.01" ' + STROKE_24 + '/>'),
@@ -4827,6 +4828,38 @@ function toolSummary(name, argsJson) {
   };
 }
 
+/// The names and marks Codex gives a tool call. MCP tools keep their own name,
+/// while the built-ins say what the reader asked for rather than exposing the
+/// engine's wire name.
+function toolDisplayName(name) {
+  if (isComputerTool(name)) return "Computer Use";
+  return {
+    tool: "Tool result",
+    "": "Tool result",
+    bash: "Command",
+    read: "Read",
+    write: "Write",
+    edit: "Edit",
+    find: "Find",
+    grep: "Search",
+    ls: "List",
+    web_search: "Web search",
+    web_fetch: "Web fetch",
+    webfetch: "Web fetch",
+  }[name] || name;
+}
+
+function toolDisplayIcon(name) {
+  if (isComputerTool(name)) return ICONS.pointer;
+  if (name === "read") return ICONS.file;
+  if (name === "write" || name === "edit") return ICONS.compose;
+  if (name === "find" || name === "grep") return ICONS.search;
+  if (name === "ls") return ICONS.folder;
+  if (name === "web_search" || name === "web_fetch" || name === "webfetch") return ICONS.globe;
+  if (name === "bash") return ICONS.changes;
+  return ICONS.power;
+}
+
 /// The first `lines` of `text`, plus how many were dropped, for the collapsed
 /// card preview.
 function previewShell(text, limit) {
@@ -4877,12 +4910,15 @@ function createToolCard(name, args) {
   caret.innerHTML = ICONS.caret;
   const tname = document.createElement("span");
   tname.className = "tname";
-  tname.textContent = name;
+  const nameIcon = document.createElement("span");
+  nameIcon.className = isComputerTool(name) ? "tool-icon computer-tool-icon" : "tool-icon";
+  nameIcon.setAttribute("aria-hidden", "true");
+  nameIcon.innerHTML = toolDisplayIcon(name);
+  const nameText = document.createElement("span");
+  nameText.textContent = toolDisplayName(name);
+  tname.append(nameIcon, nameText);
   if (isComputerTool(name)) {
-    const icon = document.createElement("span");
-    icon.className = "computer-tool-icon";
-    icon.innerHTML = ICONS.pointer;
-    head.appendChild(icon);
+    head.title = toolDisplayName(name);
   }
   const targ = document.createElement("span");
   targ.className = "targ";
@@ -5008,9 +5044,13 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0, a
   const counts = diff ? diffCounts(diff.text) : "";
   tool.tstate.textContent = tool.quiet
     ? t("ui.0Matches", "0 matches{value0}", { value0: elapsed ? ` · ${formatDuration(elapsed)}` : "" })
-    : `${isError ? "✖" : "✔"}${counts ? ` ${counts}` : ""}${
-        elapsed ? ` ${formatDuration(elapsed)}` : ""
-      }`;
+    : isError
+      ? "Failed"
+      : counts;
+  tool.tstate.setAttribute(
+    "aria-label",
+    isError ? "Failed" : tool.quiet ? tool.tstate.textContent : "Completed",
+  );
   if (diff) {
     tool.diffEl = diffBlock(diff);
     tool.diffEl.hidden = true;
@@ -6052,7 +6092,7 @@ async function refreshProjectDetails() {
   checkout.innerHTML = ICONS.worktree + `<span>${escapeHtml(state.worktree ? baseName(state.worktree) : t("ui.localCheckout", "Local checkout"))}</span>`;
   checkout.title = project || "";
   const changes = state.repositoryChanges;
-  el("details-stats").innerHTML = changes?.project === project ? statsHtml(changes.added, changes.removed) : "";
+  el("details-stats").innerHTML = changes?.project === project ? statsHtml(changes.added, changes.removed, true) : "";
   el("details-changes").disabled = !project;
   el("details-more").disabled = !project;
   const branchRow = el("details-branch");

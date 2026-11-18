@@ -20,6 +20,7 @@ use gpui::{
 };
 use serde_json::Value;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 // ---------- shared pieces ----------
@@ -2049,13 +2050,204 @@ pub fn sidebar_resizer(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -
 
 // ---------- details ----------
 
+#[derive(Clone, Debug)]
+enum DetailSource {
+    Attachment(Attachment),
+    Web,
+    Mcp(Value),
+}
+
+enum DetailSourceAction {
+    OpenImage {
+        name: String,
+        image: Arc<gpui::Image>,
+    },
+    Toast(String),
+    OpenMcp,
+}
+
+/// Everything the current chat actually carries: its attachments, a web
+/// search, and the project's MCP servers. The page lists the same sources in
+/// this order, so both desktop renderers answer the context pane the same way.
+fn chat_sources(entries: &[Entry], servers: &[Value]) -> Vec<DetailSource> {
+    let mut sources = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in entries {
+        match entry {
+            Entry::User { attachments, .. } => {
+                for attachment in attachments {
+                    if seen.insert(format!("attachment:{}", attachment.data_url)) {
+                        sources.push(DetailSource::Attachment(attachment.clone()));
+                    }
+                }
+            }
+            Entry::Tool(card)
+                if matches!(
+                    card.name.as_str(),
+                    "web_search" | "web_fetch" | "webfetch" | "websearch" | "search_query"
+                ) && seen.insert("web".to_string()) =>
+            {
+                sources.push(DetailSource::Web);
+            }
+            _ => {}
+        }
+    }
+    for server in servers {
+        let name = server["name"].as_str().unwrap_or_default();
+        if !name.is_empty() && seen.insert(format!("mcp:{name}")) {
+            sources.push(DetailSource::Mcp(server.clone()));
+        }
+    }
+    sources
+}
+
+fn mcp_source_state(server: &Value) -> (String, &'static str) {
+    if !server["enabled"].as_bool().unwrap_or(true) {
+        ("Off".to_string(), "off")
+    } else {
+        match server["state"].as_str().unwrap_or_default() {
+            "connected" => ("Connected".to_string(), "connected"),
+            "needs-auth" => ("Needs auth".to_string(), "needs"),
+            "needs-trust" => ("Needs trust".to_string(), "needs"),
+            "" => ("Ready".to_string(), "ready"),
+            other => (other.to_string(), "ready"),
+        }
+    }
+}
+
+fn detail_source_row(
+    position: usize,
+    source: DetailSource,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> Stateful<gpui::Div> {
+    let mut row = div()
+        .id(SharedString::from(format!("details-source-{position}")))
+        .role(gpui::Role::Button)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .h(px(32.0))
+        .px(px(4.0))
+        .rounded(px(7.0))
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.panel()).text_color(theme.text()));
+    let (mark, name, state, status_color, action) = match source {
+        DetailSource::Attachment(attachment) => {
+            let action = attachment.image.clone().map_or_else(
+                || {
+                    DetailSourceAction::Toast(format!(
+                        "{} is included in this chat.",
+                        attachment.name
+                    ))
+                },
+                |image| DetailSourceAction::OpenImage {
+                    name: attachment.name.clone(),
+                    image,
+                },
+            );
+            (None, attachment.name, None, None, action)
+        }
+        DetailSource::Web => (
+            Some(Icon::Globe),
+            "Web search".to_string(),
+            None,
+            None,
+            DetailSourceAction::Toast("Web search is included in this chat.".to_string()),
+        ),
+        DetailSource::Mcp(server) => {
+            let (state, tone) = mcp_source_state(&server);
+            let color = match tone {
+                "connected" => theme.success(),
+                "needs" => theme.tool(),
+                _ => theme.faint(),
+            };
+            let name = server["name"].as_str().unwrap_or("MCP server").to_string();
+            let mark = if crate::model::is_computer_tool(name.as_str()) {
+                Icon::Pointer
+            } else {
+                Icon::Globe
+            };
+            (
+                Some(mark),
+                name,
+                Some(state),
+                Some(color),
+                DetailSourceAction::OpenMcp,
+            )
+        }
+    };
+    row = row.child(match &action {
+        DetailSourceAction::OpenImage { image, .. } => div()
+            .flex_none()
+            .w(px(18.0))
+            .h(px(18.0))
+            .overflow_hidden()
+            .rounded(px(3.0))
+            .child(gpui::img(image.clone()).w(px(18.0)).h(px(18.0))),
+        _ => div()
+            .flex_none()
+            .child(icons::icon(mark.unwrap_or(Icon::File), 14.0, theme.faint())),
+    });
+    row = row.child(
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_size(px(12.0))
+            .text_color(theme.text())
+            .child(name.clone()),
+    );
+    if let (Some(state), Some(color)) = (state, status_color) {
+        row = row.child(
+            div()
+                .flex_none()
+                .max_w(px(92.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(10.5))
+                .text_color(color)
+                .child(state),
+        );
+    }
+    row.aria_label(match &action {
+        DetailSourceAction::OpenImage { name, .. } => {
+            format!("Open {name}")
+        }
+        DetailSourceAction::Toast(_) => format!("{name}, included in this chat"),
+        DetailSourceAction::OpenMcp => format!("Open {name} settings"),
+    })
+    .on_click(cx.listener(move |root, _, _, cx| match &action {
+        DetailSourceAction::OpenImage { name, image } => {
+            root.overlay = Some(Overlay::ImagePreview {
+                name: name.clone(),
+                image: image.clone(),
+            });
+            cx.notify();
+        }
+        DetailSourceAction::Toast(message) => root.toast(message.clone(), false, cx),
+        DetailSourceAction::OpenMcp => {
+            root.rail = Rail::Customize;
+            root.customize_tab = CustomizeTab::McpServers;
+            root.overlay = None;
+            cx.notify();
+        }
+    }))
+}
+
 /// The pane beside the conversation: the project, the work tree's own totals,
-/// the branch, and the sources (MCP servers) the thread can reach — the page's
-/// right-hand column, at the same 280px.
+/// the branch, and every source the current thread can reach — the page's
+/// right-hand column at the same 320px.
 pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl IntoElement {
     let project = root.selected_project().cloned();
     let branch = root.branch.clone();
-    let sources = root.sources.clone();
+    let sources = root
+        .chats
+        .get(root.active)
+        .map(|chat| chat_sources(&chat.entries, &root.sources))
+        .unwrap_or_default();
     let pull = root
         .pulls
         .iter()
@@ -2083,7 +2275,8 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         .as_ref()
         .map(|project| project.path.as_str())
         .unwrap_or_default();
-    let (files, added, removed) = change_totals(project_path, root.live_changes.as_ref(), &changes);
+    let (_files, added, removed) =
+        change_totals(project_path, root.live_changes.as_ref(), &changes);
 
     let mut panel = div()
         .id("details-pane")
@@ -2098,8 +2291,8 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         .gap(px(2.0))
         .px(px(16.0))
         .py(px(12.0))
-        .rounded(px(12.0))
-        .bg(theme.panel())
+        .rounded(px(18.0))
+        .bg(theme.panel_2())
         .border_1()
         .border_color(theme.border());
 
@@ -2147,14 +2340,10 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
         "details-changes",
         Icon::Changes,
         "View changes",
-        if files > 0 {
-            Some(vec![
-                (format!("+{added}"), theme.success()),
-                (format!("\u{2212}{removed}"), theme.error()),
-            ])
-        } else {
-            None
-        },
+        Some(vec![
+            (format!("+{added}"), theme.success()),
+            (format!("\u{2212}{removed}"), theme.error()),
+        ]),
         theme,
         cx,
         |root, _, cx| root.toggle_repository_changes(cx),
@@ -2348,7 +2537,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
             )
             .child(
                 icon_button("details-add-source", Icon::Plus, 22.0, theme, false)
-                    .tooltip(tip("Sources come from the project's mcp.json", theme))
+                    .tooltip(tip("View all sources", theme))
                     .on_click(cx.listener(|root, _, _, cx| {
                         root.rail = Rail::Customize;
                         root.overlay = None;
@@ -2364,57 +2553,11 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                 .py_1()
                 .text_size(px(11.5))
                 .text_color(theme.faint())
-                .child("No MCP servers in this project"),
+                .child("No sources yet."),
         );
     } else {
-        for server in &sources {
-            let name = server["name"].as_str().unwrap_or_default().to_string();
-            let state = if !server["enabled"].as_bool().unwrap_or(true) {
-                "Off".to_string()
-            } else {
-                match server["state"].as_str().unwrap_or_default() {
-                    "connected" => "Connected".to_string(),
-                    "needs-auth" => "Needs auth".to_string(),
-                    "needs-trust" => "Needs trust".to_string(),
-                    "" => "Ready".to_string(),
-                    other => other.to_string(),
-                }
-            };
-            let color = if state == "Connected" {
-                theme.success()
-            } else if state == "Off" {
-                theme.faint()
-            } else {
-                theme.tool()
-            };
-            panel = panel.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .h(px(32.0))
-                    .px(px(4.0))
-                    .rounded(px(7.0))
-                    .child(icons::icon(Icon::Globe, 14.0, theme.faint()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_size(px(12.0))
-                            .text_color(theme.text())
-                            .child(name),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(10.5))
-                            .text_color(color)
-                            .child(state),
-                    ),
-            );
+        for (position, source) in sources.into_iter().enumerate() {
+            panel = panel.child(detail_source_row(position, source, theme, cx));
         }
     }
 
@@ -2443,7 +2586,7 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
     div()
         .flex()
         .flex_none()
-        .w(px(312.0))
+        .w(px(320.0))
         .min_h(px(0.0))
         .p(px(8.0))
         .bg(theme.background())
@@ -2583,7 +2726,7 @@ fn conversation(
             0.0
         };
     let trailing = (if root.show_details && !root.show_changes {
-        312.0
+        320.0
     } else {
         0.0
     }) + (if root.show_changes {
@@ -2592,7 +2735,7 @@ fn conversation(
         0.0
     });
     let reading_width =
-        (f32::from(window.viewport_size().width) - leading - trailing - 44.0).clamp(280.0, 740.0);
+        (f32::from(window.viewport_size().width) - leading - trailing - 56.0).clamp(280.0, 820.0);
 
     let mut transcript = div()
         .id("transcript")
@@ -2622,10 +2765,10 @@ fn conversation(
                 }
             }),
         )
-        .px(px(22.0))
-        .pt(px(34.0))
-        .pb(px(10.0))
-        .gap(px(22.0));
+        .px(px(28.0))
+        .pt(px(38.0))
+        .pb(px(16.0))
+        .gap(px(24.0));
 
     if untrusted {
         let path = root.chats[index].project.clone();
@@ -2675,7 +2818,7 @@ fn conversation(
                 .role(gpui::Role::Article)
                 .aria_label(entry_accessibility_label(entry))
                 .w_full()
-                .max_w(px(740.0))
+                .max_w(px(820.0))
                 .mx_auto()
                 .flex_none()
                 .child({
@@ -3430,11 +3573,13 @@ fn tool_label(name: &str) -> &str {
         "tool" | "" => "Tool result",
         "bash" => "Command",
         "read" => "Read",
+        "write" => "Write",
         "edit" => "Edit",
         "find" => "Find",
         "grep" => "Search",
+        "ls" => "List",
         "web_search" => "Web search",
-        "web_fetch" => "Web fetch",
+        "web_fetch" | "webfetch" => "Web fetch",
         other => other,
     }
 }
@@ -3465,9 +3610,10 @@ fn tool_icon(name: &str) -> Icon {
     match name {
         "bash" => Icon::Changes,
         "read" => Icon::File,
-        "edit" => Icon::Pencil,
+        "write" | "edit" => Icon::Pencil,
         "find" | "grep" => Icon::Search,
-        "web_search" | "web_fetch" => Icon::Globe,
+        "ls" => Icon::Folder,
+        "web_search" | "web_fetch" | "webfetch" => Icon::Globe,
         _ => Icon::More,
     }
 }
@@ -3583,7 +3729,6 @@ fn entry_view(
                 .min_w(px(0.0))
                 .flex_none()
                 .gap_2()
-                .pl(px(18.0))
                 .pr(px(4.0));
             if blocks.is_empty() && text.is_empty() {
                 column = column.child(
@@ -3638,15 +3783,16 @@ fn entry_view(
                 )
         }
         Entry::Tool(card) => {
-            let computer_use = crate::model::is_computer_tool(&card.name);
             let (color, state) = match card.status {
                 Status::Pending => (theme.faint(), "Queued"),
                 Status::Running => (theme.accent(), "Running"),
-                Status::Done => (theme.success(), ""),
+                Status::Done => (theme.faint(), ""),
                 Status::Failed => (theme.error(), "Failed"),
             };
             let chat_id = root.chats.get(chat).map(|chat| chat.id).unwrap_or_default();
             let key = (chat_id, card.id);
+            let row_group = SharedString::from(format!("tool-row-{}", card.id));
+            let copy_group = row_group.clone();
             let expanded = root.expanded_tools.contains(&key);
             let expandable = !card.output.trim().is_empty() || card.diff.is_some();
             let show_output =
@@ -3665,6 +3811,12 @@ fn entry_view(
                 .flex_none()
                 .gap_1()
                 .rounded(px(8.0))
+                .when(card.status == Status::Running, |style| {
+                    style
+                        .border_l_2()
+                        .border_color(theme.accent())
+                        .bg(theme.color("tool_bg"))
+                })
                 .when(card.status == Status::Failed, |style| {
                     style
                         .border_l_2()
@@ -3673,12 +3825,13 @@ fn entry_view(
                 });
             let mut header = div()
                 .id(SharedString::from(format!("tool-head-{}", card.id)))
+                .group(row_group)
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap(px(7.0))
-                .min_h(px(32.0))
-                .px(px(6.0))
+                .min_h(px(30.0))
+                .px(px(4.0))
                 .rounded(px(7.0))
                 .when(expandable, move |style| {
                     style
@@ -3711,10 +3864,8 @@ fn entry_view(
                         .child(icons::icon(
                             tool_icon(&card.name),
                             13.0,
-                            if computer_use && card.status == Status::Running {
+                            if card.status == Status::Running {
                                 theme.accent()
-                            } else if card.status == Status::Done {
-                                theme.success()
                             } else if card.status == Status::Failed {
                                 theme.error()
                             } else {
@@ -3725,7 +3876,7 @@ fn entry_view(
                 .child(
                     div()
                         .flex_none()
-                        .text_size(px(12.0))
+                        .text_size(px(12.5))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(if card.status == Status::Failed {
                             theme.error()
@@ -3746,20 +3897,30 @@ fn entry_view(
                         .child(card.detail.clone()),
                 )
                 .children((!copy_text.is_empty()).then(|| {
-                    icon_button(
-                        SharedString::from(format!("tool-copy-{}", card.id)),
-                        Icon::Copy,
-                        22.0,
-                        theme,
-                        false,
-                    )
-                    .aria_label(copy_label)
-                    .tooltip(tip(copy_label, theme))
-                    .on_click(cx.listener(move |root, _, _, cx| {
-                        cx.stop_propagation();
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()));
-                        root.toast("Copied tool call", false, cx);
-                    }))
+                    div()
+                        .flex_none()
+                        .opacity(0.0)
+                        .group_hover(copy_group, |style| style.opacity(1.0))
+                        .child(
+                            icon_button(
+                                SharedString::from(format!("tool-copy-{}", card.id)),
+                                Icon::Copy,
+                                22.0,
+                                theme,
+                                false,
+                            )
+                            .aria_label(copy_label)
+                            .tooltip(tip(copy_label, theme))
+                            .on_click(cx.listener(
+                                move |root, _, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        copy_text.clone(),
+                                    ));
+                                    root.toast("Copied tool call", false, cx);
+                                },
+                            )),
+                        )
                 }))
                 .child(
                     div()
@@ -4059,7 +4220,7 @@ fn run_time_view(
     } else {
         format!("Worked for {}", format_run_duration(elapsed))
     };
-    div().flex_none().w_full().max_w(px(740.0)).mx_auto().child(
+    div().flex_none().w_full().max_w(px(820.0)).mx_auto().child(
         div()
             .id(id)
             .role(gpui::Role::Status)
@@ -6023,12 +6184,12 @@ fn composer(
         .flex_none()
         .w_full()
         .items_center()
-        .px(px(22.0))
-        .pb(px(10.0))
-        .pt(px(14.0))
+        .px(px(28.0))
+        .pb(px(14.0))
+        .pt(px(16.0))
         .children(live_pill)
         .children(strip)
-        .child(div().w_full().max_w(px(740.0)).child(box_row))
+        .child(div().w_full().max_w(px(820.0)).child(box_row))
 }
 
 /// The label a reasoning level wears: the stored name is `high`, the chip says
@@ -8180,6 +8341,74 @@ mod tool_card_tests {
         assert_eq!(tool_icon("grep"), Icon::Search);
         assert_eq!(tool_icon("web_fetch"), Icon::Globe);
         assert_eq!(tool_icon("computer-use__screenshot"), Icon::Pointer);
+    }
+}
+
+#[cfg(test)]
+mod details_source_tests {
+    use super::{chat_sources, mcp_source_state, DetailSource};
+    use crate::model::{Attachment, Entry, Status, ToolCard};
+    use serde_json::json;
+
+    fn tool(name: &str) -> Entry {
+        Entry::Tool(ToolCard {
+            id: 1,
+            name: name.to_string(),
+            detail: String::new(),
+            copy_text: String::new(),
+            app: None,
+            status: Status::Done,
+            output: String::new(),
+            diff: None,
+            media: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn the_context_pane_lists_chat_and_project_sources_once() {
+        let entries = vec![
+            Entry::User {
+                text: "Review this".to_string(),
+                attachments: vec![Attachment::new(
+                    "reference.png".to_string(),
+                    "data:image/png;base64,iVBORw0KGgo=".to_string(),
+                )],
+            },
+            tool("web_search"),
+            tool("grep"),
+        ];
+        let servers = json!([
+            { "name": "docs", "state": "connected" },
+            { "name": "docs", "state": "connected" }
+        ]);
+        let sources = chat_sources(&entries, servers.as_array().unwrap());
+
+        assert_eq!(sources.len(), 3);
+        assert!(matches!(
+            &sources[0],
+            DetailSource::Attachment(attachment) if attachment.name == "reference.png"
+        ));
+        assert!(matches!(&sources[1], DetailSource::Web));
+        assert!(matches!(
+            &sources[2],
+            DetailSource::Mcp(server) if server["name"] == "docs"
+        ));
+    }
+
+    #[test]
+    fn a_project_source_carries_the_state_the_pane_draws() {
+        assert_eq!(
+            mcp_source_state(&json!({ "state": "connected" })),
+            ("Connected".to_string(), "connected")
+        );
+        assert_eq!(
+            mcp_source_state(&json!({ "state": "needs-auth" })),
+            ("Needs auth".to_string(), "needs")
+        );
+        assert_eq!(
+            mcp_source_state(&json!({ "enabled": false })),
+            ("Off".to_string(), "off")
+        );
     }
 }
 
