@@ -3607,15 +3607,29 @@ fn tool_icon(name: &str) -> Icon {
     if crate::model::is_computer_tool(name) {
         return Icon::Pointer;
     }
+    if is_mcp_tool(name) {
+        return Icon::Plug;
+    }
     match name {
-        "bash" => Icon::Changes,
+        "bash" => Icon::Terminal,
         "read" => Icon::File,
         "write" | "edit" => Icon::Pencil,
         "find" | "grep" => Icon::Search,
         "ls" => Icon::Folder,
         "web_search" | "web_fetch" | "webfetch" => Icon::Globe,
-        _ => Icon::More,
+        _ => Icon::Tool,
     }
+}
+
+/// A tool a connected server answers, or one of the resource reads the core
+/// names as MCP rather than built-in: the same test `tools.rs` applies when it
+/// keeps a result.
+fn is_mcp_tool(name: &str) -> bool {
+    name.contains("__")
+        || matches!(
+            name,
+            "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
+        )
 }
 
 fn entry_accessibility_label(entry: &Entry) -> String {
@@ -8336,10 +8350,13 @@ mod tool_card_tests {
 
     #[test]
     fn a_tool_row_carries_the_mark_of_what_it_did() {
-        assert_eq!(tool_icon("bash"), Icon::Changes);
+        assert_eq!(tool_icon("bash"), Icon::Terminal);
         assert_eq!(tool_icon("read"), Icon::File);
         assert_eq!(tool_icon("grep"), Icon::Search);
         assert_eq!(tool_icon("web_fetch"), Icon::Globe);
+        assert_eq!(tool_icon("mock__echo"), Icon::Plug);
+        assert_eq!(tool_icon("read_mcp_resource"), Icon::Plug);
+        assert_eq!(tool_icon("task"), Icon::Tool);
         assert_eq!(tool_icon("computer-use__screenshot"), Icon::Pointer);
     }
 }

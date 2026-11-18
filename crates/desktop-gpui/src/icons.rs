@@ -209,6 +209,24 @@ const GLYPHS: &[(&str, &str)] = &[
             r##"<rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/>"##
         ),
     ),
+    (
+        "terminal",
+        glyph!(
+            r##"<rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/>"##
+        ),
+    ),
+    (
+        "tool",
+        glyph!(
+            r##"<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>"##
+        ),
+    ),
+    (
+        "plug",
+        glyph!(
+            r##"<path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>"##
+        ),
+    ),
 ];
 
 /// The drawing an element paints.
@@ -254,6 +272,9 @@ pub enum Icon {
     Download,
     Bolt,
     Reset,
+    Terminal,
+    Tool,
+    Plug,
 }
 
 impl Icon {
@@ -299,6 +320,9 @@ impl Icon {
             Icon::Download => "Update available",
             Icon::Bolt => "Effort",
             Icon::Reset => "Reset to Auto",
+            Icon::Terminal => "Terminal",
+            Icon::Tool => "Tool",
+            Icon::Plug => "MCP tool",
         }
     }
 
@@ -344,6 +368,9 @@ impl Icon {
             Icon::Download => "icons/download.svg",
             Icon::Bolt => "icons/bolt.svg",
             Icon::Reset => "icons/reset.svg",
+            Icon::Terminal => "icons/terminal.svg",
+            Icon::Tool => "icons/tool.svg",
+            Icon::Plug => "icons/plug.svg",
         }
     }
 }
@@ -498,6 +525,9 @@ mod tests {
             Icon::Download,
             Icon::Bolt,
             Icon::Reset,
+            Icon::Terminal,
+            Icon::Tool,
+            Icon::Plug,
         ] {
             let body = Assets.load(mark.path()).unwrap().unwrap();
             assert!(body.starts_with(b"<svg"));
@@ -552,6 +582,9 @@ mod tests {
             Icon::Download,
             Icon::Bolt,
             Icon::Reset,
+            Icon::Terminal,
+            Icon::Tool,
+            Icon::Plug,
         ] {
             assert!(!mark.label().is_empty());
         }

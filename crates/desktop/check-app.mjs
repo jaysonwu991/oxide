@@ -1320,7 +1320,7 @@ globalThis.FileReader = class {
 const source = readFileSync(`${here}app.js`, "utf8");
 vm.runInThisContext(
   source +
-    "\nglobalThis.__app = { send, stop, startPrompt, runSlashCommand, state, createProjectState, ICONS," +
+    "\nglobalThis.__app = { send, stop, startPrompt, runSlashCommand, state, createProjectState, ICONS, GLYPHS," +
     " newChatFromSidebar, openProjects, closeOverlays, renderProjects, pickProject, updateProjectChip, renderWelcome, recentThreads, loadProjects," +
     " openEditProject, projectActivity, formatTime, openCreateProject, addCreateProjectTypedPath, saveCreateProject, openModels," +
     " openConnect, renderProviders, saveConnect, renderLoginFields," +
@@ -1353,7 +1353,7 @@ vm.runInThisContext(
     " openPulls, readPulls, renderPulls, readPull, pullDetailNodes, renderMemories," +
     " maybePredict, showPrediction, clearPrediction, acceptPrediction, runSlashCommand," +
     " notifyFinished, notifyWaiting, notificationsAllowed, paintBadge, paintAwake," +
-    " openFile, closeFile, paintFile, csvTable," +
+    " openFile, closeFile, paintFile, csvTable, toolDisplayIcon, isMcpTool," +
     " threads, SHORTCUTS, SETTINGS_SECTIONS, DEFAULT_PREFS, pushNav, navBack, navForward, reopenClosedTab, closeOtherTabs, clearUnread };\n",
 );
 
@@ -2554,11 +2554,12 @@ check(
   /\.chip\.active \{[^}]*color: var\(--accent\);[^}]*\}/.test(sheet),
   String(sheet.indexOf(".chip.active")),
 );
-// A glyph a control wears in both front-ends is the same path in both, held
-// verbatim here beside the extension's own sources: a control drawn one way in
-// the panel and another in this window fails the check instead of drifting
-// quietly, and an icon nothing matches here is what a reviewer would have to
-// diff by eye.
+// A glyph a control wears in both this window and the VS Code panel is the
+// same path in both, held verbatim here beside the extension's own sources: a
+// control drawn one way in the panel and another in this window fails the check
+// instead of drifting quietly. The rest of the window's drawings are the native
+// window's own, from `crates/desktop-gpui/src/icons.rs`, and are held to that
+// table below.
 const extensionIcons = [
   readFileSync(new URL("../../editors/vscode/src/chatView.ts", import.meta.url), "utf8"),
   readFileSync(new URL("../../editors/vscode/media/main.js", import.meta.url), "utf8"),
@@ -2566,16 +2567,9 @@ const extensionIcons = [
 const sharedGlyphs = {
   attach:
     "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48",
-  new: "M8 3.6v8.8M3.6 8h8.8",
-  send: "M8 13.4V3.4M4 7.4 8 3.4l4 4",
-  stop: '<rect x="4" y="4" width="8" height="8" rx="1.7"',
   refresh: "M20.49 15a9 9 0 1 1-2.12-9.36L23 10",
   close: "M18 6 6 18M6 6l12 12",
   power: "M18.36 6.64a9 9 0 1 1-12.73 0",
-  selector: "m4.5 6.5 3.5 3.5 3.5-3.5",
-  branch: "M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5",
-  access:
-    "M8 1.7c1.7 1.2 3.3 1.7 5 1.8v3.8c0 3.2-1.7 5.5-5 7-3.3-1.5-5-3.8-5-7V3.5c1.7-.1 3.3-.6 5-1.8Z",
 };
 const windowSources = `${shell}\n${source}`;
 for (const [name, path] of Object.entries(sharedGlyphs)) {
@@ -2587,12 +2581,108 @@ for (const [name, path] of Object.entries(sharedGlyphs)) {
     `extension: ${inExtension} · window: ${inWindow}`,
   );
 }
+// The native window's table is where a mark is designed: its 24-unit box, its
+// 1.6 weight and its round caps and joins, taken body for body by the page's
+// own `GLYPHS`. GPUI rasterises each body into an alpha mask and tints it with
+// the element's color, so a shape it fills is white there where the page names
+// `currentColor`; every other attribute, including a drawing's own override of
+// the weight, is the same on both sides.
+const gpuiIcons = readFileSync(
+  new URL("../../crates/desktop-gpui/src/icons.rs", import.meta.url),
+  "utf8",
+);
+const nativeGlyphs = Object.fromEntries(
+  [...gpuiIcons.matchAll(/\(\s*"([a-z-]+)",\s*glyph!\(\s*r##"([\s\S]*?)"##\s*\)/g)].map(
+    ([, name, body]) => [name, body.replaceAll('fill="#fff"', 'fill="currentColor"')],
+  ),
+);
+for (const [name, body] of Object.entries(app.GLYPHS)) {
+  check(
+    `drew ${name} the way the native window does`,
+    nativeGlyphs[name] === body,
+    `${JSON.stringify(nativeGlyphs[name])} · ${JSON.stringify(body)}`,
+  );
+}
+// The shell's controls are held to the same table by name: a button that keeps
+// a look-alike after the table moves on fails here rather than in a screenshot.
+const shellGlyphs = {
+  "nav-back": "back",
+  "nav-forward": "forward",
+  "sidebar-toggle": "sidebar",
+  "rail-home": "home",
+  "rail-projects": "folder",
+  "rail-worktrees": "worktree",
+  "rail-customize": "customize",
+  "rail-update": "download",
+  settings: "settings",
+  "window-commands": "more",
+  "changes-toggle": "changes",
+  "details-toggle": "details",
+  "new-tab": "plus",
+  activity: "bell",
+  "search-chats": "search",
+  "new-chat": "pencil",
+  "create-project-btn-tree": "plus",
+  "find-prev": "arrow-up",
+  "find-next": "arrow-down",
+  "find-close": "close",
+  "jump-latest": "arrow-down",
+  project: "folder",
+  git: "branch",
+  worktree: "worktree",
+  attach: "paperclip",
+  connect: "globe",
+  trust: "lock",
+  agents: "chat",
+  help: "keyboard",
+  permissions: "lock",
+  model: "chevron-down",
+  stop: "square",
+  send: "arrow-up",
+  "panel-close": "close",
+  "review-close": "close",
+  "review-refresh": "activity",
+  "details-more": "more",
+  "details-add-source": "plus",
+  "sources-close": "close",
+  "projects-add": "plus",
+  "projects-close": "close",
+  "sessions-new": "plus",
+  "sessions-close": "close",
+  "create-project-close": "close",
+  "settings-tab-general": "settings",
+  "settings-tab-appearance": "image",
+  "settings-tab-notifications": "bell",
+  "settings-open-mcps": "globe",
+  "settings-open-plugins": "customize",
+  "settings-open-skills": "chat",
+  "settings-tab-keyboard": "keyboard",
+};
+const shellGlyph = (id) => {
+  const at = shell.indexOf(`id="${id}"`);
+  const open = at < 0 ? -1 : shell.indexOf("<svg", at);
+  const shut = open < 0 ? -1 : shell.indexOf("</svg>", open);
+  if (shut < 0) return null;
+  const tag = shell.slice(open, shell.indexOf(">", open) + 1);
+  return { tag, body: shell.slice(shell.indexOf(">", open) + 1, shut) };
+};
+for (const [id, name] of Object.entries(shellGlyphs)) {
+  const glyph = shellGlyph(id);
+  check(
+    `drew ${id} from the native window's table`,
+    glyph !== null &&
+      glyph.body === app.GLYPHS[name] &&
+      /viewBox="0 0 24 24"/.test(glyph.tag) &&
+      /fill="none" stroke="currentColor" stroke-width="1.6"/.test(glyph.tag) &&
+      /stroke-linecap="round" stroke-linejoin="round"/.test(glyph.tag),
+    glyph === null ? "no glyph" : glyph.tag,
+  );
+}
 // The rest of the window's own art — the drawings that belong to this app rather
-// than to both front-ends: a project's folder, the document a file attachment
-// shows, the caret a card folds by, the check a picker puts on the row in use,
-// and the mark the app signs an answer with. Each is held in `ICONS` and sized
-// by the sheet, and each of the two `sharedGlyphs` it also uses is the panel's
-// own path rather than a look-alike.
+// than to both front-ends: the mark the app signs an answer with, the status
+// badge, and the refresh, trash, Undo and Power the native table has no mark
+// for. Each is held in `ICONS` and sized by the sheet, and each of the two
+// `sharedGlyphs` it also uses is the panel's own path rather than a look-alike.
 //
 // The home state's four suggestions are the page a new window opens on, so the
 // panel's own copy of them is held beside this one: the same words in both
@@ -2605,11 +2695,11 @@ for (const suggestion of SUGGESTIONS) {
   );
 }
 const windowGlyphs = {
-  folder: "M20.2 19.4a1.8 1.8 0 0 0 1.8-1.8v-8",
+  folder: "M3 6h7l2 3h9v11H3ZM3 9h18",
   file: "M14 3H7a2 2 0 0 0-2 2v14",
   caret: "M5.5 8.6 12 14.8l6.5-6.2",
-  check: "m5.6 8 1.5 1.5 3.5-3.5",
-  plus: sharedGlyphs.new,
+  check: "m5.5 12.5 4.2 4.2 8.8-9",
+  plus: "M12 5v14M5 12h14",
   close: sharedGlyphs.close,
   power: sharedGlyphs.power,
 };
@@ -2950,7 +3040,7 @@ check(
   newProjectButton.includes('class="icon"') &&
     newProjectButton.includes(`title="New project&#10;`) &&
     newProjectButton.includes('aria-label="New project"') &&
-    newProjectButton.includes(`<path d="${sharedGlyphs.new}"`) &&
+    newProjectButton.includes(`<path d="${windowGlyphs.plus}"`) &&
     /<\/svg>$/.test(newProjectButton),
   newProjectButton,
 );
@@ -4931,6 +5021,35 @@ check(
     plainCard.hint.hidden
   }, state: ${plainCard.tstate.textContent}`,
 );
+// Every tool row wears the mark its call deserves rather than a generic one:
+// a shell command is a terminal, an MCP call a plug, and the rest a wrench.
+check(
+  "marked a command call with the terminal glyph",
+  String(plainCard.head.children[1].children[0].innerHTML) === app.ICONS.terminal,
+  String(plainCard.head.children[1].children[0].innerHTML),
+);
+for (const [name, mark] of [
+  ["bash", "terminal"],
+  ["read", "file"],
+  ["write", "compose"],
+  ["edit", "compose"],
+  ["find", "search"],
+  ["grep", "search"],
+  ["ls", "folder"],
+  ["web_search", "globe"],
+  ["web_fetch", "globe"],
+  ["webfetch", "globe"],
+  ["mock__echo", "plug"],
+  ["read_mcp_resource", "plug"],
+  ["task", "tool"],
+  ["computer-use__click", "pointer"],
+]) {
+  check(
+    `marked a ${name} call with the ${mark} glyph`,
+    app.toolDisplayIcon(name) === app.ICONS[mark],
+    app.toolDisplayIcon(name),
+  );
+}
 check(
   "kept the shell result at the tail with the rest behind the hint",
   plainCard.pre.textContent === "line two\nline three\nline four" &&
@@ -9035,7 +9154,7 @@ check(
   "drew the request a thread reported on its row, in its state",
   pullMark?.classList.contains("state-merged") === true &&
     pullMark.title === "Pull request #266 · Merged" &&
-    pullMark.innerHTML === app.ICONS.pullMerged &&
+    pullMark.innerHTML === app.ICONS.pull &&
     pullMark.children.length === 0 &&
     pullRow.classList.contains("has-pull"),
   `${pullMark?.className} / ${pullMark?.title}`,
@@ -9057,7 +9176,8 @@ check(
   ).length === 1,
   elementFor("projects-tree").outline(),
 );
-for (const [state, icon] of [["closed", app.ICONS.pullClosed], ["open", app.ICONS.pull], [null, app.ICONS.pull]]) {
+for (const state of ["closed", "open", null]) {
+  const icon = app.ICONS.pull;
   app.state.sessions = [{ ...pullThread, pulls: [{ ...pullThread.pulls[0], state }] }];
   await app.renderProjectsTree();
   const badge = elementFor("projects-tree").querySelector(".session-pull");

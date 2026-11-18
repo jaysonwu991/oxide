@@ -18,10 +18,10 @@
   </head>
   <body>
       <header class="topbar">
-        <div class="topbar-leading"><button id="nav-back" class="icon" type="button" title="Back to the previous chat" aria-label="Back to the previous chat" data-i18n-title="menu.back" data-i18n-aria="menu.back"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M15 6l-6 6 6 6M9 12h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="nav-forward" class="icon" type="button" title="Forward to the next chat" aria-label="Forward to the next chat" data-i18n-title="menu.forward" data-i18n-aria="menu.forward"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 6l6 6-6 6M3 12h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="sidebar-toggle" class="icon" type="button" title="Show or hide the sidebar" aria-label="Show or hide the sidebar" data-i18n-title="menu.toggleSidebar" data-i18n-aria="menu.toggleSidebar"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 4h16v16H4ZM9 4v16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+        <div class="topbar-leading"><button id="nav-back" class="icon" type="button" title="Back to the previous chat" aria-label="Back to the previous chat" data-i18n-title="menu.back" data-i18n-aria="menu.back"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6M9 12h12"/></svg></button><button id="nav-forward" class="icon" type="button" title="Forward to the next chat" aria-label="Forward to the next chat" data-i18n-title="menu.forward" data-i18n-aria="menu.forward"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6M3 12h12"/></svg></button><button id="sidebar-toggle" class="icon" type="button" title="Show or hide the sidebar" aria-label="Show or hide the sidebar" data-i18n-title="menu.toggleSidebar" data-i18n-aria="menu.toggleSidebar"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4ZM9 4v16"/></svg></button></div>
         <div class="topbar-content">
         <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs" data-i18n-aria="ui.chatTabs" hidden></div>
-        <svg class="topbar-folder" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h7l2 3h9v11H3ZM3 9h18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <svg class="topbar-folder" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h7l2 3h9v11H3ZM3 9h18"/></svg>
         <div class="thread-title" id="thread-title"></div>
         <!-- The checkout the thread on screen runs in, when it is not the
              project's own folder: a worktree is a copy of the project on its own
@@ -37,17 +37,17 @@
           <span id="run-banner-text" class="run-banner-text"></span>
           <span class="run-banner-open" aria-hidden="true" data-i18n="topbar.runOpen">Open</span>
         </button>
-        <div class="topbar-actions"><button id="window-commands" class="icon" type="button" title="Command menu" aria-label="Command menu" data-i18n-title="menu.title" data-i18n-aria="menu.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button id="changes-toggle" class="icon" title="View changes" aria-label="View changes" aria-expanded="false" data-i18n-title="topbar.viewChanges" data-i18n-aria="topbar.viewChanges"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 9h8M12 5v8M8 17h8" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
+        <div class="topbar-actions"><button id="window-commands" class="icon" type="button" title="Command menu" aria-label="Command menu" data-i18n-title="menu.title" data-i18n-aria="menu.title"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="2.4"/></svg></button>
+          <button id="changes-toggle" class="icon" title="View changes" aria-label="View changes" aria-expanded="false" data-i18n-title="topbar.viewChanges" data-i18n-aria="topbar.viewChanges"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3" stroke-width="1.8"/><path d="M8.5 9.5h7M12 6v7M8.5 16.5h7" stroke-width="1.8"/></svg></button>
           <button id="computer-use-toggle" class="icon" type="button" title="Computer use" aria-label="Computer use" aria-haspopup="dialog" hidden></button>
-          <button id="details-toggle" class="icon" title="Project details" aria-label="Project details" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="5" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="5" cy="18" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 6h9M11 12h9M11 18h9M3 12h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-          <button id="new-tab" class="icon" title="New tab (⌘T / Ctrl+T)" aria-label="New tab" data-i18n-title="topbar.newTab" data-i18n-aria="topbar.newTab"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v10M7 12h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          <button id="details-toggle" class="icon" title="Project details" aria-label="Project details" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="6" r="1.8" stroke-width="1.8"/><circle cx="5" cy="18" r="1.8" stroke-width="1.8"/><path d="M10.5 6H21M10.5 12H21M10.5 18H21M3 12h4" stroke-width="1.8"/></svg></button>
+          <button id="new-tab" class="icon" title="New tab (⌘T / Ctrl+T)" aria-label="New tab" data-i18n-title="topbar.newTab" data-i18n-aria="topbar.newTab"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button>
         </div>
         </div>
       </header>
-<nav class="navigation-rail" aria-label="Navigation" data-i18n-aria="shell.navigation"><button id="rail-home" aria-current="page" class="rail-button" type="button" title="New Chat" aria-label="New Chat" data-i18n-title="sidebar.newChat" data-i18n-aria="sidebar.newChat"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v11h5v-7h4v7h5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-projects" class="rail-button" type="button" title="Projects" aria-label="Projects" data-i18n-title="sidebar.projects" data-i18n-aria="sidebar.projects"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h7l2 3h9v11H3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-more" class="rail-button" type="button" title="Command menu" aria-label="Command menu" data-i18n-title="menu.title" data-i18n-aria="menu.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="rail-divider" role="separator"></div><button id="rail-worktrees" class="rail-button" type="button" title="Worktrees" aria-label="Worktrees" data-i18n-title="dialog.worktrees.title" data-i18n-aria="dialog.worktrees.title"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 3v12M17 9v12M7 7c0 5 10 0 10 5M5 3h4M5 17h4M15 21h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rail-customize" class="rail-button" type="button" title="Customize" aria-label="Customize"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M7 12a5 5 0 0 0 10 0M8 8h.01M16 8h.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+<nav class="navigation-rail" aria-label="Navigation" data-i18n-aria="shell.navigation"><button id="rail-home" aria-current="page" class="rail-button" type="button" title="New Chat" aria-label="New Chat" data-i18n-title="sidebar.newChat" data-i18n-aria="sidebar.newChat"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v11h5v-7h4v7h5V10"/></svg></button><button id="rail-projects" class="rail-button" type="button" title="Projects" aria-label="Projects" data-i18n-title="sidebar.projects" data-i18n-aria="sidebar.projects"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h7l2 3h9v11H3ZM3 9h18"/></svg></button><button id="rail-more" class="rail-button" type="button" title="Command menu" aria-label="Command menu" data-i18n-title="menu.title" data-i18n-aria="menu.title"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="2.4"/></svg></button><div class="rail-divider" role="separator"></div><button id="rail-worktrees" class="rail-button" type="button" title="Worktrees" aria-label="Worktrees" data-i18n-title="dialog.worktrees.title" data-i18n-aria="dialog.worktrees.title"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="9.5" height="11" rx="2"/><path d="M7.2 8h4.6M7.2 11.5h3.2"/><rect x="15" y="6" width="6.5" height="12" rx="2"/></svg></button><button id="rail-customize" class="rail-button" type="button" title="Customize" aria-label="Customize"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="8" cy="17" r="2" fill="currentColor"/></svg></button>
       <div class="rail-utilities">
-        <button id="rail-update" class="rail-button" type="button" hidden title="Update available" aria-label="Update available" aria-haspopup="dialog" aria-controls="update-modal"><span class="rail-update-icon"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 4v10m-4-4 4 4 4-4M5 14v5h14v-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
+        <button id="rail-update" class="rail-button" type="button" hidden title="Update available" aria-label="Update available" aria-haspopup="dialog" aria-controls="update-modal"><span class="rail-update-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v10m-4-4 4 4 4-4M5 14v5h14v-5"/></svg></span></button>
         <button
           id="settings"
           class="rail-button"
@@ -57,7 +57,7 @@
           aria-controls="settings-modal"
           data-i18n-title="settings.title"
           data-i18n-aria="settings.title"
-        ><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="3.8" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.93 4.79 L10.26 2.15 L13.74 2.15 L14.07 4.79 L15.64 5.44 L17.74 3.81 L20.19 6.26 L18.56 8.36 L19.21 9.93 L21.85 10.26 L21.85 13.74 L19.21 14.07 L18.56 15.64 L20.19 17.74 L17.74 20.19 L15.64 18.56 L14.07 19.21 L13.74 21.85 L10.26 21.85 L9.93 19.21 L8.36 18.56 L6.26 20.19 L3.81 17.74 L5.44 15.64 L4.79 14.07 L2.15 13.74 L2.15 10.26 L4.79 9.93 L5.44 8.36 L3.81 6.26 L6.26 3.81 L8.36 5.44Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        ><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.8" stroke-width="1.8"/><path d="M9.93 4.79 10.26 2.15h3.48l.33 2.64 1.57.65 2.1-1.63 2.45 2.45-1.63 2.1.65 1.57 2.64.33v3.48l-2.64.33-.65 1.57 1.63 2.1-2.45 2.45-2.1-1.63-1.57.65-.33 2.64h-3.48l-.33-2.64-1.57-.65-2.1 1.63-2.45-2.45 1.63-2.1-.65-1.57-2.64-.33v-3.48l2.64-.33.65-1.57-1.63-2.1 2.45-2.45 2.1 1.63Z" stroke-width="1.8"/></svg></button>
       </div>
 </nav>
     <aside class="sidebar">
@@ -75,7 +75,7 @@
             aria-controls="activity-panel"
             data-i18n-title="activity.title"
             data-i18n-aria="activity.title"
-          ><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="activity-dot" class="activity-dot" hidden></span></button>
+          ><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4"/></svg><span id="activity-dot" class="activity-dot" hidden></span></button>
           <button
             id="search-chats"
             class="icon"
@@ -83,7 +83,7 @@
             aria-label="Search chats"
             data-i18n-title="search.title"
             data-i18n-aria="search.title"
-          ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m10.4 10.4 3.1 3.1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.4 15.4 4.6 4.6"/></svg></button>
         </div>
         <button
           id="new-chat"
@@ -92,7 +92,7 @@
           aria-label="New Chat"
           data-i18n-title="sidebar.newChat"
           data-i18n-aria="sidebar.newChat"
-        ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M11 2.5l2.5 2.5M5 11l-2 .5.5-2L11.5 1.5 14 4ZM7 3H2v11h11V9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span data-i18n="sidebar.newChat">New Chat</span></button>
+        ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.5 3.75 20.25 7.5M7.5 16.5 4.5 17.25 5.25 14.25 18 1.5 21.75 5.25ZM10.5 4.5H3v16.5h16.5V13.5"/></svg><span data-i18n="sidebar.newChat">New Chat</span></button>
       </div>
 
       <div id="sidebar-projects" class="projects-section">
@@ -105,7 +105,7 @@
             aria-label="New project"
             data-i18n-title="sidebar.newProject"
             data-i18n-aria="sidebar.newProject"
-          ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button>
         </div>
         <div id="projects-tree" class="projects-tree"></div>
       </div>
@@ -178,7 +178,7 @@
                 aria-label="Close"
                 data-i18n-title="common.close"
                 data-i18n-aria="common.close"
-              ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+              ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
             </div>
           </div>
           <p class="dialog-sub" data-i18n="dialog.mcps.subtitle">The servers this project loads, and whether Oxide can reach them. They come from the same <code>mcp.json</code> files the CLI reads, and turning one off writes to the file that defines it.</p>
@@ -205,14 +205,14 @@
           data-i18n-aria="find.placeholder"
         />
         <span id="find-count" class="find-count" aria-live="polite"></span>
-        <button id="find-prev" class="icon" title="Previous match" aria-label="Previous match" data-i18n-title="find.previous" data-i18n-aria="find.previous"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 12.5V4M4 8l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <button id="find-next" class="icon" title="Next match" aria-label="Next match" data-i18n-title="find.next" data-i18n-aria="find.next"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3.5V12M4 8l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <button id="find-close" class="icon" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <button id="find-prev" class="icon" title="Previous match" aria-label="Previous match" data-i18n-title="find.previous" data-i18n-aria="find.previous"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20V5M5.5 11.5 12 5l6.5 6.5" stroke-width="1.8"/></svg></button>
+        <button id="find-next" class="icon" title="Next match" aria-label="Next match" data-i18n-title="find.next" data-i18n-aria="find.next"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15M5.5 12.5 12 19l6.5-6.5" stroke-width="1.8"/></svg></button>
+        <button id="find-close" class="icon" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
       </div>
       <nav id="message-nav" class="message-nav" aria-label="Jump to a message" data-i18n-aria="ui.jumpToAMessage" hidden></nav>
       <div id="message-preview" class="message-preview" hidden></div>
       <div id="transcript" class="conversation" role="tabpanel"></div>
-      <button id="jump-latest" class="jump-latest" title="Jump to latest message" aria-label="Jump to latest message" data-i18n-title="topbar.jumpLatest" data-i18n-aria="topbar.jumpLatest" hidden><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button id="jump-latest" class="jump-latest" title="Jump to latest message" aria-label="Jump to latest message" data-i18n-title="topbar.jumpLatest" data-i18n-aria="topbar.jumpLatest" hidden><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15M5.5 12.5 12 19l6.5-6.5" stroke-width="1.8"/></svg></button>
 
       <div class="composer-wrap">
         <!-- The folders this window can run in, opened from the composer's own
@@ -229,7 +229,7 @@
                 aria-label="New project"
                 data-i18n-title="sidebar.newProject"
                 data-i18n-aria="sidebar.newProject"
-              ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+              ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button>
               <button
                 id="projects-close"
                 class="icon"
@@ -237,7 +237,7 @@
                 aria-label="Close"
                 data-i18n-title="common.close"
                 data-i18n-aria="common.close"
-              ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+              ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
             </div>
           </div>
           <p class="dialog-sub" data-i18n="dialog.projects.subtitle">Choose the project you want to work in.</p>
@@ -263,7 +263,7 @@
                 aria-label="Close"
                 data-i18n-title="common.close"
                 data-i18n-aria="common.close"
-              ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+              ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
             </div>
           </div>
           <p class="dialog-sub" data-i18n="dialog.worktrees.subtitle">Run a chat in an isolated checkout. Choose a starting branch or commit; your local checkout stays in place.</p>
@@ -302,7 +302,7 @@
                 aria-label="New thread"
                 data-i18n-title="dialog.sessions.new"
                 data-i18n-aria="dialog.sessions.new"
-              ><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+              ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button>
               <button
                 id="sessions-close"
                 class="icon"
@@ -310,7 +310,7 @@
                 aria-label="Close"
                 data-i18n-title="common.close"
                 data-i18n-aria="common.close"
-              ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+              ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
             </div>
           </div>
           <p class="dialog-sub" data-i18n="dialog.sessions.subtitle">Threads stored for this project, most recent first. Picking one opens it here; the sidebar shows the same list beside every project.</p>
@@ -332,14 +332,14 @@
               aria-label="Choose a project"
               data-i18n-title="composer.chooseProject"
               data-i18n-aria="composer.chooseProject"
-            ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.9 12.5V4c0-.6.5-1.1 1.1-1.1h2.4c.3 0 .6.1.8.4l1.2 1.5h5.6c.6 0 1.1.5 1.1 1.1v6.6c0 .6-.5 1.1-1.1 1.1H3c-.6 0-1.1-.5-1.1-1.1Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="project-name" class="chip-name">Choose a project</span></button>
+            ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h7l2 3h9v11H3ZM3 9h18"/></svg><span id="project-name" class="chip-name">Choose a project</span></button>
             <!-- The branch is read out of the repository's own HEAD, so it
                  names a worktree's branch or the commit a detached HEAD is on;
                  a folder that is not a repository has none to name, and the
                  fact goes away rather than saying nothing. The glyph is the one
                  the panel's own footer draws for it. -->
             <span id="git" class="fact" hidden
-              ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="4" cy="3" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4" cy="13" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="12" cy="5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="git-branch"></span></span>
+              ><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6.5" cy="5.5" r="2.2"/><circle cx="6.5" cy="18.5" r="2.2"/><circle cx="17.5" cy="8.5" r="2.2"/><path d="M6.5 7.7v8.6M8.7 16.4c5.2 0 8.8-2.6 8.8-5.7"/></svg><span id="git-branch"></span></span>
             <!-- The checkout the thread runs in — a worktree is a copy of the
                  project on a branch of its own — read at the row's other end
                  rather than as a control on the row inside the box: it says
@@ -355,7 +355,7 @@
               aria-expanded="false"
               aria-controls="worktrees-modal"
               hidden
-            ><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="1.9" y="3.1" width="7.2" height="8.4" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M11.2 4.9h1.1a1.5 1.5 0 0 1 1.5 1.5v4.2a1.5 1.5 0 0 1-1.5 1.5h-1.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3.8 6.2h3.4M3.8 8.5h2.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span id="worktree-label" hidden></span></button>
+            ><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="9.5" height="11" rx="2"/><path d="M7.2 8h4.6M7.2 11.5h3.2"/><rect x="15" y="6" width="6.5" height="12" rx="2"/></svg><span id="worktree-label" hidden></span></button>
           </div>
         </div>
 
@@ -377,9 +377,9 @@
                 aria-label="Attach images or PDFs"
                 data-i18n-title="composer.attachHint"
                 data-i18n-aria="composer.attach"
-              ><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              ><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" stroke-width="1.8"/></svg></button>
               <details id="composer-tools" class="composer-tools">
-                <summary class="chip chip-icon" title="More tools" aria-label="More tools" data-i18n-title="composer.moreTools" data-i18n-aria="composer.moreTools"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></summary>
+                <summary class="chip chip-icon" title="More tools" aria-label="More tools" data-i18n-title="composer.moreTools" data-i18n-aria="composer.moreTools"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="2.4"/></svg></summary>
                 <div class="composer-tools-menu">
                   <button
                 id="connect"
@@ -388,15 +388,15 @@
                 aria-label="Connect a provider"
                 data-i18n-title="composer.connect"
                 data-i18n-aria="composer.connect"
-              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 2.2v2.6M10 2.2v2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11.8 4.8v2a3.8 3.8 0 0 1-7.6 0v-2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 10.6v3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span data-i18n="composer.connect">Connect a provider</span></button>
+              ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg><span data-i18n="composer.connect">Connect a provider</span></button>
                   <button
                 id="trust"
                 class="chip chip-icon"
                 title="Project access" data-i18n-title="composer.trust"
                 aria-label="Project access" data-i18n-aria="composer.trust"
                 hidden
-              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 1.7c1.7 1.2 3.3 1.7 5 1.8v3.8c0 3.2-1.7 5.5-5 7-3.3-1.5-5-3.8-5-7V3.5c1.7-.1 3.3-.6 5-1.8Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="m5.6 8 1.5 1.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="composer.trust">Project access</span></button>
-                  <button id="agents" class="chip chip-icon" title="Agents" data-i18n-title="dialog.agents.title" aria-label="Agents" data-i18n-aria="dialog.agents.title" aria-haspopup="dialog" aria-controls="agents-modal"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="5.2" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.2 13.8c.4-3 2-4.4 4.8-4.4s4.4 1.4 4.8 4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span data-i18n="dialog.agents.title">Agents</span></button>
+              ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10V7a4 4 0 0 1 8 0v3"/><rect x="5.5" y="10" width="13" height="9.5" rx="2.4" stroke-width="1.8"/></svg><span data-i18n="composer.trust">Project access</span></button>
+                  <button id="agents" class="chip chip-icon" title="Agents" data-i18n-title="dialog.agents.title" aria-label="Agents" data-i18n-aria="dialog.agents.title" aria-haspopup="dialog" aria-controls="agents-modal"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg><span data-i18n="dialog.agents.title">Agents</span></button>
                   <button
                 id="help"
                 class="chip chip-icon"
@@ -404,7 +404,7 @@
                 aria-label="Keyboard shortcuts"
                 data-i18n-title="composer.help"
                 data-i18n-aria="composer.help"
-              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.4 6.2a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.7.5-.7 1.1v.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 11v.01" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span data-i18n="composer.help">Keyboard shortcuts</span></button>
+              ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6.5" width="19" height="11" rx="2.5"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M7.5 14h9"/></svg><span data-i18n="composer.help">Keyboard shortcuts</span></button>
                 </div>
               </details>
               <button
@@ -414,7 +414,7 @@
                 aria-label="Tool approvals"
                 data-i18n-title="composer.permissions"
                 data-i18n-aria="composer.permissions"
-              ><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5.6 7.4V5.6a2.4 2.4 0 0 1 4.8 0v1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.4 7.4h7.2a1.2 1.2 0 0 1 1.2 1.2v4.2a1.2 1.2 0 0 1-1.2 1.2H4.4a1.2 1.2 0 0 1-1.2-1.2V8.6a1.2 1.2 0 0 1 1.2-1.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span data-i18n="composer.permissions">Tool approvals</span></button>
+              ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10V7a4 4 0 0 1 8 0v3"/><rect x="5.5" y="10" width="13" height="9.5" rx="2.4" stroke-width="1.8"/></svg><span data-i18n="composer.permissions">Tool approvals</span></button>
             </div>
             <div class="composer-right">
               <span id="status" class="status" role="status">
@@ -429,7 +429,7 @@
                   aria-haspopup="dialog"
                   aria-expanded="false"
                   aria-controls="model-menu"
-                ><span id="model-value">Model</span><span id="reasoning-value" hidden>Auto</span><svg class="selector-caret" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                ><span id="model-value">Model</span><span id="reasoning-value" hidden>Auto</span><svg class="selector-caret" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8.6 12 14.8l6.5-6.2"/></svg></button>
               </div>
               <span id="usage" class="spend"></span>
             <span id="context-ring" class="context-ring" role="img" hidden
@@ -442,8 +442,8 @@
                 aria-label="Stop the running turn"
                 data-i18n-title="composer.stopHint"
                 data-i18n-aria="composer.stopHint"
-              ><span class="stop-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="13" height="13"><rect x="4" y="4" width="8" height="8" rx="1.7" fill="currentColor"/></svg></span></button>
-              <button id="send" class="send composer-action" disabled title="Send (Enter)" aria-label="Send" data-i18n-title="composer.sendHint" data-i18n-aria="composer.send"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 13.4V3.4M4 7.4 8 3.4l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              ><span class="stop-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg></span></button>
+              <button id="send" class="send composer-action" disabled title="Send (Enter)" aria-label="Send" data-i18n-title="composer.sendHint" data-i18n-aria="composer.send"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20V5M5.5 11.5 12 5l6.5 6.5" stroke-width="1.8"/></svg></button>
             </div>
           </div>
         </div>
@@ -456,7 +456,7 @@
         <button id="panel-tab-review" class="panel-tab" role="tab" aria-selected="true" aria-controls="review-modal" data-panel="review" data-i18n="panel.review">Review</button>
         <button id="panel-tab-terminal" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-terminal" data-panel="terminal" data-i18n="panel.terminal">Terminal</button>
         <button id="panel-tab-pulls" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-pulls" data-panel="pulls" data-i18n="panel.pulls">Pull requests</button>
-        <button id="panel-close" class="icon panel-close" title="Hide the panel" aria-label="Hide the panel" data-i18n-title="panel.hide" data-i18n-aria="panel.hide"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <button id="panel-close" class="icon panel-close" title="Hide the panel" aria-label="Hide the panel" data-i18n-title="panel.hide" data-i18n-aria="panel.hide"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
       </div>
       <div class="panel-bodies">
     <aside id="review-modal" class="changes-pane" aria-label="Changes" data-i18n-aria="ui.changes" hidden>
@@ -469,7 +469,7 @@
             aria-label="Close"
             data-i18n-title="common.close"
             data-i18n-aria="common.close"
-          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
         </div>
         <div class="review-head">
           <select id="review-scope" aria-label="Change scope" data-i18n-aria="ui.changeScope"><option value="turn" data-i18n="changes.lastTurn">Last turn</option><option value="repository" data-i18n="changes.uncommitted">Uncommitted</option></select>
@@ -477,7 +477,7 @@
           <button id="review-layout" class="panel-action" type="button" aria-pressed="false" data-i18n="review.unified">Unified diff</button>
           <button id="review-stage-all" class="panel-action" hidden title="Stage every change" aria-label="Stage every change" data-i18n-title="review.stageAllHint" data-i18n-aria="review.stageAll" data-i18n="review.stageAll">Stage all</button>
           <button id="review-unstage-all" class="panel-action" hidden title="Take every change back out of the index" aria-label="Unstage every change" data-i18n-title="review.unstageAllHint" data-i18n-aria="review.unstageAll" data-i18n="review.unstageAll">Unstage all</button>
-          <button id="review-refresh" class="icon" title="Refresh changes" aria-label="Refresh changes" data-i18n-title="common.refresh" data-i18n-aria="common.refresh"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 4v6h-6M20 10a8 8 0 1 0 0 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button id="review-refresh" class="icon" title="Refresh changes" aria-label="Refresh changes" data-i18n-title="common.refresh" data-i18n-aria="common.refresh"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2.2-7 4.1 14 2.3-7H21"/></svg></button>
 
         </div>
         <div class="review-body">
@@ -504,14 +504,14 @@
 
     <aside id="details-panel" class="details-pane" aria-label="Project details" data-i18n-aria="topbar.projectDetails" hidden>
       <div class="details-card">
-        <div class="details-head"><span id="details-project"></span><button id="details-more" class="icon" title="Project options" aria-label="Project options" aria-haspopup="menu" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
+        <div class="details-head"><span id="details-project"></span><button id="details-more" class="icon" title="Project options" aria-label="Project options" aria-haspopup="menu" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="2.4"/></svg></button></div>
         <button id="details-changes" class="details-row"><span id="details-changes-icon" aria-hidden="true"></span><span data-i18n="topbar.viewChanges">View changes</span><span id="details-stats" class="change-stats"></span></button>
         <details class="details-repository">
           <summary><span id="details-repository-icon" aria-hidden="true"></span><span data-i18n="review.repository">Repository</span></summary>
         <div id="details-checkout" class="details-row"></div>
         <button id="details-branch" type="button" class="details-row" hidden></button>
         </details>
-        <div class="details-sources-head"><span class="details-label"><span id="details-sources-icon" aria-hidden="true"></span><span data-i18n="dialog.sources.title">Sources</span></span><button id="details-add-source" class="icon" title="Add sources" aria-label="Add sources" data-i18n-title="dialog.sources.add" data-i18n-aria="dialog.sources.add"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
+        <div class="details-sources-head"><span class="details-label"><span id="details-sources-icon" aria-hidden="true"></span><span data-i18n="dialog.sources.title">Sources</span></span><button id="details-add-source" class="icon" title="Add sources" aria-label="Add sources" data-i18n-title="dialog.sources.add" data-i18n-aria="dialog.sources.add"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button></div>
         <div id="details-sources"></div>
         <button id="details-view-sources" class="details-row"><span id="details-view-icon" aria-hidden="true"></span><span data-i18n="dialog.sources.viewAll">View all</span></button>
       </div>
@@ -629,7 +629,7 @@
     </div>
     <div id="sources-modal" class="overlay" hidden>
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="sources-title">
-        <div class="dialog-head"><h2 id="sources-title" data-i18n="dialog.sources.title">Sources</h2><button id="sources-close" class="icon" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
+        <div class="dialog-head"><h2 id="sources-title" data-i18n="dialog.sources.title">Sources</h2><button id="sources-close" class="icon" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button></div>
         <div id="sources-list" class="sources-list"></div>
         <button id="sources-attach" class="details-row"><span id="sources-attach-icon" aria-hidden="true"></span><span data-i18n="composer.attach">Attach files</span></button>
         <button id="sources-manage" class="details-row"><span id="sources-manage-icon" aria-hidden="true"></span><span data-i18n="dialog.mcps.manage">Manage MCP servers</span></button>
@@ -821,10 +821,10 @@
       <div class="dialog create-project-dialog">
         <div class="create-project-head">
           <h2 id="create-project-title" data-i18n="dialog.createProject.title">Create project</h2>
-          <button id="create-project-close" class="icon" type="button" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+          <button id="create-project-close" class="icon" type="button" title="Close" aria-label="Close" data-i18n-title="common.close" data-i18n-aria="common.close"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
         </div>
         <div class="create-project-name-field">
-          <span aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M3 6h7l2 3h9v11H3Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
+          <span aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h7l2 3h9v11H3ZM3 9h18"/></svg></span>
           <input id="create-project-name" aria-label="Project name" placeholder="Project name" spellcheck="false" autocomplete="off" data-i18n-aria="dialog.createProject.name" data-i18n-placeholder="dialog.createProject.name" />
         </div>
         <div id="create-project-sources" class="field">
@@ -832,7 +832,7 @@
           <div class="create-project-source-box" role="group" aria-labelledby="create-project-sources-label">
             <div id="create-project-folders" class="folder-list"></div>
             <details id="create-project-source-options" class="create-project-source-options">
-              <summary><span data-i18n="dialog.createProject.localFolder">Add a folder on this computer</span><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
+              <summary><span data-i18n="dialog.createProject.localFolder">Add a folder on this computer</span><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8.6 12 14.8l6.5-6.2"/></svg></summary>
               <div class="field-row path-row">
                 <input
                   id="create-project-path"
@@ -863,7 +863,7 @@
       <header class="projects-page-head">
         <h1 id="projects-page-title" tabindex="-1" data-i18n="sidebar.projects">Projects</h1>
         <div class="projects-page-tools">
-          <label class="projects-filter"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m16 16 5 5" stroke="currentColor" stroke-width="1.5"/></svg><input id="projects-filter" type="search" placeholder="Search projects" aria-label="Search projects" data-i18n-placeholder="projects.search" data-i18n-aria="projects.search" /></label>
+          <label class="projects-filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.4 15.4 4.6 4.6"/></svg><input id="projects-filter" type="search" placeholder="Search projects" aria-label="Search projects" data-i18n-placeholder="projects.search" data-i18n-aria="projects.search" /></label>
           <button id="projects-page-create" class="projects-create" type="button"><span aria-hidden="true">+</span><span data-i18n="common.create">Create</span></button>
         </div>
       </header>
@@ -882,7 +882,7 @@
         <aside class="settings-navigation">
           <div class="settings-head"><h2 id="settings-title" data-i18n="settings.title">Settings</h2></div>
           <label class="settings-search">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m16 16 5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.4 15.4 4.6 4.6"/></svg>
             <input id="settings-search" type="search" placeholder="Search settings" aria-label="Search settings" data-i18n-placeholder="settings.search" data-i18n-aria="settings.search" />
           </label>
           <nav class="settings-nav" aria-label="Settings sections" data-i18n-aria="settings.sections">
@@ -897,7 +897,7 @@
                 aria-controls="settings-page-general"
                 data-settings-section="general"
                 data-settings-keywords="general send enter follow up queue steer"
-              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.general">General</span></button>
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.8" stroke-width="1.8"/><path d="M9.93 4.79 10.26 2.15h3.48l.33 2.64 1.57.65 2.1-1.63 2.45 2.45-1.63 2.1.65 1.57 2.64.33v3.48l-2.64.33-.65 1.57 1.63 2.1-2.45 2.45-2.1-1.63-1.57.65-.33 2.64h-3.48l-.33-2.64-1.57-.65-2.1 1.63-2.45-2.45 1.63-2.1-.65-1.57-2.64-.33v-3.48l2.64-.33.65-1.57-1.63-2.1 2.45-2.45 2.1 1.63Z" stroke-width="1.8"/></svg><span data-i18n="settings.general">General</span></button>
               <button
                 id="settings-tab-appearance"
                 class="settings-tab"
@@ -906,7 +906,7 @@
                 aria-controls="settings-page-appearance"
                 data-settings-section="appearance"
                 data-settings-keywords="appearance theme dark light language font text sidebar"
-              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18h2a3 3 0 0 0 0-6h-1a2 2 0 0 1 0-4h3a4 4 0 0 0 0-8ZM7 10h.01M9 6h.01M6 15h.01" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.appearance">Appearance</span></button>
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.7"/><path d="m20.5 15.5-5-4-8.5 8"/></svg><span data-i18n="settings.appearance">Appearance</span></button>
               <button
                 id="settings-tab-notifications"
                 class="settings-tab"
@@ -915,7 +915,7 @@
                 aria-controls="settings-page-notifications"
                 data-settings-section="notifications"
                 data-settings-keywords="notifications alerts approvals questions awake"
-              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.notifications">Notifications</span></button>
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4"/></svg><span data-i18n="settings.notifications">Notifications</span></button>
               </div>
             </section>
             <section id="settings-group-integrations" class="settings-nav-group" role="group" aria-labelledby="settings-integrations-label" data-settings-group>
@@ -926,21 +926,21 @@
                 type="button"
                 data-settings-action="mcps"
                 data-settings-keywords="mcp servers oauth authorize tools integrations"
-              ><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 21h8M12 17v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span data-i18n="dialog.mcps.title">MCP servers</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg><span data-i18n="dialog.mcps.title">MCP servers</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
               <button
                 id="settings-open-plugins"
                 class="settings-tab settings-tab-action"
                 type="button"
                 data-settings-action="plugins"
                 data-settings-keywords="plugins extensions marketplace integrations"
-              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6a3 3 0 1 1 6 0h4v6a3 3 0 1 0 0 6v4h-6a3 3 0 1 0-6 0H4v-6a3 3 0 1 1 0-6Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span data-i18n="customize.plugins">Plugins</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="8" cy="17" r="2" fill="currentColor"/></svg><span data-i18n="customize.plugins">Plugins</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
               <button
                 id="settings-open-skills"
                 class="settings-tab settings-tab-action"
                 type="button"
                 data-settings-action="skills"
                 data-settings-keywords="skills capabilities integrations"
-              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6l2 2 2-2h6v16h-6l-2 1-2-1H4ZM12 6v15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span data-i18n="customize.skills">Skills</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg><span data-i18n="customize.skills">Skills</span><span class="settings-tab-arrow" aria-hidden="true">›</span></button>
             </section>
             <section id="settings-group-workspace" class="settings-nav-group" role="group" aria-labelledby="settings-workspace-label" data-settings-group>
               <h3 id="settings-workspace-label" data-i18n="settings.workspace">Workspace</h3>
@@ -962,7 +962,7 @@
                 aria-controls="settings-page-keyboard"
                 data-settings-section="keyboard"
                 data-settings-keywords="keyboard shortcuts keybindings workspace"
-              ><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3ZM6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h.01M18 13h.01M7 16h10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span data-i18n="settings.keyboard">Keyboard</span></button>
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6.5" width="19" height="11" rx="2.5"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M7.5 14h9"/></svg><span data-i18n="settings.keyboard">Keyboard</span></button>
               </div>
             </section>
             <p id="settings-search-empty" class="settings-search-empty" role="status" data-i18n="settings.noMatches" hidden>No settings match your search.</p>
@@ -1196,7 +1196,7 @@
             aria-label="Close"
             data-i18n-title="common.close"
             data-i18n-aria="common.close"
-          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
         </div>
         <div id="file-body" class="file-body"></div>
       </div>
@@ -1255,7 +1255,7 @@
             aria-label="Close"
             data-i18n-title="common.close"
             data-i18n-aria="common.close"
-          ><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
         </div>
         <p class="dialog-sub" data-i18n="archived.subtitle">Threads this window archived. Putting one back returns it to the sidebar where it was.</p>
         <div id="archived-list" class="session-list archived-list"></div>

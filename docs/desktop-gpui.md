@@ -133,9 +133,12 @@ and Customize and Settings use the stable window's two-column navigation. The
 topbar's Back, Forward and sidebar controls stay visible on destinations, with
 Back and Forward painted as disabled when they have no destination.
 
-Every glyph is the SVG the stable window strokes, drawn from `src/icons.rs`: GPUI
+Every glyph is inline SVG from `src/icons.rs`: GPUI
 rasterises one drawing into an alpha mask and tints it with the element's color,
 so a mark is a file in that table rather than a character in the machine's font.
+The stable window keeps the same bodies in `ui/app.js`'s `GLYPHS`, and
+`check-app.mjs` holds that copy to this table, so one control wears one mark in
+both desktop front-ends.
 The brand mark is four filled triangles painted from a canvas, since a mask
 would flatten its two colors into one. The window draws its own titlebar, so it
 opens the first project's draft in memory: the welcome page's suggestions fill
