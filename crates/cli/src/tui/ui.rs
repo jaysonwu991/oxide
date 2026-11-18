@@ -2388,13 +2388,19 @@ fn sync_lines(app: &mut App, width: usize) {
     if cached > count {
         app.mark_render_dirty(count.saturating_sub(1));
     }
-    let start = app
+    let mut start = app
         .render_dirty_from
         .unwrap_or(cached)
         .min(cached)
         .min(count);
     if start == count && cached == count {
         return;
+    }
+    while start > 0
+        && is_tool_activity_item(&app.items[start])
+        && is_tool_activity_item(&app.items[start - 1])
+    {
+        start -= 1;
     }
 
     let cut = app
@@ -2412,7 +2418,34 @@ fn sync_lines(app: &mut App, width: usize) {
         elapsed: started.elapsed(),
         subagent: app.subagent.as_ref(),
     });
-    for index in start..count {
+    let mut index = start;
+    while index < count {
+        if !app.expand_tools {
+            let end = tool_activity_end(&app.items, index);
+            if tool_activity_calls(&app.items[index..end]) > 1 {
+                let mut rendered = Rows::default();
+                render_tool_activity_summary(
+                    &app.items[index..end],
+                    width,
+                    running,
+                    &app.theme,
+                    app.lang,
+                    &mut rendered,
+                );
+                let offset = app.lines.len();
+                for _ in index..end {
+                    app.line_offsets.push(offset);
+                }
+                app.lines.append(&mut rendered.lines);
+                app.line_joins.append(&mut rendered.joins);
+                app.line_links.append(&mut rendered.links);
+                app.lines.push(Line::from(""));
+                app.line_joins.push(Join::Line);
+                app.line_links.push(Vec::new());
+                index = end;
+                continue;
+            }
+        }
         let mut rendered = Rows::default();
         render_item_themed(
             &app.items[index],
@@ -2435,8 +2468,99 @@ fn sync_lines(app: &mut App, width: usize) {
             app.line_joins.push(Join::Line);
             app.line_links.push(Vec::new());
         }
+        index += 1;
     }
     app.render_dirty_from = None;
+}
+
+fn is_tool_activity_item(item: &ChatItem) -> bool {
+    matches!(
+        item,
+        ChatItem::Tool { .. } | ChatItem::ToolProgress { .. } | ChatItem::ToolResult { .. }
+    )
+}
+
+fn tool_activity_end(items: &[ChatItem], start: usize) -> usize {
+    let mut end = start;
+    while end < items.len() && is_tool_activity_item(&items[end]) {
+        end += 1;
+    }
+    end
+}
+
+fn tool_activity_calls(items: &[ChatItem]) -> usize {
+    items
+        .iter()
+        .filter(|item| matches!(item, ChatItem::Tool { .. } | ChatItem::ToolResult { .. }))
+        .count()
+}
+
+fn render_tool_activity_summary(
+    items: &[ChatItem],
+    width: usize,
+    running: Option<Running<'_>>,
+    theme: &crate::theme::Theme,
+    lang: crate::i18n::Language,
+    lines: &mut Rows,
+) {
+    let count = tool_activity_calls(items).to_string();
+    let failed_count = items
+        .iter()
+        .filter(|item| matches!(item, ChatItem::ToolResult { is_error: true, .. }))
+        .count();
+    let mut text = format!(
+        "⚙ {}",
+        crate::i18n::tf(lang, "ui.toolCalls", &[("count", &count)])
+    );
+    if failed_count > 0 {
+        let failed = failed_count.to_string();
+        text.push_str(" · ");
+        text.push_str(&crate::i18n::tf(
+            lang,
+            "ui.failedToolCalls",
+            &[("count", &failed)],
+        ));
+    }
+    if let Some(active) = running {
+        text.push_str(" · ");
+        text.push_str(crate::i18n::t(lang, "ui.running"));
+        text.push_str(&format!(
+            " {} {}",
+            active.name,
+            activity_summary(
+                active.name,
+                &tool_args(items, active.name).unwrap_or_default()
+            )
+        ));
+    }
+    text.push_str(" · ");
+    text.push_str(crate::i18n::t(lang, "ui.ctrlOToExpand"));
+    let color = if failed_count > 0 {
+        theme.error
+    } else if running.is_some() {
+        theme.tool
+    } else {
+        theme.dim
+    };
+    lines.push(Line::from(Span::styled(
+        truncate(&text, width),
+        Style::default().fg(color),
+    )));
+}
+
+fn tool_args(items: &[ChatItem], name: &str) -> Option<String> {
+    items.iter().rev().find_map(|item| match item {
+        ChatItem::Tool {
+            name: pending,
+            args,
+        }
+        | ChatItem::ToolResult {
+            name: pending,
+            args,
+            ..
+        } if pending == name => Some(args.clone()),
+        _ => None,
+    })
 }
 
 /// The tool call currently running: its name, elapsed time, and the subagent it
@@ -4227,6 +4351,60 @@ mod tests {
                 .map(|(line, join)| (line_text(line), *join)),
         );
         assert_eq!(copied, line);
+    }
+
+    #[test]
+    fn adjacent_tools_share_one_activity_line_until_ctrl_o_expands_them() {
+        let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
+        app.items.push(ChatItem::ToolResult {
+            name: "read".into(),
+            args: "{\"path\":\"src/one.rs\"}".into(),
+            output: "one".into(),
+            is_error: false,
+            diff: None,
+            millis: 4,
+        });
+        sync_lines(&mut app, 80);
+        let single = app
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(single.contains("src/one.rs"), "{single}");
+
+        app.items.push(ChatItem::ToolResult {
+            name: "edit".into(),
+            args: "{\"path\":\"src/two.rs\"}".into(),
+            output: "oldText matched twice".into(),
+            is_error: true,
+            diff: None,
+            millis: 7,
+        });
+        sync_lines(&mut app, 80);
+        let grouped = app
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(grouped.contains("2 tool calls"), "{grouped}");
+        assert!(grouped.contains("1 failed"), "{grouped}");
+        assert!(grouped.contains("Ctrl+O to expand"), "{grouped}");
+        assert_eq!(app.line_offsets.len(), 2);
+
+        app.expand_tools = true;
+        app.render_dirty_from = Some(0);
+        sync_lines(&mut app, 80);
+        let expanded = app
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(expanded.contains("src/one.rs"), "{expanded}");
+        assert!(expanded.contains("src/two.rs"), "{expanded}");
+        assert!(expanded.contains("oldText matched twice"), "{expanded}");
     }
 
     #[test]

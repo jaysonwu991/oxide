@@ -2412,6 +2412,90 @@ button.dialog-row:focus-visible {
   overflow: hidden;
 }
 
+.tool-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+
+.tool-activity .tahead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 4px 6px;
+  border-radius: 8px;
+}
+
+.tool-activity .tahead[role="button"] {
+  cursor: pointer;
+}
+
+.tool-activity .tahead[role="button"]:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.1));
+}
+
+.tool-activity .ta-caret,
+.tool-activity .ta-icon,
+.tool-activity .ta-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-descriptionForeground);
+}
+
+.tool-activity .ta-caret {
+  width: 11px;
+  transition: transform 0.1s;
+}
+
+.tool-activity .tahead[aria-expanded="true"] .ta-caret {
+  transform: rotate(90deg);
+}
+
+.tool-activity .ta-label {
+  flex: none;
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+.tool-activity.failed .ta-label,
+.tool-activity.failed .ta-icon {
+  color: var(--vscode-errorForeground, var(--vscode-charts-red, #f14c4c));
+}
+
+.tool-activity .ta-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.78em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-activity .ta-state {
+  gap: 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.76em;
+}
+
+.tool-activity .tabody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 18px;
+}
+
+.tool-activity.single .tabody {
+  padding-left: 0;
+}
+
 .tool.expanded,
 .tool.running,
 .tool.error {

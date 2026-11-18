@@ -3973,6 +3973,58 @@ describe("webview tool card", () => {
     },
   });
 
+  it("collapses adjacent calls into one expandable activity row", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage());
+    const transcript = byId.get("transcript")!;
+    send({ k: "push", item: { id: 2, kind: "tool", name: "read", args: '{"path":"src/one.rs"}', output: "one", running: false } });
+    send({ k: "push", item: { id: 3, kind: "tool", name: "grep", args: '{"pattern":"needle"}', output: "two", running: false } });
+    send({ k: "push", item: { id: 4, kind: "tool", name: "edit", args: '{"path":"src/two.rs"}', output: "oldText matched twice", running: false, isError: true } });
+
+    const activities = transcript.querySelectorAll(".tool-activity");
+    const activity = activities[0];
+    const head = activity.querySelector(".tahead")!;
+    assert.equal(activities.length, 1);
+    assert.equal(head.hidden, false);
+    assert.equal(activity.querySelector(".tabody")!.hidden, true);
+    assert.equal(activity.querySelector(".ta-label")!.textContent, "3 tool calls · 1 failed");
+    assert.equal(head.getAttribute("role"), "button");
+    assert.equal(head.getAttribute("aria-expanded"), "false");
+    assert.equal(activity.classList.contains("failed"), true);
+
+    head.fire("click");
+    assert.equal(activity.querySelector(".tabody")!.hidden, false);
+    assert.equal(head.getAttribute("aria-expanded"), "true");
+    head.fire("keydown", { key: " ", preventDefault() {} });
+    assert.equal(activity.querySelector(".tabody")!.hidden, true);
+
+    send({ k: "push", item: { id: 5, kind: "assistant", text: "The search found the next file." } });
+    send({ k: "push", item: { id: 6, kind: "tool", name: "read", args: '{"path":"src/three.rs"}', output: "three", running: false } });
+    const after = transcript.querySelectorAll(".tool-activity");
+    assert.equal(after.length, 2, "commentary starts a new activity");
+    assert.equal(after[1].classList.contains("single"), true);
+    assert.equal(after[1].querySelector(".tahead")!.hidden, true);
+    assert.equal(after[1].querySelector(".tabody")!.hidden, false);
+    assert.match(style, /\.tool-activity\.failed \.ta-label,/);
+    assert.match(style, /\.tool-activity\.single \.tabody \{\s*padding-left: 0;/s);
+  });
+
+  it("groups tool cards replayed from a stored thread", () => {
+    const { byId, send } = loadRenderer();
+    send(stateMessage({
+      items: [
+        { id: 1, kind: "tool", name: "read", args: '{"path":"src/one.rs"}', output: "one", running: false },
+        { id: 2, kind: "tool", name: "read", args: '{"path":"src/two.rs"}', output: "two", running: false },
+        { id: 3, kind: "assistant", text: "The next file differs." },
+        { id: 4, kind: "tool", name: "read", args: '{"path":"src/three.rs"}', output: "three", running: false },
+      ],
+    }));
+    const activities = byId.get("transcript")!.querySelectorAll(".tool-activity");
+    assert.equal(activities.length, 2);
+    assert.equal(activities[0].querySelector(".ta-label")!.textContent, "2 tool calls");
+    assert.equal(activities[1].classList.contains("single"), true);
+  });
+
   it("summarizes the active turn's file changes above the compact composer", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage({ busy: true, status: "Editing…" }));
@@ -3995,9 +4047,7 @@ describe("webview tool card", () => {
 
     send(editCard({ id: 5, args: JSON.stringify({ path: "src/other.rs" }), diff: "+other" }));
     send(editCard({ id: 6, diff: "+latest" }));
-    const toolCards = byId
-      .get("transcript")!
-      .children.filter((child) => child.classList.contains("tool"));
+    const toolCards = byId.get("transcript")!.querySelectorAll(".tool");
     pill.fire("click");
     assert.equal(toolCards[2].classList.contains("expanded"), true);
     assert.equal(toolCards[1].classList.contains("expanded"), false);

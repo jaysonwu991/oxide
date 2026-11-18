@@ -1019,6 +1019,10 @@ block is created only by a `thinking_delta`, so a turn that merely starts one
 never leaves an empty block in the transcript. When a stream drops and the CLI
 retries, `auto_retry_start` drops the item the failed attempt was streaming
 into, so the retry's fresh output does not extend the partial reply.
+Adjacent tool items share one expandable activity row with their call and
+failure counts and the current running action. A single tool keeps its normal
+card; ordinary assistant commentary ends the activity so later tools cannot
+absorb it. The same grouping is rebuilt when a stored thread is replayed.
 
 `context` carries the composer's pending context *and* attachments — the tracked
 file's chip travels in the same list, marked `auto`, so the view can paint it as

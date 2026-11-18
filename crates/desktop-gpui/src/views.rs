@@ -2809,30 +2809,72 @@ fn conversation(
         transcript = transcript.child(empty_state(root, theme, "transcript-welcome", cx));
     }
 
-    for (position, entry) in entries.iter().enumerate() {
+    let blocks = transcript_blocks(&entries);
+    for (position, block) in blocks.iter().enumerate() {
+        let (label, content) = match *block {
+            TranscriptBlock::Entry(entry_position) => {
+                let entry = &entries[entry_position];
+                (
+                    entry_accessibility_label(entry),
+                    entry_view(
+                        root,
+                        entry,
+                        index,
+                        entry_position,
+                        reading_width,
+                        window,
+                        cx,
+                    ),
+                )
+            }
+            TranscriptBlock::ToolActivity { start, end } => {
+                let tools = &entries[start..=end];
+                let (count, failed, running) = tool_activity_summary(tools);
+                let label = format!(
+                    "{count} tool calls{}{}",
+                    if failed == 0 {
+                        String::new()
+                    } else {
+                        format!(", {failed} failed")
+                    },
+                    if running { ", running" } else { "" }
+                );
+                (
+                    label,
+                    tool_activity_view(root, tools, start, index, reading_width, window, cx),
+                )
+            }
+        };
         transcript = transcript.child(
             div()
                 .id(SharedString::from(format!(
                     "transcript-entry-{index}-{position}"
                 )))
                 .role(gpui::Role::Article)
-                .aria_label(entry_accessibility_label(entry))
+                .aria_label(label)
                 .w_full()
                 .max_w(px(820.0))
                 .mx_auto()
                 .flex_none()
                 .child({
-                    let mut view =
-                        entry_view(root, entry, index, position, reading_width, window, cx);
-                    if let Entry::Assistant {
-                        text,
-                        streaming: false,
-                        ..
-                    } = entry
-                    {
-                        if !text.trim().is_empty() {
-                            view = view
-                                .child(assistant_actions(root, text, index, position, theme, cx));
+                    let mut view = content;
+                    if let TranscriptBlock::Entry(entry_position) = *block {
+                        if let Entry::Assistant {
+                            text,
+                            streaming: false,
+                            ..
+                        } = &entries[entry_position]
+                        {
+                            if !text.trim().is_empty() {
+                                view = view.child(assistant_actions(
+                                    root,
+                                    text,
+                                    index,
+                                    entry_position,
+                                    theme,
+                                    cx,
+                                ));
+                            }
                         }
                     }
                     view
@@ -2935,6 +2977,55 @@ fn transcript_following_after_scroll(
         return true;
     }
     was_following
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranscriptBlock {
+    Entry(usize),
+    ToolActivity { start: usize, end: usize },
+}
+
+/// Consecutive tool cards read as one activity block. Empty compatibility
+/// reasoning entries are step boundaries, not transcript rows, so they do not
+/// split an otherwise continuous run of tools.
+fn transcript_blocks(entries: &[Entry]) -> Vec<TranscriptBlock> {
+    let mut blocks = Vec::new();
+    let mut position = 0;
+    while position < entries.len() {
+        if !matches!(entries[position], Entry::Tool(_)) {
+            if !matches!(
+                &entries[position],
+                Entry::Thinking { text, .. } if text.trim().is_empty()
+            ) {
+                blocks.push(TranscriptBlock::Entry(position));
+            }
+            position += 1;
+            continue;
+        }
+
+        let start = position;
+        let mut tools = vec![position];
+        position += 1;
+        while position < entries.len() {
+            match &entries[position] {
+                Entry::Tool(_) => {
+                    tools.push(position);
+                    position += 1;
+                }
+                Entry::Thinking { text, .. } if text.trim().is_empty() => position += 1,
+                _ => break,
+            }
+        }
+        if tools.len() == 1 {
+            blocks.push(TranscriptBlock::Entry(start));
+        } else {
+            blocks.push(TranscriptBlock::ToolActivity {
+                start,
+                end: *tools.last().unwrap_or(&start),
+            });
+        }
+    }
+    blocks
 }
 
 /// The page the window opens on before a thread is in the transcript: the mark,
@@ -3661,6 +3752,197 @@ fn entry_accessibility_label(entry: &Entry) -> String {
             format!("Worked for {}", format_run_duration(*elapsed))
         }
     }
+}
+
+fn tool_activity_summary(entries: &[Entry]) -> (usize, usize, bool) {
+    let tools = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Tool(card) => Some(card),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (
+        tools.len(),
+        tools
+            .iter()
+            .filter(|card| card.status == Status::Failed)
+            .count(),
+        tools
+            .iter()
+            .any(|card| card.status == Status::Running || card.status == Status::Pending),
+    )
+}
+
+fn tool_activity_view(
+    root: &mut Root,
+    entries: &[Entry],
+    offset: usize,
+    chat: usize,
+    width: f32,
+    window: &mut Window,
+    cx: &mut Context<Root>,
+) -> gpui::Div {
+    let theme = root.theme.clone();
+    let theme = &theme;
+    let (count, failed, running) = tool_activity_summary(entries);
+    let first_id = match &entries[0] {
+        Entry::Tool(card) => card.id,
+        _ => offset as u64,
+    };
+    let chat_id = root.chats.get(chat).map(|chat| chat.id).unwrap_or_default();
+    let key = (chat_id, first_id);
+    let expanded = root.expanded_activity.contains(&key);
+    let latest = entries
+        .iter()
+        .rev()
+        .find_map(|entry| match entry {
+            Entry::Tool(card) if card.status == Status::Running => Some(card.detail.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let label = if failed == 0 {
+        format!("{count} tool calls")
+    } else {
+        format!("{count} tool calls \u{00b7} {failed} failed")
+    };
+    let state = if running { "Running" } else { "" };
+    let aria_label = format!(
+        "{label}, {}. {}",
+        if running { "running" } else { "finished" },
+        if expanded {
+            "Collapse tool activity"
+        } else {
+            "Expand tool activity"
+        }
+    );
+    let spinner = SharedString::from(format!("activity-spinner-{chat}-{first_id}"));
+    let header = div()
+        .id(SharedString::from(format!("tool-activity-{first_id}")))
+        .role(gpui::Role::Button)
+        .aria_label(aria_label)
+        .aria_expanded(expanded)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(7.0))
+        .min_h(px(30.0))
+        .px(px(4.0))
+        .rounded(px(7.0))
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.panel_2()))
+        .tooltip(tip(
+            if expanded {
+                "Hide tool activity"
+            } else {
+                "Show tool activity"
+            },
+            theme,
+        ))
+        .child(div().flex_none().w(px(12.0)).h(px(14.0)).child(icons::icon(
+            if expanded {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            },
+            12.0,
+            theme.faint(),
+        )))
+        .child(
+            div()
+                .flex_none()
+                .w(px(16.0))
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(if running {
+                    icons::icon(Icon::Spinner, 13.0, theme.accent())
+                        .with_animation(
+                            spinner,
+                            Animation::new(Duration::from_millis(760)).repeat(),
+                            |icon, delta| {
+                                icon.with_transformation(gpui::Transformation::rotate(
+                                    gpui::percentage(delta),
+                                ))
+                            },
+                        )
+                        .into_any_element()
+                } else {
+                    icons::icon(
+                        Icon::Activity,
+                        13.0,
+                        if failed > 0 {
+                            theme.error()
+                        } else {
+                            theme.faint()
+                        },
+                    )
+                    .into_any_element()
+                }),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if failed > 0 {
+                    theme.error()
+                } else if running {
+                    theme.text()
+                } else {
+                    theme.dim()
+                })
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .font_family("Menlo")
+                .text_size(px(11.0))
+                .text_color(theme.faint())
+                .child(latest),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(10.5))
+                .text_color(if failed > 0 {
+                    theme.error()
+                } else {
+                    theme.accent()
+                })
+                .child(state.to_string()),
+        )
+        .on_click(cx.listener(move |root, _, _, cx| {
+            if !root.expanded_activity.remove(&key) {
+                root.expanded_activity.insert(key);
+            }
+            cx.notify();
+        }));
+
+    if !expanded {
+        return div().flex().flex_col().w_full().child(header);
+    }
+
+    let mut activity = div().flex().flex_col().w_full().gap_1().child(header);
+    for (position, entry) in entries.iter().enumerate() {
+        if let Entry::Tool(_) = entry {
+            activity = activity.child(div().pl(px(20.0)).child(entry_view(
+                root,
+                entry,
+                chat,
+                offset + position,
+                width - 20.0,
+                window,
+                cx,
+            )));
+        }
+    }
+    activity
 }
 
 fn entry_view(
@@ -8424,6 +8706,74 @@ mod composer_action_tests {
         assert_eq!(composer_action(true, true, false), ComposerAction::Queue);
         assert_eq!(composer_action(false, true, false), ComposerAction::Send);
         assert_eq!(composer_action(false, false, true), ComposerAction::Send);
+    }
+}
+
+#[cfg(test)]
+mod transcript_activity_tests {
+    use super::{transcript_blocks, TranscriptBlock};
+    use crate::model::{Entry, Status, ToolCard};
+
+    fn tool(id: u64) -> Entry {
+        Entry::Tool(ToolCard {
+            id,
+            name: "read".to_string(),
+            detail: format!("file-{id}.rs"),
+            copy_text: String::new(),
+            app: None,
+            status: Status::Done,
+            output: String::new(),
+            diff: None,
+            media: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn contiguous_tools_share_one_activity_block() {
+        let entries = vec![
+            Entry::User {
+                text: "Inspect it".to_string(),
+                attachments: Vec::new(),
+            },
+            tool(1),
+            Entry::Thinking {
+                text: String::new(),
+                seconds: Some(4),
+                done: true,
+            },
+            tool(2),
+            tool(3),
+        ];
+
+        assert_eq!(
+            transcript_blocks(&entries),
+            vec![
+                TranscriptBlock::Entry(0),
+                TranscriptBlock::ToolActivity { start: 1, end: 4 }
+            ]
+        );
+    }
+
+    #[test]
+    fn commentary_and_single_tools_are_not_hidden_in_activity() {
+        let entries = vec![
+            tool(1),
+            Entry::Assistant {
+                text: "The first file points to the second.".to_string(),
+                blocks: Vec::new(),
+                streaming: false,
+            },
+            tool(2),
+        ];
+
+        assert_eq!(
+            transcript_blocks(&entries),
+            vec![
+                TranscriptBlock::Entry(0),
+                TranscriptBlock::Entry(1),
+                TranscriptBlock::Entry(2)
+            ]
+        );
     }
 }
 

@@ -188,7 +188,12 @@ reveal rather than two frames of the wrong page.
   with their call, output and diff, errors, compaction notices, and a context
   ring beside the composer controls. Provider reasoning stays private: the
   stored blocks are retained for protocol replay but neither a live turn nor a
-  reopened thread paints them. A tool is one compact row by default; a successful result stays
+  reopened thread paints them. A step boundary without any public reasoning adds
+  no "Thought for" row. A run of two or more consecutive tools becomes one
+  expandable activity row with the call count, active action and failure count;
+  expanding it reveals the individual tool rows, while progress commentary
+  between tool runs stays in the transcript as its own reply. A single tool is
+  one compact row by default; a successful result stays
   folded, a failure previews its first three lines, and the row or preview
   expands and collapses the full output and diff without making every result
   compete with the answer. The row's copy control keeps a shell command's full
