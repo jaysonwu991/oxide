@@ -2648,11 +2648,15 @@ fn render_item_themed(
                 );
             }
         }
-        ChatItem::Assistant(text) => {
-            let prefix = vec![Span::styled(
-                "◆ ",
-                Style::default().fg(theme.assistant).add_modifier(bold),
-            )];
+        ChatItem::Assistant { text, phase } => {
+            let prefix = if *phase == crate::agent::MessagePhase::FinalAnswer {
+                vec![Span::styled(
+                    "◆ ",
+                    Style::default().fg(theme.assistant).add_modifier(bold),
+                )]
+            } else {
+                Vec::new()
+            };
             lines.extend(crate::tui::markdown::render_with_prefix(
                 text, width, prefix, theme,
             ));
@@ -4338,7 +4342,10 @@ mod tests {
              per-app grant the run was never allowed to use, and the hint names the app to allow \
              rather than the tool that failed to read it";
         let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
-        app.items.push(ChatItem::Assistant(paragraph.into()));
+        app.items.push(ChatItem::Assistant {
+            text: paragraph.into(),
+            phase: crate::agent::MessagePhase::FinalAnswer,
+        });
         sync_lines(&mut app, 60);
 
         assert!(app.lines.len() > 2, "the pane wrapped the paragraph");
@@ -4673,12 +4680,13 @@ mod tests {
     #[test]
     fn a_click_on_a_labels_row_answers_with_its_target() {
         let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
-        app.items.push(ChatItem::Assistant(
-            "The turn is [#176 fix(cli,desktop,vscode): name a release by its version, not its tag]\
+        app.items.push(ChatItem::Assistant {
+            text: "The turn is [#176 fix(cli,desktop,vscode): name a release by its version, not its tag]\
              (https://github.com/jaysonwu991/oxide/pull/176) \
              and it changed two files."
                 .into(),
-        ));
+            phase: crate::agent::MessagePhase::FinalAnswer,
+        });
         sync_lines(&mut app, 40);
 
         let text: String = app.lines[0]
@@ -4707,9 +4715,10 @@ mod tests {
     #[test]
     fn two_links_that_read_the_same_open_their_own_targets() {
         let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
-        app.items.push(ChatItem::Assistant(
-            "See [docs](https://example.com/a) and [docs](https://example.com/b).".into(),
-        ));
+        app.items.push(ChatItem::Assistant {
+            text: "See [docs](https://example.com/a) and [docs](https://example.com/b).".into(),
+            phase: crate::agent::MessagePhase::FinalAnswer,
+        });
         sync_lines(&mut app, 80);
 
         let text: String = app.lines[0]
@@ -4740,9 +4749,10 @@ mod tests {
     #[test]
     fn links_written_side_by_side_both_answer() {
         let mut app = App::new("model".into(), "/tmp".into(), Reasoning::Auto);
-        app.items.push(ChatItem::Assistant(
-            "See [one](https://example.com/1)[two](https://example.com/2) here.".into(),
-        ));
+        app.items.push(ChatItem::Assistant {
+            text: "See [one](https://example.com/1)[two](https://example.com/2) here.".into(),
+            phase: crate::agent::MessagePhase::FinalAnswer,
+        });
         sync_lines(&mut app, 80);
 
         let text: String = app.lines[0]
@@ -5483,19 +5493,37 @@ mod tests {
 
         let mut lines = Vec::new();
         render_item(
-            &ChatItem::Assistant("here is the answer".into()),
+            &ChatItem::Assistant {
+                text: "here is the answer".into(),
+                phase: crate::agent::MessagePhase::FinalAnswer,
+            },
             80,
             false,
             &mut lines,
         );
         assert_eq!(line_text(&lines[0]), "◆ here is the answer");
+
+        let mut lines = Vec::new();
+        render_item(
+            &ChatItem::Assistant {
+                text: "I’ll inspect the files first.".into(),
+                phase: crate::agent::MessagePhase::Commentary,
+            },
+            80,
+            false,
+            &mut lines,
+        );
+        assert_eq!(line_text(&lines[0]), "I’ll inspect the files first.");
     }
 
     #[test]
     fn assistant_messages_render_markdown_blocks() {
         let mut lines = Vec::new();
         render_item(
-            &ChatItem::Assistant("## Summary\n\n- **bold** item\n\n```\nsome code\n```".into()),
+            &ChatItem::Assistant {
+                text: "## Summary\n\n- **bold** item\n\n```\nsome code\n```".into(),
+                phase: crate::agent::MessagePhase::FinalAnswer,
+            },
             60,
             false,
             &mut lines,
@@ -6074,8 +6102,10 @@ mod tests {
             text: "first thought\nsecond thought".into(),
             millis: Some(1200),
         });
-        app.items
-            .push(ChatItem::Assistant("a reply that mentions 9 and 2".into()));
+        app.items.push(ChatItem::Assistant {
+            text: "a reply that mentions 9 and 2".into(),
+            phase: crate::agent::MessagePhase::FinalAnswer,
+        });
         let whole = Rect::new(0, 0, 80, 24);
         let messages = main_areas(whole, &app)[0];
 
@@ -6647,7 +6677,10 @@ mod tests {
         // the 131 the pane showed.
         let body = "**Short answer: no code change is needed in either, but both do get the new behavior \u{2014} and I found one real asymmetry while checking, which I fixed.**";
         let mut app = App::new("model".into(), "/tmp/project".into(), Reasoning::Auto);
-        app.items.push(ChatItem::Assistant(body.into()));
+        app.items.push(ChatItem::Assistant {
+            text: body.into(),
+            phase: crate::agent::MessagePhase::FinalAnswer,
+        });
         let mut terminal = Terminal::new(TestBackend::new(133, 24)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buffer = terminal.backend().buffer().clone();

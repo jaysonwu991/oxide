@@ -35,7 +35,7 @@ box, with Claude Code configuration support for compatibility.
   that retries transient failures.
   See [Providers](docs/configuration.md#providers).
 - **Tools** — `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, `webfetch`
-  plus agent-level `task`, `skill`, `command`, `memory`, `diagnostics`, and `ask`;
+  plus agent-level `task`, `skill`, `command`, `memory`, and `ask`;
   MCP servers over stdio or HTTP, loaded on demand with OAuth discovery.
 - **Project ecosystem** — instructions, commands, prompt templates, agents,
   skills, MCP servers, and plugin packages from `.oxide/` (and the Claude Code

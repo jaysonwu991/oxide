@@ -1,4 +1,4 @@
-use crate::agent::Steering;
+use crate::agent::{MessagePhase, Steering};
 use crate::config::Reasoning;
 use crate::llm::{ContentPart, Message};
 use crate::media;
@@ -105,7 +105,10 @@ pub enum ChatItem {
         info: Vec<String>,
     },
     User(String),
-    Assistant(String),
+    Assistant {
+        text: String,
+        phase: MessagePhase,
+    },
     /// The model's reasoning for one step. `millis` is set once the reasoning
     /// ends, which turns the streaming label into a duration.
     Thinking {
@@ -1085,7 +1088,16 @@ impl App {
                 "assistant" => {
                     if let Some(text) = message.display() {
                         if !text.trim().is_empty() {
-                            self.items.push(ChatItem::Assistant(text));
+                            let phase = if message
+                                .tool_calls
+                                .as_ref()
+                                .is_some_and(|calls| !calls.is_empty())
+                            {
+                                MessagePhase::Commentary
+                            } else {
+                                MessagePhase::FinalAnswer
+                            };
+                            self.items.push(ChatItem::Assistant { text, phase });
                         }
                     }
                 }
@@ -1248,14 +1260,31 @@ impl App {
 
     pub fn push_assistant_delta(&mut self, delta: String) {
         if !self.assistant_open {
-            self.items.push(ChatItem::Assistant(String::new()));
+            self.items.push(ChatItem::Assistant {
+                text: String::new(),
+                phase: MessagePhase::Commentary,
+            });
             self.assistant_open = true;
         }
         let index = self.items.len() - 1;
-        if let Some(ChatItem::Assistant(buffer)) = self.items.last_mut() {
-            buffer.push_str(&delta);
+        if let Some(ChatItem::Assistant { text, .. }) = self.items.last_mut() {
+            text.push_str(&delta);
         }
         self.mark_render_dirty(index);
+    }
+
+    pub fn set_assistant_phase(&mut self, phase: MessagePhase) {
+        let Some(index) = self
+            .items
+            .iter()
+            .rposition(|item| matches!(item, ChatItem::Assistant { .. }))
+        else {
+            return;
+        };
+        if let Some(ChatItem::Assistant { phase: current, .. }) = self.items.get_mut(index) {
+            *current = phase;
+            self.mark_render_dirty(index);
+        }
     }
 
     /// Toggle whether long tool output is shown in full or collapsed, and

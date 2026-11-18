@@ -279,6 +279,10 @@ pub fn event_json(event: &AgentEvent) -> Option<Value> {
             "type": "session_title",
             "title": title,
         }),
+        AgentEvent::MessagePhase(phase) => json!({
+            "type": "message_phase",
+            "phase": phase.as_str(),
+        }),
         AgentEvent::Thought { .. } => json!({ "type": "thinking" }),
         // The model step finished streaming. A consumer that renders the live
         // transcript uses this as the step boundary: text and reasoning after
@@ -659,6 +663,14 @@ mod tests {
         let text = event_json(&AgentEvent::Text("hi".into())).unwrap();
         assert_eq!(text["type"], "message_update");
         assert_eq!(text["assistantMessageEvent"]["delta"], "hi");
+        let phase = event_json(&AgentEvent::MessagePhase(
+            crate::agent::MessagePhase::Commentary,
+        ))
+        .unwrap();
+        assert_eq!(
+            phase,
+            json!({"type": "message_phase", "phase": "commentary"})
+        );
 
         let call = event_json(&AgentEvent::ToolCall {
             name: "read".into(),

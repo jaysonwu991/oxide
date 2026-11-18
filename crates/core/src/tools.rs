@@ -5261,6 +5261,10 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     if no_matches {
         output.push_str(" (search returned no matches)");
     }
+    let ref_not_found = exit != 0 && git_ref_probe_not_found(command);
+    if ref_not_found {
+        output.push_str(" (Git ref not found)");
+    }
     if exit != 0 && !reader_closed && unresolved_relative_import(&output) {
         output.push('\n');
         output.push_str(module_failure_hint(&output, cwd));
@@ -5277,7 +5281,8 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
             && !no_matches
             && !checks_pending
             && !run_pending
-            && !checks_failed,
+            && !checks_failed
+            && !ref_not_found,
         ..ToolOutput::text(output)
     })
 }
@@ -5468,6 +5473,45 @@ fn search_returned_no_matches(command: &str, text: &str) -> bool {
                         "grep" | "egrep" | "fgrep" | "rg"
                     ))
         })
+}
+
+/// A missing ref is the expected negative result of these existence probes.
+/// Keep the classifier narrow: chained commands and ordinary `git` failures
+/// still belong to the command that failed.
+fn git_ref_probe_not_found(command: &str) -> bool {
+    if command
+        .chars()
+        .any(|ch| matches!(ch, '\n' | '\r' | ';' | '|' | '&' | '<' | '>'))
+    {
+        return false;
+    }
+    let tokens = command.split_whitespace().collect::<Vec<_>>();
+    if tokens.first() != Some(&"git") || tokens.len() < 3 {
+        return false;
+    }
+    let operands = tokens[2..]
+        .iter()
+        .filter(|token| !token.starts_with('-'))
+        .count();
+    if operands == 0 {
+        return false;
+    }
+    match tokens[1] {
+        "rev-parse" => {
+            tokens.contains(&"--verify")
+                && tokens[2..].iter().all(|token| {
+                    !token.starts_with('-')
+                        || matches!(*token, "--verify" | "--quiet" | "--end-of-options")
+                })
+        }
+        "show-ref" => {
+            tokens.contains(&"--verify")
+                && tokens[2..].iter().all(|token| {
+                    !token.starts_with('-') || matches!(*token, "--verify" | "--quiet")
+                })
+        }
+        _ => false,
+    }
 }
 
 /// Whether the last stage of a `cmd` pipeline is a search. Windows has no
@@ -6886,6 +6930,24 @@ mod tests {
             "grep",
             "No matches found\nadditional detail"
         ));
+    }
+
+    #[test]
+    fn git_ref_existence_probes_report_a_missing_ref_as_a_result() {
+        assert!(git_ref_probe_not_found(
+            "git rev-parse --verify origin/topic"
+        ));
+        assert!(git_ref_probe_not_found(
+            "git rev-parse --verify --quiet origin/topic"
+        ));
+        assert!(git_ref_probe_not_found(
+            "git show-ref --verify --quiet refs/remotes/origin/topic"
+        ));
+        assert!(!git_ref_probe_not_found("git rev-parse HEAD"));
+        assert!(!git_ref_probe_not_found(
+            "git rev-parse --verify origin/topic && git status"
+        ));
+        assert!(!git_ref_probe_not_found("git rev-parse --verify"));
     }
 
     #[test]
@@ -9281,6 +9343,42 @@ mod tests {
             assert_eq!(out.text.contains(note), !failed, "{command}: {}", out.text);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bash_treats_a_missing_ref_probe_as_a_result() {
+        let dir = std::env::temp_dir().join(format!("oxide_ref_probe_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        for args in [
+            &["init", "--initial-branch=feature"][..],
+            &["config", "user.name", "Test"][..],
+            &["config", "user.email", "test@example.com"][..],
+            &["commit", "--allow-empty", "-m", "base"][..],
+        ] {
+            assert!(std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+
+        let out = execute(
+            &call(
+                "bash",
+                json!({"command": "git rev-parse --verify origin/missing"}),
+            ),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("[exit: 128]"), "{}", out.text);
+        assert!(out.text.contains("(Git ref not found)"), "{}", out.text);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

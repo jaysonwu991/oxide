@@ -480,6 +480,7 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 }
 .msg.user .label { display: none; }
 .msg.assistant .label { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11.5px; margin-bottom: 7px; }
+.msg.assistant.commentary > .label { display: none; }
 :is(.msg .body, .markdown-input) { word-break: break-word; }
 .msg.user .body { white-space: normal; }
 :is(.msg .body, .markdown-input) :is(h1, h2, h3, h4, h5, h6) { margin: 14px 0 6px; line-height: 1.3; }

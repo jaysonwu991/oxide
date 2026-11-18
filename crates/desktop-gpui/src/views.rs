@@ -9,7 +9,7 @@
 use crate::app::{Button, ChangeScope, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
-use crate::model::{Attachment, EditedFile, Entry, QueueDelivery, Status};
+use crate::model::{AssistantPhase, Attachment, EditedFile, Entry, QueueDelivery, Status};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
@@ -28,6 +28,7 @@ use std::time::Duration;
 const RAIL_WIDTH: f32 = 56.0;
 const TOPBAR_HEIGHT: f32 = 50.0;
 const SIDEBAR_RESIZER_WIDTH: f32 = 7.0;
+const CONVERSATION_WIDTH: f32 = 820.0;
 pub(crate) const SETTINGS_NAVIGATION_WIDTH: f32 = 232.0;
 
 #[derive(Clone)]
@@ -2734,8 +2735,8 @@ fn conversation(
     } else {
         0.0
     });
-    let reading_width =
-        (f32::from(window.viewport_size().width) - leading - trailing - 56.0).clamp(280.0, 820.0);
+    let reading_width = (f32::from(window.viewport_size().width) - leading - trailing - 56.0)
+        .clamp(280.0, CONVERSATION_WIDTH);
 
     let mut transcript = div()
         .id("transcript")
@@ -2856,7 +2857,7 @@ fn conversation(
                 .role(gpui::Role::Article)
                 .aria_label(label)
                 .w_full()
-                .max_w(px(820.0))
+                .max_w(px(CONVERSATION_WIDTH))
                 .mx_auto()
                 .flex_none()
                 .child({
@@ -2865,6 +2866,7 @@ fn conversation(
                         if let Entry::Assistant {
                             text,
                             streaming: false,
+                            phase: AssistantPhase::FinalAnswer,
                             ..
                         } = &entries[entry_position]
                         {
@@ -3131,11 +3133,21 @@ fn empty_state(
                     .text_size(px(12.5))
                     .text_color(theme.dim())
                     .child(if any {
-                        "Pick a folder with the project chip below, or open a recent thread."
+                        "Choose a project to start a new chat, or open a recent thread."
                     } else {
                         "Add a folder to run in \u{2014} the project chip below, or the + beside Projects."
                     }),
             );
+            if any {
+                invite = invite.child(div().pt(px(18.0)).child(
+                    Button::new("Choose project").primary().render(
+                        "empty-project",
+                        theme,
+                        cx,
+                        |root, _, cx| root.open_overlay(Overlay::Projects, cx),
+                    ),
+                ));
+            }
             let recent = recent_threads(root);
             if recent.is_empty() {
                 if !any {
@@ -4047,6 +4059,7 @@ fn entry_view(
             blocks,
             streaming,
             text,
+            phase,
         } => {
             let mut column = div()
                 .flex()
@@ -4056,6 +4069,20 @@ fn entry_view(
                 .flex_none()
                 .gap_2()
                 .pr(px(4.0));
+            if *phase == AssistantPhase::FinalAnswer {
+                column = column.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(7.0))
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.dim())
+                        .child(icons::mark(16.0))
+                        .child("Oxide"),
+                );
+            }
             if blocks.is_empty() && text.is_empty() {
                 column = column.child(
                     div()
@@ -4546,43 +4573,48 @@ fn run_time_view(
     } else {
         format!("Worked for {}", format_run_duration(elapsed))
     };
-    div().flex_none().w_full().max_w(px(820.0)).mx_auto().child(
-        div()
-            .id(id)
-            .role(gpui::Role::Status)
-            .aria_label(label.clone())
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(7.0))
-            .pb(px(8.0))
-            .border_b_1()
-            .border_color(theme.border())
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(8.0))
-                    .h(px(8.0))
-                    .rounded(px(4.0))
-                    .border_1()
-                    .border_color(if running {
-                        theme.accent()
-                    } else {
-                        theme.success()
-                    })
-                    .bg(if running {
-                        theme.wash("accent", 0.22)
-                    } else {
-                        theme.success()
-                    }),
-            )
-            .child(
-                div()
-                    .text_size(px(11.5))
-                    .text_color(theme.dim())
-                    .child(label),
-            ),
-    )
+    div()
+        .flex_none()
+        .w_full()
+        .max_w(px(CONVERSATION_WIDTH))
+        .mx_auto()
+        .child(
+            div()
+                .id(id)
+                .role(gpui::Role::Status)
+                .aria_label(label.clone())
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(7.0))
+                .pb(px(8.0))
+                .border_b_1()
+                .border_color(theme.border())
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(8.0))
+                        .h(px(8.0))
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(if running {
+                            theme.accent()
+                        } else {
+                            theme.success()
+                        })
+                        .bg(if running {
+                            theme.wash("accent", 0.22)
+                        } else {
+                            theme.success()
+                        }),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(theme.dim())
+                        .child(label),
+                ),
+        )
 }
 
 fn format_run_duration(elapsed: Duration) -> String {
@@ -5856,7 +5888,7 @@ fn composer(
             .items_center()
             .gap_3()
             .w_full()
-            .max_w(px(716.0))
+            .max_w(px(CONVERSATION_WIDTH))
             .min_h(px(32.0))
             .px(px(10.0))
             .py(px(4.0))
@@ -6515,7 +6547,7 @@ fn composer(
         .pt(px(16.0))
         .children(live_pill)
         .children(strip)
-        .child(div().w_full().max_w(px(820.0)).child(box_row))
+        .child(div().w_full().max_w(px(CONVERSATION_WIDTH)).child(box_row))
 }
 
 /// The label a reasoning level wears: the stored name is `high`, the chip says
@@ -8759,7 +8791,7 @@ mod composer_action_tests {
 #[cfg(test)]
 mod transcript_activity_tests {
     use super::{tool_activity_label, tool_activity_summary, transcript_blocks, TranscriptBlock};
-    use crate::model::{Entry, Status, ToolCard};
+    use crate::model::{AssistantPhase, Entry, Status, ToolCard};
 
     fn tool(id: u64) -> Entry {
         Entry::Tool(ToolCard {
@@ -8831,6 +8863,7 @@ mod transcript_activity_tests {
                 text: "The first file points to the second.".to_string(),
                 blocks: Vec::new(),
                 streaming: false,
+                phase: AssistantPhase::Commentary,
             },
             tool(2),
         ];
@@ -8849,7 +8882,7 @@ mod transcript_activity_tests {
 #[cfg(test)]
 mod accessibility_tests {
     use super::entry_accessibility_label;
-    use crate::model::{Attachment, Entry};
+    use crate::model::{AssistantPhase, Attachment, Entry};
 
     #[test]
     fn transcript_entries_have_speaker_and_content_labels() {
@@ -8869,6 +8902,7 @@ mod accessibility_tests {
             text: "It opens the project.".to_string(),
             blocks: Vec::new(),
             streaming: false,
+            phase: AssistantPhase::FinalAnswer,
         };
         assert_eq!(
             entry_accessibility_label(&assistant),

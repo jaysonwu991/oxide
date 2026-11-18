@@ -5,7 +5,6 @@ use crate::llm::{
     ContentPart, FunctionSpec, LlmClient, Message, MessageContent, Retry, StreamHooks, ToolCall,
     ToolSpec,
 };
-use crate::lsp::LspManager;
 use crate::mcp::McpRegistry;
 use crate::memory::QueryScope;
 use crate::permission::{subject_for, Action, Permissions};
@@ -307,7 +306,6 @@ pub struct Runtime {
     pub plugins: Arc<PluginHost>,
     pub session: Option<Arc<SessionLog>>,
     pub snapshots: Option<Arc<Snapshots>>,
-    pub lsp: Arc<LspManager>,
     pub approve: Approver,
     /// How the model asks the user a question. `None` leaves the `ask` tool out
     /// of the tool list entirely, so a run with nobody to answer (a print run)
@@ -367,6 +365,10 @@ pub enum AgentEvent {
     SessionTitle {
         title: String,
     },
+    /// Codex-style transcript phase for the assistant text in this model step.
+    /// Commentary surrounds tool work; the final answer is the reply the run
+    /// leaves after the tools finish.
+    MessagePhase(MessagePhase),
     Text(String),
     /// A compatibility hook for a front-end that can render a public reasoning
     /// summary. Provider reasoning is not emitted: it may be raw
@@ -457,6 +459,21 @@ pub enum AgentEvent {
     },
     Error(String),
     Finished(Vec<Message>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessagePhase {
+    Commentary,
+    FinalAnswer,
+}
+
+impl MessagePhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Commentary => "commentary",
+            Self::FinalAnswer => "final_answer",
+        }
+    }
 }
 
 /// Drive one conversation turn to completion: stream assistant output, execute
@@ -582,6 +599,9 @@ pub fn run_subagent(
                 // Subagents have no persisted session and are never offered
                 // the title tool; ignore a synthetic event defensively.
                 AgentEvent::SessionTitle { .. } => {}
+                AgentEvent::MessagePhase(phase) => {
+                    let _ = tx.send(AgentEvent::MessagePhase(phase));
+                }
                 AgentEvent::SubagentActivity { agent, tool, args } => {
                     let _ = tx.send(AgentEvent::SubagentActivity { agent, tool, args });
                 }
@@ -1131,15 +1151,11 @@ async fn run_loop(
             request.push(Message::user(reminder));
         }
         let tool_specs = build_tool_specs(&config, &runtime, depth, offer_session_title);
-        // The held summary's text, replayed when the re-check is retried: the
-        // failed attempt's item is discarded, and the retry has to restart the
-        // bubble with the answer it is extending.
-        let held_replay = held_summary
-            .as_ref()
-            .and_then(|(message, _)| message.display())
-            .filter(|text| !text.is_empty());
-
         let started = std::time::Instant::now();
+        // A candidate final answer must not reach a front-end before checks
+        // that the Definition of Done already knows are outstanding. Buffer
+        // this step while those checks or a re-check are in front of it.
+        let hold_stream = recheck_open || verification.reminder_pending();
         // Reset on a retry: the failed attempt's `Thought` marker belongs to the
         // discarded output, so the retry sends its own when its text starts.
         let thought_sent = Arc::new(AtomicBool::new(false));
@@ -1162,7 +1178,9 @@ async fn run_loop(
                     millis: started.elapsed().as_millis() as u64,
                 });
             }
-            let _ = text_tx.send(AgentEvent::Text(delta));
+            if !hold_stream {
+                let _ = text_tx.send(AgentEvent::Text(delta));
+            }
         };
         // Provider reasoning stays on the assistant message for the protocol,
         // but is never presented as transcript content. Models differ on whether
@@ -1179,12 +1197,6 @@ async fn run_loop(
                 max: retry.max,
                 delay_ms: retry.delay.as_millis() as u64,
             });
-            // The retry re-opens the bubble with the summary it is extending, so
-            // a dropped re-check does not leave the merged answer without its
-            // first half on screen.
-            if let Some(text) = held_replay.clone() {
-                let _ = retry_tx.send(AgentEvent::Text(text));
-            }
         };
         // This request writes the provider-side cache entry itself, so a warm
         // replay waiting on the previous entry is redundant now.
@@ -1210,6 +1222,9 @@ async fn run_loop(
                     .map(|text| text.clone())
                     .unwrap_or_default();
                 if !streamed.trim().is_empty() {
+                    if hold_stream {
+                        let _ = tx.send(AgentEvent::Text(streamed.clone()));
+                    }
                     let partial = Message::assistant(streamed, Vec::new());
                     record(&runtime.session, depth, &partial);
                     messages.push(partial);
@@ -1294,6 +1309,9 @@ async fn run_loop(
                         .map(|text| text.clone())
                         .unwrap_or_default();
                     if !streamed.trim().is_empty() {
+                        if hold_stream {
+                            let _ = tx.send(AgentEvent::Text(streamed.clone()));
+                        }
                         // Keep the exact streamed string, including any leading
                         // or trailing whitespace the user already saw.
                         let partial = Message::assistant(streamed, Vec::new());
@@ -1406,7 +1424,22 @@ async fn run_loop(
 
         let response_context = response_usage.and_then(|usage| usage.context);
         let usage = combine_usage(pending_title_usage.take(), response_usage);
-        let assistant = Message::assistant(turn.content, tool_calls.clone())
+        let phase = if tool_calls.is_empty() {
+            MessagePhase::FinalAnswer
+        } else {
+            MessagePhase::Commentary
+        };
+        let response_text = if depth == 0
+            && !has_answer
+            && !tool_calls.is_empty()
+            && !recheck_open
+            && held_summary.is_none()
+        {
+            tool_first_opening(&tool_calls).to_string()
+        } else {
+            turn.content
+        };
+        let assistant = Message::assistant(response_text, tool_calls.clone())
             .with_thinking(turn.thinking.clone());
 
         if tool_calls.is_empty() {
@@ -1505,6 +1538,12 @@ async fn run_loop(
                 }
                 None => (assistant, usage),
             };
+            let _ = tx.send(AgentEvent::MessagePhase(phase));
+            if hold_stream {
+                if let Some(text) = assistant.display().filter(|text| !text.trim().is_empty()) {
+                    let _ = tx.send(AgentEvent::Text(text));
+                }
+            }
             held_is_tail = false;
             recheck_open = false;
             rechecked_with_tools = false;
@@ -1567,6 +1606,12 @@ async fn run_loop(
             rechecked_with_tools = recheck_open;
         }
         held_is_tail = false;
+        let _ = tx.send(AgentEvent::MessagePhase(phase));
+        if let Some(text) = assistant.display().filter(|text| !text.trim().is_empty()) {
+            if hold_stream || !has_answer {
+                let _ = tx.send(AgentEvent::Text(text));
+            }
+        }
         record_usage(&runtime.session, depth, &assistant, usage);
         messages.push(assistant);
         if let Some(context) = response_context {
@@ -1882,19 +1927,6 @@ async fn run_loop(
                         tools::ToolOutput::error(format!("permission denied for `{name}`"))
                     };
                     let canonical_name = canonical;
-                    if matches!(canonical_name, "write" | "edit") && !output.is_error {
-                        if let Some(path) = effective_args.get("path").and_then(Value::as_str) {
-                            if let Some(diagnostics) = runtime
-                                .cancel
-                                .until(runtime.lsp.diagnostics_if_running(&cwd, Path::new(path)))
-                                .await
-                                .flatten()
-                            {
-                                output.text.push_str("\n\n");
-                                output.text.push_str(&diagnostics);
-                            }
-                        }
-                    }
                     if let Some(result) = runtime
                         .cancel
                         .until(runtime.plugins.tool_after(
@@ -2056,6 +2088,28 @@ fn redirect_shell_search(call: &mut ToolCall, cwd: &Path) -> bool {
     call.function.name = "grep".to_string();
     call.function.arguments = search.to_string();
     true
+}
+
+/// Providers may return a tool call without any text. Every front-end should
+/// still open a tool-using turn with words, so the core supplies a short,
+/// truthful lead-in when the model omitted one.
+fn tool_first_opening(calls: &[ToolCall]) -> &'static str {
+    let has = |names: &[&str]| {
+        calls
+            .iter()
+            .any(|call| names.contains(&call.function.name.as_str()))
+    };
+    if has(&["skill"]) {
+        "I'll load the relevant skill guidance, then apply it to the request."
+    } else if has(&["write", "edit"]) {
+        "I'll inspect the relevant code, make the requested change, and verify it."
+    } else if has(&["read", "grep", "find", "ls"]) {
+        "I'll inspect the relevant files first, then act on what I find."
+    } else if has(&["bash"]) {
+        "I'll inspect the current state and run the needed checks."
+    } else {
+        "I'll work through the request and report back with the result."
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2339,7 +2393,6 @@ fn build_tool_specs(
         specs.push(ask_spec());
     }
     specs.push(memory_spec());
-    specs.push(lsp_spec());
     specs.retain(|spec| tool_enabled(config, &spec.function.name));
     if offer_session_title && needs_session_title(runtime, depth) {
         specs.push(session_title_spec());
@@ -2445,7 +2498,7 @@ fn batch_runs(calls: Vec<ToolCall>) -> Vec<Vec<ToolCall>> {
 fn concurrency_safe(name: &str) -> bool {
     matches!(
         name,
-        "read" | "ls" | "find" | "grep" | "webfetch" | "memory" | "skill" | "diagnostics"
+        "read" | "ls" | "find" | "grep" | "webfetch" | "memory" | "skill"
     )
 }
 
@@ -2842,7 +2895,7 @@ impl VerificationState {
                     }
                 }
             }
-            "read" | "diagnostics" => {
+            "read" => {
                 if !output_failed_with_state(output, is_error) {
                     if let Some(path) = path.filter(|path| !path.is_empty()) {
                         self.edited.retain(|edited| !same_path(edited, path));
@@ -2924,6 +2977,14 @@ impl VerificationState {
 
     /// The reminder to send once when work is unconfirmed, or `None` when there
     /// is nothing to verify or it has already been sent.
+    fn reminder_pending(&self) -> bool {
+        !self.nudged
+            && (self.inline_replies_pending()
+                || !self.edited.is_empty()
+                || !self.pending.is_empty()
+                || (self.reviewed && self.edited_since_push))
+    }
+
     fn reminder(&mut self) -> Option<String> {
         if self.nudged {
             return None;
@@ -4006,7 +4067,6 @@ async fn dispatch(
                     .await,
                 ),
                 "memory" => legacy_tool_output(memory(config, &call.function.arguments)),
-                "diagnostics" => lsp_diagnostics(runtime, cwd, &call.function.arguments).await,
                 "tool_search" => {
                     match search_mcp_tools(config, runtime, &call.function.arguments, depth).await {
                         Ok(text) => tools::ToolOutput::text(text),
@@ -4085,22 +4145,6 @@ async fn ask(runtime: &Runtime, arguments: &str) -> tools::ToolOutput {
     };
     let reply: Option<Reply> = ask_user(questions.clone()).await;
     tools::ToolOutput::text(ask::format_reply(&questions, reply))
-}
-
-async fn lsp_diagnostics(runtime: &Runtime, cwd: &Path, arguments: &str) -> tools::ToolOutput {
-    let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
-    let Some(path) = args.get("path").and_then(Value::as_str) else {
-        return tools::ToolOutput::error(
-            "diagnostics requires a `path` string, for example {\"path\":\"src/main.rs\"}",
-        );
-    };
-    match runtime.lsp.diagnostics(cwd, Path::new(path)).await {
-        Some(diagnostics) => tools::ToolOutput::text(diagnostics),
-        None => tools::ToolOutput::error(format!(
-            "no language server is available for `{path}`; check that the file type is supported \
-             and its language server is installed"
-        )),
-    }
 }
 
 fn record(session: &Option<Arc<SessionLog>>, depth: usize, message: &Message) {
@@ -4223,6 +4267,7 @@ async fn task_inner(
                 let _ = events.send(AgentEvent::QuestionClosed { id });
             }
             AgentEvent::SessionTitle { .. } => {}
+            AgentEvent::MessagePhase(_) => {}
             // A no-tool step commits here, not at the next tool call.
             AgentEvent::ThoughtDone { .. } => committed = output.len(),
             AgentEvent::Usage {
@@ -4736,27 +4781,6 @@ fn memory_spec() -> ToolSpec {
                     }
                 },
                 "required": ["mode"]
-            }),
-        },
-    }
-}
-
-fn lsp_spec() -> ToolSpec {
-    ToolSpec {
-        kind: "function",
-        function: FunctionSpec {
-            name: "diagnostics".to_string(),
-            description: "Fetch language-server diagnostics (errors and warnings) for a file."
-                .to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path to check, relative to the working directory"
-                    }
-                },
-                "required": ["path"]
             }),
         },
     }
@@ -5375,7 +5399,6 @@ mod tests {
             plugins: Arc::new(PluginHost::spawn(&[], &std::env::temp_dir()).await),
             session: None,
             snapshots: None,
-            lsp: Arc::new(LspManager::new()),
             approve: Arc::new(|_, _| Box::pin(async { false })),
             ask: None,
             steering: Steering::new(),
@@ -7065,14 +7088,21 @@ mod tests {
         }
         assert!(errors.is_empty(), "{errors:?}");
         let finished = finished.expect("the run finished");
-        // One user-facing summary: the check's answer added nothing, so the run
-        // ended with the summary it had already given.
+        // The opening sentence stays ahead of the work, and the check's answer
+        // adds nothing to the summary the run had already given.
         let summaries = finished
             .iter()
             .filter(|message| message.role == "assistant")
             .filter_map(|message| message.display())
             .collect::<Vec<_>>();
-        assert_eq!(summaries, vec!["Upgrade complete.".to_string()]);
+        assert_eq!(
+            summaries,
+            vec![
+                "I'll inspect the relevant code, make the requested change, and verify it."
+                    .to_string(),
+                "Upgrade complete.".to_string(),
+            ]
+        );
         assert!(
             finished.iter().any(|message| message.role == "tool"),
             "the re-check ran a tool"
@@ -7296,6 +7326,91 @@ for line in sys.stdin:
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn a_tool_first_response_emits_words_before_the_tool_event() {
+        let dir = std::env::temp_dir().join(format!("oxide_tool_opening_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (addr, server) = sse_server(vec![
+            tool_call_body("ls", "{}"),
+            answer_body("Found the files."),
+        ])
+        .await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            auto_approve: true,
+            ..Config::default()
+        };
+        let session = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        session.set_name("Files").unwrap();
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(session.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            dir.clone(),
+            vec![Message::user("list the files")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let mut opening = None;
+        let mut commentary_phase = None;
+        let mut first_tool = None;
+        let mut final_phase = None;
+        let mut final_answer = None;
+        for (index, event) in std::iter::from_fn(|| rx.try_recv().ok()).enumerate() {
+            match event {
+                AgentEvent::Text(text)
+                    if text
+                        == "I'll inspect the relevant files first, then act on what I find." =>
+                {
+                    opening = Some(index);
+                }
+                AgentEvent::ToolCall { .. } if first_tool.is_none() => first_tool = Some(index),
+                AgentEvent::Text(text) if text == "Found the files." => final_answer = Some(index),
+                AgentEvent::MessagePhase(MessagePhase::Commentary) => {
+                    commentary_phase = Some(index)
+                }
+                AgentEvent::MessagePhase(MessagePhase::FinalAnswer) => final_phase = Some(index),
+                _ => {}
+            }
+        }
+        let opening = opening.expect("the fallback opening was emitted");
+        let commentary_phase = commentary_phase.expect("commentary phase was emitted");
+        let first_tool = first_tool.expect("the tool call was emitted");
+        let final_answer = final_answer.expect("the final answer was emitted");
+        let final_phase = final_phase.expect("final-answer phase was emitted");
+        assert!(commentary_phase < first_tool);
+        assert!(opening < first_tool, "{opening} < {first_tool}");
+        assert!(first_tool < final_answer, "{first_tool} < {final_answer}");
+        assert!(final_answer < final_phase);
+        assert_eq!(server.await.unwrap().len(), 2);
+
+        let stored = session.messages().unwrap();
+        let stored_assistant = stored
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stored_assistant[0].display().as_deref(),
+            Some("I'll inspect the relevant files first, then act on what I find.")
+        );
+        assert!(stored_assistant[0].tool_calls.is_some());
+        assert_eq!(
+            stored_assistant[1].display().as_deref(),
+            Some("Found the files.")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The re-check must extend the summary it asked about, not produce a
     /// second one. The run ends with one assistant turn that holds both the
     /// original answer and the verified answer, and the transcript keeps one
@@ -7361,23 +7476,17 @@ for line in sys.stdin:
             }
         }
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(texts.len(), 2, "both answers streamed: {texts:?}");
-        assert_eq!(texts[0].1, "Upgrade complete.");
-        assert_eq!(texts[1].1, "Verified on disk.");
-        // No step boundary falls between the two answers, so the front-ends
-        // paint one bubble and the re-check's text extends it. The usage event
-        // is a boundary too (the VS Code transcript commits on it), so the held
-        // step must not emit it until the merged answer is committed.
-        assert!(
-            !thought_done
-                .iter()
-                .any(|at| *at > texts[0].0 && *at < texts[1].0),
-            "no step closed between the answers: {thought_done:?}"
+        assert_eq!(texts.len(), 2, "opening and merged answer: {texts:?}");
+        assert_eq!(
+            texts[0].1,
+            "I'll inspect the relevant code, make the requested change, and verify it."
         );
-        assert!(
-            !usage.iter().any(|at| *at > texts[0].0 && *at < texts[1].0),
-            "usage did not commit the held step early: {usage:?}"
-        );
+        assert_eq!(texts[1].1, "Upgrade complete.\n\nVerified on disk.");
+        // The candidate final answer was withheld until the check completed,
+        // so no front-end saw it before the verification result.
+        assert!(!texts.iter().any(|(_, text)| text == "Upgrade complete."));
+        assert!(thought_done.iter().all(|at| *at != texts[1].0));
+        assert!(usage.iter().all(|at| *at != texts[1].0));
 
         let finished = finished.expect("the run finished");
         let summaries: Vec<String> = finished
@@ -7545,16 +7654,7 @@ for line in sys.stdin:
 
     #[test]
     fn only_read_only_tools_are_concurrency_safe() {
-        for name in [
-            "read",
-            "ls",
-            "find",
-            "grep",
-            "webfetch",
-            "memory",
-            "skill",
-            "diagnostics",
-        ] {
+        for name in ["read", "ls", "find", "grep", "webfetch", "memory", "skill"] {
             assert!(concurrency_safe(name), "{name} should be concurrency-safe");
         }
         for name in [
@@ -7567,6 +7667,26 @@ for line in sys.stdin:
         ] {
             assert!(!concurrency_safe(name), "{name} must stay sequential");
         }
+    }
+
+    #[test]
+    fn a_tool_first_response_gets_a_user_facing_opening() {
+        assert_eq!(
+            tool_first_opening(&[tool_call("skill")]),
+            "I'll load the relevant skill guidance, then apply it to the request."
+        );
+        assert_eq!(
+            tool_first_opening(&[tool_call("read"), tool_call("edit")]),
+            "I'll inspect the relevant code, make the requested change, and verify it."
+        );
+        assert_eq!(
+            tool_first_opening(&[tool_call("grep")]),
+            "I'll inspect the relevant files first, then act on what I find."
+        );
+        assert_eq!(
+            tool_first_opening(&[tool_call("bash")]),
+            "I'll inspect the current state and run the needed checks."
+        );
     }
 
     #[test]
@@ -7645,7 +7765,7 @@ for line in sys.stdin:
         for name in ["write", "edit", "bash", "task", "server__tool"] {
             assert!(tool_may_mutate_workspace(name), "{name} may mutate");
         }
-        for name in ["read", "ls", "find", "grep", "webfetch", "diagnostics"] {
+        for name in ["read", "ls", "find", "grep", "webfetch"] {
             assert!(!tool_may_mutate_workspace(name), "{name} is read-only");
         }
     }
@@ -8140,7 +8260,7 @@ for line in sys.stdin:
 
     #[test]
     fn failed_reads_do_not_confirm_edits() {
-        for tool in ["read", "diagnostics"] {
+        for tool in ["read"] {
             for (output, is_error) in [
                 ("error: permission denied", true),
                 ("File not found", true),

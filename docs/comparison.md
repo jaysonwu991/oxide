@@ -18,7 +18,6 @@ so check each project's documentation for the current details.
 | Skills | `SKILL.md` | Skills | `SKILL.md` | `SKILL.md` (`.pi/skills`, `.agents/skills`) | Agent Skills |
 | MCP servers | stdio + HTTP + OAuth, managed with `oxide mcp` | MCP servers | MCP servers (`codex mcp`, config.toml) | stdio + streamable HTTP + OAuth, managed with `pi mcp` and `/mcp` | MCP servers |
 | Plugins / hooks | Hooks + plugin packages & marketplaces | Hooks, plugins, Agent SDK | — | Extensions (in-process TypeScript hooks) + packages from npm or git | Plugins |
-| LSP diagnostics | Built in (rust-analyzer, TS, pyright, gopls) | — | — | — | Built in (LSP servers) |
 | Undo file changes | Shadow-git `/undo`, `/redo` | Git / checkpoints | Git checkpoints (`codex checkpoint`) | — (session branches undo conversation, not files) | `/undo`, `/redo` |
 | Sessions | Pi-style JSONL trees, `-c` / `-r`, `/session` / `/tree` / `/fork` / `/clone`, pin/archive in the shared store | Sessions across surfaces | Sessions (`codex --resume`) | JSONL trees, `--continue` / `--resume`, `/tree` / `/fork` / `/clone`, `/export` / `/share` | Sessions, share links |
 | Project trust | `trust.json`, `--approve` / `/trust` | — | Sandbox + approval modes | `trust.json`, `--approve` / `/trust`, `defaultProjectTrust` | — |
@@ -45,7 +44,7 @@ and servers that offer resources are reached with `list_mcp_resources`,
 rather than Pi's `codemode`, because Oxide has no codemode tool; `codemode` and
 `codemode-deferred` entries are read as `deferred`. The table above is where the
 two stop agreeing — Oxide adds
-the desktop app, the VS Code panel, subagents, LSP diagnostics, shadow-git
-undo, and a provider table with its own logins, while Pi keeps the harness
+the desktop app, the VS Code panel, subagents, shadow-git undo, and a provider
+table with its own logins, while Pi keeps the harness
 minimal and leaves subagents, plan mode and file checkpoints to extensions
 and packages.

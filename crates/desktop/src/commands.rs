@@ -60,8 +60,8 @@ pub struct DesktopState {
     /// it would have heard. See `LaunchUpdate`.
     pub launch_update: std::sync::Mutex<Option<LaunchUpdate>>,
     runs: Arc<Mutex<HashMap<u64, RunHandle>>>,
-    /// The MCP servers, plugin host and language servers each project's last
-    /// turn used, so the next turn reuses them instead of starting them again.
+    /// The MCP servers and plugin host each project's last turn used, so the
+    /// next turn reuses them instead of starting them again.
     environments: Arc<Mutex<HashMap<PathBuf, oxide_core::runner::TurnEnvironment>>>,
     /// The terminals the window has open, by the id it was given when it opened
     /// one. A terminal outlives the panel that shows it — closing the panel puts

@@ -351,8 +351,10 @@ what was called, and a stored thread is mostly the second: an assistant step tha
 only dispatched tools paints no bubble, each call it made paints the same tool
 card the live turn painted, while stored reasoning stays on the protocol message
 instead of entering the transcript. Ordinary commentary from that step remains
-visible before its tool cards and answer. The result the CLI stores as a message
-of its own is folded into the card it answers rather than shown beside it. The
+visible before its tool cards and answer. Commentary is rendered without a
+speaker label; only the final answer carries the Oxide label. The result the CLI
+stores as a message of its own is folded into the card it answers rather than
+shown beside it. The
 tail is counted in those stored messages, so reopening a long thread
 shows several of its turns rather than its last reply only. A replayed card
 carries the change its own
