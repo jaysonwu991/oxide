@@ -9,7 +9,7 @@
 use crate::app::{Button, ChangeScope, CustomizeTab, Overlay, Rail, Root};
 use crate::icons::{self, Icon};
 use crate::markdown::{Block, Inline};
-use crate::model::{AssistantPhase, Attachment, EditedFile, Entry, QueueDelivery, Status};
+use crate::model::{AssistantPhase, Attachment, Chat, EditedFile, Entry, QueueDelivery, Status};
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
@@ -436,11 +436,14 @@ pub fn tip(
 
 /// The thread the window is on: the folder it runs in and its title. Drawn in
 /// place of the tabs while one chat is open.
-fn thread_label(root: &Root, theme: &Theme) -> impl IntoElement {
-    let title = match root.chats.get(root.active) {
-        Some(chat) => chat.title.clone(),
-        None => "New chat".to_string(),
-    };
+fn thread_label_title(chats: &[Chat], active: usize) -> Option<&str> {
+    chats
+        .get(active)
+        .map(|chat| chat.title.as_str())
+        .filter(|title| !title.trim().is_empty())
+}
+
+fn thread_label(root: &Root, title: String, theme: &Theme) -> impl IntoElement {
     div()
         .flex()
         .flex_row()
@@ -662,8 +665,10 @@ pub fn topbar(
     // its tabs for the thread's own label.
     if root.chats.len() > 1 {
         content = content.child(tabs);
+    } else if let Some(title) = thread_label_title(&root.chats, root.active) {
+        content = content.child(thread_label(root, title.to_string(), theme));
     } else {
-        content = content.child(thread_label(root, theme));
+        content = content.child(div().flex_1());
     }
 
     let new_chat = icon_button("new-chat", Icon::Plus, 30.0, theme, false)
@@ -8745,8 +8750,10 @@ fn customize_empty(theme: &Theme, mark: Icon, title: &str, detail: &str) -> gpui
 
 #[cfg(test)]
 mod welcome_tests {
-    use super::{change_totals, edited_summary, format_run_duration, welcome, Welcome};
-    use crate::model::{EditedCard, EditedFile};
+    use super::{
+        change_totals, edited_summary, format_run_duration, thread_label_title, welcome, Welcome,
+    };
+    use crate::model::{Chat, EditedCard, EditedFile};
     use serde_json::json;
     use std::time::Duration;
 
@@ -8760,6 +8767,17 @@ mod welcome_tests {
         assert_eq!(welcome(false, true), Welcome::Waiting);
         assert_eq!(welcome(true, false), Welcome::NoProject);
         assert_eq!(welcome(true, true), Welcome::Project);
+    }
+
+    #[test]
+    fn the_topbar_does_not_invent_a_thread_when_no_chat_is_open() {
+        assert_eq!(thread_label_title(&[], 0), None);
+
+        let chats = [Chat::new(
+            "/tmp/project".to_string(),
+            "Open thread".to_string(),
+        )];
+        assert_eq!(thread_label_title(&chats, 0), Some("Open thread"));
     }
 
     #[test]
