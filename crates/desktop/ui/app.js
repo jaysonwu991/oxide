@@ -1651,12 +1651,25 @@ function inline(text, references = false, hardBreaks = false) {
     s = s.replace(/(^|[\s(])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|org|net|io|dev|app|co|edu|gov|ai|me|info|uk|cn|de|fr|jp)(?::\d{1,5})?(?:[/?#][^\s<>"'`\u0000]*)?)(?=$|[\s),.;:!?])/gi,
       (_, prefix, url) => prefix + autolink(url, stash, true));
   }
-  if (hardBreaks) s = s.replace(/ {2,}\n|\\\n/g, () => stash("<br>")).replace(/\n/g, " ");
+  if (hardBreaks) {
+    s = s.replace(/ {2,}\n|\\\n/g, (breakMark) =>
+      stash(references ? `<br data-editor-hard-break="${escapeHtml(breakMark.slice(0, -1))}">` : "<br>"),
+    ).replace(/\n/g, " ");
+  }
   s = escapeHtml(decodeEntities(s));
   // Emphasis needs a non-space on both sides of its delimiters, so `2 * 3 * 4`
   // stays arithmetic and `** spaced **` stays literal; `_` additionally may not
   // open or close inside a word, which keeps `snake_case_name` a name. Each pass
   // runs twice so a span wrapped in the other delimiter bolds its contents too.
+  const triple = () => s
+    .replace(/\*\*\*(\S(?:[^*]*?\S)?)\*\*\*/g, (_, body) =>
+      stash(references
+        ? `<em data-editor-triple="***"><strong data-editor-silent="">${body}</strong></em>`
+        : `<em><strong>${body}</strong></em>`))
+    .replace(/(^|[^\w_])___(\S(?:[^_]*?\S)?)___(?![\w_])/g, (_, before, body) =>
+      `${before}${stash(references
+        ? `<em data-editor-triple="___"><strong data-editor-silent="">${body}</strong></em>`
+        : `<em><strong>${body}</strong></em>`)}`);
   const del = () => s.replace(/~~(\S(?:[^~]*?\S)?)~~/g, "<del>$1</del>");
   const strong = () => s.replace(/\*\*(\S(?:[^*]*?\S)?)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^\w_])__(\S(?:[^_]*?\S)?)__/g, (_, before, body) =>
@@ -1665,6 +1678,7 @@ function inline(text, references = false, hardBreaks = false) {
     .replace(/(^|[^\w_])_(\S(?:[^_\n]*?\S)?)_(?![\w_])/g, (_, before, body) =>
       `${before}<em${references ? ' data-editor-marker="underscore"' : ""}>${body}</em>`);
   s = del();
+  s = triple();
   s = strong();
   s = em();
   s = strong();
@@ -1819,8 +1833,37 @@ function highlight(code, lang) {
 function splitRow(line) {
   let row = line.trim();
   if (row.startsWith("|")) row = row.slice(1);
-  if (row.endsWith("|")) row = row.slice(0, -1);
-  return row.split("|").map((cell) => cell.trim());
+  let slashes = 0;
+  while (row[row.length - 2 - slashes] === "\\") slashes += 1;
+  if (row.endsWith("|") && slashes % 2 === 0) row = row.slice(0, -1);
+  const cells = [];
+  let cell = "";
+  let ticks = 0;
+  for (let index = 0; index < row.length; index += 1) {
+    const char = row[index];
+    if (char === "\\") {
+      cell += char;
+      if (index + 1 < row.length) cell += row[++index];
+      continue;
+    }
+    if (char === "`") {
+      let run = 1;
+      while (row[index + run] === "`") run += 1;
+      if (!ticks) ticks = run;
+      else if (ticks === run) ticks = 0;
+      cell += "`".repeat(run);
+      index += run - 1;
+      continue;
+    }
+    if (char === "|" && !ticks) {
+      cells.push(cell.trim());
+      cell = "";
+      continue;
+    }
+    cell += char;
+  }
+  cells.push(cell.trim());
+  return cells;
 }
 
 function isTableSeparator(line) {
@@ -1887,6 +1930,16 @@ function listItem(line) {
   };
 }
 
+function stripIndent(line, width) {
+  let consumed = 0;
+  let index = 0;
+  while (index < line.length && consumed < width && /[ \t]/.test(line[index])) {
+    consumed += 1;
+    index += 1;
+  }
+  return line.slice(index);
+}
+
 // One list run, item by item: an item indented past the one before it nests
 // inside it, so a nested list keeps its levels instead of being flattened into
 // its parent's, and a line under an item that is not a block of its own
@@ -1895,7 +1948,16 @@ function renderList(lines, start, softBreaks) {
   const out = [];
   const open = [];
   let i = start;
+  let gap = "";
   while (i < lines.length) {
+    if (lines[i].trim() === "") {
+      let next = i;
+      while (next < lines.length && lines[next].trim() === "") next += 1;
+      const following = listItem(lines[next] || "");
+      if (!open.length || !following || following.indent < open[0].indent) break;
+      gap = "\n".repeat(next - i);
+      i = next;
+    }
     const item = listItem(lines[i]);
     if (!item) break;
     const tag = item.number == null ? "ul" : "ol";
@@ -1922,28 +1984,85 @@ function renderList(lines, start, softBreaks) {
       level.expected = item.number + 1;
     }
     if (item.task) attributes += ' class="task"';
-    const body = [item.task ? item.task[2] : item.content];
-    let pad = 0;
+    const listGap = softBreaks && gap ? ` data-editor-gap="${escapeHtml(gap)}"` : "";
+    gap = "";
+    const pieces = [];
+    let run = [{ text: item.task ? item.task[2] : item.content, pad: "" }];
+    const flushRun = () => {
+      if (!run.length) return;
+      const text = softBreaks
+        ? run.map(({ text: line, pad }, index) =>
+            `${index ? `<br data-editor-pad="${escapeHtml(pad)}">` : ""}${inline(line, true)}`,
+          ).join("")
+        : inline(run.map(({ text: line }) => line).join("\n"), false, true);
+      pieces.push(text);
+      run = [];
+    };
+    const contentIndent = item.prefix.length;
+    let pendingGap = "";
     while (i + 1 < lines.length) {
       const next = lines[i + 1];
-      if (next.trim() === "" || BLOCK_START.test(next) || RULE.test(next) || startsTable(lines, i + 1)) break;
-      const indent = /^[ \t]*/.exec(next)[0].length;
-      if (body.length === 1) pad = indent;
-      body.push(next.slice(indent));
+      if (next.trim() === "") {
+        let following = i + 1;
+        while (following < lines.length && lines[following].trim() === "") following += 1;
+        const child = lines[following] || "";
+        const indent = /^[ \t]*/.exec(child)[0].length;
+        if (listItem(child) || indent < contentIndent) break;
+        pendingGap = "\n".repeat(following - i - 1);
+        i = following - 1;
+        continue;
+      }
+      if (listItem(next)) break;
+      const indentText = /^[ \t]*/.exec(next)[0];
+      if (indentText.length < contentIndent) break;
+      const body = next.slice(indentText.length);
+      const rest = [body];
+      for (let lookahead = i + 2; lookahead < lines.length && rest.length < 2; lookahead += 1) {
+        if (lines[lookahead].trim() === "") break;
+        const lookIndent = /^[ \t]*/.exec(lines[lookahead])[0].length;
+        if (lookIndent < contentIndent) break;
+        rest.push(stripIndent(lines[lookahead], contentIndent));
+      }
+      if (pendingGap || BLOCK_START.test(body) || RULE.test(body) || startsTable(rest, 0)) {
+        flushRun();
+        const block = [];
+        const pad = next.slice(0, contentIndent);
+        while (i + 1 < lines.length) {
+          const line = lines[i + 1];
+          if (line.trim() === "") {
+            let following = i + 1;
+            while (following < lines.length && lines[following].trim() === "") following += 1;
+            const child = lines[following] || "";
+            const indent = /^[ \t]*/.exec(child)[0].length;
+            if (listItem(child) || indent < contentIndent) break;
+          }
+          const child = listItem(line);
+          if (child && child.indent > item.indent) break;
+          if (line.trim() !== "" && /^[ \t]*/.exec(line)[0].length < contentIndent) break;
+          block.push(stripIndent(line, contentIndent));
+          i += 1;
+        }
+        pieces.push(
+          softBreaks
+            ? `<div data-editor-list-block=""${pendingGap ? ` data-editor-gap="${escapeHtml(pendingGap)}"` : ""} data-editor-pad="${escapeHtml(pad)}">${renderMarkdown(block.join("\n"), softBreaks)}</div>`
+            : `<div>${renderMarkdown(block.join("\n"), softBreaks)}</div>`,
+        );
+        pendingGap = "";
+        continue;
+      }
+      run.push({ text: body, pad: indentText });
       i += 1;
     }
-    if (body.length > 1 && softBreaks) attributes += ` data-editor-pad="${escapeHtml(" ".repeat(pad))}"`;
+    flushRun();
     const checked = item.task ? item.task[1].toLowerCase() === "x" : false;
     const mark = item.task
       ? softBreaks
         ? `<input type="checkbox" data-editor-task=""${checked ? " checked" : ""} contenteditable="false" tabindex="-1">`
         : `${checked ? "☑" : "☐"} `
       : "";
-    const text = softBreaks
-      ? body.map((line) => inline(line, true)).join("<br>")
-      : inline(body.join("\n"), false, true);
+    const text = pieces.join("");
     const prefix = softBreaks ? ` data-editor-prefix="${escapeHtml(item.prefix)}"` : "";
-    out.push(`<li${attributes}${prefix}>${mark}${text}`);
+    out.push(`<li${attributes}${listGap}${prefix}>${mark}${text}`);
     i += 1;
   }
   while (open.length) out.push(`</li></${open.pop().tag}>`);
@@ -1964,9 +2083,11 @@ function renderMarkdown(text, softBreaks = false) {
   while (i < lines.length) {
     const line = lines[i];
 
-    const fence = line.match(/^\s*(`{3,}|~{3,})[ \t]*([\w+.#-]*)\s*$/);
-    if (fence) {
-      const run = fence[1];
+    const fence = line.match(/^([ \t]*)(`{3,}|~{3,})(.*)$/);
+    if (fence && !(fence[2][0] === "`" && fence[3].includes("`"))) {
+      const indent = fence[1];
+      const run = fence[2];
+      const info = fence[3];
       const code = [];
       i += 1;
       while (i < lines.length && !isFenceEnd(lines[i], run)) {
@@ -1976,12 +2097,22 @@ function renderMarkdown(text, softBreaks = false) {
       // A fence still being typed has no closing run yet, and reading one back
       // as closed would put a fence the reader never wrote under the caret.
       const closed = i < lines.length;
-      const complete = closed && fence[2].toLowerCase() === "mermaid" && !softBreaks;
+      const closing = closed ? lines[i] : null;
+      const closingRun = closing?.trim() || "";
+      const closingIndent = closing ? /^[ \t]*/.exec(closing)[0] : "";
+      const language = info.trim().split(/\s+/, 1)[0];
+      const complete = closed && language.toLowerCase() === "mermaid" && !softBreaks;
       i += 1;
-      const lang = fence[2] ? ` data-lang="${escapeHtml(fence[2].toLowerCase())}"` : "";
+      const lang = language ? ` data-lang="${escapeHtml(language.toLowerCase())}"` : "";
       const open = closed || !softBreaks ? "" : ' data-editor-open=""';
       const marker = run === "```" || !softBreaks ? "" : ` data-editor-fence="${escapeHtml(run)}"`;
-      out.push(`<pre${lang}${complete ? ' data-complete="true"' : ""}${marker}${open}><code>${highlight(code.join("\n"), fence[2])}</code></pre>`);
+      const editorInfo = softBreaks ? ` data-editor-info="${escapeHtml(info)}"` : "";
+      const editorIndent = softBreaks && indent ? ` data-editor-fence-indent="${escapeHtml(indent)}"` : "";
+      const editorClose = softBreaks && closed && closingRun !== run ? ` data-editor-close="${escapeHtml(closingRun)}"` : "";
+      const editorCloseIndent = softBreaks && closed && closingIndent !== indent
+        ? ` data-editor-close-indent="${escapeHtml(closingIndent)}"`
+        : "";
+      out.push(`<pre${lang}${complete ? ' data-complete="true"' : ""}${marker}${editorInfo}${editorIndent}${editorClose}${editorCloseIndent}${open}><code>${highlight(code.join("\n"), language)}</code></pre>`);
       continue;
     }
 
@@ -1993,10 +2124,12 @@ function renderMarkdown(text, softBreaks = false) {
       continue;
     }
 
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    const heading = line.match(/^ {0,3}(#{1,6})[ \t]+(.*)$/);
     if (heading) {
       const level = heading[1].length;
-      out.push(`<h${level}>${inline(heading[2], softBreaks)}</h${level}>`);
+      const indent = softBreaks ? /^ {0,3}/.exec(line)[0] : "";
+      const attribute = indent ? ` data-editor-heading-indent="${indent}"` : "";
+      out.push(`<h${level}${attribute}>${inline(heading[2], softBreaks)}</h${level}>`);
       i += 1;
       continue;
     }
@@ -3464,7 +3597,8 @@ function markdownToText(node, point = null, root = node) {
     // What the reader typed after the last block belongs under it, not after the
     // blank line that block wrote to separate itself from the next one.
     if (children[index]?.hasAttribute?.("data-editor-tail")) return all.replace(/\n+$/, "") + part;
-    if ((node === root || node.tagName === "BLOCKQUOTE") && /\n$/.test(all) && /^\n/.test(part)) {
+    if ((node === root || node.tagName === "BLOCKQUOTE" || node.hasAttribute?.("data-editor-list-block"))
+      && /\n$/.test(all) && /^\n/.test(part)) {
       return all.replace(/\n+$/, "") + "\n\n" + part.replace(/^\n+/, "");
     }
     return all + part;
@@ -3473,11 +3607,17 @@ function markdownToText(node, point = null, root = node) {
   const tag = node.tagName;
   if (node.hasAttribute?.("data-editor-padding")) return "";
   if (tag === "BR") {
-    const pad = node.parentNode?.hasAttribute?.("data-editor-pad") ? node.parentNode.getAttribute("data-editor-pad") : "";
+    const hardBreak = node.getAttribute?.("data-editor-hard-break");
+    if (hardBreak != null) return `${hardBreak}\n`;
+    const pad = node.getAttribute?.("data-editor-pad")
+      ?? (node.parentNode?.hasAttribute?.("data-editor-pad") ? node.parentNode.getAttribute("data-editor-pad") : "");
     return `\n${pad}`;
   }
   if (tag === "STRONG" || tag === "B" || tag === "EM" || tag === "I") {
     // The delimiter the writer used, so `__bold__` is not rewritten to `**bold**`.
+    if (node.hasAttribute?.("data-editor-silent")) return text;
+    const triple = node.getAttribute?.("data-editor-triple");
+    if (triple) return `${triple}${text}${triple}`;
     const bare = tag === "STRONG" || tag === "B";
     const marker = node.getAttribute("data-editor-marker");
     const delimiter = marker === "underscore" ? (bare ? "__" : "_") : marker || (bare ? "**" : "*");
@@ -3486,8 +3626,12 @@ function markdownToText(node, point = null, root = node) {
   if (tag === "DEL" || tag === "S") return `~~${text}~~`;
   if (tag === "PRE") {
     const fence = node.getAttribute("data-editor-fence") || "```";
-    const open = `${fence}${node.getAttribute("data-lang") || ""}\n${text}`;
-    return node.hasAttribute("data-editor-open") ? `\n\n${open}\n\n` : `\n\n${open}\n${fence}\n\n`;
+    const close = node.getAttribute("data-editor-close") || fence;
+    const indent = node.getAttribute("data-editor-fence-indent") || "";
+    const closeIndent = node.getAttribute("data-editor-close-indent") ?? indent;
+    const info = node.getAttribute("data-editor-info") ?? node.getAttribute("data-lang") ?? "";
+    const open = `${indent}${fence}${info}\n${text}`;
+    return node.hasAttribute("data-editor-open") ? `\n\n${open}\n\n` : `\n\n${open}\n${closeIndent}${close}\n\n`;
   }
   if (tag === "CODE" && node.parentNode?.tagName !== "PRE") {
     const run = Math.max(1, ...(text.match(/`+/g) || []).map((ticks) => ticks.length + 1));
@@ -3507,7 +3651,8 @@ function markdownToText(node, point = null, root = node) {
   if (/^H[1-6]$/.test(tag)) {
     const underline = node.getAttribute("data-editor-marker");
     if (underline) return `\n\n${text}\n${underline}\n\n`;
-    return `\n\n${"#".repeat(Number(tag[1]))} ${text}\n\n`;
+    const indent = node.getAttribute("data-editor-heading-indent") || "";
+    return `\n\n${indent}${"#".repeat(Number(tag[1]))} ${text}\n\n`;
   }
   if (tag === "BLOCKQUOTE") {
     const heldTail = text.includes(QUOTE_TAIL);
@@ -3518,9 +3663,10 @@ function markdownToText(node, point = null, root = node) {
     return `\n\n${lines.map((line) => `${prefix}${line}`).join("\n")}\n\n`;
   }
   if (tag === "LI") {
+    const gap = node.getAttribute("data-editor-gap") || "";
     const prefix = node.getAttribute("data-editor-prefix") || "- ";
     const line = text.replace(/^☑ /, "[x] ").replace(/^☐ /, "[ ] ");
-    return `${prefix}${line}${line.endsWith("\n") || line === "" ? "" : "\n"}`;
+    return `${gap}${prefix}${line}${line.endsWith("\n") || line === "" ? "" : "\n"}`;
   }
   if (tag === "UL" || tag === "OL") {
     return node.parentNode?.tagName === "LI" ? `\n${text}` : `\n\n${text}\n`;
@@ -3539,6 +3685,12 @@ function markdownToText(node, point = null, root = node) {
   }
   if (tag === "TABLE") return `\n\n${text}\n\n`;
   if (tag === "P") return `\n\n${text}\n\n`;
+  if (tag === "DIV" && node.hasAttribute?.("data-editor-list-block")) {
+    const gap = node.getAttribute("data-editor-gap") || "";
+    const pad = node.getAttribute("data-editor-pad") || "";
+    const body = text.replace(/^\n+|\n+$/g, "");
+    return `${gap}\n${body.split("\n").map((line) => (line ? `${pad}${line}` : "")).join("\n")}`;
+  }
   if (tag === "DIV" && node !== root) return `\n${text || "\n"}`;
   return text;
 }
@@ -3778,11 +3930,11 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     const lineStart = source.lastIndexOf("\n", start - 1) + 1;
     const lineEnd = source.indexOf("\n", start);
     const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
-    const heading = /^(#{1,6})[ \t]+/.exec(line);
+    const heading = /^([ \t]*)(#{1,6})[ \t]+/.exec(line);
     if (!heading) return false;
-    const level = heading[1].length;
+    const level = heading[2].length;
     const next = direction > 0 ? Math.min(6, level + 1) : level - 1;
-    const prefix = "#".repeat(Math.max(0, next)) + (next > 0 ? " " : "");
+    const prefix = heading[1] + "#".repeat(Math.max(0, next)) + (next > 0 ? " " : "");
     source = source.slice(0, lineStart) + prefix + source.slice(lineStart + heading[0].length);
     const delta = prefix.length - heading[0].length;
     remember();

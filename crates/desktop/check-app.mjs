@@ -9742,7 +9742,7 @@ const functionCode = (code, name) => {
 };
 const constCode = (code, name) => stripIndent((code.match(new RegExp(`^ *const ${name} = .*$`, "m")) || [""])[0]);
 const markdownPieces = ["markdownToText", "readMarkdown", "anchor", "autolink", "inlineDestination", "inlineLinks", "decodeEntities", "inline",
-  "splitRow", "isTableSeparator", "tableAligns", "tableHtml", "startsTable", "isFenceEnd", "listItem", "renderList",
+  "splitRow", "isTableSeparator", "tableAligns", "tableHtml", "startsTable", "isFenceEnd", "listItem", "stripIndent", "renderList",
   "renderMarkdown"];
 const markdownConstants = ["BLOCK_START", "RULE", "LIST_ITEM", "ENTITIES", "CARET", "TAIL_NEWLINE"];
 check(
@@ -9812,11 +9812,25 @@ const painted = (text) => {
 const roundTrip = (text) => app.readMarkdown(painted(text));
 for (const [name, text, expected] of [
   ["a bulleted list", "- one\n- two", "- one\n- two"],
+  ["a loose bulleted list", "- one\n\n- two", "- one\n\n- two"],
+  ["a loose numbered list", "1. one\n\n2. two", "1. one\n\n2. two"],
   ["the markers a list was written with", "* one\n+ two", "* one\n+ two"],
   ["a numbered list's own numbers", "3. three\n4. four", "3. three\n4. four"],
   ["a numbered list's own delimiter", "1) one\n2) two", "1) one\n2) two"],
   ["a nested list", "- outer\n  - inner", "- outer\n  - inner"],
+  ["a deeply nested mixed list", "- outer\n  1. ordered\n     - deep\n  2. second\n- next", "- outer\n  1. ordered\n     - deep\n  2. second\n- next"],
+  ["a nested list returning to its parent", "1. first\n   - child\n   - child two\n2. second", "1. first\n   - child\n   - child two\n2. second"],
+  ["nested task items", "- [ ] todo\n  - [x] nested\n- [ ] next", "- [ ] todo\n  - [x] nested\n- [ ] next"],
+  ["a nested list after a blank line", "- outer\n\n  - inner", "- outer\n\n  - inner"],
   ["a list item continued under itself", "- an item\n  on two lines", "- an item\n  on two lines"],
+  ["a list item with differently indented continuation lines", "- item\n  first\n    second", "- item\n  first\n    second"],
+  ["a list item with a fenced code block", "- item\n  ```js\n  const x = 1;\n  ```\n- next", "- item\n  ```js\n  const x = 1;\n  ```\n- next"],
+  ["a list item with a blockquote", "- item\n  > quoted\n- next", "- item\n  > quoted\n- next"],
+  ["a list item with a heading and paragraph", "- item\n  # heading\n\n  paragraph\n- next", "- item\n  # heading\n\n  paragraph\n- next"],
+  ["a list item with a table", "- item\n  | a | b |\n  | --- | --- |\n  | 1 | 2 |\n- next", "- item\n  | a | b |\n  | --- | --- |\n  | 1 | 2 |\n- next"],
+  ["a loose list item with another paragraph", "- item\n\n  second paragraph\n\n- next", "- item\n\n  second paragraph\n\n- next"],
+  ["a loose list item with a fenced code block", "- item\n\n  ```js\n  const x = 1;\n  ```\n\n- next", "- item\n\n  ```js\n  const x = 1;\n  ```\n\n- next"],
+  ["a loose list item with a blockquote", "- item\n\n  > quoted\n\n- next", "- item\n\n  > quoted\n\n- next"],
   ["a task list", "- [ ] todo\n- [x] done", "- [ ] todo\n- [x] done"],
   ["a heading", "# Heading", "# Heading"],
   ["a quote", "> quoted", "> quoted"],
@@ -9824,18 +9838,33 @@ for (const [name, text, expected] of [
   ["a fence", "```\ncode\n```", "```\ncode\n```"],
   ["a fence still being typed", "```\ncode", "```\ncode"],
   ["a tilde fence", "~~~\ncode\n~~~", "~~~\ncode\n~~~"],
+  ["a fence with a longer closing run", "```\ncode\n`````", "```\ncode\n`````"],
+  ["a fence with a multi-word info string", "```rust extra words\ncode\n````", "```rust extra words\ncode\n````"],
+  ["an indented fence", "  ~~~js\n  code\n  ~~~", "  ~~~js\n  code\n  ~~~"],
   ["a table", "| a | b |\n| --- | --- |\n| 1 | 2 |", "| a | b |\n| --- | --- |\n| 1 | 2 |"],
   ["a table's alignment", "| a | b |\n| :-- | --: |\n| 1 | 2 |", "| a | b |\n| :-- | --: |\n| 1 | 2 |"],
   ["a table's pipes", "a | b\n--- | ---\n1 | 2", "| a | b |\n--- | ---\n| 1 | 2 |"],
+  ["an escaped pipe in a table cell", "| a \\| b | c |\n| --- | --- |\n| 1 | 2 |", "| a \\| b | c |\n| --- | --- |\n| 1 | 2 |"],
+  ["a pipe in inline code in a table cell", "| `a|b` | c |\n| --- | --- |\n| 1 | 2 |", "| `a|b` | c |\n| --- | --- |\n| 1 | 2 |"],
   ["an underlined heading", "Title\n=====", "Title\n====="],
   ["an underlined second-level heading", "Title\n---", "Title\n---"],
+  ["an indented heading", "  ## Heading", "  ## Heading"],
   ["a link with a title", "[label](https://example.com \"a title\")", "[label](https://example.com \"a title\")"],
   ["a link with a spaced destination", "[label](<https://example.com/a b>)", "[label](<https://example.com/a b>)"],
   ["an escaped delimiter", "an \\*escaped\\* star", "an \\*escaped\\* star"],
+  ["a hard break made with spaces", "first  \nsecond", "first  \nsecond"],
+  ["a hard break made with a backslash", "first\\\nsecond", "first\\\nsecond"],
+  ["a nested quote", "> > nested", "> > nested"],
+  ["a list inside a quote", "> - one\n> - two", "> - one\n> - two"],
   ["a code span holding a backtick", "``a ` b``", "``a ` b``"],
   ["the delimiter an emphasis was written with", "_i_ and __b__", "_i_ and __b__"],
+  ["triple emphasis with stars", "***bold italic***", "***bold italic***"],
+  ["triple emphasis with underscores", "___bold italic___", "___bold italic___"],
   ["arithmetic rather than emphasis", "2 * 3 * 4", "2 * 3 * 4"],
   ["a name with underscores", "snake_case_name", "snake_case_name"],
+  ["image syntax kept as its source", "![alt](https://example.com/a.png)", "![alt](https://example.com/a.png)"],
+  ["a reference-style link kept as its source", "[label][id]\n\n[id]: https://example.com", "[label][id]\n\n[id]: https://example.com"],
+  ["literal HTML kept as text", "<span>text</span>", "<span>text</span>"],
   ["the line a reader typed after a list", "- one\n- two\n", "- one\n- two\n"],
 ]) {
   const back = roundTrip(text);
@@ -9850,8 +9879,8 @@ for (const text of ["- one\n- two", "# Heading", "text\n\nmore", "| a |\n| --- |
 }
 check(
   "drew no editable markers into a transcript",
-  !/data-editor-(?:prefix|pad|open|fence|marker|escape)/.test(
-    app.renderMarkdown("- a\n  - b\n\n---\n\n```\nx\n```\n\n| a |\n| :-- |\n| 1 |\n\n_em_ and \\*literal\\*"),
+  !/data-editor-(?:prefix|pad|open|fence|close|info|marker|escape|list-block|gap|heading-indent|hard-break|triple|silent)/.test(
+    app.renderMarkdown("- a\n  - b\n\n- item\n\n  # nested\n\n  ```js\n  x\n  ```\n\n---\n\n```\nx\n```\n\n| a |\n| :-- |\n| 1 |\n\n_em_ and \\*literal\\*"),
   ),
 );
 for (const prompt of [

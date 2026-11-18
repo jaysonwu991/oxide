@@ -1727,6 +1727,15 @@ blank line a block needs around itself, an entity's character, a table's added
 outer pipes. A construct that rewrote itself on every keystroke would move the
 reader's own text under the caret.
 
+Lists stay one tree across blank lines. Mixed bullet and numbered levels keep
+each marker, number and indentation; a loose list remains one list; lines under
+an item keep their own continuation indentation; and paragraphs, headings,
+quotes, fenced code and tables indented under an item stay inside that item.
+Fences keep their opening and closing runs, indentation and complete info
+string. Table cells do not split on an escaped pipe or one inside inline code,
+ATX headings accept Markdown's up to three leading spaces, and triple emphasis
+renders as bold italic without producing crossed HTML tags.
+
 The composer follows Codex's input rules rather than parsing every newline as a
 finished Markdown document. ATX headings and list markers become blocks when
 their separating space is typed; Setext underlines do not. In particular, a
