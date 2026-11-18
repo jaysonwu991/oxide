@@ -4648,6 +4648,30 @@ check("restored MCP screenshot previews from session history", Boolean(replayScr
 check("restored the persistent computer-use screenshot from session history",
   app.visibleThread().computerUse?.image?.dataUrl === toolShot &&
   Boolean(app.el("computer-use-preview").children.length));
+const replayActivity = document.createElement("div");
+app.renderStoredTranscript(replayActivity, [
+  { role: "assistant", content: "", toolCalls: [
+    { id: "read-one", name: "read", arguments: '{"path":"src/one.rs"}' },
+    { id: "read-two", name: "read", arguments: '{"path":"src/two.rs"}' },
+  ] },
+  { role: "tool", toolCallId: "read-one", content: "one" },
+  { role: "tool", toolCallId: "read-two", content: "two" },
+  { role: "assistant", content: "The first files point to a third.", toolCalls: [] },
+  { role: "assistant", content: "", toolCalls: [
+    { id: "read-three", name: "read", arguments: '{"path":"src/three.rs"}' },
+  ] },
+  { role: "tool", toolCallId: "read-three", content: "three" },
+]);
+const replayActivities = replayActivity.querySelectorAll(".tool-activity");
+check(
+  "replayed adjacent tools as one activity and kept a single call compact",
+  replayActivities.length === 2 &&
+    replayActivities[0].querySelector(".tahead").hidden === false &&
+    replayActivities[0].querySelector(".tabody").hidden === true &&
+    replayActivities[0].querySelector(".ta-label").textContent === "2 tool calls" &&
+    String(replayActivities[1].className).includes("single"),
+  String(replayActivities.length),
+);
 const unsafeCard = app.startTool("computer-use__screenshot", '{}');
 app.finishTool(unsafeCard, "image", { attachments: [{ dataUrl: "https://example.com/track.png" }] });
 check("refused remote tool images in previews", !unsafeCard.block.querySelector(".att-open"));
@@ -4797,6 +4821,78 @@ check("reported a failed action in computer-use controls",
   app.el("computer-use-status").textContent === "Action failed");
 computerThread.computerUse = null;
 app.paintComputerUse();
+
+// ---------- a run of tool calls ----------
+
+// Adjacent calls are one quiet activity row. The first call keeps the ordinary
+// card; a second folds the run behind a header, and text closes the run rather
+// than letting a later action absorb commentary that belongs between them.
+console.log("a run of tool calls");
+app.state.currentActivity = null;
+elementFor("transcript").replaceChildren();
+const activityRead = app.startTool("read", JSON.stringify({ path: "src/one.rs" }));
+const activitySearch = app.startTool("grep", JSON.stringify({ pattern: "needle", path: "src" }));
+const activity = activityRead.activity;
+check(
+  "made two adjacent calls one activity",
+  activity === activitySearch.activity &&
+    activity.tools.length === 2 &&
+    activityRead.block.parentNode === activity.body &&
+    activitySearch.block.parentNode === activity.body,
+);
+check(
+  "showed only the activity row while its calls run",
+  activity.head.hidden === false &&
+    activity.body.hidden === true &&
+    activity.label.textContent === "2 tool calls" &&
+    activity.status.innerHTML.includes("running") &&
+    activity.head.getAttribute("role") === "button" &&
+    activity.head.getAttribute("aria-expanded") === "false",
+  `${activity.label.textContent} / ${activity.status.textContent}`,
+);
+app.finishTool(activityRead, "one", { elapsed: 4 });
+app.finishTool(activitySearch, "two", { elapsed: 7 });
+check(
+  "kept the completed run on one quiet line",
+  activity.head.hidden === false &&
+    activity.body.hidden === true &&
+    activity.status.textContent === "",
+);
+const activityFailure = app.startTool("edit", JSON.stringify({ path: "src/two.rs" }));
+app.finishTool(activityFailure, "oldText matched twice", { isError: true });
+check(
+  "counted a failed call in the activity row",
+  activity.label.textContent === "3 tool calls · 1 failed" &&
+    String(activity.block.className).includes("failed"),
+  activity.label.textContent,
+);
+activity.head.onclick();
+check(
+  "opened every call in the activity",
+  activity.expanded === true &&
+    activity.body.hidden === false &&
+    activity.head.getAttribute("aria-expanded") === "true",
+);
+activity.head.onkeydown?.({ key: " ", preventDefault() {} });
+check(
+  "closed the activity from the keyboard",
+  activity.expanded === false && activity.body.hidden === true,
+);
+app.handleEvent({
+  type: "message_update",
+  assistantMessageEvent: { type: "text_delta", delta: "The search found the next file." },
+});
+const afterCommentary = app.startTool("read", JSON.stringify({ path: "src/three.rs" }));
+check(
+  "started a new activity after progress commentary",
+  app.state.currentActivity !== activity &&
+    afterCommentary.activity !== activity &&
+    afterCommentary.activity.head.hidden === true &&
+    afterCommentary.activity.body.hidden === false,
+);
+activity.head.onclick();
+app.finishTool(afterCommentary, "three");
+app.state.currentActivity = null;
 
 // ---------- an edited file's own card ----------
 

@@ -73,6 +73,11 @@ A context compaction renders as Pi's `[compaction]` block and a branch summary
 as `[branch]`, each folded to a one-line note with `Ctrl+O to expand` until
 `Ctrl+O` shows its text — the same key that unfolds tool output.
 
+Adjacent tool calls fold into one activity line with their call and failure
+counts, the current action while one is running, and a `Ctrl+O to expand` hint.
+A single call keeps its ordinary panel; `Ctrl+O` restores every panel in the
+activity with its normal output and diagnostics.
+
 A URL in a reply is clickable: written bare or as an `<autolink>` the URL is
 the link itself, and a labelled link is drawn as its label alone — the target
 is not printed, as in both desktop front-ends and the panel — with the whole label

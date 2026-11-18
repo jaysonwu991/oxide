@@ -399,6 +399,7 @@ function threadRecord(key) {
       computerActive: false,
       currentAssistant: null,
       currentThinking: null,
+      currentActivity: null,
       runError: "",
       runStartedAt: 0,
       runElapsed: 0,
@@ -510,6 +511,7 @@ for (const key of [
   "computerUse",
   "currentAssistant",
   "currentThinking",
+  "currentActivity",
   "runError",
   "runStartedAt",
   "runElapsed",
@@ -3313,6 +3315,7 @@ function clearPaint() {
   state.tools = [];
   paintComputerUse();
   state.currentThinking = null;
+  state.currentActivity = null;
 }
 
 /// The pointers into the transcript on screen, dropped only when no turn is in
@@ -4636,6 +4639,7 @@ async function startPrompt(prompt, attachments, showBubble = true, thread = null
     record.tools = [];
     record.currentAssistant = null;
     record.currentThinking = null;
+    record.currentActivity = null;
     startRunClock(record);
   }
   if (showBubble) {
@@ -4716,6 +4720,7 @@ async function queueAction(action, index, direction = 0) {
     });
     if (!accepted) return;
     state.pendingSends.splice(index, 1);
+    state.currentActivity = null;
     el("transcript").appendChild(bubble("user", pending.prompt, pending.attachments));
     scrollDown(el("transcript"), true);
     setStatus(t("composer.steering", "Steering the active response…"));
@@ -4757,6 +4762,7 @@ function ensureAssistant() {
 }
 
 function appendText(delta) {
+  state.currentActivity = null;
   const assistant = ensureAssistant();
   assistant.text += delta;
   paintMarkdown(assistant.body, assistant.text);
@@ -4775,6 +4781,7 @@ function discardAttempt() {
 }
 
 function appendThinking(delta) {
+  state.currentActivity = null;
   const transcript = runTranscript();
   if (!state.currentThinking) {
     const block = document.createElement("div");
@@ -4893,6 +4900,111 @@ function formatDuration(ms) {
   return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 }
 
+/// A run of adjacent tools is one quiet activity row. The first call keeps its
+/// own card; when a second joins it the header replaces the separate rows until
+/// the reader opens it. Text or reasoning between calls closes the run, so
+/// progress commentary is never swallowed into a later activity.
+function createToolActivity(transcript) {
+  const block = document.createElement("div");
+  block.className = "tool-activity single";
+  const head = document.createElement("div");
+  head.className = "tahead";
+  head.hidden = true;
+  const caret = document.createElement("span");
+  caret.className = "ta-caret";
+  caret.setAttribute("aria-hidden", "true");
+  caret.innerHTML = ICONS.caret;
+  const mark = document.createElement("span");
+  mark.className = "ta-icon";
+  mark.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.className = "ta-label";
+  const detail = document.createElement("span");
+  detail.className = "ta-detail";
+  const status = document.createElement("span");
+  status.className = "ta-state";
+  head.append(caret, mark, label, detail, status);
+  const body = document.createElement("div");
+  body.className = "tabody";
+  block.append(head, body);
+  transcript.appendChild(block);
+  const activity = {
+    block,
+    head,
+    body,
+    mark,
+    label,
+    detail,
+    status,
+    tools: [],
+    expanded: false,
+    owner: paintingThread(),
+  };
+  head.onclick = () => toggleToolActivity(activity);
+  head.onkeydown = (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleToolActivity(activity);
+  };
+  return activity;
+}
+
+function paintToolActivity(activity) {
+  const count = activity.tools.length;
+  const failed = activity.tools.filter((tool) => tool.isError).length;
+  const runningTool = [...activity.tools].reverse().find((tool) => !tool.done);
+  const current = runningTool || activity.tools.at(-1);
+  const label = failed
+    ? `${count} tool calls · ${failed} failed`
+    : `${count} tool calls`;
+  activity.block.classList.toggle("single", count === 1);
+  activity.block.classList.toggle("failed", failed > 0);
+  activity.head.hidden = count === 1;
+  activity.body.hidden = count > 1 && !activity.expanded;
+  activity.head.tabIndex = count > 1 ? 0 : -1;
+  if (count > 1) {
+    activity.head.setAttribute("role", "button");
+    activity.head.setAttribute("aria-expanded", activity.expanded ? "true" : "false");
+  } else {
+    activity.head.removeAttribute("role");
+    activity.head.removeAttribute("aria-expanded");
+  }
+  activity.label.textContent = label;
+  activity.mark.innerHTML = current ? toolDisplayIcon(current.name) : ICONS.power;
+  activity.detail.textContent = runningTool ? toolSummary(runningTool.name, runningTool.args).text : "";
+  activity.status.innerHTML = runningTool ? '<span class="spinner"></span>running' : "";
+  activity.head.setAttribute(
+    "aria-label",
+    count > 1
+      ? `${label}${runningTool ? ", running" : ""}. ${activity.expanded ? "Collapse" : "Expand"} tool activity`
+      : label,
+  );
+  activity.head.title = count > 1
+    ? activity.expanded
+      ? "Hide tool activity"
+      : "Show tool activity"
+    : "";
+}
+
+function toggleToolActivity(activity) {
+  if (activity.tools.length < 2) return;
+  activity.expanded = !activity.expanded;
+  paintToolActivity(activity);
+  scrollDown(runTranscript());
+}
+
+function placeTool(tool, transcript = runTranscript()) {
+  let activity = state.currentActivity;
+  if (!activity) {
+    activity = createToolActivity(transcript);
+    state.currentActivity = activity;
+  }
+  tool.activity = activity;
+  activity.tools.push(tool);
+  activity.body.appendChild(tool.block);
+  paintToolActivity(activity);
+}
+
 /// Builds one tool card. `startTool` wires it for a live call; the stored
 /// transcript calls it too so a reopened thread reads the same way.
 function createToolCard(name, args) {
@@ -4973,7 +5085,7 @@ function startTool(name, args) {
   state.currentThinking = null;
   const tool = createToolCard(name, args);
   const transcript = runTranscript();
-  transcript.appendChild(tool.block);
+  placeTool(tool, transcript);
   state.tools.push(tool);
   updateComputerUse(tool);
   startToolTimer(tool);
@@ -5069,6 +5181,7 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0, a
   tool.isError = isError;
   updateComputerUse(tool, images);
   paintTool(tool);
+  if (tool.activity) paintToolActivity(tool.activity);
 }
 
 /// Collapsed cards show the first lines of output plus how much was hidden;
@@ -5147,6 +5260,7 @@ function toggleTool(tool) {
 /// calls as finished cards, with results matched back by `toolCallId`.
 function renderStoredTranscript(container, messages) {
   state.computerUse = null;
+  state.currentActivity = null;
   paintComputerUse();
   const results = new Map();
   for (const message of messages) {
@@ -5156,15 +5270,18 @@ function renderStoredTranscript(container, messages) {
   }
   for (const message of messages) {
     if (message.role === "user") {
+      state.currentActivity = null;
       container.appendChild(bubble("user", message.content, message.attachments || []));
     } else if (message.role === "assistant") {
       if (typeof message.thinking === "string" && message.thinking.trim()) {
+        state.currentActivity = null;
         const thinking = document.createElement("div");
         thinking.className = "thinking";
         thinking.textContent = `✦ ${message.thinking}`;
         container.appendChild(thinking);
       }
       if (message.content) {
+        state.currentActivity = null;
         container.appendChild(bubble("assistant", message.content, []));
       }
       for (const call of message.toolCalls || []) {
@@ -5174,10 +5291,11 @@ function renderStoredTranscript(container, messages) {
         const displayOutput = isError ? output.replace(/^error:\s*/, "") : output;
         const tool = createToolCard(call.name || "tool", call.arguments);
         finishTool(tool, displayOutput, { isError, attachments: result?.attachments || [] });
-        container.appendChild(tool.block);
+        placeTool(tool, container);
       }
     }
   }
+  state.currentActivity = null;
 }
 
 // ---------- computer use ----------
@@ -6306,6 +6424,7 @@ function activeTool(name) {
 
 function reportRunError(message) {
   state.runError = t("common.errorDetail", "Error: {value0}", { value0: message });
+  state.currentActivity = null;
   const notice = document.createElement("div");
   notice.className = "run-error";
   notice.setAttribute("role", "alert");

@@ -755,6 +755,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   let dirty = new Set();
   let liveChanges = new Map();
   let liveChangesCard = null;
+  let currentToolActivity = null;
   let frame = 0;
   let imageReturnFocus = null;
 
@@ -2335,16 +2336,110 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     });
   }
 
+  function createToolActivity() {
+    const wrap = document.createElement("div");
+    wrap.className = "tool-activity single";
+    const head = document.createElement("div");
+    head.className = "tahead";
+    head.hidden = true;
+    const caret = document.createElement("span");
+    caret.className = "ta-caret";
+    caret.textContent = "\u203a";
+    const mark = document.createElement("span");
+    mark.className = "ta-icon";
+    mark.textContent = "\u2699";
+    const label = document.createElement("span");
+    label.className = "ta-label";
+    const detail = document.createElement("span");
+    detail.className = "ta-detail";
+    const state = document.createElement("span");
+    state.className = "ta-state";
+    head.append(caret, mark, label, detail, state);
+    const body = document.createElement("div");
+    body.className = "tabody";
+    wrap.append(head, body);
+    transcript.appendChild(wrap);
+    const activity = { wrap, head, body, label, detail, state, tools: [], expanded: false };
+    head.addEventListener("click", () => toggleToolActivity(activity));
+    head.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      toggleToolActivity(activity);
+    });
+    return activity;
+  }
+
+  function paintToolActivity(activity) {
+    const count = activity.tools.length;
+    const failed = activity.tools.filter((entry) => entry.item.isError).length;
+    const running = activity.tools.slice().reverse().find((entry) => entry.item.running);
+    const current = running || activity.tools.at(-1);
+    let label = t("ui.toolCalls", "{count} tool calls", { count });
+    if (failed) label += ` \u00b7 ${t("ui.failedToolCalls", "{count} failed", { count: failed })}`;
+    activity.wrap.classList.toggle("single", count === 1);
+    activity.wrap.classList.toggle("failed", failed > 0);
+    activity.head.hidden = count === 1;
+    activity.body.hidden = count > 1 && !activity.expanded;
+    activity.head.tabIndex = count > 1 ? 0 : -1;
+    if (count > 1) {
+      activity.head.setAttribute("role", "button");
+      activity.head.setAttribute("aria-expanded", String(activity.expanded));
+    } else {
+      activity.head.removeAttribute("role");
+      activity.head.removeAttribute("aria-expanded");
+    }
+    activity.label.textContent = label;
+    activity.detail.textContent = running
+      ? toolSummary(running.item.name, running.item.args).text
+      : "";
+    activity.state.innerHTML = running
+      ? `<span class="spinner"></span>${t("ui.running", "Running")}`
+      : "";
+    activity.head.setAttribute(
+      "aria-label",
+      count > 1
+        ? `${label}. ${activity.expanded ? "Collapse" : "Expand"} tool activity`
+        : label,
+    );
+    activity.head.title = count > 1
+      ? activity.expanded
+        ? "Hide tool activity"
+        : "Show tool activity"
+      : "";
+  }
+
+  function toggleToolActivity(activity) {
+    if (activity.tools.length < 2) return;
+    activity.expanded = !activity.expanded;
+    paintToolActivity(activity);
+    scrollDown(false);
+  }
+
+  function placeTool(entry) {
+    if (!currentToolActivity) currentToolActivity = createToolActivity();
+    entry.activity = currentToolActivity;
+    currentToolActivity.tools.push(entry);
+    currentToolActivity.body.append(entry.el);
+  }
+
   function appendItem(item, keepScroll, retained = null) {
     const entry = retained || itemNode(item);
     entry.item = item;
     entry.el.dataset.id = String(item.id);
     entries.set(item.id, entry);
-    transcript.appendChild(entry.el);
+    if (item.kind === "tool") {
+      placeTool(entry);
+    } else {
+      currentToolActivity = null;
+      transcript.appendChild(entry.el);
+    }
     if (isConversation(item)) empty.hidden = true;
     if (item.kind === "assistant") renderAssistant(entry);
     else if (item.kind === "thinking") entry.el.textContent = item.text;
-    else if (item.kind === "tool") paintTool(entry);
+    else if (item.kind === "tool") {
+      paintTool(entry);
+      paintToolActivity(entry.activity);
+    }
     else if (item.kind === "approval") paintApproval(entry);
     else if (item.kind === "question") paintQuestion(entry);
     else if (item.kind === "changes") { paintChanges(entry); paintLiveChanges(); }
@@ -2421,6 +2516,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
         const selection = focused ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
         entries.clear();
         transcript.innerHTML = "";
+        currentToolActivity = null;
         transcript.appendChild(empty);
         empty.hidden = message.items.some(isConversation);
         transcript.classList.toggle("hide-thinking", message.showThinking === false);
@@ -2458,6 +2554,11 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
         const entry = entries.get(message.id);
         if (entry) {
           entry.el.remove();
+          if (entry.activity) {
+            entry.activity.tools = entry.activity.tools.filter((tool) => tool !== entry);
+            if (entry.activity.tools.length) paintToolActivity(entry.activity);
+            else entry.activity.wrap.remove();
+          }
           entries.delete(message.id);
         }
         return;
@@ -2469,7 +2570,10 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
         else entry.item.output += message.delta;
         if (entry.item.kind === "assistant") scheduleRender(entry);
         else if (entry.item.kind === "thinking") entry.el.textContent = entry.item.text;
-        else paintTool(entry);
+        else {
+          paintTool(entry);
+          if (entry.activity) paintToolActivity(entry.activity);
+        }
         scrollDown(false);
         return;
       }
@@ -2478,6 +2582,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
         if (!entry) return;
         Object.assign(entry.item, message.patch);
         paintTool(entry);
+        if (entry.activity) paintToolActivity(entry.activity);
         scrollDown(false);
         return;
       }

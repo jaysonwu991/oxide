@@ -477,7 +477,10 @@ The regions, top to bottom:
   --all`) — a finished call is a line of
   the transcript rather than a box around it, so a long run reads as a log, and
   only the card still being written and the one that failed keep a surface, each
-  carrying its state on its left edge (accent, error) with the reply's own text
+  carrying its state on its left edge (accent, error). Adjacent calls collapse
+  into one expandable activity row with the call and failure counts; progress
+  commentary between runs stays outside it, and a step boundary with no public
+  reasoning adds no thought row. The reply's own text
   above the dimmer output below it. They expand automatically for
   diffs and errors and can be clicked open/closed — a card wears the fold caret
   only once it has output behind it, so a card showing everything it printed

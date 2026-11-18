@@ -746,18 +746,10 @@ impl Chat {
                     _ => {}
                 }
             }
-            "thinking" => {
-                if !matches!(
-                    self.entries.last(),
-                    Some(Entry::Thinking { done: false, .. })
-                ) {
-                    self.entries.push(Entry::Thinking {
-                        text: String::new(),
-                        seconds: None,
-                        done: false,
-                    });
-                }
-            }
+            // A step boundary is not transcript content. Provider reasoning is
+            // private, so a row is opened only if a compatibility stream sends
+            // an actual `thinking_delta`.
+            "thinking" => {}
             "thinking_done" => {
                 if let Some(Entry::Thinking { seconds, done, .. }) = self.entries.last_mut() {
                     *seconds = payload["millis"].as_u64().map(|millis| millis / 1000);
@@ -1305,6 +1297,33 @@ mod tests {
                 streaming: false,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn an_empty_step_boundary_does_not_add_a_thought_row() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.apply(&json!({ "type": "thinking" }));
+        chat.apply(&json!({
+            "type": "thinking_done",
+            "millis": 4200,
+        }));
+        assert!(chat.entries.is_empty());
+
+        chat.apply(&json!({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "thinking_delta",
+                "delta": "Public compatibility summary"
+            }
+        }));
+        assert!(matches!(
+            chat.entries.as_slice(),
+            [Entry::Thinking {
+                text,
+                done: false,
+                ..
+            }] if text == "Public compatibility summary"
         ));
     }
 
