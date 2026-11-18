@@ -184,6 +184,10 @@ unsuccessful producer, invalid regex, a failed leading `cd`, or an earlier
 command that could hide the last one (a comment, a heredoc, a background `&`, a
 `&&`/`||` half that ends the shell with `exit`/`exec`/`set -e`, or a command
 word that is itself an expansion) still fails.
+An unpiped `git rev-parse --verify <ref>` or `git show-ref --verify <ref>` probe
+is a neutral result when the ref is absent: its nonzero exit is kept, the result
+is labelled `Git ref not found`, and the frontend does not paint a task failure.
+Chained Git commands and other nonzero statuses remain failures.
 
 The same script reader decides the pending `gh` exits below, so a wait written as
 `sleep 270; cd . && gh pr checks 260 2>&1 | tail -12` is still read through the
