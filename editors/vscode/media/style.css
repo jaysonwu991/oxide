@@ -420,6 +420,19 @@ pre,
   margin: 6px 0;
 }
 
+:is(.composer, #composer) .markdown-input > p:has(+ :is(ul, ol)),
+:is(.composer, #composer) .markdown-input > :is(ul, ol):has(+ p),
+:is(.composer, #composer) .markdown-input > :is(ul, ol) > li {
+  margin-block: 0;
+}
+:is(.composer, #composer) .markdown-input > p + :is(ul, ol),
+:is(.composer, #composer) .markdown-input > :is(ul, ol) + p {
+  margin-top: 0;
+}
+:is(.composer, #composer) .markdown-input > :is(ul, ol):has(+ [data-editor-tail]) {
+  margin-bottom: 0;
+}
+
 :is(.assistant .body, .user .body, .markdown-input) blockquote {
   margin: 6px 0;
   padding: 0 0 0 8px;

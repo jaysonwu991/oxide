@@ -3747,6 +3747,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     if (offset >= source.length && editor.lastChild) {
       const tail = editor.querySelector?.("[data-editor-tail]");
       if (tail) return { node: tail.firstChild, offset: tail.firstChild.nodeValue.length };
+      let container = editor.lastElementChild || editor;
+      while (/^(UL|OL)$/.test(container.tagName) && container.lastElementChild) {
+        container = container.lastElementChild;
+      }
+      if (container.lastChild?.nodeType === 3) {
+        return { node: container.lastChild, offset: container.lastChild.nodeValue.length };
+      }
+      return { node: container, offset: container.childNodes.length };
     }
     const walker = document.createTreeWalker(editor, 5);
     let best = { node: editor, offset: 0 };
@@ -3786,7 +3794,15 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     editor.style.height = "auto";
     // Markdown ignores trailing blank lines. Keep the editable suffix outside
     // its renderer, with a final caret stop outside any link or code span.
-    const trailing = source.match(/\s*$/)[0];
+    const trailingWhitespace = source.match(/\s*$/)[0];
+    const beforeTrailing = source.length - trailingWhitespace.length;
+    const trailingLineStart = source.lastIndexOf("\n", beforeTrailing - 1) + 1;
+    const trailingLine = source.slice(trailingLineStart, beforeTrailing);
+    const trailing = trailingWhitespace.includes("\n")
+      || (source && source.trim() === "")
+      || /^[ \t]*>$/.test(trailingLine)
+      ? trailingWhitespace
+      : "";
     let split = source.length - trailing.length;
     const lineStart = source.lastIndexOf("\n", split - 1) + 1;
     const line = source.slice(lineStart, split);
@@ -3800,7 +3816,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     const body = source.slice(0, split);
     const whitespace = source.slice(split);
     editor.innerHTML = body ? render(body) : "";
-    if (source && document.createTextNode) {
+    if ((whitespace || (source && !editor.textContent)) && document.createTextNode) {
       const tail = document.createElement("span");
       tail.setAttribute("data-editor-tail", "");
       tail.appendChild(document.createTextNode(whitespace));
@@ -3876,24 +3892,24 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     savedStart = savedEnd = selectionOffset(false);
     return true;
   }
-  function lineBreakText(start, end) {
-    if (start !== end) return "\n";
+  function lineBreakEdit(start, end) {
+    if (start !== end) return { start, end, text: "\n" };
     const lineStart = source.lastIndexOf("\n", start - 1) + 1;
     const lineEnd = source.indexOf("\n", start);
     const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
     // A quote is a block in Markdown too. A soft break in one stays in the
     // quote, so the next line carries the same prefix into the renderer.
     const quote = /^([ \t]*>[ \t]?)/.exec(line);
-    if (quote) return `\n${quote[1]}`;
-    if (source.slice(start).trim() !== "") return "\n";
+    if (quote) return { start, end, text: `\n${quote[1]}` };
+    if (source.slice(start).trim() !== "") return { start, end, text: "\n" };
     // A list item carries on into the next one, the way the native composer
-    // does; an item with nothing in it is the way out, and leaving takes the
-    // blank line that closes the block too.
+    // does; an item with nothing in it is the way out. Leaving removes that
+    // item's marker rather than leaving an orphan bullet behind the caret.
     const item = /^([ \t]*(?:[-*+]|(\d+)[.)])[ \t]+)(\[[ xX]\][ \t]+)?(.*)$/.exec(line);
-    if (!item) return "\n";
-    if (!item[4].trim()) return "\n\n";
+    if (!item) return { start, end, text: "\n" };
+    if (!item[4].trim()) return { start: lineStart, end, text: "" };
     const prefix = item[2] == null ? item[1] : item[1].replace(/\d+/, String(Number(item[2]) + 1));
-    return `\n${prefix}${item[3] ? "[ ] " : ""}`;
+    return { start, end, text: `\n${prefix}${item[3] ? "[ ] " : ""}` };
   }
   function indentList(direction) {
     const start = selectionOffset(false);
@@ -4053,10 +4069,12 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     event.preventDefault();
     const start = selectionOffset(false);
     const end = selectionOffset(true);
-    const text = event.inputType === "insertLineBreak" ? lineBreakText(start, end) : event.data || "";
-    source = source.slice(0, start) + text + source.slice(end);
+    const edit = event.inputType === "insertLineBreak"
+      ? lineBreakEdit(start, end)
+      : { start, end, text: event.data || "" };
+    source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
     remember();
-    paint(start + text.length);
+    paint(edit.start + edit.text.length);
     editor.dispatchEvent(new Event("input", { bubbles: true }));
   });
   editor.addEventListener("compositionstart", () => { composing = true; });

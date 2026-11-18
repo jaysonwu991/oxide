@@ -29,10 +29,31 @@ function exerciseEditor() {
   // Force a DOM-backed edit: reading only the saved source would hide a damaged
   // rendering until a paste, deletion or IME commit reads it back.
   const editInPage = (text = "!") => {
-    const tail = editor.querySelector("[data-editor-tail]").firstChild;
-    tail.appendData(text);
+    let target = editor.querySelector("[data-editor-tail]")?.firstChild;
+    if (!target) {
+      let container = editor.lastElementChild || editor;
+      while (
+        container.lastElementChild &&
+        (/^(UL|OL)$/.test(container.tagName) || /^(UL|OL)$/.test(container.lastElementChild.tagName))
+      ) {
+        container = container.lastElementChild;
+      }
+      if (["PRE", "TABLE", "HR", "BLOCKQUOTE"].includes(container.tagName)) {
+        const tail = document.createElement("span");
+        tail.setAttribute("data-editor-tail", "");
+        target = document.createTextNode("");
+        tail.appendChild(target);
+        editor.appendChild(tail);
+      } else if (container.lastChild?.nodeType === Node.TEXT_NODE) {
+        target = container.lastChild;
+      } else {
+        target = document.createTextNode("");
+        container.appendChild(target);
+      }
+    }
+    target.appendData(text);
     const caret = document.createRange();
-    caret.setStart(tail, tail.length);
+    caret.setStart(target, target.length);
     caret.collapse(true);
     window.getSelection().removeAllRanges();
     window.getSelection().addRange(caret);
@@ -40,8 +61,8 @@ function exerciseEditor() {
   };
   const results = document.querySelector("#results");
   installMarkdownInput(editor, (text) => renderMarkdown(text, true));
-  const check = (name, pass) => {
-    if (!pass) throw new Error(`${name}: ${JSON.stringify({ source: editor.value, html: editor.innerHTML })}`);
+  const check = (name, pass, detail = "") => {
+    if (!pass) throw new Error(`${name}: ${detail || JSON.stringify({ source: editor.value, html: editor.innerHTML })}`);
     results.textContent += `PASS ${name}\n`;
   };
   const end = () => {
@@ -255,7 +276,18 @@ function exerciseEditor() {
     end();
     type(" ");
     type(" ");
-    check("consecutive spaces stay visible", editor.value === "hello  " && editor.textContent === "hello  " && window.getSelection().focusNode.nodeValue === "  ");
+    check(
+      "consecutive spaces stay visible",
+      editor.value === "hello  " &&
+        editor.textContent === "hello  " &&
+        window.getSelection().focusNode.nodeValue === "hello  " &&
+        window.getSelection().focusOffset === 7,
+      JSON.stringify({
+        node: window.getSelection().focusNode?.nodeName,
+        value: window.getSelection().focusNode?.nodeValue,
+        offset: window.getSelection().focusOffset,
+      }),
+    );
     editor.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertLineBreak", bubbles: true, cancelable: true }));
     document.execCommand("delete");
     check("deleting a trailing newline preserves spaces", editor.value === "hello  ");
@@ -267,10 +299,89 @@ function exerciseEditor() {
       const expected = { "- one": "- ", "* star": "* ", "1. ordered": "2. ", "- [ ] task": "- [ ] ", "- outer\n  - inner": "  - " }[list];
       check(`a newline continues ${JSON.stringify(list)}`, carried === `\n${expected}`);
       lineBreak();
-      check(`a newline on the empty item leaves ${JSON.stringify(list)}`, editor.value === `${list}${carried}\n\n`);
+      check(
+        `a newline on the empty item closes ${JSON.stringify(list)} without an orphan bullet`,
+        editor.value === `${list}\n`,
+      );
       type("plain");
-      check(`typing after ${JSON.stringify(list)} is outside the list`, editor.value.endsWith("\n\nplain") && editor.lastElementChild?.tagName === "P");
+      check(`typing after ${JSON.stringify(list)} is outside the list`, editor.value.endsWith("\nplain") && editor.lastElementChild?.tagName === "P");
     }
+    editor.value = "- ";
+    end();
+    type("Test 1");
+    check(
+      "typing a spaced item keeps it in the list",
+      editor.value === "- Test 1" && editor.querySelector("ul li")?.textContent === "Test 1",
+      JSON.stringify({ value: editor.value, html: editor.innerHTML }),
+    );
+    editor.value = "- Test";
+    end();
+    type(" ");
+    const spacedItem = editor.querySelector("ul li");
+    const spaceSelection = window.getSelection();
+    check(
+      "a trailing space stays inside its list item",
+      editor.value === "- Test " &&
+        spacedItem?.textContent === "Test " &&
+        spacedItem.contains(spaceSelection.focusNode),
+      JSON.stringify({
+        value: editor.value,
+        item: spacedItem?.textContent,
+        focus: spaceSelection.focusNode?.nodeValue,
+        html: editor.innerHTML,
+      }),
+    );
+    type("Any text");
+    check(
+      "text after a space stays on the list item's line",
+      editor.value === "- Test Any text" &&
+        editor.querySelector("ul li")?.textContent === "Test Any text",
+      JSON.stringify({ value: editor.value, html: editor.innerHTML }),
+    );
+    editor.value = "Test\n- Test 1\n- Test 2\n- Test 3";
+    end();
+    lineBreak();
+    lineBreak();
+    const lastItemBox = editor.querySelector("ul li:last-child").getBoundingClientRect();
+    const listCaretBox = window.getSelection().getRangeAt(0).getBoundingClientRect();
+    const listLineHeight = parseFloat(getComputedStyle(editor).lineHeight);
+    check(
+      "leaves one plain line after the end of a list",
+      editor.value === "Test\n- Test 1\n- Test 2\n- Test 3\n" &&
+        listCaretBox.top - lastItemBox.bottom <= listLineHeight,
+      JSON.stringify({
+        value: editor.value,
+        itemBottom: lastItemBox.bottom,
+        caretTop: listCaretBox.top,
+        gap: listCaretBox.top - lastItemBox.bottom,
+        lineHeight: listLineHeight,
+        html: editor.innerHTML,
+      }),
+    );
+    editor.value = "Test\n- Test 1\n- Test 2";
+    const paragraphBox = editor.querySelector("p").getBoundingClientRect();
+    const [firstItem, secondItem] = editor.querySelectorAll("ul li");
+    const firstItemBox = firstItem.getBoundingClientRect();
+    const secondItemBox = secondItem.getBoundingClientRect();
+    check(
+      "keeps plain text and list items on the composer's line rhythm",
+      Math.abs(firstItemBox.top - paragraphBox.bottom) < 1 &&
+        Math.abs(secondItemBox.top - firstItemBox.bottom) < 1,
+      JSON.stringify({
+        paragraphBottom: paragraphBox.bottom,
+        firstItemTop: firstItemBox.top,
+        firstItemBottom: firstItemBox.bottom,
+        secondItemTop: secondItemBox.top,
+      }),
+    );
+    editor.value = "- Test 1\nTest 2";
+    const listBox = editor.querySelector("ul").getBoundingClientRect();
+    const followingText = editor.querySelector("p").getBoundingClientRect();
+    check(
+      "keeps the line after a list on the composer's line rhythm",
+      Math.abs(followingText.top - listBox.bottom) < 1,
+      JSON.stringify({ listBottom: listBox.bottom, paragraphTop: followingText.top }),
+    );
     editor.value = "- one";
     editor.setSelectionRange(3, 3);
     lineBreak();
@@ -332,10 +443,8 @@ function exerciseEditor() {
       ["docs.example.dev/setup", "https://docs.example.dev/setup"],
     ]));
     const domainSource = editor.value;
-    const domainTail = editor.querySelector("[data-editor-tail]").firstChild;
-    domainTail.appendData("!");
-    editor.dispatchEvent(new Event("input", { bubbles: true }));
-    check("DOM edits keep bare domain source unchanged", editor.value === domainSource + "!");
+    type("!");
+    check("editing after a bare domain keeps its source unchanged", editor.value === domainSource + "!");
     editor.value = "github.com";
     end();
     type("/openai");

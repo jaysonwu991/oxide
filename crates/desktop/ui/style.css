@@ -493,6 +493,18 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 :is(.msg .body, .markdown-input) p { margin: 7px 0; }
 :is(.msg .body, .markdown-input) ul, :is(.msg .body, .markdown-input) ol { margin: 7px 0; padding-left: 22px; }
 :is(.msg .body, .markdown-input) li { margin: 2px 0; }
+:is(.composer, #composer) .markdown-input > p:has(+ :is(ul, ol)),
+:is(.composer, #composer) .markdown-input > :is(ul, ol):has(+ p),
+:is(.composer, #composer) .markdown-input > :is(ul, ol) > li {
+  margin-block: 0;
+}
+:is(.composer, #composer) .markdown-input > p + :is(ul, ol),
+:is(.composer, #composer) .markdown-input > :is(ul, ol) + p {
+  margin-top: 0;
+}
+:is(.composer, #composer) .markdown-input > :is(ul, ol):has(+ [data-editor-tail]) {
+  margin-bottom: 0;
+}
 :is(.msg .body, .markdown-input) blockquote { margin: 7px 0; padding-left: 11px; border-left: 2px solid var(--border); color: var(--dim); }
 :is(.msg .body, .markdown-input) a { color: var(--accent); text-decoration: underline; cursor: pointer; }
 :is(.msg .body, .markdown-input) a:hover { opacity: 0.8; }
