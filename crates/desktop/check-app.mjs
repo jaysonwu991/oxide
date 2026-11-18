@@ -4956,6 +4956,14 @@ check(
     String(activity.block.className).includes("failed"),
   activity.label.textContent,
 );
+const activityRecovery = app.startTool("read", JSON.stringify({ path: "src/two.rs" }));
+app.finishTool(activityRecovery, "corrected", { elapsed: 3 });
+check(
+  "quieted a failure once a later call recovered the activity",
+  activity.label.textContent === "4 tool calls · 1 recovered" &&
+    !String(activity.block.className).includes("failed"),
+  `${activity.label.textContent} / ${activity.block.className}`,
+);
 activity.head.onclick();
 check(
   "opened every call in the activity",

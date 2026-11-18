@@ -2508,6 +2508,16 @@ fn render_tool_activity_summary(
         .iter()
         .filter(|item| matches!(item, ChatItem::ToolResult { is_error: true, .. }))
         .count();
+    let unresolved = running.is_none()
+        && items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                ChatItem::ToolResult { is_error, .. } => Some(*is_error),
+                _ => None,
+            })
+            .unwrap_or(false);
+    let recovered = failed_count > 0 && !unresolved && running.is_none();
     let mut text = format!(
         "⚙ {}",
         crate::i18n::tf(lang, "ui.toolCalls", &[("count", &count)])
@@ -2517,7 +2527,11 @@ fn render_tool_activity_summary(
         text.push_str(" · ");
         text.push_str(&crate::i18n::tf(
             lang,
-            "ui.failedToolCalls",
+            if recovered {
+                "ui.recoveredToolCalls"
+            } else {
+                "ui.failedToolCalls"
+            },
             &[("count", &failed)],
         ));
     }
@@ -2535,7 +2549,7 @@ fn render_tool_activity_summary(
     }
     text.push_str(" · ");
     text.push_str(crate::i18n::t(lang, "ui.ctrlOToExpand"));
-    let color = if failed_count > 0 {
+    let color = if unresolved {
         theme.error
     } else if running.is_some() {
         theme.tool
@@ -4392,6 +4406,25 @@ mod tests {
         assert!(grouped.contains("1 failed"), "{grouped}");
         assert!(grouped.contains("Ctrl+O to expand"), "{grouped}");
         assert_eq!(app.line_offsets.len(), 2);
+
+        app.items.push(ChatItem::ToolResult {
+            name: "read".into(),
+            args: "{\"path\":\"src/two.rs\"}".into(),
+            output: "corrected".into(),
+            is_error: false,
+            diff: None,
+            millis: 3,
+        });
+        sync_lines(&mut app, 80);
+        let recovered = app
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(recovered.contains("3 tool calls"), "{recovered}");
+        assert!(recovered.contains("1 recovered"), "{recovered}");
+        assert!(!recovered.contains("1 failed"), "{recovered}");
 
         app.expand_tools = true;
         app.render_dirty_from = Some(0);

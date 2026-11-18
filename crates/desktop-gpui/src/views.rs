@@ -2829,15 +2829,18 @@ fn conversation(
             }
             TranscriptBlock::ToolActivity { start, end } => {
                 let tools = &entries[start..=end];
-                let (count, failed, running) = tool_activity_summary(tools);
+                let summary = tool_activity_summary(tools);
                 let label = format!(
                     "{count} tool calls{}{}",
-                    if failed == 0 {
+                    if summary.failed == 0 {
                         String::new()
+                    } else if summary.unresolved {
+                        format!(", {} failed", summary.failed)
                     } else {
-                        format!(", {failed} failed")
+                        format!(", {} recovered", summary.failed)
                     },
-                    if running { ", running" } else { "" }
+                    if summary.running { ", running" } else { "" },
+                    count = summary.calls,
                 );
                 (
                     label,
@@ -3768,7 +3771,15 @@ fn entry_accessibility_label(entry: &Entry) -> String {
     }
 }
 
-fn tool_activity_summary(entries: &[Entry]) -> (usize, usize, bool) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ToolActivitySummary {
+    calls: usize,
+    failed: usize,
+    running: bool,
+    unresolved: bool,
+}
+
+fn tool_activity_summary(entries: &[Entry]) -> ToolActivitySummary {
     let tools = entries
         .iter()
         .filter_map(|entry| match entry {
@@ -3776,16 +3787,35 @@ fn tool_activity_summary(entries: &[Entry]) -> (usize, usize, bool) {
             _ => None,
         })
         .collect::<Vec<_>>();
-    (
-        tools.len(),
-        tools
-            .iter()
-            .filter(|card| card.status == Status::Failed)
-            .count(),
-        tools
-            .iter()
-            .any(|card| card.status == Status::Running || card.status == Status::Pending),
-    )
+    let failed = tools
+        .iter()
+        .filter(|card| card.status == Status::Failed)
+        .count();
+    let running = tools
+        .iter()
+        .any(|card| card.status == Status::Running || card.status == Status::Pending);
+    ToolActivitySummary {
+        calls: tools.len(),
+        failed,
+        running,
+        unresolved: !running
+            && tools
+                .last()
+                .is_some_and(|card| card.status == Status::Failed),
+    }
+}
+
+fn tool_activity_label(summary: ToolActivitySummary) -> String {
+    let mut label = format!("{} tool calls", summary.calls);
+    if summary.failed > 0 {
+        label.push_str(" \u{00b7} ");
+        label.push_str(&if summary.unresolved {
+            format!("{} failed", summary.failed)
+        } else {
+            format!("{} recovered", summary.failed)
+        });
+    }
+    label
 }
 
 fn tool_activity_view(
@@ -3799,7 +3829,7 @@ fn tool_activity_view(
 ) -> gpui::Div {
     let theme = root.theme.clone();
     let theme = &theme;
-    let (count, failed, running) = tool_activity_summary(entries);
+    let summary = tool_activity_summary(entries);
     let first_id = match &entries[0] {
         Entry::Tool(card) => card.id,
         _ => offset as u64,
@@ -3815,15 +3845,15 @@ fn tool_activity_view(
             _ => None,
         })
         .unwrap_or_default();
-    let label = if failed == 0 {
-        format!("{count} tool calls")
-    } else {
-        format!("{count} tool calls \u{00b7} {failed} failed")
-    };
-    let state = if running { "Running" } else { "" };
+    let label = tool_activity_label(summary);
+    let state = if summary.running { "Running" } else { "" };
     let aria_label = format!(
         "{label}, {}. {}",
-        if running { "running" } else { "finished" },
+        if summary.running {
+            "running"
+        } else {
+            "finished"
+        },
         if expanded {
             "Collapse tool activity"
         } else {
@@ -3870,7 +3900,7 @@ fn tool_activity_view(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(if running {
+                .child(if summary.running {
                     icons::icon(Icon::Spinner, 13.0, theme.accent())
                         .with_animation(
                             spinner,
@@ -3886,7 +3916,7 @@ fn tool_activity_view(
                     icons::icon(
                         Icon::Activity,
                         13.0,
-                        if failed > 0 {
+                        if summary.unresolved {
                             theme.error()
                         } else {
                             theme.faint()
@@ -3900,9 +3930,9 @@ fn tool_activity_view(
                 .flex_none()
                 .text_size(px(12.5))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(if failed > 0 {
+                .text_color(if summary.unresolved {
                     theme.error()
-                } else if running {
+                } else if summary.running {
                     theme.text()
                 } else {
                     theme.dim()
@@ -3924,7 +3954,7 @@ fn tool_activity_view(
             div()
                 .flex_none()
                 .text_size(px(10.5))
-                .text_color(if failed > 0 {
+                .text_color(if summary.unresolved {
                     theme.error()
                 } else {
                     theme.accent()
@@ -8728,7 +8758,7 @@ mod composer_action_tests {
 
 #[cfg(test)]
 mod transcript_activity_tests {
-    use super::{transcript_blocks, TranscriptBlock};
+    use super::{tool_activity_label, tool_activity_summary, transcript_blocks, TranscriptBlock};
     use crate::model::{Entry, Status, ToolCard};
 
     fn tool(id: u64) -> Entry {
@@ -8743,6 +8773,28 @@ mod transcript_activity_tests {
             diff: None,
             media: Vec::new(),
         })
+    }
+
+    #[test]
+    fn a_later_result_reclassifies_an_intermediate_failure_as_recovered() {
+        let mut failed = tool(1);
+        if let Entry::Tool(card) = &mut failed {
+            card.status = Status::Failed;
+        }
+        let entries = vec![failed, tool(2)];
+        let summary = tool_activity_summary(&entries);
+        assert_eq!(summary.failed, 1);
+        assert!(!summary.unresolved);
+        assert_eq!(tool_activity_label(summary), "2 tool calls · 1 recovered");
+
+        let mut failed = tool(2);
+        if let Entry::Tool(card) = &mut failed {
+            card.status = Status::Failed;
+        }
+        let entries = vec![tool(1), failed];
+        let summary = tool_activity_summary(&entries);
+        assert!(summary.unresolved);
+        assert_eq!(tool_activity_label(summary), "2 tool calls · 1 failed");
     }
 
     #[test]

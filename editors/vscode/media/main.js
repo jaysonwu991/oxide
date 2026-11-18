@@ -2374,10 +2374,16 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     const failed = activity.tools.filter((entry) => entry.item.isError).length;
     const running = activity.tools.slice().reverse().find((entry) => entry.item.running);
     const current = running || activity.tools.at(-1);
+    const unresolved = failed > 0 && !running && Boolean(activity.tools.at(-1)?.item.isError);
+    const recovered = failed > 0 && !running && !unresolved;
     let label = t("ui.toolCalls", "{count} tool calls", { count });
-    if (failed) label += ` \u00b7 ${t("ui.failedToolCalls", "{count} failed", { count: failed })}`;
+    if (failed) {
+      label += ` \u00b7 ${recovered
+        ? t("ui.recoveredToolCalls", "{count} recovered", { count: failed })
+        : t("ui.failedToolCalls", "{count} failed", { count: failed })}`;
+    }
     activity.wrap.classList.toggle("single", count === 1);
-    activity.wrap.classList.toggle("failed", failed > 0);
+    activity.wrap.classList.toggle("failed", unresolved);
     activity.head.hidden = count === 1;
     activity.body.hidden = count > 1 && !activity.expanded;
     activity.head.tabIndex = count > 1 ? 0 : -1;
