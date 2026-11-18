@@ -5008,11 +5008,16 @@ function paintToolActivity(activity) {
   const failed = activity.tools.filter((tool) => tool.isError).length;
   const runningTool = [...activity.tools].reverse().find((tool) => !tool.done);
   const current = runningTool || activity.tools.at(-1);
-  const label = failed
-    ? `${count} tool calls · ${failed} failed`
-    : `${count} tool calls`;
+  const unresolved = failed > 0 && !runningTool && Boolean(activity.tools.at(-1)?.isError);
+  const recovered = failed > 0 && !runningTool && !unresolved;
+  let label = t("ui.toolCalls", "{count} tool calls", { count });
+  if (failed) {
+    label += ` · ${recovered
+      ? t("ui.recoveredToolCalls", "{count} recovered", { count: failed })
+      : t("ui.failedToolCalls", "{count} failed", { count: failed })}`;
+  }
   activity.block.classList.toggle("single", count === 1);
-  activity.block.classList.toggle("failed", failed > 0);
+  activity.block.classList.toggle("failed", unresolved);
   activity.head.hidden = count === 1;
   activity.body.hidden = count > 1 && !activity.expanded;
   activity.head.tabIndex = count > 1 ? 0 : -1;

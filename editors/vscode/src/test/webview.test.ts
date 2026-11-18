@@ -3992,14 +3992,18 @@ describe("webview tool card", () => {
     assert.equal(head.getAttribute("aria-expanded"), "false");
     assert.equal(activity.classList.contains("failed"), true);
 
+    send({ k: "push", item: { id: 5, kind: "tool", name: "read", args: '{"path":"src/two.rs"}', output: "corrected", running: false } });
+    assert.equal(activity.querySelector(".ta-label")!.textContent, "4 tool calls · 1 recovered");
+    assert.equal(activity.classList.contains("failed"), false);
+
     head.fire("click");
     assert.equal(activity.querySelector(".tabody")!.hidden, false);
     assert.equal(head.getAttribute("aria-expanded"), "true");
     head.fire("keydown", { key: " ", preventDefault() {} });
     assert.equal(activity.querySelector(".tabody")!.hidden, true);
 
-    send({ k: "push", item: { id: 5, kind: "assistant", text: "The search found the next file." } });
-    send({ k: "push", item: { id: 6, kind: "tool", name: "read", args: '{"path":"src/three.rs"}', output: "three", running: false } });
+    send({ k: "push", item: { id: 6, kind: "assistant", text: "The search found the next file." } });
+    send({ k: "push", item: { id: 7, kind: "tool", name: "read", args: '{"path":"src/three.rs"}', output: "three", running: false } });
     const after = transcript.querySelectorAll(".tool-activity");
     assert.equal(after.length, 2, "commentary starts a new activity");
     assert.equal(after[1].classList.contains("single"), true);

@@ -193,8 +193,9 @@ reveal rather than two frames of the wrong page.
   stored blocks are retained for protocol replay but neither a live turn nor a
   reopened thread paints them. A step boundary without any public reasoning adds
   no "Thought for" row. A run of two or more consecutive tools becomes one
-  expandable activity row with the call count, active action and failure count;
-  expanding it reveals the individual tool rows, while progress commentary
+  expandable activity row with the call count, active action and recovered
+  failures; an unresolved final failure alone colors the activity row red.
+  Expanding it reveals the individual tool rows, while progress commentary
   between tool runs stays in the transcript as its own reply. A single tool is
   one compact row by default; a successful result stays
   folded, a failure previews its first three lines, and the row or preview

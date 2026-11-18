@@ -1278,6 +1278,11 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("tui.thoughtFor", "Thought for {duration}", "思考了 {duration}"),
     ("ui.toolCalls", "{count} tool calls", "{count} 次工具调用"),
     ("ui.failedToolCalls", "{count} failed", "{count} 次失败"),
+    (
+        "ui.recoveredToolCalls",
+        "{count} recovered",
+        "{count} 次已恢复",
+    ),
     ("ui.ctrlOToExpand", "Ctrl+O to expand", "Ctrl+O 展开"),
     ("tui.jumpLatest", "↓ Jump to latest message · End", "↓ 跳到最新消息 · End"),
     ("tui.steering", "Steering", "引导"),
