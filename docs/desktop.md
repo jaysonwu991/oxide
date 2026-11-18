@@ -134,9 +134,9 @@ rather than saying the products are the same.
 
 The project tree uses compact rows and a narrow inset beside the native scrollbar
 lane, so titles can use the sidebar width. Only the active chat has a filled
-selection background. Pull-request badges use a merge glyph in purple for merged
-requests, a crossed request glyph in red for closed requests, green for open
-requests and grey while their state is unknown. Pin and archive actions still
+selection background. Pull-request badges wear the native window's request
+glyph — green for open requests, purple for merged, red for closed and grey while
+their state is unknown — so the mark is one drawing and the colour is the state. Pin and archive actions still
 appear on hover or keyboard focus without shifting the title.
 
 Project disclosure buttons fold their chats independently and keep that choice
@@ -360,12 +360,19 @@ not yet key is not spent on making it key.
 
 The window follows a Codex-style layout. Every glyph it draws for itself is
 inline SVG — the tree's folder, a document, a caret and a check, the mark that
-signs a reply, `+`, and the remove `✕` — stroked with `currentColor` in the
-panel's own two boxes and weights (24 units at 1.8 for a glyph that fills its
-button, 16 at 1.5–1.6 for the marks that sit on a text baseline), so nothing on
-screen is a character whose shape and size would come from the machine's fonts,
-and every control's words live in its tooltip and its `aria-label`, as the
-extension's do. The characters the window still types are text in a line rather
+signs a reply, `+`, and the remove `✕` — stroked with `currentColor`, so nothing
+on screen is a character whose shape and size would come from the machine's
+fonts, and every control's words live in its tooltip and its `aria-label`, as
+the extension's do. A mark the native window draws is that window's own
+drawing, taken body for body from `crates/desktop-gpui/src/icons.rs` in its
+24-unit box at 1.6, so a control wears one mark in both desktop front-ends;
+`ui/app.js`'s `GLYPHS` holds that table and `check-app.mjs` reads the Rust one
+beside it, failing a look-alike rather than letting the two windows drift. The
+few marks the native table has none for — the refresh arrow, a queue's trash,
+Undo, the MCP power switch, the composer's status badge and the brand mark —
+are drawn for this page alone in the panel's own boxes (24 units at 1.8, 16 at
+1.5–1.6 for the marks that sit on a text baseline). The characters the window
+still types are text in a line rather
 than a control's drawing: a tool card's `✔`/`✖` and the `☐`/`☑` of an assistant's
 task list, which the panel's own renderer types too, a compatibility reasoning
 mark for older streams, the `⌘`/`⇧`/`⌃`/`⌥` naming a shortcut
@@ -375,9 +382,9 @@ joined with, and the image preview's head-row `✕`. Drawing one here and typing
 there would make the two front-ends read the same state two ways, so
 `check-app.mjs` pins the set the window's own strings
 carry — a character a control could wear cannot appear under cover of them. It
-also holds the paths the two front-ends share beside the extension's own
-sources, so chrome drawn one way in the panel and another in this window fails
-the check.
+also holds the four paths the window still shares with the extension beside the
+extension's own sources, so chrome drawn one way in the panel and another in
+this window fails the check.
 
 Lists do not wear a bar that is always there. A scrollable box keeps its
 scrollbar's lane clear of its rows, and the bar is drawn only while the box is
@@ -473,8 +480,11 @@ The regions, top to bottom:
   measuring itself. User messages are right-aligned
   bubbles; user messages and assistant replies render Markdown and links open in the system
   browser (see [Rendering](#rendering)). Tool calls are compact cards
-  showing the call with Codex's label and mark (e.g. `Command cargo test
-  --all`) — a finished call is a line of
+  showing the call with Codex's label and its own mark (e.g. `Command cargo test
+  --all`) — the mark says what the call did, a terminal for a command, a document
+  for a read, a pencil for a write or edit, a magnifier for a find, a folder for a
+  listing, a globe for the web, a plug for an MCP tool and a wrench for anything
+  else — and a finished call is a line of
   the transcript rather than a box around it, so a long run reads as a log, and
   only the card still being written and the one that failed keep a surface, each
   carrying its state on its left edge (accent, error). Adjacent calls collapse
@@ -535,12 +545,13 @@ The regions, top to bottom:
   in (`body.running`), the bar steps aside so the box keeps the room its phase
   and Stop need, and it is back once the run ends. The
   box's own row is icon-first, the
-  way the VS Code panel's is: the attach paperclip, the model, the thinking
-  level and the trust shield lead, then — after a rule of its own — the app's own
-  dialogs as icon buttons in the extension's own style: a plug that opens
-  **Connect**, a padlock for the saved tool approvals, and a
-  circled `?` for the shortcut help, each with the words in its tooltip and its
-  `aria-label`. The project chip is one of the bar's two controls, and the one
+  way the VS Code panel's is: the attach paperclip, the tools menu and the
+  approvals lock lead, with the model and its effort beside the context ring and
+  the one action that sends or stops the turn on the right. The tools menu holds
+  the app's own dialogs as icon buttons in the extension's own style: a globe
+  that opens **Connect**, a lock for project access, a chat bubble for agents,
+  and a keyboard for the shortcut help, each with the words in its tooltip and
+  its `aria-label`. The project chip is one of the bar's two controls, and the one
   that keeps its words on the face of it whether or not a project is chosen — **Choose a project** while none is open, else the
   folder's name, accented in the first case the way the model picker marks the row
   in use — because with nothing open it is how a first thread starts rather than a
@@ -569,11 +580,11 @@ The regions, top to bottom:
   failure is cut with an
   ellipsis rather than allowed to push the controls off the row.
   The controls the extension's own row carries come first and in
-  its order, and the glyphs the two front-ends share — the paperclip, the `+`,
-  the send arrow, the stop square, the refresh arrow, the close `✕`, the MCP
-    power switch, the model's cube, the thinking sparkles and the trust shield —
-  are the same paths in both, which `check-app.mjs` holds beside the
-  extension's own sources so a control drawn one way here and another there
+  its order, and each wears the native window's own mark — the paperclip, the
+  `+`, the send arrow, the stop square, the close `✕` and the lock — so the two
+  desktop front-ends paint one row; only the refresh arrow and the MCP power
+  switch are the panel's own paths, which `check-app.mjs` holds beside the
+  extension's own sources so a control drawn one way there and another here
   fails the check. The box itself says whether it is holding something: its
   border lifts while a message or a chip is in it. No input box paints on
   focus — the caret moving into a box leaves its border alone — so every box
@@ -823,7 +834,7 @@ When a project has resources that can execute or reshape the agent
 is saved, the desktop asks **Trust this project?** the way the CLI's trust
 prompt does. Trusting it saves a `true` decision to `trust.json` and reloads the
 ecosystem; declining saves `false` and leaves project resources out. The trust
-button in the composer — a shield, tinted with the accent once the project is
+button in the composer — a lock, tinted with the accent once the project is
 trusted — shows and reviews the current decision, so the project's resources load
 exactly as they would in the CLI instead of being silently dropped.
 
@@ -2162,7 +2173,7 @@ coordinates do not silently change under coordinate-based tools.
 
 ### Computer-use activity and native helper
 
-Computer-use tool cards carry a mouse glyph. A topbar mouse control opens the
+Computer-use tool cards carry a pointer glyph. A topbar pointer control opens the
 computer-use dialog even when the details dock has no room; the dock shows the
 same status and latest returned screenshot. Text-only actions preserve that
 snapshot with its original app label. Active calls, waiting between actions,

@@ -596,7 +596,7 @@ trust the current project when no decision has been saved for it (or a parent
 directory), even if it has no local resources yet. Trust controls loading these
 resources. As in Pi, file and shell tools can access any filesystem path the
 operating-system user can access, regardless of project trust, including temporary
-files and other projects. The trust shield is accented while the project is trusted.
+files and other projects. The project access lock is accented while the project is trusted.
 
 - `defaultProjectTrust` in `settings.json` controls the fallback: `ask`
   (default), `always`, or `never`.

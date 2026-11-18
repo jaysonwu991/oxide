@@ -134,17 +134,87 @@ const SIDEBAR_RECENT_LIMIT = 5;
 /// control's glyph is the same drawing on every machine. A character is not one
 /// — a `✕`, a `📁` or a `＋` is whatever shape and size the machine's own font
 /// gives it, which is how the composer's stroked paperclip ended up beside an
-/// emoji folder. The box and the weight are the panel's own two — a 24-unit box
-/// at 1.8 for a glyph that fills its button, a 16-unit one at 1.5–1.6 for the
-/// marks that sit on a text baseline — and the paths this window shares with the
-/// VS Code panel are the panel's verbatim, held to them by `check-app.mjs`.
+/// emoji folder. A mark the native window draws is that window's own drawing,
+/// taken body for body from `crates/desktop-gpui/src/icons.rs` — its 24-unit
+/// box, its 1.6 weight and its round caps and joins — so one control wears one
+/// mark in both front-ends, and `check-app.mjs` holds the two tables together.
 function glyph(paths, box = 24) {
   return `<svg viewBox="0 0 ${box} ${box}" aria-hidden="true">${paths}</svg>`;
 }
 
-// The two boxes the app's own drawings are made in, at the weight the panel
+/// One glyph from the native window's table, in the box and at the weight it
+/// strokes every mark with. A drawing that fills a shape names `currentColor`
+/// where `icons.rs` names the white its alpha mask is cut from, since a page has
+/// no mask to tint.
+function gpui(body) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
+/// The native window's glyph bodies, kept in its own names so the two tables
+/// can be read side by side: `icons.rs` is where a mark is designed, and this is
+/// where the page keeps the same drawing.
+const GLYPHS = {
+  back: '<path d="M15 6l-6 6 6 6M9 12h12"/>',
+  forward: '<path d="M9 6l6 6-6 6M3 12h12"/>',
+  sidebar: '<path d="M4 4h16v16H4ZM9 4v16"/>',
+  home: '<path d="M3 11l9-8 9 8M5 10v11h5v-7h4v7h5V10"/>',
+  folder: '<path d="M3 6h7l2 3h9v11H3ZM3 9h18"/>',
+  pencil:
+    '<path d="M16.5 3.75 20.25 7.5M7.5 16.5 4.5 17.25 5.25 14.25 18 1.5 21.75 5.25ZM10.5 4.5H3v16.5h16.5V13.5"/>',
+  plus: '<path d="M12 5v14M5 12h14" stroke-width="1.8"/>',
+  more: '<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="2.4"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.4 15.4 4.6 4.6"/>',
+  settings:
+    '<circle cx="12" cy="12" r="3.8" stroke-width="1.8"/><path d="M9.93 4.79 10.26 2.15h3.48l.33 2.64 1.57.65 2.1-1.63 2.45 2.45-1.63 2.1.65 1.57 2.64.33v3.48l-2.64.33-.65 1.57 1.63 2.1-2.45 2.45-2.1-1.63-1.57.65-.33 2.64h-3.48l-.33-2.64-1.57-.65-2.1 1.63-2.45-2.45 1.63-2.1-.65-1.57-2.64-.33v-3.48l2.64-.33.65-1.57-1.63-2.1 2.45-2.45 2.1 1.63Z" stroke-width="1.8"/>',
+  customize:
+    '<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="8" cy="17" r="2" fill="currentColor"/>',
+  chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>',
+  globe:
+    '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/>',
+  bell: '<path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4"/>',
+  activity: '<path d="M3 12h4l2.2-7 4.1 14 2.3-7H21"/>',
+  pointer:
+    '<path d="M5 3v15l4-4 3.5 7 3-1.7-3.5-6.8H18Z"/><path d="m13.5 15.5 4 4"/>',
+  bolt: '<path d="M13 2.5 5 13.5h6l-1 8 8-11h-6l1-8Z" stroke-width="1.8"/>',
+  reset:
+    '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" stroke-width="1.8"/><path d="M4.5 3.8v3.4h3.4" stroke-width="1.8"/>',
+  download: '<path d="M12 4v10m-4-4 4 4 4-4M5 14v5h14v-5"/>',
+  keyboard:
+    '<rect x="2.5" y="6.5" width="19" height="11" rx="2.5"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M7.5 14h9"/>',
+  pin: '<path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z"/>',
+  "pull-request":
+    '<circle cx="6" cy="5" r="2.4"/><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="19" r="2.4"/><path d="M6 7.4v9.2M18 16.6v-8a2 2 0 0 0-2-2H8"/>',
+  archive: '<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6"/>',
+  "chevron-down": '<path d="M5.5 8.6 12 14.8l6.5-6.2"/>',
+  "chevron-right": '<path d="m8.6 5.5 6.2 6.5-6.2 6.5"/>',
+  paperclip:
+    '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" stroke-width="1.8"/>',
+  lock: '<path d="M8 10V7a4 4 0 0 1 8 0v3"/><rect x="5.5" y="10" width="13" height="9.5" rx="2.4" stroke-width="1.8"/>',
+  "arrow-up": '<path d="M12 20V5M5.5 11.5 12 5l6.5 6.5" stroke-width="1.8"/>',
+  "arrow-down": '<path d="M12 4v15M5.5 12.5 12 19l6.5-6.5" stroke-width="1.8"/>',
+  square: '<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>',
+  branch:
+    '<circle cx="6.5" cy="5.5" r="2.2"/><circle cx="6.5" cy="18.5" r="2.2"/><circle cx="17.5" cy="8.5" r="2.2"/><path d="M6.5 7.7v8.6M8.7 16.4c5.2 0 8.8-2.6 8.8-5.7"/>',
+  worktree:
+    '<rect x="2.5" y="4" width="9.5" height="11" rx="2"/><path d="M7.2 8h4.6M7.2 11.5h3.2"/><rect x="15" y="6" width="6.5" height="12" rx="2"/>',
+  details:
+    '<circle cx="5" cy="6" r="1.8" stroke-width="1.8"/><circle cx="5" cy="18" r="1.8" stroke-width="1.8"/><path d="M10.5 6H21M10.5 12H21M10.5 18H21M3 12h4" stroke-width="1.8"/>',
+  close: '<path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/>',
+  check: '<path d="m5.5 12.5 4.2 4.2 8.8-9"/>',
+  changes:
+    '<rect x="4" y="3" width="16" height="18" rx="3" stroke-width="1.8"/><path d="M8.5 9.5h7M12 6v7M8.5 16.5h7" stroke-width="1.8"/>',
+  image:
+    '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.7"/><path d="m20.5 15.5-5-4-8.5 8"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  terminal:
+    '<rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/>',
+  tool: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  plug: '<path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
+};
+
+// The two boxes this window's own drawings are made in, at the weight the panel
 // draws each in: a 24-unit box for a glyph that fills its button, a 16-unit one
-// at the panel's own 1.5 for the plus it shares with it.
+// at the panel's own 1.5–1.6 for the marks that sit on a text baseline.
 const STROKE_24 =
   'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
 const STROKE_16 =
@@ -171,68 +241,43 @@ function brandMark() {
 
 /// Sizing is the sheet's, next to the box each glyph is drawn in.
 const ICONS = {
-  // A project's folder and a document the webview cannot paint: the two drawn
-  // for this window alone, in the composer's own style.
-  puzzle: glyph('<path d="M4 4h6a3 3 0 1 1 6 0h4v6a3 3 0 1 0 0 6v4h-6a3 3 0 1 0-6 0H4v-6a3 3 0 1 1 0-6Z" ' + STROKE_24 + '/>'),
-  book: glyph('<path d="M4 4h6l2 2 2-2h6v16h-6l-2 1-2-1H4ZM12 6v15" ' + STROKE_24 + '/>'),
+  // The marks the native table names for Plugins and Skills, worn by the
+  // customize sidebar the way that window's own sidebar wears them.
+  puzzle: gpui(GLYPHS.customize),
+  book: gpui(GLYPHS.chat),
+
   refresh: glyph('<path d="M20 7V3m0 4h-4M4 17v4m0-4h4M20 7a8 8 0 0 0-14-2M4 17a8 8 0 0 0 14 2" ' + STROKE_24 + '/>'),
   trash: glyph('<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" ' + STROKE_24 + '/>'),
-  back: glyph('<path d="m10 5-7 7 7 7M3 12h18" ' + STROKE_24 + '/>'),
-  globe: glyph(`<circle cx="12" cy="12" r="9" ${STROKE_24}/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z" ${STROKE_24}/>`),
-  folder: glyph(
-    `<path d="M20.2 19.4a1.8 1.8 0 0 0 1.8-1.8v-8a1.8 1.8 0 0 0-1.8-1.8h-7.9a1.8 1.8 0 0 1-1.5-.8l-.9-1.4a1.8 1.8 0 0 0-1.5-.8H3.8A1.8 1.8 0 0 0 2 6.6v11a1.8 1.8 0 0 0 1.8 1.8Z" ${STROKE_24}/>`,
-  ),
-  file: glyph(
-    `<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" ${STROKE_24}/>` +
-      `<path d="M14 3v5h5" ${STROKE_24}/>`,
-  ),
-  search: glyph(`<circle cx="10.5" cy="10.5" r="6.5" ${STROKE_24}/><path d="m15.3 15.3 4.7 4.7" ${STROKE_24}/>`),
-  close: glyph(`<path d="M18 6 6 18M6 6l12 12" ${STROKE_24}/>`),
-  plus: glyph('<path d="M8 3.6v8.8M3.6 8h8.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>', 16),
-  more: glyph('<path d="M5 12h.01M12 12h.01M19 12h.01" ' + STROKE_24 + '/>'),
-  compose: glyph('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" ' + STROKE_24 + '/>'),
-  changes: glyph('<rect x="4" y="3" width="16" height="18" rx="3" ' + STROKE_24 + '/><path d="M8 9h8M12 5v8M8 17h8" ' + STROKE_24 + '/>'),
+  back: gpui(GLYPHS.back),
+  globe: gpui(GLYPHS.globe),
+  folder: gpui(GLYPHS.folder),
+  file: gpui(GLYPHS.file),
+  search: gpui(GLYPHS.search),
+  close: gpui(GLYPHS.close),
+  plus: gpui(GLYPHS.plus),
+  more: gpui(GLYPHS.more),
+  compose: gpui(GLYPHS.pencil),
+  changes: gpui(GLYPHS.changes),
   undo: glyph('<path d="m9 4-5 5 5 5M4 9h10a6 6 0 0 1 0 12h-3" ' + STROKE_24 + '/>'),
-  pin: glyph('<path d="m14 4 6 6-3 1-4 4-1 5-3-6-5-3 5-1 4-4Z" ' + STROKE_24 + '/>'),
-  archive: glyph('<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6" ' + STROKE_24 + '/>'),
-  chat: glyph('<path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-5A7 7 0 0 1 3 13V8a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" ' + STROKE_24 + '/>'),
-  pointer: glyph('<path d="m5 3 14 9-7 1-3 7Z" ' + STROKE_24 + '/><path d="m12 13 5 7" ' + STROKE_24 + '/>'),
+  pin: gpui(GLYPHS.pin),
+  archive: gpui(GLYPHS.archive),
+  chat: gpui(GLYPHS.chat),
+  pointer: gpui(GLYPHS.pointer),
   computer: glyph('<rect x="3" y="4" width="18" height="13" rx="2" ' + STROKE_24 + '/><path d="M8 21h8M12 17v4" ' + STROKE_24 + '/>'),
-  branch: glyph('<circle cx="4" cy="3" r="1.5" ' + STROKE_16 + '/><circle cx="4" cy="13" r="1.5" ' + STROKE_16 + '/><circle cx="12" cy="5" r="1.5" ' + STROKE_16 + '/><path d="M4 4.5v7M5.5 11c4 0 6.5-1.5 6.5-4.5" ' + STROKE_16 + '/>', 16),
-  // A worktree: a checkout of this project beside it, on its own branch. Drawn
-  // in the composer's own box, so the row's chip and a thread's badge are the
-  // same mark.
-  worktree: glyph(
-    '<rect x="1.9" y="3.1" width="7.2" height="8.4" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
-      '<path d="M11.2 4.9h1.1a1.5 1.5 0 0 1 1.5 1.5v4.2a1.5 1.5 0 0 1-1.5 1.5h-1.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
-      '<path d="M3.8 6.2h3.4M3.8 8.5h2.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
-    16,
-  ),
-  gear: glyph('<circle cx="12" cy="12" r="3.8" ' + STROKE_24 + '/><path d="M9.93 4.79 L10.26 2.15 L13.74 2.15 L14.07 4.79 L15.64 5.44 L17.74 3.81 L20.19 6.26 L18.56 8.36 L19.21 9.93 L21.85 10.26 L21.85 13.74 L19.21 14.07 L18.56 15.64 L20.19 17.74 L17.74 20.19 L15.64 18.56 L14.07 19.21 L13.74 21.85 L10.26 21.85 L9.93 19.21 L8.36 18.56 L6.26 20.19 L3.81 17.74 L5.44 15.64 L4.79 14.07 L2.15 13.74 L2.15 10.26 L4.79 9.93 L5.44 8.36 L3.81 6.26 L6.26 3.81 L8.36 5.44Z" ' + STROKE_24 + '/>'),
-  // A pull request a thread reported. The row colors it with the state the
-  // forge last answered with, so the mark is the state as well as the link.
-  pull: glyph(
-    '<circle cx="3.6" cy="3" r="1.6" ' + STROKE_16 + '/>' +
-      '<circle cx="3.6" cy="13" r="1.6" ' + STROKE_16 + '/>' +
-      '<circle cx="12.4" cy="13" r="1.6" ' + STROKE_16 + '/>' +
-      '<path d="M3.6 4.6v6.8M12.4 11.4V6.2a1.4 1.4 0 0 0-1.4-1.4H5.4" ' + STROKE_16 + '/>',
-    16,
-  ),
-  pullMerged: glyph(
-    '<circle cx="4" cy="3" r="1.5" ' + STROKE_16 + '/><circle cx="4" cy="13" r="1.5" ' + STROKE_16 + '/><circle cx="12" cy="13" r="1.5" ' + STROKE_16 + '/><path d="M4 4.5v7M5.5 4.5 10.5 11" ' + STROKE_16 + '/>',
-    16,
-  ),
-  pullClosed: glyph(
-    '<circle cx="4" cy="3" r="1.5" ' + STROKE_16 + '/><circle cx="4" cy="13" r="1.5" ' + STROKE_16 + '/><circle cx="12" cy="13" r="1.5" ' + STROKE_16 + '/><path d="M4 4.5v7M12 7.5v4M10 2l4 4M14 2l-4 4" ' + STROKE_16 + '/>',
-    16,
-  ),
-  check: glyph('<path d="m5.6 8 1.5 1.5 3.5-3.5" ' + STROKE_16 + '/>', 16),
-  caret: glyph(`<path d="M5.5 8.6 12 14.8l6.5-6.2" ${STROKE_24}/>`),
-  // The model menu's marks, drawn with the same paths the GPUI window's
-  // `icons.rs` holds, so both front-ends paint one menu.
-  chevronRight: glyph(`<path d="m8.6 5.5 6.2 6.5-6.2 6.5" ${STROKE_24}/>`),
-  bolt: glyph(`<path d="M13 2.5 5 13.5h6l-1 8 8-11h-6l1-8Z" ${STROKE_24}/>`),
-  reset: glyph(`<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" ${STROKE_24}/><path d="M4.5 3.8v3.4h3.4" ${STROKE_24}/>`),
+  branch: gpui(GLYPHS.branch),
+  worktree: gpui(GLYPHS.worktree),
+  gear: gpui(GLYPHS.settings),
+  // A request's state is the color the row wears, as it is in the native
+  // window: one drawing, three states.
+  pull: gpui(GLYPHS["pull-request"]),
+  check: gpui(GLYPHS.check),
+  terminal: gpui(GLYPHS.terminal),
+  tool: gpui(GLYPHS.tool),
+  plug: gpui(GLYPHS.plug),
+  caret: gpui(GLYPHS["chevron-down"]),
+  chevronRight: gpui(GLYPHS["chevron-right"]),
+  bolt: gpui(GLYPHS.bolt),
+  reset: gpui(GLYPHS.reset),
   power: glyph(
     '<path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
       '<path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
@@ -4858,13 +4903,22 @@ function toolDisplayName(name) {
 
 function toolDisplayIcon(name) {
   if (isComputerTool(name)) return ICONS.pointer;
+  if (isMcpTool(name)) return ICONS.plug;
   if (name === "read") return ICONS.file;
   if (name === "write" || name === "edit") return ICONS.compose;
   if (name === "find" || name === "grep") return ICONS.search;
   if (name === "ls") return ICONS.folder;
   if (name === "web_search" || name === "web_fetch" || name === "webfetch") return ICONS.globe;
-  if (name === "bash") return ICONS.changes;
-  return ICONS.power;
+  if (name === "bash") return ICONS.terminal;
+  return ICONS.tool;
+}
+
+/// A tool a connected server answers, or one of the resource reads the core
+/// names as MCP rather than built-in: the same test `tools.rs` applies when it
+/// keeps a result.
+function isMcpTool(name) {
+  return name.includes("__") ||
+    ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(name);
 }
 
 /// The first `lines` of `text`, plus how many were dropped, for the collapsed
@@ -8912,8 +8966,7 @@ function pullButton(pull) {
   button.className = `session-pull state-${pull.state || "unknown"}`;
   button.title = pullTitle(pull);
   button.setAttribute("aria-label", button.title);
-  button.innerHTML = pull.state === "merged" ? ICONS.pullMerged
-    : pull.state === "closed" ? ICONS.pullClosed : ICONS.pull;
+  button.innerHTML = ICONS.pull;
   button.onclick = (event) => {
     event.stopPropagation();
     openExternal(pull.url);
@@ -12478,7 +12531,7 @@ function init() {
     }
   }
   for (const [id, icon] of Object.entries({
-    "customize-plugins": "puzzle", "customize-skills": "book", "customize-mcps": "computer",
+    "customize-plugins": "puzzle", "customize-skills": "book", "customize-mcps": "globe",
     "customize-chat": "back", "plugins-refresh": "refresh", "plugins-add": "plus",
     "skills-refresh": "refresh", "settings-close": "back",
   })) {
