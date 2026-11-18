@@ -439,7 +439,7 @@ pub fn tip(
 fn thread_label(root: &Root, theme: &Theme) -> impl IntoElement {
     let title = match root.chats.get(root.active) {
         Some(chat) => chat.title.clone(),
-        None => "No open chats".to_string(),
+        None => "New chat".to_string(),
     };
     div()
         .flex()
@@ -593,7 +593,7 @@ pub fn topbar(
             div()
                 .text_size(px(12.5))
                 .text_color(theme.faint())
-                .child("No open chats"),
+                .child("New chat"),
         );
     }
     let mut tab_elements = Vec::new();
@@ -2702,6 +2702,12 @@ fn conversation(
 
     if root.chats.is_empty() {
         pane = pane.child(empty_state(root, theme, "welcome", cx));
+        if root.projects_loaded {
+            let project = root
+                .selected_project()
+                .map(|project| root.project_name(&project.path));
+            pane = pane.child(home_composer(project, theme, cx));
+        }
         return pane;
     }
 
@@ -3131,36 +3137,15 @@ fn empty_state(
                 div()
                     .pt(px(8.0))
                     .text_size(px(12.5))
-                    .text_color(theme.dim())
+                    .text_color(theme.faint())
                     .child(if any {
-                        "Choose a project to start a new chat, or open a recent thread."
+                        "Pick a folder with the project chip below, or open a recent thread."
                     } else {
                         "Add a folder to run in \u{2014} the project chip below, or the + beside Projects."
                     }),
             );
-            if any {
-                invite = invite.child(div().pt(px(18.0)).child(
-                    Button::new("Choose project").primary().render(
-                        "empty-project",
-                        theme,
-                        cx,
-                        |root, _, cx| root.open_overlay(Overlay::Projects, cx),
-                    ),
-                ));
-            }
             let recent = recent_threads(root);
-            if recent.is_empty() {
-                if !any {
-                    invite = invite.child(div().pt(px(22.0)).child(
-                        Button::new("Add project").primary().render(
-                            "empty-add",
-                            theme,
-                            cx,
-                            |root, window, cx| root.open_new_project(window, cx),
-                        ),
-                    ));
-                }
-            } else {
+            if !recent.is_empty() {
                 invite = invite.child(recent_list(recent, theme, cx));
             }
         }
@@ -5093,7 +5078,7 @@ fn model_summary_page(
         .unwrap_or("auto")
         .to_string();
     let levels = reasoning_levels(root);
-    let show_effort = root.info["supportsReasoning"].as_bool().unwrap_or(false) && levels.len() > 1;
+    let show_effort = has_reasoning_levels(&levels, &current_effort);
 
     let at_auto = current_effort.eq_ignore_ascii_case("auto");
     let model_button = div()
@@ -5138,11 +5123,7 @@ fn model_summary_page(
             .w(px(26.0))
             .h(px(26.0))
             .rounded(px(6.0))
-            .child(icons::icon(
-                Icon::Reset,
-                14.0,
-                if at_auto { theme.faint() } else { theme.dim() },
-            ));
+            .child(icons::icon(Icon::Reset, 14.0, theme.dim()));
         let reset = if at_auto {
             reset.opacity(0.35)
         } else {
@@ -5212,22 +5193,20 @@ fn model_picker_page(
         .flex_row()
         .items_center()
         .gap(px(4.0))
-        .h(px(40.0))
-        .px(px(8.0))
-        .border_b_1()
-        .border_color(theme.border())
+        .mb(px(8.0))
         .child(
             div()
                 .id("composer-model-back")
                 .flex()
+                .flex_none()
                 .items_center()
                 .justify_center()
                 .w(px(28.0))
-                .h(px(28.0))
+                .h(px(26.0))
                 .rounded(px(7.0))
                 .cursor_pointer()
                 .hover(move |style| style.bg(theme.panel_2()))
-                .child(icons::icon(Icon::Back, 15.0, theme.dim()))
+                .child(icons::icon(Icon::Back, 14.0, theme.dim()))
                 .on_click(cx.listener(|root, _, _, cx| {
                     root.model_menu_show_models = false;
                     cx.notify();
@@ -5236,6 +5215,9 @@ fn model_picker_page(
         .child(
             div()
                 .flex_1()
+                .min_w(px(0.0))
+                .flex()
+                .justify_center()
                 .text_size(px(12.5))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text())
@@ -5250,8 +5232,9 @@ fn model_picker_page(
                 .h(px(26.0))
                 .px(px(8.0))
                 .rounded(px(7.0))
+                .flex_none()
                 .cursor_pointer()
-                .text_size(px(10.5))
+                .text_size(px(11.5))
                 .text_color(theme.dim())
                 .hover(move |style| style.bg(theme.panel_2()).text_color(theme.text()))
                 .child("Refresh")
@@ -5274,8 +5257,7 @@ fn model_picker_page(
         .id("composer-model-filter")
         .role(gpui::Role::SearchInput)
         .aria_label("Filter models")
-        .mx(px(8.0))
-        .mt(px(8.0))
+        .mb(px(10.0))
         .h(px(32.0))
         .px_2()
         .flex()
@@ -5295,6 +5277,7 @@ fn model_picker_page(
         .child(icons::icon(Icon::Search, 13.0, theme.faint()))
         .child(div().flex_1().min_w(px(0.0)).h_full().child(filter));
     panel
+        .p(px(10.0))
         .child(header)
         .child(search)
         .child(model_picker_body(root, theme, cx))
@@ -5302,7 +5285,6 @@ fn model_picker_page(
 
 fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stateful<gpui::Div> {
     let data = root.models.clone();
-    let current_model = root.info["model"].as_str().unwrap_or_default().to_string();
     let query = root
         .model_filter
         .read(cx)
@@ -5318,8 +5300,7 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
         .flex_col()
         .gap(px(2.0))
         .max_h(px(270.0))
-        .overflow_y_scroll()
-        .p(px(6.0));
+        .overflow_y_scroll();
     if let Some(error) = data["error"].as_str() {
         body = body
             .child(
@@ -5371,31 +5352,21 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
         let current = provider["current"].as_str().unwrap_or_default().to_string();
         body = body.child(
             div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .pt(px(7.0))
-                .pb(px(3.0))
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if active {
-                            theme.accent()
-                        } else {
-                            theme.faint()
-                        })
-                        .child(provider_name.clone()),
-                )
-                .children((!current.is_empty()).then(|| {
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(theme.faint())
-                        .child(current.clone())
-                })),
+                .mx(px(8.0))
+                .mt(px(8.0))
+                .mb(px(2.0))
+                .text_size(px(10.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(if active {
+                    theme.accent()
+                } else {
+                    theme.faint()
+                })
+                .child(if active {
+                    format!("{provider_name} (active)")
+                } else {
+                    provider_name.clone()
+                }),
         );
         if let Some(error) = provider["error"].as_str() {
             body = body.child(
@@ -5441,7 +5412,7 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
             {
                 continue;
             }
-            let selected = active && id == current_model;
+            let selected = active && id == current;
             let provider_choice = provider_name.clone();
             let model_choice = id.clone();
             body = body.child(
@@ -5459,6 +5430,7 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
                     .gap_2()
                     .min_h(px(32.0))
                     .px_2()
+                    .py_1()
                     .rounded(px(7.0))
                     .cursor_pointer()
                     .bg(if selected {
@@ -5478,23 +5450,20 @@ fn model_picker_body(root: &Root, theme: &Theme, cx: &mut Context<Root>) -> Stat
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_size(px(11.5))
-                                    .text_color(if selected {
-                                        theme.accent()
-                                    } else {
-                                        theme.text()
-                                    })
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text())
                                     .child(label),
                             )
                             .children(detail.map(|detail| {
                                 div()
                                     .overflow_hidden()
                                     .whitespace_nowrap()
-                                    .text_size(px(10.0))
+                                    .text_size(px(10.5))
                                     .text_color(theme.faint())
                                     .child(detail)
                             })),
                     )
-                    .children(selected.then(|| icons::icon(Icon::Check, 13.0, theme.accent())))
+                    .children(selected.then(|| icons::icon(Icon::Check, 14.0, theme.accent())))
                     .on_click(cx.listener(move |root, _, _, cx| {
                         root.set_model(provider_choice.clone(), model_choice.clone(), cx)
                     })),
@@ -5510,17 +5479,46 @@ fn effort_slider(
     levels: &[String],
     current: &str,
 ) -> Stateful<gpui::Div> {
-    const TRACK_WIDTH: f32 = 290.0;
+    const TRACK_WIDTH: f32 = 284.0;
     const TRACK_HEIGHT: f32 = 10.0;
     const SLIDER_HEIGHT: f32 = 32.0;
     const KNOB_SIZE: f32 = 26.0;
-    let selected = effort_position(levels, current).unwrap_or_default();
-    let progress = if levels.len() > 1 {
-        selected as f32 / (levels.len() - 1) as f32
-    } else {
-        0.0
+    const DOT_SIZE: f32 = 4.0;
+    let selected = effort_position(levels, current);
+    let offset = |index: usize| {
+        if levels.len() > 1 {
+            index as f32 / (levels.len() - 1) as f32
+        } else {
+            0.0
+        }
     };
-    let knob_left = progress * (TRACK_WIDTH - KNOB_SIZE);
+    let dots = (0..levels.len())
+        .filter(|index| Some(*index) != selected)
+        .map(|index| {
+            div()
+                .absolute()
+                .left(px(KNOB_SIZE / 2.0
+                    + offset(index) * (TRACK_WIDTH - KNOB_SIZE)
+                    - DOT_SIZE / 2.0))
+                .top(px((SLIDER_HEIGHT - DOT_SIZE) / 2.0))
+                .w(px(DOT_SIZE))
+                .h(px(DOT_SIZE))
+                .rounded_full()
+                .bg(theme.faint())
+        })
+        .collect::<Vec<_>>();
+    let knob = selected.map(|index| {
+        div()
+            .absolute()
+            .left(px(offset(index) * (TRACK_WIDTH - KNOB_SIZE)))
+            .top(px((SLIDER_HEIGHT - KNOB_SIZE) / 2.0))
+            .w(px(KNOB_SIZE))
+            .h(px(KNOB_SIZE))
+            .rounded_full()
+            .bg(theme.text())
+            .border_2()
+            .border_color(theme.accent())
+    });
     let mut hits = div()
         .absolute()
         .top(px(0.0))
@@ -5531,7 +5529,7 @@ fn effort_slider(
         .flex_row();
     for level in levels {
         let choice = level.clone();
-        let label = capitalised(level);
+        let label = format!("{} \u{2014} {}", capitalised(level), reasoning_hint(level));
         let down_choice = level.clone();
         let move_choice = level.clone();
         hits = hits.child(
@@ -5566,6 +5564,8 @@ fn effort_slider(
         .relative()
         .w(px(TRACK_WIDTH))
         .h(px(SLIDER_HEIGHT))
+        .mx(px(2.0))
+        .mb(px(2.0))
         .child(
             div()
                 .absolute()
@@ -5576,32 +5576,32 @@ fn effort_slider(
                 .rounded_full()
                 .bg(theme.panel_3()),
         )
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .top(px((SLIDER_HEIGHT - TRACK_HEIGHT) / 2.0))
-                .h(px(TRACK_HEIGHT))
-                .w(px(progress * TRACK_WIDTH))
-                .rounded_full()
-                .bg(theme.accent()),
-        )
-        .child(
-            div()
-                .absolute()
-                .left(px(knob_left))
-                .top(px((SLIDER_HEIGHT - KNOB_SIZE) / 2.0))
-                .w(px(KNOB_SIZE))
-                .h(px(KNOB_SIZE))
-                .rounded_full()
-                .bg(theme.text())
-                .border_2()
-                .border_color(theme.panel()),
-        )
+        .children(knob)
+        .children(dots)
         .child(hits)
 }
 
+/// What each level asks the model for, the words the page's slider shows.
+fn reasoning_hint(level: &str) -> &'static str {
+    match level.to_ascii_lowercase().as_str() {
+        "auto" => "Let the provider decide",
+        "off" => "Turn thinking off where the model allows it",
+        "minimal" => "The least reasoning",
+        "low" => "A little reasoning",
+        "medium" => "Balanced reasoning",
+        "high" => "A lot of reasoning",
+        "xhigh" => "Extra-high reasoning",
+        "max" => "The most reasoning",
+        _ => "",
+    }
+}
+
+/// The levels the slider walks, the page's `reasoningChoices`: the model's own
+/// advertised levels unless it reports no reasoning support, else Auto alone.
 fn reasoning_levels(root: &Root) -> Vec<String> {
+    if root.info["supportsReasoning"].as_bool() == Some(false) {
+        return vec!["auto".to_string()];
+    }
     root.info["reasoningLevels"]
         .as_array()
         .map(|levels| {
@@ -5612,6 +5612,16 @@ fn reasoning_levels(root: &Root) -> Vec<String> {
         })
         .filter(|levels| !levels.is_empty())
         .unwrap_or_else(|| vec!["auto".to_string()])
+}
+
+/// Whether the effort half of the chip and menu is drawn, the page's
+/// `hasReasoningLevels`: a level beyond Auto, or a saved level the model no
+/// longer offers, which the slider's Auto stop and the reset recover from.
+pub(crate) fn has_reasoning_levels(levels: &[String], current: &str) -> bool {
+    levels
+        .iter()
+        .any(|level| !level.eq_ignore_ascii_case("auto"))
+        || !current.eq_ignore_ascii_case("auto")
 }
 
 pub(crate) fn effort_position(levels: &[String], current: &str) -> Option<usize> {
@@ -5882,21 +5892,7 @@ fn composer(
     // starts. Once the thread has a transcript, that room belongs to the
     // message and the normal rounded composer takes the full column.
     let strip = show_strip.then(|| {
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .w_full()
-            .max_w(px(CONVERSATION_WIDTH))
-            .min_h(px(32.0))
-            .px(px(10.0))
-            .py(px(4.0))
-            .bg(theme.panel_2())
-            .border_1()
-            .border_color(theme.border())
-            .border_b(px(0.0))
-            .rounded_t(px(10.0))
+        let bar = composer_strip_bar(theme)
             .child(
                 div()
                     .id("composer-project")
@@ -5972,7 +5968,8 @@ fn composer(
                             .child(worktree.name.clone())
                     }))
                     .on_click(cx.listener(|root, _, _, cx| root.open_worktrees(cx))),
-            )
+            );
+        composer_strip_frame(bar)
     });
 
     if !attachments.is_empty() {
@@ -6385,13 +6382,18 @@ fn composer(
         .child(div().flex_1());
 
     let mut model_controls = div().relative().flex().flex_row().gap_1().flex_none();
-    model_controls = model_controls.child(setting_chip(
-        ("chip-model", 1usize),
+    let chip_label = if has_reasoning_levels(&reasoning_levels(root), &reasoning) {
         format!(
             "{} · {}",
             model_display_name(&model),
             capitalised(&reasoning)
-        ),
+        )
+    } else {
+        model_display_name(&model)
+    };
+    model_controls = model_controls.child(setting_chip(
+        ("chip-model", 1usize),
+        chip_label,
         theme,
         cx,
         |root, _, cx| root.open_model_menu(cx),
@@ -6550,6 +6552,149 @@ fn composer(
         .child(div().w_full().max_w(px(CONVERSATION_WIDTH)).child(box_row))
 }
 
+/// The folder-facts row that sits on the composer box's top edge.
+fn composer_strip_bar(theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .w_full()
+        .min_h(px(32.0))
+        .px(px(10.0))
+        .py(px(4.0))
+        .bg(theme.panel_2())
+        .border_1()
+        .border_color(theme.border())
+        .border_b(px(0.0))
+        .rounded_t(px(12.0))
+}
+
+fn open_projects(root: &mut Root, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Root>) {
+    root.open_overlay(Overlay::Projects, cx);
+}
+
+/// The strip stands 13px inside the box on each side, so its rounded top corners
+/// sit within the box's own and the box reads as the wider of the two.
+fn composer_strip_frame(bar: gpui::Div) -> gpui::Div {
+    div()
+        .w_full()
+        .max_w(px(CONVERSATION_WIDTH))
+        .px(px(13.0))
+        .child(bar)
+}
+
+/// What stands in for the composer before any chat exists. A chat needs a
+/// folder, so every control here asks for one, the way the page's project chip
+/// does while no project is open.
+fn home_composer(
+    project: Option<String>,
+    theme: &Theme,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let unset = project.is_none();
+    let label = project.unwrap_or_else(|| "Choose a project".to_string());
+    let tint = if unset { theme.accent() } else { theme.dim() };
+    let chip = div()
+        .id("home-project")
+        .role(gpui::Role::Button)
+        .aria_label("Choose a project")
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .flex_none()
+        .px_1()
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(move |style| style.bg(theme.panel_3()))
+        .child(icons::icon(Icon::Folder, 13.0, tint))
+        .child(
+            div()
+                .max_w(px(240.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(11.5))
+                .text_color(tint)
+                .child(label),
+        )
+        .on_click(cx.listener(open_projects));
+    let strip = composer_strip_frame(composer_strip_bar(theme).child(chip));
+    let footer = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .w_full()
+        .h(px(30.0))
+        .child(
+            icon_button(("home-attach", 0usize), Icon::Paperclip, 30.0, theme, false)
+                .tooltip(tip("Attach a file", theme))
+                .on_click(cx.listener(open_projects)),
+        )
+        .child(
+            icon_button(("home-tools", 1usize), Icon::More, 30.0, theme, false)
+                .tooltip(tip("More tools", theme))
+                .on_click(cx.listener(open_projects)),
+        )
+        .child(
+            icon_button(("home-approvals", 2usize), Icon::Lock, 30.0, theme, false)
+                .tooltip(tip("Tool approvals", theme))
+                .on_click(cx.listener(|root, _, _, cx| root.open_overlay(Overlay::Approvals, cx))),
+        )
+        .child(div().flex_1())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_none()
+                .w(px(30.0))
+                .h(px(30.0))
+                .rounded(px(15.0))
+                .bg(theme.panel_3())
+                .child(icons::icon(Icon::ArrowUp, 15.0, theme.dim())),
+        );
+    let box_row = div()
+        .id("home-composer")
+        .role(gpui::Role::Form)
+        .aria_label("Message composer")
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .w_full()
+        .px(px(12.0))
+        .py(px(10.0))
+        .bg(theme.panel_2())
+        .border_1()
+        .border_color(theme.border())
+        .rounded(px(20.0))
+        .child(
+            div()
+                .id("home-input")
+                .h(px(50.0))
+                .px(px(3.0))
+                .py(px(6.0))
+                .text_size(px(14.0))
+                .text_color(theme.faint())
+                .cursor_pointer()
+                .child("Ask Oxide\u{2026}")
+                .on_click(cx.listener(open_projects)),
+        )
+        .child(footer);
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w_full()
+        .items_center()
+        .px(px(28.0))
+        .pb(px(14.0))
+        .pt(px(16.0))
+        .child(strip)
+        .child(div().w_full().max_w(px(CONVERSATION_WIDTH)).child(box_row))
+}
+
 /// The label a reasoning level wears: the stored name is `high`, the chip says
 /// `High`, the way the page prints it.
 fn capitalised(label: &str) -> String {
@@ -6698,15 +6843,22 @@ fn setting_chip(
         .flex()
         .flex_row()
         .items_center()
-        .gap_1()
+        .gap(px(5.0))
         .flex_none()
         .h(px(30.0))
-        .px(px(8.0))
-        .rounded(px(8.0))
+        .px(px(5.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(gpui::transparent_black())
         .cursor_pointer()
         .text_size(px(11.5))
         .text_color(theme.dim())
-        .hover(move |style| style.bg(theme.panel_3()).text_color(theme.text()))
+        .hover(move |style| {
+            style
+                .bg(theme.panel_2())
+                .border_color(theme.dim())
+                .text_color(theme.text())
+        })
         .child(access_label)
         .child(icons::icon(Icon::ChevronDown, 12.0, theme.faint()))
         .on_click(cx.listener(move |root, _, window, cx| on_click(root, window, cx)))

@@ -4341,19 +4341,44 @@ fn script_runs_other_commands(command: &str, segments: &[&str], index: usize) ->
     })
 }
 
+const GENERATED_DIRECTORIES: [&str; 8] = [
+    "node_modules",
+    "target",
+    ".git",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    "vendor",
+];
+
+/// Whether a search operand is itself a dependency or build-output directory,
+/// which excluding those trees would silently turn into an empty search.
+fn grep_names_generated_directory(operands: &[String]) -> bool {
+    operands.iter().any(|operand| {
+        literal_grep_word(operand).is_some_and(|word| {
+            Path::new(&word)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| GENERATED_DIRECTORIES.contains(&name))
+        })
+    })
+}
+
+/// A shell function that makes every `grep` in the command skip dependency and
+/// build-output trees, so a recursive sweep that cannot be converted to the
+/// `grep` tool still runs bounded instead of being refused.
+fn grep_sweep_shim() -> String {
+    let excludes: String = GENERATED_DIRECTORIES
+        .iter()
+        .map(|name| format!(" --exclude-dir={name}"))
+        .collect();
+    format!("grep() {{ command grep{excludes} \"$@\"; }}\n")
+}
+
 /// Whether every operand names an existing file, or a directory strictly below
 /// `base` that is not itself a dependency or build-output tree.
 fn grep_scope_is_bounded(operands: &[String], base: &Path) -> bool {
-    const GENERATED: [&str; 8] = [
-        "node_modules",
-        "target",
-        ".git",
-        ".venv",
-        "venv",
-        "dist",
-        "build",
-        "vendor",
-    ];
     let Ok(base) = std::fs::canonicalize(base) else {
         return false;
     };
@@ -4373,8 +4398,10 @@ fn grep_scope_is_bounded(operands: &[String], base: &Path) -> bool {
                 && !path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| GENERATED.contains(&name))
-                && !GENERATED.iter().any(|name| path.join(name).exists())
+                    .is_some_and(|name| GENERATED_DIRECTORIES.contains(&name))
+                && !GENERATED_DIRECTORIES
+                    .iter()
+                    .any(|name| path.join(name).exists())
         })
 }
 
@@ -4519,8 +4546,9 @@ fn uses_recursive_shell_grep(command: &str, cwd: &Path) -> bool {
 /// searches the same pattern and path when the command spells them out.
 fn recursive_shell_grep_refusal(grep: &ShellGrep) -> String {
     let mut message = String::from(
-        "recursive shell grep refused; call the `grep` tool directly with `pattern` and \
-         optional `path`, `glob`, and `limit` instead. The tool uses ripgrep when \
+        "recursive shell grep refused, and nothing in this command was run; call the `grep` \
+         tool directly with `pattern` and optional `path`, `glob`, and `limit` instead, then \
+         rerun the rest of the command without the grep. The tool uses ripgrep when \
          available, skips dependency/generated directories, and respects ignore files",
     );
     let calls = grep.equivalent_calls();
@@ -5127,8 +5155,13 @@ async fn bash_with_network_retry(
 
 async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutput> {
     let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
+    let mut bounded_sweep = false;
     if let Some(grep) = recursive_shell_grep(command, cwd) {
-        anyhow::bail!("{}", recursive_shell_grep_refusal(&grep));
+        if cfg!(unix) && !grep_names_generated_directory(&grep.operands) {
+            bounded_sweep = true;
+        } else {
+            anyhow::bail!("{}", recursive_shell_grep_refusal(&grep));
+        }
     }
     let secs = bash_timeout_secs(args, command);
     #[cfg(unix)]
@@ -5149,8 +5182,13 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
             // Capture the last pipeline before another command overwrites
             // PIPESTATUS. Explicit exit/exec and errexit skip this suffix;
             // without evidence of a closed reader their failures stay failures.
+            let shim = if bounded_sweep {
+                grep_sweep_shim()
+            } else {
+                String::new()
+            };
             let script = format!(
-                "{command}\n__oxide_pipeline_status=(\"$?\" \"${{PIPESTATUS[@]}}\")\n\
+                "{shim}{command}\n__oxide_pipeline_status=(\"$?\" \"${{PIPESTATUS[@]}}\")\n\
                  if (( __oxide_pipeline_status[0] == {SIGPIPE_EXIT} || __oxide_pipeline_status[0] == 1 || __oxide_pipeline_status[0] == {GH_PENDING_EXIT} )); then\n\
                  builtin printf '%s\\n' \"${{__oxide_pipeline_status[@]}}\" > \"$OXIDE_BASH_STATUS\"\n\
                  fi\n\
@@ -5254,6 +5292,9 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         output.push_str(" (");
         output.push_str(RUN_IN_PROGRESS_NOTE);
         output.push(')');
+    }
+    if bounded_sweep {
+        output.push_str(" (recursive grep ran with dependency and build directories excluded; prefer the `grep` tool for searches)");
     }
     if reader_closed {
         output.push_str(" (a command in the pipeline stopped because its reader closed)");
@@ -10357,31 +10398,44 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn bash_redirects_recursive_grep_to_the_search_tool() {
+    async fn bash_runs_an_unconvertible_recursive_grep_with_generated_directories_excluded() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_sweep_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(dir.join("node_modules/dep.txt"), "needle in a dependency\n").unwrap();
+        std::fs::write(dir.join("src.txt"), "needle in source\n").unwrap();
+
         let output = execute(
             &call(
                 "bash",
                 json!({ "command": "grep -rn needle . 2>/dev/null | sort -u" }),
             ),
-            Path::new("."),
+            &dir,
             &McpRegistry::default(),
             &Progress::default(),
         )
         .await;
 
-        assert!(output.is_error);
-        assert!(output.text.contains("recursive shell grep refused"));
-        assert!(output.text.contains("call the `grep` tool directly"));
-        assert!(output.text.contains("uses ripgrep when available"));
-        // The refusal restates the call, so the step is recoverable without
-        // translating the shell command into tool arguments by hand.
-        assert!(
-            output.text.contains(r#""pattern":"needle""#),
-            "{}",
-            output.text
-        );
-        assert!(output.text.contains(r#""path":".""#), "{}", output.text);
+        assert!(!output.is_error, "{}", output.text);
+        assert!(output.text.contains("src.txt:1:needle in source"));
+        assert!(!output.text.contains("dep.txt"), "{}", output.text);
+        assert!(output.text.contains("prefer the `grep` tool"));
+
+        let named = execute(
+            &call(
+                "bash",
+                json!({ "command": "grep -rn needle node_modules | sort -u" }),
+            ),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(named.is_error);
+        assert!(named.text.contains("recursive shell grep refused"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(unix)]
@@ -10436,8 +10490,8 @@ mod tests {
             &Progress::default(),
         )
         .await;
-        assert!(piped.is_error);
-        assert!(piped.text.contains("recursive shell grep refused"));
+        assert!(!piped.is_error, "{}", piped.text);
+        assert!(piped.text.contains("api.md:1:"), "{}", piped.text);
         std::fs::remove_dir_all(&dir).ok();
     }
 

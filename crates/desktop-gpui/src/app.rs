@@ -4866,7 +4866,9 @@ mod sidebar_resize_tests {
         toggled_details, Rail,
     };
     use crate::model::{Attachment, Chat, SessionRow};
-    use crate::views::{customize_destination, effort_position, model_display_name};
+    use crate::views::{
+        customize_destination, effort_position, has_reasoning_levels, model_display_name,
+    };
 
     #[test]
     fn sidebar_resize_preserves_the_reading_column() {
@@ -4949,6 +4951,10 @@ mod sidebar_resize_tests {
         assert_eq!(effort_position(&levels, "high"), Some(3));
         assert_eq!(effort_position(&levels, "HIGH"), Some(3));
         assert_eq!(effort_position(&levels, "unknown"), None);
+        assert!(has_reasoning_levels(&levels, "auto"));
+        let auto_only = vec!["auto".to_string()];
+        assert!(!has_reasoning_levels(&auto_only, "auto"));
+        assert!(has_reasoning_levels(&auto_only, "high"));
         assert_eq!(
             model_display_name("deepseek-v4.1-flash"),
             "DeepSeek V4.1 Flash"
