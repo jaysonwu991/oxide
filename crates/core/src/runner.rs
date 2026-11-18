@@ -1,14 +1,13 @@
 //! Starting an agent turn.
 //!
 //! The CLI's print/JSON/RPC modes and the desktop app share this: it wires the
-//! runtime (MCP, plugins, session, snapshots, LSP), resolves attachments, and
+//! runtime (MCP, plugins, session, snapshots), resolves attachments, and
 //! spawns the agent loop with events streamed to a channel.
 
 use crate::agent::{self, AgentEvent, Approver, Cancel, Runtime, Steering};
 use crate::ask::Asker;
 use crate::config::Config;
 use crate::llm::{ContentPart, Message};
-use crate::lsp::LspManager;
 use crate::mcp::McpRegistry;
 use crate::media;
 use crate::plugin::PluginHost;
@@ -20,16 +19,14 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
-/// The parts of a run that outlive one turn: connected MCP servers, the plugin
-/// host, and language servers. A long-lived front-end — the desktop harness and
-/// an `--mode rpc` process — keeps one per project and hands it to each turn, so
-/// a server is not started again for every prompt and a language server warmed
-/// by one edit can answer the next.
+/// The parts of a run that outlive one turn: connected MCP servers and the
+/// plugin host. A long-lived front-end — the desktop harness and an `--mode rpc`
+/// process — keeps one per project and hands it to each turn, so a server is not
+/// started again for every prompt.
 #[derive(Clone)]
 pub struct TurnEnvironment {
     pub mcp: Arc<McpRegistry>,
     pub plugins: Arc<PluginHost>,
-    pub lsp: Arc<LspManager>,
     key: String,
 }
 
@@ -38,7 +35,6 @@ impl TurnEnvironment {
         Self {
             mcp: Arc::new(McpRegistry::new(&config.ecosystem.mcp)),
             plugins: Arc::new(PluginHost::spawn(&config.ecosystem.hooks, cwd).await),
-            lsp: Arc::new(LspManager::new()),
             key: environment_key(config, cwd),
         }
     }
@@ -206,7 +202,6 @@ pub async fn spawn_agent_in(
         plugins: environment.plugins,
         session: session.map(Arc::new),
         snapshots: Snapshots::open(&cwd).ok().map(Arc::new),
-        lsp: environment.lsp,
         approve: approver,
         ask,
         steering,

@@ -42,7 +42,7 @@ describe("stored session history", () => {
     assert.deepEqual(history.entries, [
       { kind: "user", text: "why is the test flaky?" },
       { kind: "tool", name: "read", args: "{}", output: "fn test() {}", isError: false },
-      { kind: "assistant", text: "it polls the clock" },
+      { kind: "assistant", text: "it polls the clock", phase: "final_answer" },
     ]);
     assert.equal(history.total, 4);
     assert.equal(history.shown, 4);
@@ -139,7 +139,7 @@ describe("stored session history", () => {
     // Text first, then the calls it made, each carrying its own result rather
     // than a card per stored message.
     assert.deepEqual(history.entries, [
-      { kind: "assistant", text: "reading both" },
+      { kind: "assistant", text: "reading both", phase: "commentary" },
       { kind: "tool", name: "read", args: '{"path":"a.rs"}', output: "first", isError: false },
       { kind: "tool", name: "grep", args: '{"pattern":"x"}', output: "second", isError: false },
     ]);
@@ -163,7 +163,7 @@ describe("stored session history", () => {
     assert.ok(history);
     assert.deepEqual(history.entries, [
       { kind: "thinking", text: "Check the timeout before changing the test." },
-      { kind: "assistant", text: "I found it." },
+      { kind: "assistant", text: "I found it.", phase: "commentary" },
       { kind: "tool", name: "read", args: '{"path":"test.rs"}', output: "timeout: 1s", isError: false },
     ]);
   });
@@ -263,7 +263,7 @@ describe("stored session history", () => {
     assert.deepEqual(history.entries, [
       { kind: "user", text: "why is the test flaky?" },
       { kind: "tool", name: "read", args: "{}", output: "fn test() {}", isError: false },
-      { kind: "assistant", text: "it polls the clock" },
+      { kind: "assistant", text: "it polls the clock", phase: "final_answer" },
     ]);
   });
 

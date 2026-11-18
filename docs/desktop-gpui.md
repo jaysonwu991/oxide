@@ -140,9 +140,10 @@ The stable window keeps the same bodies in `ui/app.js`'s `GLYPHS`, and
 `check-app.mjs` holds that copy to this table, so one control wears one mark in
 both desktop front-ends.
 The brand mark is four filled triangles painted from a canvas, since a mask
-would flatten its two colors into one. The window draws its own titlebar, so it
-opens the first project's draft in memory: the welcome page's suggestions fill
-that composer instead of being sent.
+would flatten its two colors into one. The window draws its own titlebar and
+opens on the welcome page without selecting a project or creating a draft. The
+reader chooses a project explicitly; picking one opens its draft, and that
+draft becomes a session only when a message is sent.
 
 That page waits for `list_projects`: until the engine has answered, the welcome
 is the brand mark alone, so a project the window is about to open cannot be
@@ -196,8 +197,9 @@ reveal rather than two frames of the wrong page.
   expandable activity row with the call count, active action and recovered
   failures; an unresolved final failure alone colors the activity row red.
   Expanding it reveals the individual tool rows, while progress commentary
-  between tool runs stays in the transcript as its own reply. A single tool is
-  one compact row by default; a successful result stays
+  stays in the transcript as its own unlabelled Codex commentary phase, and the
+  final answer alone carries the Oxide speaker label. A single tool is one
+  compact row by default; a successful result stays
   folded, a failure previews its first three lines, and the row or preview
   expands and collapses the full output and diff without making every result
   compete with the answer. The row's copy control keeps a shell command's full

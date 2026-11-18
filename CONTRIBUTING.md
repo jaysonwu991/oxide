@@ -12,8 +12,6 @@ workflow, project layout, and conventions. For a user-facing overview see
   - `bun` or `node` for plugin development.
   - `ripgrep` (`rg`) to accelerate `grep`; without it oxide uses its built-in
     parallel walker.
-  - Language servers for the `diagnostics` tool: `rust-analyzer`,
-    `typescript-language-server`, `pyright`, or `gopls`.
 
 ## Getting started
 
@@ -102,14 +100,13 @@ relative to the repository root.
 | `crates/core/src/pricing.rs` | Model price table for the footer's `$cost` segment, overlaid by `modelPrices` in `settings.json`. |
 | `crates/core/src/diff.rs` | Dependency-free LCS line diff for edit previews (context windows and gap markers). |
 | `crates/core/src/html.rs` | Dependency-free HTML to Markdown/plain-text conversion for `webfetch`. |
-| `crates/core/src/lsp.rs` | Minimal LSP client and diagnostics, including eviction and reconnection of a crashed server instead of reusing its broken pipe. |
 | `crates/core/src/plugin.rs` | Plugin host and hooks: `tool.execute.before`/`after` (output rewriting, terminate hint) and `status` for footer statuses. |
 | `crates/core/src/plugin_registry.rs` | Claude Code-style plugin packages and marketplaces: the `oxide plugin` CLI and TUI `/plugins` install lifecycle, manifests (`.oxide/*.json` preferred, `.claude-plugin/*.json` compatible), and hook-shim generation. |
 | `crates/core/src/clipboard.rs` | System clipboard writes for the TUI: an OSC 52 sequence (tmux/screen-aware, so it survives SSH) plus a best-effort native helper. |
 | `crates/core/src/memory.rs` | Cross-session memory store. |
 | `crates/core/src/media.rs` | Image/PDF attachments and `@path` references. |
 | `crates/core/src/notify.rs` | Best-effort desktop toast for a finished turn (Notification Center/`notify-send`/WinRT), with `notifyOnComplete`/`notifySound` settings. |
-| `crates/core/src/runner.rs` | Shared `AgentRun` + `spawn_agent`/`spawn_agent_in`: wires the runtime (MCP, plugins, session, snapshots, LSP, steering and follow-up queues, approval and ask brokers), resolves attachments, arms the prompt-cache warmer, and starts the agent loop for the CLI, the desktop app and rpc clients. |
+| `crates/core/src/runner.rs` | Shared `AgentRun` + `spawn_agent`/`spawn_agent_in`: wires the runtime (MCP, plugins, session, snapshots, steering and follow-up queues, approval and ask brokers), resolves attachments, arms the prompt-cache warmer, and starts the agent loop for the CLI, the desktop app and rpc clients. |
 | `crates/core/src/worktree.rs` | Git worktrees: a conversation's own checkout under the config directory — created, listed, removed, given a branch, and handed a chat between the local folder and that checkout. |
 | `crates/core/src/commands.rs` | The shared slash-command catalog: built-ins with their arguments and the `FrontEnd`s that perform them, plus the project's commands, prompt templates and skills, so every front-end lists the same names. |
 | `crates/core/src/i18n.rs` | The interface language: one setting (`language`), the `en-GB`/`zh-CN` catalog every front-end paints, and the answer `oxide language` gives a client that cannot link the crate. |
@@ -160,7 +157,7 @@ relative to the repository root.
   call's name directly, so a tool's name in `specs` is the name everything else
   matches. Read-only tools are listed in the `concurrency_safe` classifier in
   `crates/core/src/agent.rs` to run in parallel. Agent-level tools (`task`,
-  `skill`, `command`, `memory`, `diagnostics`) are defined and dispatched in
+  `skill`, `command`, `memory`) are defined and dispatched in
   `crates/core/src/agent.rs`.
 - **Sessions and context.** Session trees, entry appends, leaf-path context
   building, and compaction/branch-summary entries live in

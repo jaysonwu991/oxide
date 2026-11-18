@@ -3440,7 +3440,8 @@ describe("webview links", () => {
     const { byId, send } = loadRenderer();
     const text = "✅ Committed  \n✅ Verified  \n✅ Ready\n\nWrapped\nprose\n\nFirst\\\nSecond";
     send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
-    const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+    const assistant = byId.get("transcript")!.querySelector(".msg.assistant")!;
+    const html = assistant.children[1].innerHTML;
     assert.equal(html, "<p>✅ Committed<br>✅ Verified<br>✅ Ready</p><p>Wrapped prose</p><p>First<br>Second</p>");
   });
 
@@ -3454,7 +3455,8 @@ describe("webview links", () => {
       ["``first `code`  \nsecond``", "<p><code>first `code`   second</code></p>"],
     ]) {
       send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
-      const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+      const assistant = byId.get("transcript")!.querySelector(".msg.assistant")!;
+      const html = assistant.children[1].innerHTML;
       assert.equal(html, expected);
     }
   });
@@ -3467,7 +3469,8 @@ describe("webview links", () => {
       ["```js\nconst x = 1;\n```", false],
     ] as const) {
       send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
-      const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+      const assistant = byId.get("transcript")!.querySelector(".msg.assistant")!;
+      const html = assistant.children[1].innerHTML;
       assert.equal(html.includes('data-complete="true"'), complete);
     }
   });
@@ -3476,7 +3479,8 @@ describe("webview links", () => {
     const { byId, send } = loadRenderer();
     const text = "PR [#11519 [CYB-5757] feat: allow indexing](https://github.com/Skyscanner/falcon/pull/11519) is open.";
     send(stateMessage({ items: [{ id: 1, kind: "assistant", text }] }));
-    const html = byId.get("transcript")!.querySelector(".msg.assistant")!.children[0].innerHTML;
+    const assistant = byId.get("transcript")!.querySelector(".msg.assistant")!;
+    const html = assistant.children[1].innerHTML;
     assert.equal(html, '<p>PR <a href="https://github.com/Skyscanner/falcon/pull/11519" target="_blank" rel="noreferrer">#11519 [CYB-5757] feat: allow indexing</a> is open.</p>');
   });
 

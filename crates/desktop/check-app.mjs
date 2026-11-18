@@ -7336,6 +7336,13 @@ check(
     !/unfinished/.test(el("transcript").outline()),
   el("transcript").outline(),
 );
+app.handleEvent({ type: "message_phase", runId: 61, phase: "final_answer" });
+check(
+  "marked the replacement as Codex's final answer",
+  app.state.currentAssistant?.phase === "final_answer" &&
+    app.state.currentAssistant?.wrap.classList.contains("final_answer"),
+  el("transcript").outline(),
+);
 app.handleEvent({ type: "thinking_done", runId: 61 });
 app.setIdle();
 app.setStatus("Ready");

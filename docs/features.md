@@ -70,8 +70,7 @@ and [vscode.md](vscode.md).
   `find`, `ls`, `webfetch`. See [tools.md](tools.md).
 - Agent-level tools: `task` (subagents), `skill` (on-demand skill loading),
   `command` (model-invoked commands), `memory` (cross-session notes),
-  `diagnostics` (LSP diagnostics), and `ask` (a question put to the user by a
-  front-end that can answer it).
+  and `ask` (a question put to the user by a front-end that can answer it).
 - MCP servers over stdio or Streamable HTTP, loaded on demand with automatic
   tool selection, OAuth discovery, and session handling, exposed as
   `<server>__<tool>`. `exposure` and `toolExposure` choose between deferred
@@ -98,10 +97,6 @@ and [vscode.md](vscode.md).
   `oxide -t read,grep,find,ls -p "review this"`.
 - Tool selection: `--tools`/`-t` allowlists and `--exclude-tools`/`-x` disables
   tools; disabled tools are hidden from the model and refused if requested.
-- LSP diagnostics via rust-analyzer, typescript-language-server, pyright, gopls;
-  a language server that crashes or closes its pipe is evicted and respawned on
-  the next edit instead of poisoning every later call with a broken pipe.
-
 ## Evidence-based completion
 
 The system prompt's Definition of Done requires the model to confirm the outcome
@@ -221,7 +216,13 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   internal reasoning stream. That keeps the transcript readable whether the
   provider returns a summary, raw chain-of-thought or no reasoning text. Reopening
   a saved thread shows the same commentary, tool steps and answers without
-  replaying internal reasoning. A running
+  replaying internal reasoning. Codex-style commentary and final-answer phases
+  are carried separately: commentary has no speaker label, while the final
+  answer does. Every tool-using turn opens with a short goal sentence before its
+  first call — including when loading a skill — and closes with a separate
+  summary. A candidate final summary is held back while required edits, tests,
+  review reads or external side effects remain unchecked; users see it only
+  after the verification result is in. A running
   `task` subagent reports its own
   progress — a live `Elapsed` on any tool panel, a
   `↳ <agent> · <activity> · <n> call(s)` line, and a status row naming the

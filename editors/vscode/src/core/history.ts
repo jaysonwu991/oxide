@@ -89,7 +89,15 @@ export function parseSessionHistory(json: string): SessionHistory | null {
       if (thinking.trim()) entries.push({ kind: "thinking", text: thinking });
       // A step that only called tools carries no text, and an empty bubble says
       // nothing about the thread.
-      if (text.trim()) entries.push({ kind: "assistant", text });
+      if (text.trim()) {
+        entries.push({
+          kind: "assistant",
+          text,
+          phase: Array.isArray(message.toolCalls) && message.toolCalls.length
+            ? "commentary"
+            : "final_answer",
+        });
+      }
       for (const raw of Array.isArray(message.toolCalls) ? message.toolCalls : []) {
         const call = obj(raw);
         const name = str(call.name);

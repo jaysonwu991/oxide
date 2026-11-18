@@ -201,6 +201,34 @@ describe("Transcript", () => {
     assert.deepEqual(texts, ["first", "second"]);
   });
 
+  it("keeps Codex commentary and final-answer phases", () => {
+    const transcript = new Transcript();
+    transcript.apply({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "I'll inspect it." },
+    });
+    const commentary = transcript.apply({ type: "message_phase", phase: "commentary" });
+    assert.deepEqual(commentary, [
+      { k: "phase", id: transcript.items[0].id, phase: "commentary" },
+    ]);
+    transcript.apply({ type: "thinking_done" });
+    transcript.apply({ type: "tool_call", toolName: "read", arguments: '{"path":"a.rs"}' });
+    transcript.apply({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "It is fixed." },
+    });
+    const finalAnswer = transcript.apply({ type: "message_phase", phase: "final_answer" });
+    assert.deepEqual(finalAnswer, [
+      { k: "phase", id: transcript.items.at(-1)!.id, phase: "final_answer" },
+    ]);
+    assert.deepEqual(
+      transcript.items
+        .filter((item): item is AssistantItem => item.kind === "assistant")
+        .map((item) => item.phase),
+      ["commentary", "final_answer"],
+    );
+  });
+
   it("builds a tool card from the call and finishes it with the result", () => {
     const transcript = new Transcript((name) => (name === "edit" ? "diff-text" : null));
     const pushed = transcript.apply({
@@ -635,7 +663,7 @@ describe("Transcript", () => {
         isError: false,
       },
       { kind: "thinking", text: "The clock is read before the assertion." },
-      { kind: "assistant", text: "it polls the clock" },
+      { kind: "assistant", text: "it polls the clock", phase: "final_answer" },
     ]);
     // No message per entry: the controller repaints the whole list from one
     // `state` afterwards, so replaying forty stored turns is one paint.
@@ -653,7 +681,7 @@ describe("Transcript", () => {
         unknown: true,
       },
       { id: 3, kind: "thinking", text: "The clock is read before the assertion." },
-      { id: 4, kind: "assistant", text: "it polls the clock" },
+      { id: 4, kind: "assistant", text: "it polls the clock", phase: "final_answer" },
     ]);
   });
 

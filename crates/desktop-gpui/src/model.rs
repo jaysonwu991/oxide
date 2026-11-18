@@ -38,7 +38,6 @@ pub struct ProjectRow {
     pub path: String,
     pub name: String,
     pub display_path: String,
-    pub registered: bool,
     pub exists: bool,
     pub session_count: usize,
     pub last_session_at: u64,
@@ -56,7 +55,6 @@ impl ProjectRow {
                 .or_else(|| value["display_path"].as_str())
                 .unwrap_or_default()
                 .to_string(),
-            registered: value["registered"].as_bool().unwrap_or(false),
             exists: value["exists"].as_bool().unwrap_or(true),
             session_count: number(value, "session_count", "sessionCount") as usize,
             last_session_at: number(value, "last_session_at", "lastSessionAt"),
@@ -235,6 +233,7 @@ pub enum Entry {
         text: String,
         blocks: Vec<Block>,
         streaming: bool,
+        phase: AssistantPhase,
     },
     Thinking {
         text: String,
@@ -258,11 +257,29 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub fn assistant() -> Self {
+    pub fn assistant(phase: AssistantPhase) -> Self {
         Entry::Assistant {
             text: String::new(),
             blocks: Vec::new(),
             streaming: true,
+            phase,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AssistantPhase {
+    #[default]
+    Commentary,
+    FinalAnswer,
+}
+
+impl AssistantPhase {
+    pub fn from_wire(value: &str) -> Self {
+        if value == "final_answer" {
+            Self::FinalAnswer
+        } else {
+            Self::Commentary
         }
     }
 }
@@ -654,6 +671,7 @@ impl Chat {
             text,
             blocks,
             streaming,
+            ..
         }) = self.entries.last_mut()
         {
             if *streaming {
@@ -662,11 +680,12 @@ impl Chat {
                 return;
             }
         }
-        let mut entry = Entry::assistant();
+        let mut entry = Entry::assistant(AssistantPhase::Commentary);
         if let Entry::Assistant {
             text,
             blocks,
             streaming,
+            ..
         } = &mut entry
         {
             text.push_str(delta);
@@ -754,6 +773,16 @@ impl Chat {
                 if let Some(Entry::Thinking { seconds, done, .. }) = self.entries.last_mut() {
                     *seconds = payload["millis"].as_u64().map(|millis| millis / 1000);
                     *done = true;
+                }
+            }
+            "message_phase" => {
+                let phase =
+                    AssistantPhase::from_wire(payload["phase"].as_str().unwrap_or_default());
+                for entry in self.entries.iter_mut().rev() {
+                    if let Entry::Assistant { phase: current, .. } = entry {
+                        *current = phase;
+                        break;
+                    }
                 }
             }
             "tool_call" => {
@@ -903,10 +932,19 @@ impl Chat {
                             });
                         }
                         if !text.is_empty() {
+                            let phase = if message["toolCalls"]
+                                .as_array()
+                                .is_some_and(|calls| !calls.is_empty())
+                            {
+                                AssistantPhase::Commentary
+                            } else {
+                                AssistantPhase::FinalAnswer
+                            };
                             self.entries.push(Entry::Assistant {
                                 blocks: markdown::parse(&text),
                                 text,
                                 streaming: false,
+                                phase,
                             });
                         }
                         if let Some(calls) = message["toolCalls"].as_array() {
@@ -1236,6 +1274,42 @@ mod tests {
         }));
         assert!(matches!(chat.entries[0], Entry::RunTime { .. }));
         assert!(matches!(chat.entries[1], Entry::Edited(_)));
+    }
+
+    #[test]
+    fn commentary_and_the_final_answer_keep_their_codex_phases() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.apply(&json!({
+            "type": "message_update",
+            "assistantMessageEvent": { "type": "text_delta", "delta": "I'll inspect it." }
+        }));
+        chat.apply(&json!({ "type": "message_phase", "phase": "commentary" }));
+        assert!(matches!(
+            &chat.entries[0],
+            Entry::Assistant {
+                phase: AssistantPhase::Commentary,
+                ..
+            }
+        ));
+
+        chat.apply(&json!({ "type": "thinking_done" }));
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "read",
+            "arguments": { "path": "src/main.rs" }
+        }));
+        chat.apply(&json!({
+            "type": "message_update",
+            "assistantMessageEvent": { "type": "text_delta", "delta": "It is fixed." }
+        }));
+        chat.apply(&json!({ "type": "message_phase", "phase": "final_answer" }));
+        assert!(matches!(
+            chat.entries.last(),
+            Some(Entry::Assistant {
+                phase: AssistantPhase::FinalAnswer,
+                ..
+            })
+        ));
     }
 
     #[test]

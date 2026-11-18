@@ -19,8 +19,8 @@ use tokio::task::JoinHandle;
 /// front-end can abort it, and the steering queues so it can be nudged mid-run.
 pub struct Turn {
     pub session_id: Option<String>,
-    /// The MCP servers, plugin host and language servers this turn used, to be
-    /// handed to the next turn in the same project instead of built again.
+    /// The MCP servers and plugin host this turn used, to be handed to the next
+    /// turn in the same project instead of built again.
     pub environment: TurnEnvironment,
     /// The thread's summarized title, by the same rules the session store lists
     /// it under ([`oxide_core::title`]), so a front-end can name the running
@@ -104,8 +104,8 @@ pub async fn start_turn(
         cancel: cancel.clone(),
     };
     // The same project and the same MCP/hook/plugin configuration reuse the
-    // servers and language servers the previous turn left warm; anything that
-    // changed builds a fresh environment.
+    // servers the previous turn left warm; anything that changed builds a fresh
+    // environment.
     let environment = match environment {
         Some(environment) if environment.suits(&run.config, project) => environment,
         _ => TurnEnvironment::new(&run.config, project).await,

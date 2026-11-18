@@ -3289,11 +3289,10 @@ async function newChatFromSidebar() {
 
 // ---------- chat ----------
 
-function bubble(kind, text, attachments = []) {
+function bubble(kind, text, attachments = [], phase = "final_answer") {
   const wrap = document.createElement("div");
-  wrap.className = `msg ${kind}`;
+  wrap.className = `msg ${kind}${kind === "assistant" ? ` ${phase}` : ""}`;
   wrap.chatAttachments = attachments;
-  const label = speakerLabel(kind);
   const body = document.createElement("div");
   body.className = "body";
   paintMarkdown(body, text);
@@ -3307,7 +3306,7 @@ function bubble(kind, text, attachments = []) {
     }
     body.appendChild(strip);
   }
-  wrap.append(label, body);
+  wrap.append(speakerLabel(kind), body);
   return wrap;
 }
 
@@ -4796,14 +4795,22 @@ async function stopThread(record) {
 function ensureAssistant() {
   if (state.currentAssistant) return state.currentAssistant;
   const wrap = document.createElement("div");
-  wrap.className = "msg assistant";
+  wrap.className = "msg assistant commentary";
   const label = speakerLabel("assistant");
   const body = document.createElement("div");
   body.className = "body";
   wrap.append(label, body);
   runTranscript().appendChild(wrap);
-  state.currentAssistant = { wrap, body, text: "" };
+  state.currentAssistant = { wrap, body, text: "", phase: "commentary" };
   return state.currentAssistant;
+}
+
+function setAssistantPhase(phase) {
+  const assistant = state.currentAssistant;
+  if (!assistant) return;
+  assistant.phase = phase === "final_answer" ? "final_answer" : "commentary";
+  assistant.wrap.classList.toggle("commentary", assistant.phase === "commentary");
+  assistant.wrap.classList.toggle("final_answer", assistant.phase === "final_answer");
 }
 
 function appendText(delta) {
@@ -5341,7 +5348,10 @@ function renderStoredTranscript(container, messages) {
       }
       if (message.content) {
         state.currentActivity = null;
-        container.appendChild(bubble("assistant", message.content, []));
+        const phase = Array.isArray(message.toolCalls) && message.toolCalls.length
+          ? "commentary"
+          : "final_answer";
+        container.appendChild(bubble("assistant", message.content, [], phase));
       }
       for (const call of message.toolCalls || []) {
         const result = results.get(call.id);
@@ -6528,6 +6538,9 @@ function handleEvent(event) {
       else if (inner.type === "thinking_delta") appendThinking(inner.delta || "");
       break;
     }
+    case "message_phase":
+      setAssistantPhase(event.phase);
+      break;
     case "tool_call":
       startTool(event.toolName || "tool", event.arguments);
       break;

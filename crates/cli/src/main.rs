@@ -10,7 +10,7 @@ mod update;
 // paths keep resolving with the same names as before the workspace split.
 pub use oxide_core::{
     agent, approval, approvals, at, auth, catalog, cli, clipboard, commands, compact, config, diff,
-    ecosystem, html, i18n, llm, lsp, mcp, mcp_config, mcp_oauth, media, memory, notice, notify,
+    ecosystem, html, i18n, llm, mcp, mcp_config, mcp_oauth, media, memory, notice, notify,
     permission, plugin, plugin_registry, portkey_usage, pricing, runner, session, sessions,
     snapshots, title, tools, trust, update_notice, worktree,
 };
@@ -2113,6 +2113,7 @@ async fn run_print_text(
             // The persisted name is consumed by interactive clients and session
             // listings; print mode has no title chrome to update.
             AgentEvent::SessionTitle { .. } => {}
+            AgentEvent::MessagePhase(_) => {}
             AgentEvent::Compaction {
                 summarized,
                 tokens_before,
@@ -2287,9 +2288,9 @@ async fn run_rpc_mode(
     // a handle on the same broker.
     let driver_approvals = approvals.clone();
     let driver_questions = questions.clone();
-    // One process serves every prompt in this project, so its MCP servers,
-    // plugin host and language servers are started once and reused, rather than
-    // rebuilt for each turn.
+    // One process serves every prompt in this project, so its MCP servers and
+    // plugin host are started once and reused, rather than rebuilt for each
+    // turn.
     let environment = runner::TurnEnvironment::new(&config, &cwd).await;
     let driver = tokio::spawn(async move {
         let mut pending_prompts = std::collections::VecDeque::new();

@@ -5,7 +5,7 @@ subject to.
 
 Built-in file and shell tools are `read`, `write`, `edit`, `bash`, `grep`,
 `find`, `ls`, and `webfetch`. Agent-level tools: `task`, `skill`, `command`,
-`memory`, `diagnostics`, `ask`, and `tool_search`. Enabled MCP servers connect
+`memory`, `ask`, and `tool_search`. Enabled MCP servers connect
 in the background; `tool_search` discovers capabilities and declares only the
 matching `<server>__<tool>` schemas on the next model call. `mcp_load` connects or
 retries a particular server while keeping its catalog deferred. `tool_search` is
@@ -62,10 +62,7 @@ byte-exact first, then tolerates trailing whitespace and the `N|` / `N+|` line n
 the target and replacement. When text has genuinely changed, a closest-region hint
 is offered only when it shares meaningful content or a substantial source prefix; blank lines and punctuation
 alone do not identify a region. Read the current target before retrying. Line
-endings and a leading BOM are preserved. `write` and `edit` append LSP diagnostics
-for the edited file when its language server is already running; the first edit
-starts the server in the background rather than waiting for it to index the
-project, so the edit is never blocked on a cold `rust-analyzer`.
+endings and a leading BOM are preserved.
 
 Each `edit` call changes one file. Send separate calls for different files, omit
 replacements whose `oldText` equals `newText`, and merge overlapping changes. A
@@ -171,8 +168,8 @@ the reader's terminal for an answer of its own — zsh's `compinit` asking wheth
 to keep an insecure directory, a credential or passphrase prompt, a pager — fails
 with the reason in its own output (`compinit: initialization aborted`) instead of
 painting its prompt over the interface that started it and reading the keys typed
-there. The children that are not commands get the same treatment: an LSP server,
-an MCP server and the plugin host.
+there. The children that are not commands get the same treatment: an MCP server
+and the plugin host.
 
 On Unix, a shell search whose only unsuccessful stages are
 `grep`/`rg` returning 1 is a normal empty result. The output retains `[exit: 1]`
@@ -346,7 +343,7 @@ recover the dropped detail without re-running the tool. Set
 7 days.
 
 The agent applies these limits again after plugin hooks and agent-level tools
-(such as `task` and `diagnostics`), preserving an existing full-output pointer
+(such as `task`), preserving an existing full-output pointer
 when the result is already bounded. This prevents those paths from bypassing
 the context budget.
 
@@ -376,7 +373,7 @@ for selective stale-output shortening and active MCP schema limits.
 ## Concurrency and steering
 
 When the model requests several tools at once, the ones with no side effects
-(`read`, `ls`, `find`, `grep`, `webfetch`, `memory`, `skill`, `diagnostics`) run
+(`read`, `ls`, `find`, `grep`, `webfetch`, `memory`, `skill`) run
 concurrently; anything that writes to the workspace, spawns a subagent, or has
 unknown remote effects stays sequential. Results are recorded in the model's
 original call order. `bash` streams stdout and stderr line by line into the TUI

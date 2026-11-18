@@ -77,8 +77,7 @@ Adjacent tool calls fold into one activity line with their call count,
 recovered failures, the current action while one is running, and a `Ctrl+O to
 expand` hint. An error followed by a successful call is quiet; an unresolved
 final failure colors the summary red. A single call keeps its ordinary panel;
-`Ctrl+O` restores every panel in the activity with its normal output and
-diagnostics.
+`Ctrl+O` restores every panel in the activity with its normal output.
 
 A URL in a reply is clickable: written bare or as an `<autolink>` the URL is
 the link itself, and a labelled link is drawn as its label alone — the target

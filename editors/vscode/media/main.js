@@ -2294,10 +2294,13 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     }
     if (item.kind === "assistant") {
       const wrap = document.createElement("div");
-      wrap.className = "msg assistant";
+      wrap.className = `msg assistant ${item.phase || "commentary"}`;
+      const label = document.createElement("div");
+      label.className = "assistant-name";
+      label.textContent = "Oxide";
       const body = document.createElement("div");
       body.className = "body";
-      wrap.appendChild(body);
+      wrap.append(label, body);
       return { el: wrap, body };
     }
     if (item.kind === "thinking") {
@@ -2318,6 +2321,8 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   }
 
   function renderAssistant(entry) {
+    entry.el.classList.toggle("commentary", entry.item.phase !== "final_answer");
+    entry.el.classList.toggle("final_answer", entry.item.phase === "final_answer");
     paintMarkdown(entry.body, entry.item.text);
   }
 
@@ -2580,6 +2585,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
           paintTool(entry);
           if (entry.activity) paintToolActivity(entry.activity);
         }
+        scrollDown(false);
+        return;
+      }
+      case "phase": {
+        const entry = entries.get(message.id);
+        if (!entry || entry.item.kind !== "assistant") return;
+        entry.item.phase = message.phase;
+        renderAssistant(entry);
         scrollDown(false);
         return;
       }

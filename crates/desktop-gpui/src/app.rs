@@ -1309,14 +1309,7 @@ impl Root {
     }
 
     pub fn current_project(&self) -> Option<String> {
-        if let Some(chat) = self.chats.get(self.active) {
-            return Some(chat.project.clone());
-        }
-        self.projects
-            .iter()
-            .find(|project| project.registered)
-            .map(|project| project.path.clone())
-            .or_else(|| self.projects.first().map(|project| project.path.clone()))
+        current_chat_project(&self.chats, self.active)
     }
 
     pub fn load_project_info(&mut self, cx: &mut Context<Self>) {
@@ -4428,15 +4421,6 @@ pub(crate) fn change_hunk(lines: &[Value], first: usize, last: usize) -> Value {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A window with no thread in it opens on the invite and the composer under
-        // it, the way the page does, rather than on a page with nothing to type
-        // into: the first project's draft is made in memory here and becomes a
-        // session only when something is sent.
-        if self.chats.is_empty() {
-            if let Some(project) = self.current_project() {
-                self.push_chat(window, project, None, "New chat".to_string(), cx);
-            }
-        }
         if let Some(id) = self.pending_focus.take() {
             if let Some(editor) = self.editors.get(&id) {
                 window.focus(&editor.read(cx).focus_handle(cx), cx);
@@ -4841,6 +4825,10 @@ fn can_reuse_new_chat(chat: &Chat, composer_text: &str) -> bool {
         && composer_text.trim().is_empty()
 }
 
+fn current_chat_project(chats: &[Chat], active: usize) -> Option<String> {
+    chats.get(active).map(|chat| chat.project.clone())
+}
+
 fn synchronize_session_titles(chats: &mut [Chat], sessions: &[SessionRow]) {
     let titles: HashMap<&str, &SessionRow> = sessions
         .iter()
@@ -4873,8 +4861,9 @@ fn draft_follows_project(chat: &Chat, composer_text: &str, project: &str) -> boo
 mod sidebar_resize_tests {
     use super::{
         add_attachment, can_reuse_new_chat, clamp_sidebar_width, composer_has_content,
-        details_visible, draft_follows_project, performs_slash_command, resized_changes_width,
-        session_reference, slash_command, synchronize_session_titles, toggled_details, Rail,
+        current_chat_project, details_visible, draft_follows_project, performs_slash_command,
+        resized_changes_width, session_reference, slash_command, synchronize_session_titles,
+        toggled_details, Rail,
     };
     use crate::model::{Attachment, Chat, SessionRow};
     use crate::views::{customize_destination, effort_position, model_display_name};
@@ -4986,6 +4975,16 @@ mod sidebar_resize_tests {
 
         composed.session = Some("saved-thread".to_string());
         assert!(!can_reuse_new_chat(&composed, ""));
+    }
+
+    #[test]
+    fn an_empty_window_has_no_implicit_project() {
+        assert_eq!(current_chat_project(&[], 0), None);
+        let chat = Chat::new("/tmp/project".to_string(), "New chat".to_string());
+        assert_eq!(
+            current_chat_project(std::slice::from_ref(&chat), 0),
+            Some("/tmp/project".to_string())
+        );
     }
 
     #[test]

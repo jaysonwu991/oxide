@@ -2373,6 +2373,15 @@ button.dialog-row:focus-visible {
   margin-bottom: 16px;
 }
 
+.msg.assistant .assistant-name {
+  margin-bottom: 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.msg.assistant.commentary > .assistant-name { display: none; }
+
 .msg.user {
   width: auto;
   max-width: min(78%, 620px);

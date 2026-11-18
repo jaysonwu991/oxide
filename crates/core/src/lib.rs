@@ -26,7 +26,6 @@ pub mod efficiency;
 pub mod html;
 pub mod i18n;
 pub mod llm;
-pub mod lsp;
 pub mod mcp;
 pub mod mcp_config;
 pub mod mcp_oauth;

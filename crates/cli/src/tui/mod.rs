@@ -11,7 +11,6 @@ use crate::config::{Config, Reasoning};
 use crate::ecosystem::{AgentMode, McpExposure};
 use crate::install::InstallMethod;
 use crate::llm::{ContentPart, LlmClient, Message};
-use crate::lsp::LspManager;
 use crate::mcp::{McpRegistry, McpStatus, McpStatusRow};
 use crate::media;
 use crate::notice::{self, Level, Notice};
@@ -84,8 +83,6 @@ pub async fn run(
     let mcp = Arc::new(McpRegistry::new(&config.ecosystem.mcp));
     let plugins = Arc::new(PluginHost::spawn(&config.ecosystem.hooks, &cwd).await);
     let snapshots = Snapshots::open(&cwd).ok().map(Arc::new);
-    let lsp = Arc::new(LspManager::new());
-
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(
@@ -103,7 +100,6 @@ pub async fn run(
         mcp,
         plugins,
         snapshots,
-        lsp,
         session,
         open_sessions_picker,
         theme_name,
@@ -132,7 +128,6 @@ async fn event_loop(
     mcp: Arc<McpRegistry>,
     plugins: Arc<PluginHost>,
     snapshots: Option<Arc<Snapshots>>,
-    lsp: Arc<LspManager>,
     mut session: Option<SessionLog>,
     open_sessions_picker: bool,
     theme_name: String,
@@ -323,7 +318,7 @@ async fn event_loop(
                     Some(Ok(Event::Key(key))) => {
                         handle_key(
                             key, &mut app, &mut config, &cwd, &trust_cwd, &mut rx, &mcp, &plugins,
-                            snapshots.as_ref(), &lsp, &mut session, &approvals, &models_tx, &mcps_tx,
+                            snapshots.as_ref(), &mut session, &approvals, &models_tx, &mcps_tx,
                             &plugins_tx, &listings_tx, &marketplaces_tx, &usage_tx, &update_tx, &paste_tx,
                         );
                         if let Some(provider) = app.pending_login.take() {
@@ -658,7 +653,6 @@ fn handle_key(
     mcp: &Arc<McpRegistry>,
     plugins: &Arc<PluginHost>,
     snapshots: Option<&Arc<Snapshots>>,
-    lsp: &Arc<LspManager>,
     session: &mut Option<SessionLog>,
     approvals: &Arc<ApprovalBroker>,
     models_tx: &UnboundedSender<ModelCatalogs>,
@@ -1777,7 +1771,6 @@ fn handle_key(
                 plugins: Arc::clone(plugins),
                 session: session.clone().map(Arc::new),
                 snapshots: snapshots.cloned(),
-                lsp: Arc::clone(lsp),
                 approve,
                 // The terminal answers approvals but not questions, so `ask` is
                 // left out of its tool list rather than offered and then
@@ -4538,7 +4531,19 @@ fn restore_history(app: &mut App, messages: Vec<Message>, resumed: String) {
             }
             "assistant" => {
                 if let Some(content) = message.display() {
-                    app.items.push(ChatItem::Assistant(content));
+                    let phase = if message
+                        .tool_calls
+                        .as_ref()
+                        .is_some_and(|calls| !calls.is_empty())
+                    {
+                        crate::agent::MessagePhase::Commentary
+                    } else {
+                        crate::agent::MessagePhase::FinalAnswer
+                    };
+                    app.items.push(ChatItem::Assistant {
+                        text: content,
+                        phase,
+                    });
                 }
             }
             _ => {}
@@ -5117,7 +5122,7 @@ fn copy_command(app: &mut App, all: bool) {
         app.transcript_text()
     } else {
         match app.items.iter().rev().find_map(|item| match item {
-            ChatItem::Assistant(text) if !text.trim().is_empty() => Some(text.clone()),
+            ChatItem::Assistant { text, .. } if !text.trim().is_empty() => Some(text.clone()),
             _ => None,
         }) {
             Some(text) => text,
@@ -5711,6 +5716,7 @@ fn handle_agent_event(event: AgentEvent, app: &mut App) {
             app.status = app.t("tui.status.Thinking").to_string();
             app.push_assistant_delta(delta);
         }
+        AgentEvent::MessagePhase(phase) => app.set_assistant_phase(phase),
         AgentEvent::ThinkingDelta(delta) => {
             app.assistant_open = false;
             app.push_thinking_delta(delta);
@@ -6344,7 +6350,41 @@ mod tests {
             &mut app,
         );
         assert_eq!(app.items.len(), 1);
-        assert!(matches!(&app.items[0], ChatItem::Assistant(text) if text == "summary"));
+        assert!(matches!(
+            &app.items[0],
+            ChatItem::Assistant { text, .. } if text == "summary"
+        ));
+    }
+
+    #[test]
+    fn assistant_text_keeps_codexs_commentary_and_final_answer_phases() {
+        let mut app = test_app();
+        handle_agent_event(AgentEvent::Text("I'll inspect it.".into()), &mut app);
+        handle_agent_event(
+            AgentEvent::MessagePhase(crate::agent::MessagePhase::Commentary),
+            &mut app,
+        );
+        assert!(matches!(
+            &app.items[0],
+            ChatItem::Assistant {
+                phase: crate::agent::MessagePhase::Commentary,
+                ..
+            }
+        ));
+
+        handle_agent_event(AgentEvent::ThoughtDone { millis: 1 }, &mut app);
+        handle_agent_event(AgentEvent::Text("It is fixed.".into()), &mut app);
+        handle_agent_event(
+            AgentEvent::MessagePhase(crate::agent::MessagePhase::FinalAnswer),
+            &mut app,
+        );
+        assert!(matches!(
+            &app.items[1],
+            ChatItem::Assistant {
+                phase: crate::agent::MessagePhase::FinalAnswer,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -6851,7 +6891,10 @@ mod tests {
             1,
             "a repeated tip replaces the previous line"
         );
-        app.items.push(ChatItem::Assistant("an answer".into()));
+        app.items.push(ChatItem::Assistant {
+            text: "an answer".into(),
+            phase: crate::agent::MessagePhase::FinalAnswer,
+        });
         app.show_status("copied 56 chars");
         assert_eq!(
             app.items
@@ -6871,7 +6914,7 @@ mod tests {
             serde_json::json!({"type": "redacted_thinking", "data": "x"}),
         ]);
         restore_history(&mut app, vec![message], "resumed".to_string());
-        assert!(matches!(&app.items[0], ChatItem::Assistant(_)));
+        assert!(matches!(&app.items[0], ChatItem::Assistant { .. }));
         assert_eq!(
             app.history[0].reasoning_content().as_deref(),
             Some("the test moved")

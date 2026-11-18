@@ -95,7 +95,10 @@ export interface AssistantItem {
   id: number;
   kind: "assistant";
   text: string;
+  phase?: AssistantPhase;
 }
+
+export type AssistantPhase = "commentary" | "final_answer";
 
 export interface ThinkingItem {
   id: number;
@@ -242,7 +245,7 @@ export type ToolPatch = Partial<
 export type ReplayEntry =
   | { kind: "user"; text: string; attachments?: SentChip[] }
   | { kind: "thinking"; text: string }
-  | { kind: "assistant"; text: string }
+  | { kind: "assistant"; text: string; phase?: AssistantPhase }
   | { kind: "tool"; name: string; args: string; output: string; isError: boolean };
 
 /// A file or selection that is inlined into the prompt.
@@ -350,6 +353,7 @@ export type ViewMessage =
   | { k: "push"; item: Item }
   | { k: "remove"; id: number }
   | { k: "append"; id: number; field: "text" | "output"; delta: string }
+  | { k: "phase"; id: number; phase: AssistantPhase }
   | { k: "patch"; id: number; patch: ToolPatch }
   /// One approval card's state. It is not a `patch`: a tool card repaints from
   /// the item, while a card that is settled keeps its buttons removed.
@@ -735,10 +739,10 @@ export class Transcript {
 
   /// A reply pushed whole rather than streamed: the stored conversation of a
   /// thread the panel is reopening, which arrives already finished.
-  pushAssistant(text: string): ViewMessage[] {
+  pushAssistant(text: string, phase: AssistantPhase = "final_answer"): ViewMessage[] {
     this.closeAssistant();
     this.closeThinking();
-    const item: AssistantItem = { id: this.nextId++, kind: "assistant", text };
+    const item: AssistantItem = { id: this.nextId++, kind: "assistant", text, phase };
     this.items.push(item);
     return [{ k: "push", item }];
   }
@@ -749,7 +753,7 @@ export class Transcript {
     for (const entry of entries) {
       if (entry.kind === "user") this.pushUser(entry.text, entry.attachments ?? []);
       else if (entry.kind === "thinking") this.pushThinking(entry.text);
-      else if (entry.kind === "assistant") this.pushAssistant(entry.text);
+      else if (entry.kind === "assistant") this.pushAssistant(entry.text, entry.phase ?? "final_answer");
       else this.pushTool(entry.name, entry.args, entry.output, entry.isError);
     }
   }
@@ -836,6 +840,13 @@ export class Transcript {
         return [];
       case "message_update":
         return this.applyDelta(obj(event.assistantMessageEvent));
+      case "message_phase": {
+        if (!this.currentAssistant) return [];
+        const phase: AssistantPhase =
+          str(event.phase) === "final_answer" ? "final_answer" : "commentary";
+        this.currentAssistant.phase = phase;
+        return [{ k: "phase", id: this.currentAssistant.id, phase }];
+      }
       case "tool_call":
         return this.startTool(str(event.toolName) || "tool", event.arguments);
       case "tool_execution_update":
@@ -1173,7 +1184,12 @@ export class Transcript {
   private ensureAssistant(): AssistantItem {
     if (this.currentAssistant) return this.currentAssistant;
     this.closeThinking();
-    const item: AssistantItem = { id: this.nextId++, kind: "assistant", text: "" };
+    const item: AssistantItem = {
+      id: this.nextId++,
+      kind: "assistant",
+      text: "",
+      phase: "commentary",
+    };
     this.items.push(item);
     this.currentAssistant = item;
     return item;

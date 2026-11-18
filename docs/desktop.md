@@ -510,11 +510,9 @@ The regions, top to bottom:
   approvals, model/reasoning and Send still visible. Extended usage totals remain
   available through `/usage`. The project bar appears only before a chat starts;
   established chats keep that space for the message. The bar sits on the box's top edge — the way Codex's own composer
-  carries its top row, and the way the VS Code panel carries its own. That bar is
-  narrower than the box and centered on it, 24px narrower (the 12px the box pads
-  each side), so its edges stand where the box's own text column does and the box
-  reads as the wider of the two in a narrow window as much as a wide one. It
-  names where the turn will run: the
+  carries its top row, and the way the VS Code panel carries its own. That bar
+  shares the box's width and stays centered on it, so the two edges line up in a
+  narrow window as much as a wide one. It names where the turn will run: the
   folder's chip, the branch that folder is on, and the checkout the next turn
   runs in at the row's other end — and nothing else, since the window's settings
   stay in the Settings page and the box's own row, and what the chat has spent
@@ -992,14 +990,12 @@ environment, controls)` loads the project's config, resolves the session (`new` 
 `oxide_core::runner::begin_session`, and spawns the shared agent loop with
 `runner::spawn_agent_in`, returning a stream of `AgentEvent`s plus the run's
 `Steering` handles and its cooperative `Cancel` flag. The engine keeps a
-`runner::TurnEnvironment` per project — the MCP servers, plugin host and
-language servers — and hands it to the next turn, so those are started once for
-the harness rather than once per prompt; an environment whose project, MCP
-servers, hook plugins or installed packages changed is rebuilt. That is also
-what lets an edit's language-server diagnostics reach a later edit (the first
-edit starts the server in the background instead of blocking), and what keeps
-the prompt-cache warmer — armed by `runner` when the turn ends — replaying
-against the same project. The engine's
+`runner::TurnEnvironment` per project — the MCP servers and plugin host — and
+hands it to the next turn, so those are started once for the harness rather than
+once per prompt; an environment whose project, MCP servers, hook plugins or
+installed packages changed is rebuilt. The prompt-cache warmer — armed by
+`runner` when the turn ends — keeps replaying against the same project. The
+engine's
 event channel serializes events with
 `oxide_core::cli::event_json` (the same Pi-shaped JSON the CLI emits in
 `--mode json`), attaches any `DiffPreview`, and forwards them over

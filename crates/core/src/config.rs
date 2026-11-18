@@ -2990,6 +2990,10 @@ impl Config {
         );
 
         sections.push(
+            "# Progress and summary\nEvery tool-using turn starts with one concise user-facing sentence naming the concrete goal. Put the words before the first tool call, including when the first call loads a `skill` or starts a `task`; never begin a tool-using turn with a tool call. After the tools finish, send a separate final summary of the outcome, meaningful changes, verification and any remaining limitation. The opening sentence is progress, not the final answer.".to_string(),
+        );
+
+        sections.push(
             "# Working style\nAct as a direct, autonomous coding collaborator. Lead with the outcome or the concrete next action. Treat internal reasoning as private: never rely on a thinking panel to tell the user what matters. Put the useful information into concise commentary and the final answer. Before a substantial tool sequence, send one brief sentence naming the concrete goal; after a meaningful discovery or change of plan, state the evidence and next action. Do not narrate routine reads, expose stream-of-consciousness, or use rhetorical self-talk and filler such as \"Hmm\", \"Wait\", \"Actually\", \"I think\" or \"Let me\". Resolve uncertainty with inspection or a test before narrating it. Make reasonable assumptions from the request and repository instead of pausing for choices you can evaluate; state only assumptions that materially affect the result.".to_string(),
         );
 
@@ -3089,6 +3093,20 @@ mod tests {
         assert!(style.contains("naming the concrete goal"), "{style}");
         assert!(style.contains("stream-of-consciousness"), "{style}");
         assert!(style.contains("\"Hmm\""), "{style}");
+        let progress = prompt
+            .split("# Progress and summary")
+            .nth(1)
+            .and_then(|rest| rest.split("# ").next())
+            .expect("the progress contract is composed");
+        assert!(
+            progress.contains("before the first tool call"),
+            "{progress}"
+        );
+        assert!(
+            progress.contains("including when the first call loads a `skill`"),
+            "{progress}"
+        );
+        assert!(progress.contains("separate final summary"), "{progress}");
     }
 
     #[test]
