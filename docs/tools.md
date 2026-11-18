@@ -143,7 +143,11 @@ before permissions, events and execution see it, so the transcript paints
 `--after-context`, `--before-context` and `--context` windows map to the tool's
 symmetric `context` argument; a search of one named file is converted too.
 Pipes, mutations, expansions and shell-dependent behavior are never discarded:
-those commands retain their real shell semantics.
+those commands retain their real shell semantics. A recursive grep that cannot be
+converted (a pipe or script) is not refused: on Unix it runs with `grep` redefined to
+skip `node_modules`, `target`, `.git`, `.venv`, `venv`, `dist`, `build` and `vendor`,
+and the output notes this. It is refused only when an operand names one of those
+directories, and on Windows.
 
 A `read` the platform refuses — macOS keeps the
 Desktop, Documents and Downloads folders behind a per-app grant — is reported

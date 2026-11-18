@@ -1434,6 +1434,7 @@ async fn run_loop(
             && !tool_calls.is_empty()
             && !recheck_open
             && held_summary.is_none()
+            && !run_already_opened(&messages)
         {
             tool_first_opening(&tool_calls).to_string()
         } else {
@@ -2088,6 +2089,22 @@ fn redirect_shell_search(call: &mut ToolCall, cwd: &Path) -> bool {
     call.function.name = "grep".to_string();
     call.function.arguments = search.to_string();
     true
+}
+
+/// Whether the assistant has already spoken since the last user message. The
+/// generic lead-in belongs to the start of a run; repeating it before every
+/// later tool call only fills the transcript with identical sentences.
+fn run_already_opened(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .rev()
+        .take_while(|message| message.role != "user")
+        .any(|message| {
+            message.role == "assistant"
+                && message
+                    .display()
+                    .is_some_and(|text| !text.trim().is_empty())
+        })
 }
 
 /// Providers may return a tool call without any text. Every front-end should
@@ -7667,6 +7684,16 @@ for line in sys.stdin:
         ] {
             assert!(!concurrency_safe(name), "{name} must stay sequential");
         }
+    }
+
+    #[test]
+    fn the_generic_opening_is_given_once_per_run() {
+        let user = Message::user("do it");
+        assert!(!run_already_opened(std::slice::from_ref(&user)));
+        let opened = Message::assistant("I'll look.".to_string(), vec![tool_call("read")]);
+        assert!(run_already_opened(&[user.clone(), opened.clone()]));
+        let next = Message::user("again");
+        assert!(!run_already_opened(&[user, opened, next]));
     }
 
     #[test]

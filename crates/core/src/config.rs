@@ -2990,7 +2990,7 @@ impl Config {
         );
 
         sections.push(
-            "# Progress and summary\nEvery tool-using turn starts with one concise user-facing sentence naming the concrete goal. Put the words before the first tool call, including when the first call loads a `skill` or starts a `task`; never begin a tool-using turn with a tool call. After the tools finish, send a separate final summary of the outcome, meaningful changes, verification and any remaining limitation. The opening sentence is progress, not the final answer.".to_string(),
+            "# Progress and summary\nOpen a tool-using run with one concise user-facing sentence naming the concrete goal; for work with three or more steps, state the plan as a short list instead. Put the words before the first tool call, including when the first call loads a `skill` or starts a `task`; never begin a tool-using turn with a tool call. After that, run the tools back to back, batching independent calls in one turn, without a sentence before each call; speak again only after a meaningful discovery or a change of plan. After the tools finish, send a separate final summary of the outcome, meaningful changes, verification and any remaining limitation. The opening sentence is progress, not the final answer.".to_string(),
         );
 
         sections.push(
