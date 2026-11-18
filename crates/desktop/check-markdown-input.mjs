@@ -411,34 +411,88 @@ function exerciseEditor() {
     }
     editor.value = "";
     check("clearing", editor.innerHTML === "");
+    editor.value = "- item\n\n  paragraph\n\n- next";
+    const listParagraph = editor.querySelector("li div p").firstChild;
+    const nestedParagraphCaret = document.createRange();
+    nestedParagraphCaret.setStart(listParagraph, listParagraph.nodeValue.length);
+    nestedParagraphCaret.collapse(true);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(nestedParagraphCaret);
+    type(" updated");
+    check(
+      "typing stays inside a paragraph nested in a list item",
+      editor.value === "- item\n\n  paragraph updated\n\n- next",
+    );
+    editor.value = "- item\n  ```js\n  const x = 1;\n  ```\n- next";
+    const listCode = editor.querySelector("li div pre code");
+    const nestedCodeCaret = document.createRange();
+    nestedCodeCaret.setStart(listCode, listCode.childNodes.length);
+    nestedCodeCaret.collapse(true);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(nestedCodeCaret);
+    type("!");
+    check(
+      "typing stays inside a code block nested in a list item",
+      editor.value === "- item\n  ```js\n  const x = 1;!\n  ```\n- next",
+    );
+    editor.value = "";
     // Every construct the box can draw has to come back as the text that was
     // typed: what the page holds is re-read on the next keystroke, so a block
     // that writes a blank line around itself, a list that normalizes `*` to `-`
     // or a fence that invents a closing run would edit the reader's own text.
     for (const source of [
       "- one\n- two",
+      "- one\n\n- two",
+      "1. one\n\n2. two",
       "* star\n+ plus",
       "1) paren\n2) again",
       "3. three\n4. four",
       "1. one\n1. repeated",
       "- outer\n  - inner",
+      "- outer\n\n  - inner",
+      "- outer\n  1. ordered\n     - deep\n  2. second\n- next",
+      "1. first\n   - child\n   - child two\n2. second",
+      "- [ ] todo\n  - [x] nested\n- [ ] next",
       "- an item\n  continued under itself",
+      "- item\n  first\n    second",
+      "- item\n  ```js\n  const x = 1;\n  ```\n- next",
+      "- item\n  > quoted\n- next",
+      "- item\n  # heading\n\n  paragraph\n- next",
+      "- item\n  | a | b |\n  | --- | --- |\n  | 1 | 2 |\n- next",
+      "- item\n\n  second paragraph\n\n- next",
+      "- item\n\n  ```js\n  const x = 1;\n  ```\n\n- next",
+      "- item\n\n  > quoted\n\n- next",
       "- [ ] todo\n- [x] done",
       "# Heading",
       "> quoted",
       "***",
       "```\ncode\n```",
       "~~~\ncode\n~~~",
+      "```\ncode\n`````",
+      "```rust extra words\ncode\n````",
+      "  ~~~js\n  code\n  ~~~",
       "```\nstill being typed",
       "| a | b |\n| --- | --- |\n| 1 | 2 |",
       "| a | b |\n| :-- | --: |\n| 1 | 2 |",
+      "| a \\| b | c |\n| --- | --- |\n| 1 | 2 |",
+      "| `a|b` | c |\n| --- | --- |\n| 1 | 2 |",
       "2 * 3 * 4",
       "_italic_ and __bold__ and snake_case_name",
+      "***bold italic***",
+      "___bold italic___",
       "an \\*escaped\\* star",
+      "first  \nsecond",
+      "first\\\nsecond",
       "``a ` b``",
       "see https://example.com/a_b",
       "[label](https://example.com \"a title\")",
       "Title\n=====",
+      "  ## Heading",
+      "> > nested",
+      "> - one\n> - two",
+      "![alt](https://example.com/a.png)",
+      "[label][id]\n\n[id]: https://example.com",
+      "<span>text</span>",
     ]) {
       editor.value = source;
       editor.focus();
