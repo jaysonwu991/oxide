@@ -13,10 +13,10 @@ use crate::model::{AssistantPhase, Attachment, EditedFile, Entry, QueueDelivery,
 use crate::theme::Theme;
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, percentage, point, px, Animation, AnimationExt as _, ClickEvent, Context,
-    Focusable, Font, FontStyle, FontWeight, KeyDownEvent, MouseButton, PathBuilder, Pixels, Point,
-    Render, SharedString, Stateful, StrikethroughStyle, StyledText, TextRun, Transformation,
-    UnderlineStyle, Window, WindowControlArea,
+    canvas, deferred, div, percentage, point, px, Animation, AnimationExt as _, ClickEvent,
+    Context, Focusable, Font, FontStyle, FontWeight, KeyDownEvent, MouseButton, PathBuilder,
+    Pixels, Point, Render, SharedString, Stateful, StrikethroughStyle, StyledText, TextRun,
+    Transformation, UnderlineStyle, Window, WindowControlArea,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -6364,7 +6364,7 @@ fn composer(
                 })),
             );
             if tools_open {
-                tools = tools.child(composer_tools_menu(root, theme, cx));
+                tools = tools.child(deferred(composer_tools_menu(root, theme, cx)));
             }
             tools
         })
