@@ -3,22 +3,20 @@
 #
 # The repository keeps a placeholder version (`0.0.0`); release CI calls this
 # with the pushed tag so the built CLI binary and desktop bundle report the tag
-# version. Patches the workspace version in the root `Cargo.toml` and the two
-# the desktop app reads its own version from: the engine's `Cargo.toml` (it is
-# not a workspace member, so it does not read the workspace's) and the Electron
-# window's `package.json` (which the bundler writes into the app bundle, and
-# which the updater compares a release against). Then it is up to the caller to
-# refresh the lockfiles (e.g. `cargo update --workspace`, and the same in
-# `crates/desktop`).
+# version. Patches the workspace version in the root `Cargo.toml` and the
+# component it belongs to: the Tauri package/config, the engine's `Cargo.toml`,
+# or the Electron window's `package.json`. Then it is up to the caller to
+# refresh the lockfiles.
 #
 # A tag may carry a component prefix so each component releases independently:
 # `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
-# `desktop-gpui-v1.2.3` for the primary GPUI desktop app, and
+# `desktop-tauri-v1.2.3` for the primary Tauri desktop app, and
 # `extension-v1.2.3` for the VS Code extension (which is versioned in its
 # own `editors/vscode/package.json`). A bare `1.2.3` is also accepted.
 #
 # Usage: scripts/set-version.sh v1.2.3
 #        scripts/set-version.sh cli-v1.2.3
+#        scripts/set-version.sh desktop-tauri-v1.2.3
 #        scripts/set-version.sh desktop-v1.2.3
 #        scripts/set-version.sh extension-v1.2.3
 
@@ -34,9 +32,9 @@ version="${raw}"
 component=""
 case "$version" in
   cli-*) version="${version#cli-}" ;;
-  desktop-gpui-*)
-    component="gpui"
-    version="${version#desktop-gpui-}"
+  desktop-tauri-*)
+    component="tauri"
+    version="${version#desktop-tauri-}"
     ;;
   desktop-*) version="${version#desktop-}" ;;
   extension-*)
@@ -108,11 +106,12 @@ if not patched_cargo:
 with open(cargo_path, "w", encoding="utf-8") as handle:
     handle.writelines(lines)
 
-# crates/desktop-gpui/Cargo.toml: the GPUI desktop app is its own workspace as
+# crates/desktop-tauri/Cargo.toml: the Tauri desktop app is its own workspace as
 # well, and reports the version in its own manifest.
-if component == "gpui":
-    gpui_manifest = f"{root}/crates/desktop-gpui/Cargo.toml"
-    with open(gpui_manifest, encoding="utf-8") as handle:
+if component == "tauri":
+    tauri_manifest = f"{root}/crates/desktop-tauri/Cargo.toml"
+    tauri_config = f"{root}/crates/desktop-tauri/tauri.conf.json"
+    with open(tauri_manifest, encoding="utf-8") as handle:
         lines = handle.readlines()
     in_section = False
     patched = False
@@ -127,10 +126,15 @@ if component == "gpui":
             patched = True
             break
     if not patched:
-        sys.exit("error: could not find version in [package] of crates/desktop-gpui/Cargo.toml")
-    with open(gpui_manifest, "w", encoding="utf-8") as handle:
+        sys.exit("error: could not find version in [package] of crates/desktop-tauri/Cargo.toml")
+    with open(tauri_manifest, "w", encoding="utf-8") as handle:
         handle.writelines(lines)
-    print(f"set GPUI desktop version to {version}")
+    with open(tauri_config, encoding="utf-8") as handle:
+        config = handle.read()
+    config = re.sub(r'(?m)^(\s*"version"\s*:\s*)"[^"]+"', rf'\g<1>"{version}"', config, count=1)
+    with open(tauri_config, "w", encoding="utf-8") as handle:
+        handle.write(config)
+    print(f"set Tauri desktop version to {version}")
     sys.exit(0)
 
 # crates/desktop/Cargo.toml: the desktop package is excluded from the root

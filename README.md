@@ -12,7 +12,7 @@
 # Oxide
 
 A native Rust AI coding agent with a terminal UI, two independent desktop apps
-— Oxide Desktop GPUI and Oxide Desktop Electron — and a VS Code extension.
+— Oxide Desktop Tauri and Oxide Desktop Electron — and a VS Code extension.
 Oxide streams from
 OpenAI-compatible and Anthropic models, runs a tool-using agent loop against
 your project, and understands its own `.oxide/` configuration layout out of the
@@ -21,7 +21,7 @@ box, with Claude Code configuration support for compatibility.
 ## Highlights
 
 - **One core, several front-ends** — a ratatui terminal UI, the recommended
-  native GPUI desktop app (`crates/desktop-gpui`), an independently supported
+  native Tauri desktop app (`crates/desktop-tauri`), an independently supported
   Electron desktop app (`crates/desktop`), and a VS Code extension
   (`editors/vscode`), all sharing the same configuration, sessions, trust
   decisions, and MCP servers.
@@ -77,20 +77,20 @@ and `oxide uninstall` are in [docs/install.md](docs/install.md).
 
 ## Installers
 
-Oxide Desktop GPUI, Oxide Desktop Electron, and the VS Code extension are always
-the newest build. GPUI links use `desktop-latest`, Electron links use its
+Oxide Desktop Tauri, Oxide Desktop Electron, and the VS Code extension are always
+the newest build. Tauri links use `desktop-latest`, Electron links use its
 independent `desktop-electron-latest` alias, and the extension uses
 `extension-latest`; their files are replaced on every publish, so the links
-themselves never change. Versioned `desktop-gpui-v*`, `desktop-v*`, and
+themselves never change. Versioned `desktop-tauri-v*`, `desktop-v*`, and
 `extension-v*` releases name the version a file is from.
 
 | Surface | Platform | Installer |
 | --- | --- | --- |
-| Oxide Desktop GPUI | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-arm64.dmg) |
-| Oxide Desktop GPUI | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-x64.dmg) |
-| Oxide Desktop GPUI | Windows x64 | [Oxide-win-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.tar.gz) |
-| Oxide Desktop GPUI | Linux x64 | [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
-| Oxide Desktop GPUI | Linux arm64 | [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
+| Oxide Desktop Tauri | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-arm64.dmg) |
+| Oxide Desktop Tauri | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-x64.dmg) |
+| Oxide Desktop Tauri | Windows x64 | [Oxide-win-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.tar.gz) |
+| Oxide Desktop Tauri | Linux x64 | [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
+| Oxide Desktop Tauri | Linux arm64 | [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
 | Oxide Desktop Electron | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-macos-arm64.dmg) |
 | Oxide Desktop Electron | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-macos-x64.dmg) |
 | Oxide Desktop Electron | Windows x64 | [Oxide-win-x64-Setup.exe](https://github.com/jaysonwu991/oxide/releases/download/desktop-electron-latest/Oxide-win-x64-Setup.exe) |
@@ -151,17 +151,17 @@ Keyboard shortcuts, the transcript layout, and copy behavior are in
 [docs/tui.md](docs/tui.md); print/JSON/RPC modes and `oxide session` are in
 [docs/modes.md](docs/modes.md).
 
-## Oxide Desktop GPUI
+## Oxide Desktop Tauri
 
-`crates/desktop-gpui` is the primary desktop app: the same agent drawn with
-[GPUI](https://gpui.rs) in one native process. It links the desktop engine
+`crates/desktop-tauri` is the primary desktop app: the same agent in a
+[Tauri](https://tauri.rs) window, loading the shared desktop page. It links the desktop engine
 in-process (`oxide_desktop::commands::dispatch`), so it reads and writes the same
 projects, sessions, approvals, configuration, themes and language as the
 terminal and editor integration. It manages multiple projects and their threads
 from one window, with streamed turns, reviews, worktrees, terminals, plugins,
-MCP servers and AccessKit accessibility.
+MCP servers and platform webview accessibility.
 
-**Oxide Desktop GPUI is the recommended desktop app.** It owns the
+**Oxide Desktop Tauri is the recommended desktop app.** It owns the
 `desktop-latest` installer links and receives new desktop feature work first.
 Oxide Desktop Electron remains a fully supported, independent desktop app with
 the same Rust engine and shared configuration, sessions, approvals and MCP
@@ -171,11 +171,11 @@ separately.
 The package is its own Cargo workspace:
 
 ```sh
-cd crates/desktop-gpui && cargo run
+cd crates/desktop-tauri && cargo run
 ```
 
 Prebuilt installers are in [Installers](#installers). See
-[docs/desktop-gpui.md](docs/desktop-gpui.md) for the complete surface,
+[docs/desktop-tauri.md](docs/desktop-tauri.md) for the complete surface,
 accessibility, signing and packaging.
 
 ### Oxide Desktop Electron
@@ -183,7 +183,7 @@ accessibility, signing and packaging.
 `crates/desktop` is the independent [Electron](https://electronjs.org) desktop
 app. It drives the same Rust engine through its JSON bridge and shares the same
 stores and project state while keeping its own window implementation, installer
-and `desktop-v*` release train. GPUI is recommended for new installs, but the
+and `desktop-v*` release train. Tauri is recommended for new installs, but the
 Electron app is a supported first-class frontend rather than a fallback.
 
 ```sh
@@ -221,14 +221,14 @@ setting tables, and [docs/vscode.md](docs/vscode.md) for the architecture.
 | Guide | Contents |
 | --- | --- |
 | [docs/features.md](docs/features.md) | The full feature list behind the highlights above. |
-| [docs/install.md](docs/install.md) | Install and update the CLI, Oxide Desktop GPUI, Oxide Desktop Electron, and the extension; supported platforms, `oxide update`, `oxide uninstall`. |
+| [docs/install.md](docs/install.md) | Install and update the CLI, Oxide Desktop Tauri, Oxide Desktop Electron, and the extension; supported platforms, `oxide update`, `oxide uninstall`. |
 | [docs/tui.md](docs/tui.md) | Terminal layout, keyboard shortcuts, copying. |
 | [docs/modes.md](docs/modes.md) | `-p/--print`, `--mode json`, `--mode rpc`, `oxide session`, a turn's changes. |
 | [docs/configuration.md](docs/configuration.md) | `config.json`, CLI flags, environment variables, providers, trust, themes, compaction, data locations. |
 | [docs/ecosystem.md](docs/ecosystem.md) | The `.oxide/` layout, Claude Code compatibility, built-in slash commands. |
 | [docs/tools.md](docs/tools.md) | Tool parameters, behavior, output caps, concurrency. |
 | [docs/cli.md](docs/cli.md) | Task-by-task guide: MCP servers, subagents, commands, skills, plugins, permissions, reasoning, attachments, notifications. |
-| [docs/desktop-gpui.md](docs/desktop-gpui.md) | Primary native Oxide Desktop GPUI. |
+| [docs/desktop-tauri.md](docs/desktop-tauri.md) | Primary native Oxide Desktop Tauri. |
 | [docs/desktop.md](docs/desktop.md) | Oxide Desktop Electron architecture, interface, packaging, and signing. |
 | [docs/vscode.md](docs/vscode.md) | VS Code extension architecture, protocol, testing. |
 | [docs/comparison.md](docs/comparison.md) | Oxide next to Claude Code, Codex, Pi Coding Agent, and OpenCode. |
@@ -244,14 +244,14 @@ cargo fmt
 ```
 
 The workspace members are `crates/core` (shared agent core) and `crates/cli` (the
-`oxide` terminal binary). `crates/desktop-gpui` and `crates/desktop` are
-separate Cargo workspaces: GPUI is the recommended native desktop app, while
+`oxide` terminal binary). `crates/desktop-tauri` and `crates/desktop` are
+separate Cargo workspaces: Tauri is the recommended native desktop app, while
 Electron is an independently supported desktop app packaged with
 electron-builder. The VS
 Code extension is a separate pnpm package:
 
 ```sh
-cd crates/desktop-gpui && cargo test && cargo clippy --all-targets -- -D warnings
+cd crates/desktop-tauri && cargo test && cargo clippy --all-targets -- -D warnings
 cd crates/desktop && pnpm install && cargo test
 node crates/desktop/check-app.mjs && node crates/desktop/check-shell.mjs
 cd editors/vscode && pnpm test

@@ -2,7 +2,7 @@
 
 The full feature list. The [README](../README.md) keeps a short summary; this
 page is the detail behind it, and the task-by-task guides live in
-[cli.md](cli.md), [desktop-gpui.md](desktop-gpui.md), [desktop.md](desktop.md),
+[cli.md](cli.md), [desktop-tauri.md](desktop-tauri.md), [desktop.md](desktop.md),
 and [vscode.md](vscode.md).
 
 ## Interfaces
@@ -10,14 +10,14 @@ and [vscode.md](vscode.md).
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
   TUI, `/connect` and `/logout` manage provider credentials.
-- **Oxide Desktop GPUI** (`crates/desktop-gpui`) is the recommended and primary
-  desktop app: a native GPUI window that links the desktop engine in-process,
+- **Oxide Desktop Tauri** (`crates/desktop-tauri`) is the recommended and primary
+  desktop app: a native Tauri window that links the desktop engine in-process,
   manages multiple projects, and shares the CLI's configuration and session
   store. It includes chat tabs, independent drafts and runs, streamed Markdown,
-  reviews, worktrees, terminals, MCP servers, plugins, and AccessKit
-  accessibility (see [desktop-gpui.md](desktop-gpui.md)).
-- The Electron desktop app (`crates/desktop`) remains a compatibility fallback.
-  It drives the same Rust engine over its JSON bridge and shares the same
+  reviews, worktrees, terminals, MCP servers, plugins, and the platform webview's
+  accessibility (see [desktop-tauri.md](desktop-tauri.md)).
+- The Electron desktop app (`crates/desktop`) is independently supported. It
+  drives the same Rust engine over its JSON bridge and shares the same
   configuration and session store (see [desktop.md](desktop.md)).
 - VS Code extension (`editors/vscode`) that drives the same `oxide` binary from
   a chat panel in the activity bar, with editor actions for the selection and

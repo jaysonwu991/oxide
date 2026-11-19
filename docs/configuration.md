@@ -159,7 +159,7 @@ oxide mcp <COMMAND>
 oxide plugin <COMMAND>
 oxide session <COMMAND>
 oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
-oxide update [--check] [--component <cli|desktop-gpui|desktop|extension>] [--current <VERSION>] [--version <VERSION>] [--force] [--json]
+oxide update [--check] [--component <cli|desktop-tauri|desktop|extension>] [--current <VERSION>] [--version <VERSION>] [--force] [--json]
 ```
 
 These print what a front-end draws, through the same core the terminal uses, so

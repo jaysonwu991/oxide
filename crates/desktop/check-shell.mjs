@@ -106,7 +106,11 @@ const scalar = (source, key) => {
 // The names `ui/app.js` performs and the dispatch arms the engine answers with,
 // read out of the sources themselves rather than a hand-kept list.
 const arms = new Set([...commands.slice(commands.indexOf("pub async fn dispatch(")).matchAll(/^\s*"([a-z_]+)" =>/gm)].map(([, name]) => name));
-const performed = new Set([...app.matchAll(/invoke\("([a-z_]+)"/g)].map(([, name]) => name));
+const performed = new Set(
+  [...app.matchAll(/invoke\("([a-z_]+)"/g)]
+    .map(([, name]) => name)
+    .filter((name) => name !== "oxide_message"),
+);
 // A command the window performs itself never reaches the engine: the folder
 // chooser is the platform's panel and a link is the platform's browser, and a
 // child process can be reached through neither.
@@ -133,9 +137,9 @@ check(
   JSON.stringify(unused) ===
     JSON.stringify([
       "add_project",
-      "check_gpui_updates",
-      "download_gpui_update",
-      "install_gpui_update",
+      "check_tauri_updates",
+      "download_tauri_update",
+      "install_tauri_update",
       "list_sessions",
       "rename_session",
     ]),
@@ -201,7 +205,6 @@ check(
   ) &&
     app.includes("window.__electrobunHostBridge") &&
     /userBridge\.postMessage\(JSON\.stringify\(packet\)\)/.test(app) &&
-    !app.includes("__TAURI__") &&
     !app.includes("__OXIDE__"),
   invokeCall.replace(/\s+/g, " ").trim(),
 );
@@ -234,7 +237,8 @@ check(
   ) &&
     [...installed].every((name) => pageGlobals.includes(name)) &&
     !installed.has("__electrobunSendToHost") &&
-    /const userBridge = window\.__electrobunHostBridge/.test(app) &&
+    /let userBridge = window\.__electrobunHostBridge/.test(app) &&
+    /window\.__electrobunHostBridge = userBridge/.test(app) &&
     /if \(userBridge\) return userBridge\.postMessage\(JSON\.stringify\(packet\)\)/.test(app),
   `page: ${pageGlobals.join(", ")} / preload: ${[...installed].join(", ")}`,
 );
@@ -244,8 +248,9 @@ check(
     /page\.__electrobun\.receiveMessageFromHost\(raw\)/.test(preload) &&
     /page\.__electrobunPendingHostMessages\.push\(raw\)/.test(preload) &&
     /window\.__electrobun\.receiveMessageFromHost = receiveMessageFromHost/.test(app) &&
-    /window\.__electrobunPendingHostMessages = \[\]/.test(app) &&
-    /setTimeout\(drainPendingHostMessages, 0\)/.test(app),
+    /window\.__electrobunPendingHostMessages = window\.__electrobunPendingHostMessages \|\| \[\]/.test(app) &&
+    /pageEventsReady = true/.test(app) &&
+    /drainPendingHostMessages\(\)/.test(app),
 );
 
 // ---------- the channel between the window and the engine ----------
@@ -319,8 +324,8 @@ check(
 // The engine's half of the protocol: a request read by its own fields, answered
 // over the two envelopes the page and the window already agreed on. The command
 // layer and the pipe are library modules (`crates/desktop/src/lib.rs`), so the
-// binary reaches them through the package's own name — the GPUI front-end in
-// `crates/desktop-gpui` links the same ones.
+// binary reaches them through the package's own name — the Tauri front-end in
+// `crates/desktop-tauri` links the same ones.
 check(
   "reads the packet the page writes",
   /packet\["type"\] != "request"/.test(engine) &&
@@ -806,7 +811,7 @@ const aliases = [
   ...readme.matchAll(/releases\/download\/(desktop|extension)-latest\/([^)\s]+)/g),
 ];
 const workflows = {
-  desktop: text(`${root}.github/workflows/desktop-gpui.yml`),
+  desktop: text(`${root}.github/workflows/desktop-tauri.yml`),
   extension: text(`${root}.github/workflows/vscode.yml`),
 };
 check(

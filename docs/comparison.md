@@ -7,10 +7,10 @@ so check each project's documentation for the current details.
 
 | Capability | Oxide | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) | [Codex](https://github.com/openai/codex) | [Pi Coding Agent](https://github.com/earendil-works/pi) | [OpenCode](https://opencode.ai) |
 | --- | --- | --- | --- | --- | --- |
-| Distribution | Native Rust core + Oxide Desktop GPUI (recommended) + Electron + VS Code extension | Proprietary CLI + apps | Open-source CLI (Rust) + IDE extension | Open-source TypeScript CLI (npm, install script, Nix) with RPC mode and a TypeScript SDK | Open-source CLI (Node/Bun) |
+| Distribution | Native Rust core + Oxide Desktop Tauri (recommended) + Electron + VS Code extension | Proprietary CLI + apps | Open-source CLI (Rust) + IDE extension | Open-source TypeScript CLI (npm, install script, Nix) with RPC mode and a TypeScript SDK | Open-source CLI (Node/Bun) |
 | License | MIT | Proprietary | Apache-2.0 | MIT | Open source |
 | Model providers | 35 built-in providers (OpenAI-compatible incl. the Portkey gateway, Anthropic Messages, Gemini/Vertex, Bedrock, Azure, GitHub Copilot, GitLab Duo) + any custom endpoint | Claude (Anthropic API, Bedrock, Vertex, third-party) | OpenAI models (GPT-5-Codex family) + custom providers | Many hosted providers by OAuth or API key (Anthropic, OpenAI, Gemini, Bedrock and Vertex with ambient credentials, and more) + custom endpoints and llama.cpp | Any provider (bring your own keys) |
-| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, native GPUI desktop, Electron, VS Code extension | Terminal, IDE, desktop, web | Terminal CLI, IDE (VS Code, Cursor) | Interactive TUI, print, JSON event stream, RPC, TypeScript SDK | Terminal, desktop, IDE, web |
+| Interfaces | Terminal TUI, `-p` print, JSON/RPC modes, native Tauri desktop, Electron, VS Code extension | Terminal, IDE, desktop, web | Terminal CLI, IDE (VS Code, Cursor) | Interactive TUI, print, JSON event stream, RPC, TypeScript SDK | Terminal, desktop, IDE, web |
 | Project config | `.oxide/` + `AGENTS.md` (also reads `.claude/`) | `CLAUDE.md` + `.claude/` | `AGENTS.md` + `~/.codex/config.toml` | `.pi/` + `AGENTS.md` (also reads `CLAUDE.md`) | `opencode.json` + `AGENTS.md` |
 | Subagents | `--agent`, `task`, command routing | Subagents, background agents | Subagents | — (left to extensions and packages) | Agents |
 | Reasoning effort | `auto` / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`, narrowed to the levels the model's own listing or the pi.dev catalog advertises (Shift+Tab, `--reasoning`) | Extended thinking | `--reasoning-effort` (model-dependent) | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`, cycled with Shift+Tab and settable per model | Model-dependent |
@@ -27,7 +27,7 @@ so check each project's documentation for the current details.
 
 A dash indicates no first-class built-in equivalent. Where Oxide differs most:
 it is a dependency-light Rust core with a terminal binary, a recommended native
-GPUI desktop app, an Electron compatibility fallback, and a VS Code extension, it speaks the
+Tauri desktop app, an independently supported Electron app, and a VS Code extension, it speaks the
 OpenAI-compatible, Anthropic, Gemini, Bedrock and Azure APIs directly, its
 plugin packages reuse the same on-disk commands, agents, skills, and MCP servers
 the ecosystem already reads, and it is compatible with the Claude Code on-disk

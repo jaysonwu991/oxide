@@ -1358,19 +1358,31 @@ check("left the composer ready to type in", elementFor("prompt").disabled === fa
 // and at the same weight as the composer's controls under it — not an emoji,
 // whose shape and size belong to whatever font the machine has.
 const firstProjectRow = elementFor("projects-tree").children[0].children[0];
-const projectDisclosure = firstProjectRow.querySelector(".project-collapse");
 const projectChats = elementFor("projects-tree").children[0].children[1];
 const beforeFoldProject = app.state.project;
-projectDisclosure.onclick(press({ stopPropagation() {} }));
+check(
+  "made the project row itself the disclosure, without a dropdown glyph",
+  firstProjectRow.querySelector(".project-collapse") === null &&
+    firstProjectRow.getAttribute("role") === "treeitem" &&
+    firstProjectRow.getAttribute("tabindex") === "0" &&
+    firstProjectRow.getAttribute("aria-controls") === projectChats.id,
+  firstProjectRow.outline(),
+);
+firstProjectRow.onclick(press());
 check("folded project chats without selecting another project",
-  projectChats.hidden && projectDisclosure.getAttribute("aria-expanded") === "false" && app.state.project === beforeFoldProject);
+  projectChats.hidden && firstProjectRow.getAttribute("aria-expanded") === "false" && app.state.project === beforeFoldProject);
 await app.renderProjectsTree();
-const restoredDisclosure = elementFor("projects-tree").querySelector(".project-collapse");
+const restoredProject = elementFor("projects-tree").children[0].children[0];
 check("kept the project folded when sessions repaint",
-  elementFor("projects-tree").children[0].children[1].hidden && restoredDisclosure.getAttribute("aria-expanded") === "false");
-restoredDisclosure.onclick(press({ stopPropagation() {} }));
+  elementFor("projects-tree").children[0].children[1].hidden && restoredProject.getAttribute("aria-expanded") === "false");
+let disclosurePrevented = false;
+restoredProject.onkeydown({
+  key: " ",
+  target: restoredProject,
+  preventDefault() { disclosurePrevented = true; },
+});
 check("expanded the same project again",
-  !elementFor("projects-tree").children[0].children[1].hidden && restoredDisclosure.getAttribute("aria-expanded") === "true");
+  disclosurePrevented && !elementFor("projects-tree").children[0].children[1].hidden && restoredProject.getAttribute("aria-expanded") === "true");
 check(
   "drew a project's folder as the app's own glyph",
   String(firstProjectRow.querySelector(".icon").innerHTML) === app.ICONS.folder,
@@ -2496,7 +2508,7 @@ const footerSource = readFileSync(
 );
 
 // Model and reasoning are one visible selector beside the single action icon,
-// "Model · Effort", the control the GPUI composer draws: the model by its
+// "Model · Effort", the control the Tauri composer draws: the model by its
 // display name, and the effort half left off while the model offers only Auto.
 check(
   "showed the current model and effort in one chip beside the action",
@@ -2526,9 +2538,8 @@ check(
 // A glyph a control wears in both this window and the VS Code panel is the
 // same path in both, held verbatim here beside the extension's own sources: a
 // control drawn one way in the panel and another in this window fails the check
-// instead of drifting quietly. The rest of the window's drawings are the native
-// window's own, from `crates/desktop-gpui/src/icons.rs`, and are held to that
-// table below.
+// instead of drifting quietly. The rest of the window's drawings come from the
+// shared `crates/desktop/ui/app.js` table.
 const extensionIcons = [
   readFileSync(new URL("../../editors/vscode/src/chatView.ts", import.meta.url), "utf8"),
   readFileSync(new URL("../../editors/vscode/media/main.js", import.meta.url), "utf8"),
@@ -2550,30 +2561,9 @@ for (const [name, path] of Object.entries(sharedGlyphs)) {
     `extension: ${inExtension} · window: ${inWindow}`,
   );
 }
-// The native window's table is where a mark is designed: its 24-unit box, its
-// 1.6 weight and its round caps and joins, taken body for body by the page's
-// own `GLYPHS`. GPUI rasterises each body into an alpha mask and tints it with
-// the element's color, so a shape it fills is white there where the page names
-// `currentColor`; every other attribute, including a drawing's own override of
-// the weight, is the same on both sides.
-const gpuiIcons = readFileSync(
-  new URL("../../crates/desktop-gpui/src/icons.rs", import.meta.url),
-  "utf8",
-);
-const nativeGlyphs = Object.fromEntries(
-  [...gpuiIcons.matchAll(/\(\s*"([a-z-]+)",\s*glyph!\(\s*r##"([\s\S]*?)"##\s*\)/g)].map(
-    ([, name, body]) => [name, body.replaceAll('fill="#fff"', 'fill="currentColor"')],
-  ),
-);
-for (const [name, body] of Object.entries(app.GLYPHS)) {
-  check(
-    `drew ${name} the way the native window does`,
-    nativeGlyphs[name] === body,
-    `${JSON.stringify(nativeGlyphs[name])} · ${JSON.stringify(body)}`,
-  );
-}
-// The shell's controls are held to the same table by name: a button that keeps
-// a look-alike after the table moves on fails here rather than in a screenshot.
+// The shell's controls are held to the page's one table by name: a button that
+// keeps a look-alike after the table moves on fails here rather than in a
+// screenshot.
 const shellGlyphs = {
   "nav-back": "back",
   "nav-forward": "forward",
@@ -2638,7 +2628,7 @@ const shellGlyph = (id) => {
 for (const [id, name] of Object.entries(shellGlyphs)) {
   const glyph = shellGlyph(id);
   check(
-    `drew ${id} from the native window's table`,
+    `drew ${id} from the shared glyph table`,
     glyph !== null &&
       glyph.body === app.GLYPHS[name] &&
       /viewBox="0 0 24 24"/.test(glyph.tag) &&
@@ -2945,6 +2935,15 @@ check(
   `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px`,
 );
 check(
+  "aligned project names with the session titles beneath them",
+  /--sidebar-title-indent:\s*28px;/.test(sheet) &&
+    /\.project-item \{\s*padding:\s*7px 8px 7px calc\(var\(--sidebar-title-indent\) - 22px\);/.test(
+      sheet,
+    ) &&
+    /\.session-item \{ padding: 6px 6px 6px var\(--sidebar-title-indent\); \}/.test(sheet),
+  rowRule(".project-item"),
+);
+check(
   "replaced the resting pull badge with hover actions in the same strip",
   /min-width: 0/.test(rowRule(".session-item .name")) &&
     /flex: none/.test(rowRule(".session-pull")) &&
@@ -3100,11 +3099,8 @@ check(
   String(sheet.indexOf(".conversation > *")),
 );
 check(
-  "kept the transcript's reading column at 820px, the width GPUI draws",
-  /\.msg,[^}]*\.run-error \{\s*max-width:\s*820px;/.test(sheet) &&
-    /const CONVERSATION_WIDTH: f32 = 820\.0;/.test(
-      readFileSync(new URL("../desktop-gpui/src/views.rs", import.meta.url), "utf8"),
-    ),
+  "kept the transcript's reading column at the shared 820px width",
+  /\.msg,[^}]*\.run-error \{\s*max-width:\s*820px;/.test(sheet),
   String(sheet.indexOf(".run-error {")),
 );
 check(

@@ -44,9 +44,10 @@ cargo run -- -p "summarize this repository"
 | `node crates/desktop/check-markdown-input.mjs <chrome>` | Optional: both composers' `installMarkdownInput` against a real Chromium layout (pass a Chromium or `chrome-headless-shell` binary). |
 | `node crates/desktop/check-transcript-scroll.mjs <chrome>` | Optional: both transcripts' follow-the-newest-line controller against Chromium's real layout. |
 | `node --test shared/diagrams.test.mjs` | The shared Mermaid renderer's lifecycle checks (run by CI). |
-| `cd crates/desktop-gpui && cargo test` | Oxide Desktop GPUI's tests (markdown blocks, inline spans, the transcript model). |
-| `cd crates/desktop-gpui && cargo run` | Run the primary GPUI window (`--check` answers engine commands without a window). |
-| `cd crates/desktop-gpui && ./package.sh` | Package Oxide Desktop GPUI for this platform under `crates/desktop-gpui/artifacts/`. |
+| `cd crates/desktop-tauri && cargo test` | Oxide Desktop Tauri's packet, native service, menu and launch-handshake tests. |
+| `node crates/desktop-tauri/check-shell.mjs` | Tauri host, shared-page bridge, native service parity and release-train checks. |
+| `cd crates/desktop-tauri && cargo run` | Run the primary Tauri window (`--check` answers engine commands without a window). |
+| `cd crates/desktop-tauri && ./package.sh` | Package Oxide Desktop Tauri for this platform under `crates/desktop-tauri/artifacts/`. |
 | `cd editors/vscode && pnpm test` | VS Code extension tests (`tsc -p .` then `node --test out/test/`). |
 
 Before opening a pull request, make sure `cargo fmt`, `cargo clippy`, and
@@ -66,12 +67,12 @@ packaged by electron-builder and versioned with the app, so the package is
 the root one and built from its own directory. It is an Electron window in
 TypeScript (`electron/`) over the Rust engine (`src/`, one JSON packet per line)
 and the front-end the window loads (`ui/`), documented in
-[`docs/desktop.md`](docs/desktop.md). `oxide-desktop-gpui`
-The primary native desktop app, `oxide-desktop-gpui` (`crates/desktop-gpui`), is
-a workspace of its own that
-links the same engine's library half in-process and draws it natively, packaged
+[`docs/desktop.md`](docs/desktop.md). The primary desktop app,
+`oxide-desktop-tauri` (`crates/desktop-tauri`), is a workspace of its own that
+links the same engine's library half in-process and hosts the shared page with
+Tauri, packaged
 by its own `package.sh`, documented in
-[`docs/desktop-gpui.md`](docs/desktop-gpui.md). The VS Code extension under
+[`docs/desktop-tauri.md`](docs/desktop-tauri.md). The VS Code extension under
 `editors/vscode` is a separate pnpm/TypeScript package, not a Cargo workspace
 member, documented in [`docs/vscode.md`](docs/vscode.md). Every path below is
 relative to the repository root.
@@ -128,8 +129,8 @@ relative to the repository root.
 | `crates/core/src/approval.rs` | The interactive approve/deny broker shared by the TUI, the CLI's rpc mode and the desktop app: emits an `approval_request` event carrying a request id and resolves `deny`/`once`/`always` from the answer. The desktop brokers the same decisions through its Rust-host event sink in `crates/desktop/src/approval.rs`. |
 | `crates/core/src/approvals.rs` | The persisted side of an `always` answer: per-project `allow` rules in the shared `<config>/Oxide/approvals.json`, so the terminal, the desktop app and the VS Code extension stop asking for the same tool. |
 | `crates/core/src/ask.rs` | The other direction: a skill's `ask` tool, the questions it parses, and the broker the desktop app and an `--mode rpc` client answer through (unanswered after five minutes, announced closed so a dialog stops offering an answer nothing waits for). |
-| `crates/desktop/src/commands.rs` | The shared desktop command layer (projects, sessions, turns, models, themes, providers, approvals). The Electron reaches it through the single `oxide_invoke` the page sends; Oxide Desktop GPUI dispatches the same commands through the linked library. |
-| `crates/desktop-gpui/src/` | The primary GPUI front-end: `engine.rs` runs the desktop engine in-process, `app.rs` holds the window's state and packets, `views.rs` draws the rail, sidebar, transcript, composer and docks, `overlays.rs` the dialogs, `editor.rs` the composer's text field, `markdown.rs` the transcript's markdown, and `model.rs` the cards a turn leaves. |
+| `crates/desktop/src/commands.rs` | The shared desktop command layer (projects, sessions, turns, models, themes, providers, approvals). The Electron reaches it through the single `oxide_invoke` the page sends; Oxide Desktop Tauri dispatches the same commands through the linked library. |
+| `crates/desktop-tauri/src/` | The primary Tauri host: `main.rs` bridges the shared Electron page to native services and the engine, `menu.rs` builds the translated macOS menu, and `engine.rs` dispatches the desktop command contract in-process. |
 | `editors/vscode/` | VS Code extension (separate pnpm/TypeScript package): a chat webview and editor actions that drive the installed `oxide` binary as `oxide --mode rpc` (its prompt, and the answer to a tool approval, are request frames on the process's stdin); `src/core/` is webview-free and unit tested under `node --test`. |
 | `.oxide/` | Project agents, commands, prompts, skills, and plugins (Oxide layout). |
 
@@ -248,8 +249,8 @@ Releases are automated by GitHub Actions:
    (including `x86_64-pc-windows-msvc`), packages each binary with a `.sha256`
    checksum, and publishes a GitHub Release with `install.sh` and `install.ps1`
    attached.
-3. `desktop-gpui.yml` triggers on `desktop-gpui-v*` tags, builds Oxide Desktop
-   GPUI for every supported platform, and publishes the recommended desktop
+3. `desktop-tauri.yml` triggers on `desktop-tauri-v*` tags, builds Oxide Desktop
+   Tauri for every supported platform, and publishes the recommended desktop
    installers and `desktop-latest` alias.
 4. `desktop.yml` triggers on `desktop-v*` tags (and manually), builds the
    Electron installers with electron-builder, and drafts its separate
@@ -258,18 +259,18 @@ Releases are automated by GitHub Actions:
    check and unit tests, builds `oxide-vscode.vsix`, and attaches it
    to the matching GitHub Release.
 
-The CLI, Oxide Desktop GPUI, the Electron app, and the VS Code extension
+The CLI, Oxide Desktop Tauri, the Electron app, and the VS Code extension
 release independently. A `vX.Y.Z` tag releases the CLI; a
-`desktop-gpui-vX.Y.Z` tag releases Oxide Desktop GPUI; a `desktop-vX.Y.Z` tag
+`desktop-tauri-vX.Y.Z` tag releases Oxide Desktop Tauri; a `desktop-vX.Y.Z` tag
 releases the Electron app; an `extension-vX.Y.Z` tag releases the VS Code
 extension. A component that did not change keeps its previous version.
 
 Release notes are drafted on every push to `main`, one draft per component:
 `release-drafter.cli.yml` drafts the CLI release,
-`release-drafter.desktop-gpui.yml` drafts Oxide Desktop GPUI,
+`release-drafter.desktop-tauri.yml` drafts Oxide Desktop Tauri,
 `release-drafter.desktop.yml` drafts the Electron app, and
 `release-drafter.vscode.yml` drafts the VS Code extension. Each config is pinned to
-its component's tag prefix (`v`, `desktop-gpui-v`, `desktop-v`, and
+its component's tag prefix (`v`, `desktop-tauri-v`, `desktop-v`, and
 `extension-v`), so a run only
 sees its own draft and resolves its next version from its own last release; the
 draft it produces already carries the tag to push. The extension prefix is
@@ -289,8 +290,8 @@ The repository keeps a placeholder version (`0.0.0`). On a tag, the matching
 workflow runs `scripts/set-version.sh "$GITHUB_REF_NAME"` followed by
 `cargo update --workspace`, so the built CLI binary or desktop app reports the
 tag version — there is no manual version bump. Both desktop packages are their
-own workspaces, so `set-version.sh` writes the GPUI version into
-`crates/desktop-gpui/Cargo.toml` and Electron's version into
+own workspaces, so `set-version.sh` writes the Tauri version into
+`crates/desktop-tauri/Cargo.toml` and Electron's version into
 `crates/desktop/Cargo.toml` and `crates/desktop/package.json`, as well as the
 root one. The VS Code extension is
 versioned separately in `editors/vscode/package.json`; the script patches it
@@ -303,8 +304,8 @@ git push origin vX.Y.Z
 git tag desktop-vX.Y.Z     # desktop release
 git push origin desktop-vX.Y.Z
 
-git tag desktop-gpui-vX.Y.Z # Oxide Desktop GPUI release
-git push origin desktop-gpui-vX.Y.Z
+git tag desktop-tauri-vX.Y.Z # Oxide Desktop Tauri release
+git push origin desktop-tauri-vX.Y.Z
 
 git tag extension-vX.Y.Z   # VS Code extension release
 git push origin extension-vX.Y.Z
@@ -315,7 +316,7 @@ The VS Code extension's release is attached by `vscode.yml`: it builds
 uploads it to the release the drafter already created for that tag.
 
 The desktop and extension workflows also refresh alias releases —
-`desktop-latest` for Oxide Desktop GPUI, `desktop-electron-latest` for the
+`desktop-latest` for Oxide Desktop Tauri, `desktop-electron-latest` for the
 Electron, and `extension-latest` — with the same files under tags that
 never move, because `/releases/latest` names the newest release of the
 repository as a whole and multiple components publish into it, so it cannot address one component's

@@ -1,8 +1,8 @@
 # Electron Desktop
 
-The primary desktop app is the native GPUI window in `crates/desktop-gpui`,
-documented in [desktop-gpui.md](desktop-gpui.md). This file describes the
-Electron window, retained as the fallback during the desktop migration.
+The primary desktop app is the native Tauri window in `crates/desktop-tauri`,
+documented in [desktop-tauri.md](desktop-tauri.md). This file describes the
+independently supported Electron window.
 
 The `oxide-desktop` package (`crates/desktop`) is an
 [Electron](https://www.electronjs.org) front-end for the same agent the terminal
@@ -139,9 +139,10 @@ glyph — green for open requests, purple for merged, red for closed and grey wh
 their state is unknown — so the mark is one drawing and the colour is the state. Pin and archive actions still
 appear on hover or keyboard focus without shifting the title.
 
-Project disclosure buttons fold their chats independently and keep that choice
-while the session list refreshes. Opening a chat from Recents reveals its project
-again. Pull-request badges remain icon-only and give way to Pin and Archive
+Project rows are their own disclosure controls: clicking the row folds or
+expands its chats, without a separate chevron, and the choice survives a session
+list refresh. Opening a chat from Recents reveals its project again.
+Pull-request badges remain icon-only and give way to Pin and Archive
 in the same right-hand area on hover or keyboard focus. Focusing the request
 link itself keeps it visible and clickable until focus moves to another control.
 
@@ -363,12 +364,9 @@ inline SVG — the tree's folder, a document, a caret and a check, the mark that
 signs a reply, `+`, and the remove `✕` — stroked with `currentColor`, so nothing
 on screen is a character whose shape and size would come from the machine's
 fonts, and every control's words live in its tooltip and its `aria-label`, as
-the extension's do. A mark the native window draws is that window's own
-drawing, taken body for body from `crates/desktop-gpui/src/icons.rs` in its
-24-unit box at 1.6, so a control wears one mark in both desktop front-ends;
-`ui/app.js`'s `GLYPHS` holds that table and `check-app.mjs` reads the Rust one
-beside it, failing a look-alike rather than letting the two windows drift. The
-few marks the native table has none for — the refresh arrow, a queue's trash,
+the extension's do. Tauri loads this same page, including `ui/app.js`'s
+`GLYPHS` table, so a control wears one mark in both desktop front-ends. The
+few marks kept for this page alone — the refresh arrow, a queue's trash,
 Undo, the MCP power switch, the composer's status badge and the brand mark —
 are drawn for this page alone in the panel's own boxes (24 units at 1.8, 16 at
 1.5–1.6 for the marks that sit on a text baseline). The characters the window
@@ -580,7 +578,7 @@ The regions, top to bottom:
   failure is cut with an
   ellipsis rather than allowed to push the controls off the row.
   The controls the extension's own row carries come first and in
-  its order, and each wears the native window's own mark — the paperclip, the
+  its order, and each wears the shared page's own mark — the paperclip, the
   `+`, the send arrow, the stop square, the close `✕` and the lock — so the two
   desktop front-ends paint one row; only the refresh arrow and the MCP power
   switch are the panel's own paths, which `check-app.mjs` holds beside the
@@ -1970,7 +1968,7 @@ Each build writes to `crates/desktop/artifacts/`, named the way
 `Oxide-linux-<arch>-Setup.tar.gz` for each Linux architecture, and a
 `Oxide-win-<arch>-Setup.exe`. None of them carries a version, exactly as the
 CLI's archives are named: the same names are republished to the
-`desktop-electron-latest` release, while the recommended Oxide Desktop GPUI
+`desktop-electron-latest` release, while the recommended Oxide Desktop Tauri
 installers use `desktop-latest`. electron-builder spells an AppImage's x64
 `x86_64` rather than `x64`, so the Linux x64 AppImage is
 `Oxide-linux-x86_64-Setup.AppImage` while its archive is
@@ -2135,7 +2133,7 @@ with generated notes before uploading and publishing. It then refreshes the
 `desktop-electron-latest` alias release — the same files again, at a tag that never moves
 and is marked a pre-release so `/releases/latest` keeps naming a versioned
 release. This is Electron's permanent link; the `desktop-latest`
-release used by the main installer table is published from Oxide Desktop GPUI. A
+release used by the main installer table is published from Oxide Desktop Tauri. A
 `workflow_dispatch` build publishes nothing and needs no more than a read-only
 token.
 

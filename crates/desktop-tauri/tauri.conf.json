@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Oxide",
+  "version": "0.0.0",
+  "identifier": "dev.oxide.desktop",
+  "build": {
+    "frontendDist": "../desktop/ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Oxide",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 820,
+        "minHeight": 560,
+        "center": true,
+        "visible": false,
+        "acceptFirstMouse": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 16
+        }
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "../desktop/icons/32x32.png",
+      "../desktop/icons/128x128.png",
+      "../desktop/icons/128x128@2x.png",
+      "../desktop/icons/icon.icns",
+      "../desktop/icons/icon.ico"
+    ]
+  }
+}
