@@ -14,8 +14,8 @@ and [vscode.md](vscode.md).
   desktop app: a native GPUI window that links the desktop engine in-process,
   manages multiple projects, and shares the CLI's configuration and session
   store. It includes chat tabs, independent drafts and runs, streamed Markdown,
-  reviews, worktrees, terminals, MCP servers, plugins, Computer Use controls,
-  and AccessKit accessibility (see [desktop-gpui.md](desktop-gpui.md)).
+  reviews, worktrees, terminals, MCP servers, plugins, and AccessKit
+  accessibility (see [desktop-gpui.md](desktop-gpui.md)).
 - The Electron desktop app (`crates/desktop`) remains a compatibility fallback.
   It drives the same Rust engine over its JSON bridge and shares the same
   configuration and session store (see [desktop.md](desktop.md)).

@@ -432,7 +432,7 @@ let pluginsError = null;
 const pluginsFixture = {
   installed: [
     { name: "helper", description: "Useful commands", enabled: true, version: "1.0" },
-    { name: "oxide-computer-use", description: "Control desktop apps", enabled: true, version: "0.1.0", managed: true },
+    { name: "builtin-helper", description: "Bundled with the app", enabled: true, version: "0.1.0", managed: true },
   ],
   marketplaces: [{ name: "team", source: "/tmp/team", error: null, plugins: [
     { name: "helper", description: "Useful commands", installed: true, enabled: true },
@@ -440,19 +440,6 @@ const pluginsFixture = {
   ] }],
 };
 let mcpsError = null;
-let computerUsePolicy = {
-  default: "allow",
-  allowed: [],
-  denied: [],
-  identities: {},
-  oneTime: null,
-  selfAutomation: "deny",
-  terminals: "deny",
-  apps: [
-    { id: "com.microsoft.edgemac", displayName: "Microsoft Edge", path: "/Applications/Microsoft Edge.app", isRunning: true, policy: "" },
-    { id: "com.apple.Notes", displayName: "Notes", path: "/System/Applications/Notes.app", isRunning: false, policy: "" },
-  ],
-};
 let createError = null;
 
 // What `check_updates` answers with: the desktop app's own release train, the
@@ -830,24 +817,6 @@ const invoke = async (command, args = {}) => {
       if (mcpsError) throw mcpsError;
       if (!String(args.project || "").trim()) throw "select a project first";
       return servers.map((server) => ({ ...server }));
-    case "computer_use_policy": {
-      if (!String(args.project || "").trim()) throw "select a project first";
-      if (args.action === "list") {
-        return { configured: true, server: "oxide-computer-use", policy: structuredClone(computerUsePolicy) };
-      }
-      if (args.action === "set_default") {
-        computerUsePolicy.default = args.mode;
-      } else if (args.app) {
-        const display = computerUsePolicy.apps.find((entry) => entry.id === args.app)?.displayName || args.app;
-        computerUsePolicy.allowed = computerUsePolicy.allowed.filter((name) => name !== display && name !== args.app);
-        computerUsePolicy.denied = computerUsePolicy.denied.filter((name) => name !== display && name !== args.app);
-        if (args.action === "allow") computerUsePolicy.allowed.push(display);
-        if (args.action === "deny") computerUsePolicy.denied.push(display);
-        if (args.action === "grant_once") computerUsePolicy.oneTime = display;
-        if (args.action === "revoke") computerUsePolicy.oneTime = null;
-      }
-      return { configured: true, server: "oxide-computer-use", policy: structuredClone(computerUsePolicy) };
-    }
     case "set_mcp_server": {
       if (mcpsError) throw mcpsError;
       const target = servers.find((server) => server.name === args.name);
@@ -1336,7 +1305,7 @@ vm.runInThisContext(
     " openWorktrees, renderWorktrees, selectWorktree, createWorktree, removeWorktree, createWorktreeBranch, handoffSession, loadWorktrees, runFolder, chatSources, paintProjectSources," +
     " listedSessions, selectSessionFromTree, archiveSession," +
     " updateChips, openReasoning, loadInfo, refreshContextWindow, applyContextInfo, parkThread, restoreThread, captureChatTab, threads, visibleThread, withThread, turnInThread, backgroundRun, openThreadRecord, threadForRunId," +
-    " startTool, finishTool, toggleTool, renderStoredTranscript, paintComputerUse, isComputerTool, runningComputerThread, openUpdate, installUpdate, cancelUpdate," +
+    " startTool, finishTool, toggleTool, renderStoredTranscript, openUpdate, installUpdate, cancelUpdate," +
     " installedUpdate, catchUpOnLaunchUpdate, handleUpdateProgress, handleUpdateReady, handleUpdateFailed," +
     " paintJumpLatest, scrollDown, chatTabs, activeChatTab, newChatTab, activateChatTab, closeChatTab, renderMessageNavigator, paintDockToggles," +
     " bubble, renderMarkdown, markdownToText, readMarkdown, SCROLLBAR_LINGER, setUsage, setReasoning, setStatus, showToast, answerTrust, paintStatus, confirmDialog," +
@@ -3313,19 +3282,6 @@ check(
 );
 await tick();
 check("closed the list once the reference was done", atBox.hidden === true);
-await typeAt("@Mic");
-await tick();
-check(
-  "offered a running app as an @App Computer Use target",
-  String(atRows.outline()).includes("Microsoft Edge"),
-  `${atBox.hidden} / ${atRows.outline()}`,
-);
-app.acceptAt(0);
-check(
-  "inserted a whitespace-safe @App identifier",
-  composer.value === "@com.microsoft.edgemac ",
-  composer.value,
-);
 
 // A row of the list is clicked like anything else, while the press is refused
 // so the caret stays in the message box it is completing into: that list is the
@@ -3690,7 +3646,7 @@ check("marked the app-managed plugin as built in", elementFor("plugin-list").out
 check(
   "did not offer uninstall for the app-managed plugin",
   ![...elementFor("plugin-list").querySelectorAll("button")].some(
-    (button) => button.title === "Uninstall oxide-computer-use",
+    (button) => button.title === "Uninstall builtin-helper",
   ),
 );
 check("showed available marketplace plugins", elementFor("plugin-list").outline().includes("search-tools"));
@@ -4725,8 +4681,8 @@ check(
 );
 
 const toolShot = "data:image/png;base64,iVBORw0KGgo=";
-const screenCard = app.startTool("computer-use__screenshot", '{}');
-app.handleEvent({ type: "tool_execution_end", toolName: "computer-use__screenshot",
+const screenCard = app.startTool("notes__screenshot", '{}');
+app.handleEvent({ type: "tool_execution_end", toolName: "notes__screenshot",
   result: "Captured screenshot", attachments: [{ name: "Edge", dataUrl: toolShot }] });
 const screenButton = screenCard.block.querySelector(".att-open");
 check("rendered a live MCP screenshot as a preview button", screenButton?.tagName === "BUTTON");
@@ -4736,16 +4692,13 @@ app.closeOverlays();
 const replayScreen = document.createElement("div");
 app.renderStoredTranscript(replayScreen, [
   { role: "assistant", thinking: "Capture the app before deciding.",
-    toolCalls: [{ id: "shot", name: "computer-use__screenshot", arguments: "{}" }] },
+    toolCalls: [{ id: "shot", name: "notes__screenshot", arguments: "{}" }] },
   { role: "tool", toolCallId: "shot", content: "Captured screenshot",
     attachments: [{ name: "Edge", dataUrl: toolShot }] },
 ]);
 check("restored stored thinking before the assistant step",
   replayScreen.querySelector(".thinking")?.textContent === "✦ Capture the app before deciding.");
 check("restored MCP screenshot previews from session history", Boolean(replayScreen.querySelector(".att-open")));
-check("restored the persistent computer-use screenshot from session history",
-  app.visibleThread().computerUse?.image?.dataUrl === toolShot &&
-  Boolean(app.el("computer-use-preview").children.length));
 const replayActivity = document.createElement("div");
 app.renderStoredTranscript(replayActivity, [
   { role: "assistant", content: "", toolCalls: [
@@ -4770,155 +4723,9 @@ check(
     String(replayActivities[1].className).includes("single"),
   String(replayActivities.length),
 );
-const unsafeCard = app.startTool("computer-use__screenshot", '{}');
+const unsafeCard = app.startTool("notes__screenshot", '{}');
 app.finishTool(unsafeCard, "image", { attachments: [{ dataUrl: "https://example.com/track.png" }] });
 check("refused remote tool images in previews", !unsafeCard.block.querySelector(".att-open"));
-
-// Computer-use controls must keep the originating conversation's state,
-// including when a later AX-only result carries no new screenshot.
-console.log("computer-use activity and persistent preview");
-const computerThread = app.visibleThread();
-computerThread.computerUse = null;
-computerThread.tools = [];
-computerThread.busy = false;
-computerThread.runError = "";
-computerThread.stopRequested = false;
-check("recognized local computer-use server names without matching unrelated tools",
-  app.isComputerTool("computer-use-local__click") && app.isComputerTool("oxide-computer-use__get_app_state") && app.isComputerTool("computer_use__screenshot") && !app.isComputerTool("other__computer-use"));
-const missingPermissionCard = app.startTool("oxide-computer-use__permissions", "{}");
-app.finishTool(missingPermissionCard, JSON.stringify({
-  accessibility: false,
-  screen_recording: true,
-  launching_app: "/Applications/Oxide.app",
-  guidance: "Grant access in System Settings.",
-}));
-check(
-  "reported missing Computer Use permissions instead of a finished screenshot session",
-  app.el("computer-use-status").textContent === "Permissions needed" &&
-    app.el("computer-use-snapshot").textContent.includes("Device Control & Data Access"),
-  `${app.el("computer-use-status").textContent} / ${app.el("computer-use-snapshot").textContent}`,
-);
-const readyPermissionCard = app.startTool("oxide-computer-use__permissions", "{}");
-app.finishTool(readyPermissionCard, JSON.stringify({
-  accessibility: true,
-  screen_recording: true,
-  launching_app: "/Applications/Oxide.app",
-  guidance: "Ready.",
-}));
-check(
-  "reported a healthy permission check without claiming a screenshot",
-  app.el("computer-use-status").textContent === "Ready" &&
-    app.el("computer-use-snapshot").textContent === "App control and screen capture permissions are available.",
-  `${app.el("computer-use-status").textContent} / ${app.el("computer-use-snapshot").textContent}`,
-);
-computerThread.computerUse = null;
-computerThread.tools = [];
-computerThread.busy = true;
-const pointerCard = app.startTool("computer-use__click", '{"app":"Edge"}');
-check("showed a mouse icon and active computer-use status",
-  Boolean(pointerCard.block.querySelector(".computer-tool-icon")) &&
-  app.el("computer-use-toggle").classList.contains("computer-active") &&
-  app.el("computer-use-status").textContent === "Using computer");
-app.finishTool(pointerCard, "Clicked", { attachments: [{ name: "Edge", dataUrl: toolShot }] });
-check(
-  "kept the live Computer Use session between individual tool calls",
-  app.runningComputerThread() === computerThread,
-);
-const persistentPreview = app.el("computer-use-preview").children[0];
-const axCard = app.startTool("computer-use__get_app_state", '{"app":"Finder"}');
-app.finishTool(axCard, "Accessibility tree");
-check("kept the last screenshot and its original app label after an AX-only action",
-  app.el("computer-use-preview").children[0] === persistentPreview &&
-  app.el("computer-use-snapshot").textContent.includes("Edge") &&
-  app.el("computer-use-action").textContent.startsWith("Finder"));
-check("did not describe a snapshot as a live feed",
-  app.el("computer-use-status").textContent === "Waiting for next action" &&
-  app.el("computer-use-snapshot").textContent.startsWith("Last captured screenshot") &&
-  app.el("computer-use-snapshot").textContent.includes("Esc to stop") &&
-  app.el("computer-use-toggle").getAttribute("aria-keyshortcuts") === "Escape");
-computerThread.runId = 9001;
-calls.length = 0;
-document.fire("keydown", { key: "Escape", preventDefault() {} });
-await nextTick();
-check(
-  "cancelled the active Computer Use task with Escape",
-  projectCalls("cancel_run").some(([, args]) => args.runId === 9001),
-  JSON.stringify(projectCalls("cancel_run")),
-);
-computerThread.runId = null;
-computerThread.stopRequested = false;
-app.paintComputerUse();
-app.el("computer-use-toggle").onclick();
-await nextTick();
-check("opened computer-use controls independently of the details dock",
-  !app.el("computer-use-modal").hidden && Boolean(app.el("computer-use-dialog-preview").children.length));
-const initialPolicyRows = app.el("computer-use-apps").querySelectorAll(".computer-use-app-row");
-check(
-  "loaded Always-allowed app policy into the computer-use settings",
-  initialPolicyRows.length === 2 &&
-    projectCalls("computer_use_policy")[0]?.[1]?.action === "list" &&
-    app.el("computer-use-default").value === "allow",
-);
-const edgeActions = initialPolicyRows[0].querySelectorAll("button");
-edgeActions[0].onclick();
-await nextTick();
-check(
-  "Always allow writes the selected app through the server policy tool",
-  projectCalls("computer_use_policy").some(
-    ([, args]) => args.action === "allow" && args.app === "com.microsoft.edgemac",
-  ) && String(app.el("computer-use-apps").outline()).includes("Always allowed"),
-  `${JSON.stringify(projectCalls("computer_use_policy"))} / ${app.el("computer-use-apps").outline()}`,
-);
-app.el("computer-use-default").value = "deny";
-app.el("computer-use-default").onchange({ target: app.el("computer-use-default") });
-await nextTick();
-check(
-  "the fallback app decision is saved through the same policy tool",
-  projectCalls("computer_use_policy").some(
-    ([, args]) => args.action === "set_default" && args.mode === "deny",
-  ) && computerUsePolicy.default === "deny",
-);
-const dialogScreenshot = app.el("computer-use-dialog-preview").children[0];
-dialogScreenshot.focus();
-dialogScreenshot.onclick();
-check("opened the dialog screenshot at full size", !app.el("image-modal").hidden);
-app.el("image-view-close").onclick();
-check("returned screenshot focus to a visible computer-use control",
-  document.activeElement === app.el("computer-use-toggle"));
-app.el("computer-use-toggle").onclick();
-app.el("computer-use-close").onclick();
-check("returned keyboard focus from the computer-use dialog",
-  app.el("computer-use-modal").hidden && document.activeElement === app.el("computer-use-toggle"));
-const foregroundActivity = computerThread.computerUse;
-const otherComputerThread = { ...computerThread, key: "computer-background", tools: [], computerUse: null };
-app.withThread(otherComputerThread, () => {
-  const backgroundCard = app.startTool("computer-use__screenshot", '{"app":"Notes"}');
-  app.finishTool(backgroundCard, "Screenshot", { attachments: [{ name: "Notes", dataUrl: toolShot + "AA" }] });
-});
-check("kept a background screenshot and activity out of the visible conversation",
-  computerThread.computerUse === foregroundActivity && otherComputerThread.computerUse.imageApp === "Notes" &&
-  app.el("computer-use-preview").children[0] === persistentPreview);
-computerThread.stopRequested = true;
-app.paintComputerUse();
-check("disabled repeated stop requests while cancellation was pending",
-  app.el("computer-use-status").textContent === "Stopping…" && app.el("computer-use-stop").disabled);
-computerThread.busy = false;
-app.paintComputerUse();
-check("kept stopped activity distinct from a successful finish",
-  app.el("computer-use-status").textContent === "Stopped" && app.el("computer-use-stop").hidden);
-computerThread.computerUse = null;
-app.paintComputerUse();
-computerThread.computerUse = foregroundActivity;
-computerThread.stopRequested = false;
-app.paintComputerUse();
-check("restored a screenshot after switching through an empty conversation",
-  Boolean(app.el("computer-use-preview").children.length));
-const failedComputerCard = app.startTool("computer-use__click", '{"app":"Edge"}');
-app.finishTool(failedComputerCard, "Permission denied", { isError: true });
-check("reported a failed action in computer-use controls",
-  app.el("computer-use-status").textContent === "Action failed");
-computerThread.computerUse = null;
-app.paintComputerUse();
 
 // ---------- a run of tool calls ----------
 
@@ -5154,7 +4961,6 @@ for (const [name, mark] of [
   ["mock__echo", "plug"],
   ["read_mcp_resource", "plug"],
   ["task", "tool"],
-  ["computer-use__click", "pointer"],
 ]) {
   check(
     `marked a ${name} call with the ${mark} glyph`,

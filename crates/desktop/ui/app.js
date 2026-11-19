@@ -173,8 +173,6 @@ const GLYPHS = {
     '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/>',
   bell: '<path d="M5 17V10a7 7 0 0 1 14 0v7l2 2H3ZM10 22h4"/>',
   activity: '<path d="M3 12h4l2.2-7 4.1 14 2.3-7H21"/>',
-  pointer:
-    '<path d="M5 3v15l4-4 3.5 7 3-1.7-3.5-6.8H18Z"/><path d="m13.5 15.5 4 4"/>',
   bolt: '<path d="M13 2.5 5 13.5h6l-1 8 8-11h-6l1-8Z" stroke-width="1.8"/>',
   reset:
     '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" stroke-width="1.8"/><path d="M4.5 3.8v3.4h3.4" stroke-width="1.8"/>',
@@ -262,7 +260,6 @@ const ICONS = {
   pin: gpui(GLYPHS.pin),
   archive: gpui(GLYPHS.archive),
   chat: gpui(GLYPHS.chat),
-  pointer: gpui(GLYPHS.pointer),
   computer: glyph('<rect x="3" y="4" width="18" height="13" rx="2" ' + STROKE_24 + '/><path d="M8 21h8M12 17v4" ' + STROKE_24 + '/>'),
   branch: gpui(GLYPHS.branch),
   worktree: gpui(GLYPHS.worktree),
@@ -440,8 +437,6 @@ function threadRecord(key) {
       stopRequested: false,
       pendingSends: [],
       tools: [],
-      computerUse: null,
-      computerActive: false,
       currentAssistant: null,
       currentThinking: null,
       currentActivity: null,
@@ -553,7 +548,6 @@ for (const key of [
   "stopRequested",
   "pendingSends",
   "tools",
-  "computerUse",
   "currentAssistant",
   "currentThinking",
   "currentActivity",
@@ -3490,7 +3484,6 @@ function clearPaint() {
   }
   state.currentAssistant = null;
   state.tools = [];
-  paintComputerUse();
   state.currentThinking = null;
   state.currentActivity = null;
 }
@@ -3504,7 +3497,6 @@ function clearPaintIdle() {
 }
 
 function resetTurn() {
-  paintingThread().computerActive = false;
   clearPaint();
   // A run that ended took its requests with it, so a question it left waiting
   // is not answerable any more: the dialog goes away, as the extension settles
@@ -4306,7 +4298,6 @@ function setIdle() {
   const record = paintingThread();
   finishRunClock(record);
   record.busy = false;
-  record.computerActive = false;
   record.runId = null;
   record.runSession = null;
   record.runProject = null;
@@ -4669,8 +4660,7 @@ function clearAttachments() {
 let imageReturnFocus = null;
 
 function openImage(dataUrl, name = t("ui.attachmentPreview", "Attachment preview")) {
-  imageReturnFocus = !el("computer-use-modal").hidden
-    ? el("computer-use-toggle") : document.activeElement || null;
+  imageReturnFocus = document.activeElement || null;
   el("image-view-img").src = dataUrl;
   el("image-view-img").alt = name || t("ui.attachmentPreview", "Attachment preview");
   el("image-view-img").title = name || t("ui.attachmentPreview", "Attachment preview");
@@ -4826,7 +4816,6 @@ async function startPrompt(prompt, attachments, showBubble = true, thread = null
   const turnOptions = record.turnOptions || { agent: null, reasoning: null };
   const project = record.worktree || record.project || view.project;
   if (!project) return;
-  record.computerActive = false;
   const session = record.session;
   record.project ||= project;
   record.runProject = project;
@@ -4952,7 +4941,6 @@ async function stop() {
 async function stopThread(record) {
   if (!record?.busy) return;
   record.stopRequested = true;
-  paintComputerUse();
   if (record === visibleThread()) setStatus(t("composer.stopping", "Stopping…"));
   if (record.runId == null) return;
   try {
@@ -5061,7 +5049,6 @@ function toolSummary(name, argsJson) {
 /// while the built-ins say what the reader asked for rather than exposing the
 /// engine's wire name.
 function toolDisplayName(name) {
-  if (isComputerTool(name)) return "Computer Use";
   return {
     tool: "Tool result",
     "": "Tool result",
@@ -5079,7 +5066,6 @@ function toolDisplayName(name) {
 }
 
 function toolDisplayIcon(name) {
-  if (isComputerTool(name)) return ICONS.pointer;
   if (isMcpTool(name)) return ICONS.plug;
   if (name === "read") return ICONS.file;
   if (name === "write" || name === "edit") return ICONS.compose;
@@ -5247,7 +5233,6 @@ function createToolCard(name, args) {
   const block = document.createElement("div");
   block.chatTool = { name, args };
   block.className = "tool running";
-  if (isComputerTool(name)) block.classList.add("computer-tool");
   const head = document.createElement("div");
   head.className = "thead";
   // The caret the card folds by: the same drawing the change card and its rows
@@ -5259,15 +5244,12 @@ function createToolCard(name, args) {
   const tname = document.createElement("span");
   tname.className = "tname";
   const nameIcon = document.createElement("span");
-  nameIcon.className = isComputerTool(name) ? "tool-icon computer-tool-icon" : "tool-icon";
+  nameIcon.className = "tool-icon";
   nameIcon.setAttribute("aria-hidden", "true");
   nameIcon.innerHTML = toolDisplayIcon(name);
   const nameText = document.createElement("span");
   nameText.textContent = toolDisplayName(name);
   tname.append(nameIcon, nameText);
-  if (isComputerTool(name)) {
-    head.title = toolDisplayName(name);
-  }
   const targ = document.createElement("span");
   targ.className = "targ";
   const summary = toolSummary(name, args);
@@ -5323,7 +5305,6 @@ function startTool(name, args) {
   const transcript = runTranscript();
   placeTool(tool, transcript);
   state.tools.push(tool);
-  updateComputerUse(tool);
   startToolTimer(tool);
   scrollDown(transcript);
   return tool;
@@ -5415,7 +5396,6 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0, a
   }
   tool.inline = Boolean(diff);
   tool.isError = isError;
-  updateComputerUse(tool, images);
   paintTool(tool);
   if (tool.activity) paintToolActivity(tool.activity);
 }
@@ -5495,9 +5475,7 @@ function toggleTool(tool) {
 /// Replays a stored session: user/assistant text as bubbles, each turn's tool
 /// calls as finished cards, with results matched back by `toolCallId`.
 function renderStoredTranscript(container, messages) {
-  state.computerUse = null;
   state.currentActivity = null;
-  paintComputerUse();
   const results = new Map();
   for (const message of messages) {
     if (message.role === "tool" && message.toolCallId) {
@@ -5535,345 +5513,6 @@ function renderStoredTranscript(container, messages) {
     }
   }
   state.currentActivity = null;
-}
-
-// ---------- computer use ----------
-
-function isComputerTool(name) {
-  return /^(?:[\w-]*[-_])?computer[-_]use(?:[-_][\w-]+)?__/.test(name);
-}
-
-const computerPolicy = {
-  generation: 0,
-  loading: false,
-  error: "",
-  configured: false,
-  server: "",
-  value: null,
-  search: "",
-  attemptedProject: "",
-  project: "",
-};
-
-function computerPolicyStatus(app) {
-  if (app.policy === "[approved for one call]") return t("computerUse.once", "Allowed once");
-  if (app.policy === "[blocked by app policy]") return t("computerUse.blocked", "Blocked");
-  const policy = computerPolicy.value || {};
-  const explicit = [...(policy.allowed || []), ...(policy.denied || [])]
-    .some((name) => [app.displayName, app.id]
-      .some((value) => String(name).toLowerCase() === String(value || "").toLowerCase()));
-  if (explicit) return t("computerUse.allowed", "Always allowed");
-  return app.isRunning ? t("computerUse.running", "Running") : t("computerUse.notRunning", "Not running");
-}
-
-async function loadComputerUsePolicy() {
-  const project = state.project || "";
-  const generation = ++computerPolicy.generation;
-  if (!project) {
-    computerPolicy.loading = false;
-    computerPolicy.error = t("computerUse.selectProject", "Select a project to configure app access.");
-    computerPolicy.configured = false;
-    computerPolicy.value = null;
-    renderComputerUsePolicy();
-    return;
-  }
-  computerPolicy.loading = true;
-  computerPolicy.error = "";
-  renderComputerUsePolicy();
-  try {
-    const answer = await invoke("computer_use_policy", { project, action: "list" });
-    if (generation !== computerPolicy.generation || project !== state.project) return;
-    computerPolicy.loading = false;
-    computerPolicy.configured = Boolean(answer?.configured);
-    computerPolicy.server = answer?.server || "";
-    computerPolicy.value = answer?.policy || null;
-    computerPolicy.project = project;
-    computerPolicy.error = answer?.configured ? "" : answer?.error || t("computerUse.notConfigured", "oxide-computer-use is not configured.");
-  } catch (error) {
-    if (generation !== computerPolicy.generation || project !== state.project) return;
-    computerPolicy.loading = false;
-    computerPolicy.configured = false;
-    computerPolicy.value = null;
-    computerPolicy.project = project;
-    computerPolicy.error = String(error);
-  }
-  renderComputerUsePolicy();
-}
-
-async function changeComputerUsePolicy(action, app = "", mode = "") {
-  if (!state.project) return;
-  computerPolicy.error = "";
-  renderComputerUsePolicy();
-  try {
-    const answer = await invoke("computer_use_policy", {
-      project: state.project,
-      action,
-      app,
-      mode,
-    });
-    computerPolicy.configured = Boolean(answer?.configured);
-    computerPolicy.server = answer?.server || "";
-    computerPolicy.value = answer?.policy || null;
-    if (!answer?.configured) {
-      computerPolicy.error = answer?.error || t("computerUse.notConfigured", "oxide-computer-use is not configured.");
-    }
-  } catch (error) {
-    computerPolicy.error = String(error);
-  }
-  renderComputerUsePolicy();
-}
-
-function renderComputerUsePolicy() {
-  const box = el("computer-use-apps");
-  const select = el("computer-use-default");
-  if (!box || !select) return;
-  const value = computerPolicy.value;
-  select.disabled = computerPolicy.loading || !computerPolicy.configured;
-  select.value = value?.default === "deny" ? "deny" : "allow";
-  box.innerHTML = "";
-  if (computerPolicy.loading) {
-    box.innerHTML = `<div class="computer-use-app-empty">${escapeHtml(t("ui.loading", "Loading…"))}</div>`;
-    return;
-  }
-  if (computerPolicy.error) {
-    box.innerHTML = `<div class="computer-use-app-empty">${escapeHtml(computerPolicy.error)}</div>`;
-    return;
-  }
-  const needle = computerPolicy.search.trim().toLowerCase();
-  const apps = (value?.apps || [])
-    .filter((app) => !needle || [app.displayName, app.id, app.path]
-      .some((text) => String(text || "").toLowerCase().includes(needle)))
-    .sort((left, right) => Number(Boolean(right.isRunning)) - Number(Boolean(left.isRunning))
-      || String(left.displayName).localeCompare(String(right.displayName)));
-  if (!apps.length) {
-    box.innerHTML = `<div class="computer-use-app-empty">${escapeHtml(t("computerUse.noApps", "No matching apps."))}</div>`;
-    return;
-  }
-  for (const app of apps) {
-    const row = document.createElement("div");
-    row.className = "computer-use-app-row";
-    const name = document.createElement("div");
-    name.className = "computer-use-app-name";
-    const label = document.createElement("strong");
-    label.textContent = app.displayName || app.id;
-    const detail = document.createElement("span");
-    detail.textContent = [computerPolicyStatus(app), app.id].filter(Boolean).join(" · ");
-    name.append(label, detail);
-    const actions = document.createElement("div");
-    actions.className = "computer-use-app-actions";
-    for (const [action, text, className] of [
-      ["allow", t("computerUse.always", "Always allow"), "secondary"],
-      ["grant_once", t("computerUse.onceAction", "Allow once"), "secondary"],
-      ["deny", t("computerUse.block", "Block"), "ghost"],
-      ["revoke", t("computerUse.revoke", "Revoke"), "ghost"],
-    ]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = className;
-      button.textContent = text;
-      button.onclick = () => void changeComputerUsePolicy(action, app.id);
-      actions.appendChild(button);
-    }
-    row.append(name, actions);
-    box.appendChild(row);
-  }
-}
-
-function updateComputerUse(tool, images = []) {
-  if (!isComputerTool(tool.name)) return;
-  let args = tool.args;
-  if (typeof args === "string") {
-    try { args = JSON.parse(args); } catch { args = {}; }
-  }
-  const record = tool.owner;
-  const previous = record.computerUse;
-  const app = typeof args?.app === "string" ? args.app : "";
-  const action = tool.name.split("__").at(-1).replaceAll("_", " ");
-  record.computerUse = {
-    app,
-    action,
-    isError: Boolean(tool.isError),
-    image: images.at(-1) || previous?.image || null,
-    imageApp: images.length ? app : previous?.imageApp || "",
-    permissions: action === "permissions" && tool.done
-      ? parseComputerPermissions(tool.full)
-      : previous?.permissions || null,
-  };
-  record.computerActive = true;
-  // Background events update their owner; shared controls describe only the
-  // visible conversation, including when another thread is being replayed.
-  if (record === visibleThread()) paintComputerUse();
-}
-
-function parseComputerPermissions(output) {
-  try {
-    const status = JSON.parse(String(output || "").trim());
-    if (typeof status?.accessibility !== "boolean" || typeof status?.screen_recording !== "boolean") return null;
-    return {
-      accessibility: status.accessibility,
-      screenRecording: status.screen_recording,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function computerUsePermissionCaption(activity) {
-  const permissions = activity?.permissions;
-  if (!permissions) return t("computerUse.permissionCheckNoScreenshot", "Permission checks do not capture the screen.");
-  if (permissions.accessibility && permissions.screenRecording) {
-    return t("computerUse.permissionsReady", "App control and screen capture permissions are available.");
-  }
-  if (!permissions.accessibility && !permissions.screenRecording) {
-    return t("computerUse.permissionsMissing", "Enable Oxide under both Device Control & Data Access and Screen & System Audio Recording in System Settings → Privacy & Security.");
-  }
-  return !permissions.accessibility
-    ? t("computerUse.accessibilityMissing", "Enable Oxide under System Settings → Privacy & Security → Device Control & Data Access.")
-    : t("computerUse.screenRecordingMissing", "Enable Oxide under System Settings → Privacy & Security → Screen & System Audio Recording.");
-}
-
-// While a Computer Use task runs, the window follows it: the screen is read
-// from the session the turn holds every couple of seconds so the preview is the
-// screen as it is rather than as the last tool call left it, and an overlay
-// window marks every display and the pointer. Both end with the task.
-const COMPUTER_LIVE_MS = 1500;
-const computerLive = { timer: null, overlay: false, reading: false };
-
-function runningComputerThread() {
-  let found = null;
-  for (const record of threads.values()) {
-    if (record.busy && !record.stopRequested && record.computerActive) found = record;
-  }
-  return found;
-}
-
-/// Codex gives Computer Use the Escape key while its task is running. An
-/// unrelated dialog keeps its own Escape behavior, so only the Computer Use
-/// dialog or the bare conversation hands the key to cancellation.
-function escapeStopsComputer() {
-  return Boolean(runningComputerThread())
-    && ![...OVERLAYS, "question"].some((id) => !el(id).hidden);
-}
-
-function syncComputerLive() {
-  const owner = runningComputerThread();
-  if (Boolean(owner) !== computerLive.overlay) {
-    computerLive.overlay = Boolean(owner);
-    void invoke("computer_use_overlay", { active: computerLive.overlay }).catch(() => {});
-  }
-  if (!owner) {
-    if (computerLive.timer) clearInterval(computerLive.timer);
-    computerLive.timer = null;
-    return;
-  }
-  if (!computerLive.timer) computerLive.timer = setInterval(() => void readComputerScreen(), COMPUTER_LIVE_MS);
-}
-
-async function readComputerScreen() {
-  const owner = runningComputerThread();
-  if (!owner || !owner.project || computerLive.reading) {
-    syncComputerLive();
-    return;
-  }
-  computerLive.reading = true;
-  try {
-    const answer = await invoke("computer_use_screen", { project: owner.project });
-    const image = answer?.live ? answer.image : null;
-    if (!image || runningComputerThread() !== owner || !owner.computerUse) return;
-    if (owner.computerUse.image?.dataUrl === image.dataUrl) return;
-    owner.computerUse.image = image;
-    owner.computerUse.live = true;
-    if (owner === visibleThread()) paintComputerUse();
-  } catch {
-    // A session that cannot show its screen keeps the last captured one.
-  } finally {
-    computerLive.reading = false;
-  }
-}
-
-function paintComputerUse() {
-  syncComputerLive();
-  if (paintThread && paintThread !== visibleThread()) return;
-  const record = visibleThread();
-  const activity = record.computerUse;
-  const toggle = el("computer-use-toggle");
-  const card = el("computer-use-card");
-  toggle.hidden = false;
-  card.hidden = !activity;
-  if (!activity) {
-    toggle.innerHTML = ICONS.pointer;
-    toggle.classList.remove("computer-active");
-    toggle.title = t("computerUse.settingsTitle", "Computer use settings");
-    toggle.setAttribute("aria-label", toggle.title);
-    toggle.setAttribute("aria-expanded", String(!el("computer-use-modal").hidden));
-    toggle.removeAttribute("aria-keyshortcuts");
-    if (!el("computer-use-modal").hidden) {
-      for (const prefix of ["computer-use-dialog"]) {
-        el(`${prefix}-status`).textContent = t("computerUse.noSession", "No active Computer Use session.");
-        el(`${prefix}-action`).textContent = "";
-        el(`${prefix}-stop`).hidden = true;
-      }
-    }
-    return;
-  }
-  const active = record.tools.filter((tool) => isComputerTool(tool.name) && !tool.done);
-  const running = record.busy && active.length > 0;
-  const taskRunning = runningComputerThread() === record;
-  const permissionsMissing = Boolean(activity.permissions)
-    && (!activity.permissions.accessibility || !activity.permissions.screenRecording);
-  const permissionsReady = activity.action === "permissions"
-    && activity.permissions?.accessibility
-    && activity.permissions?.screenRecording;
-  const label = record.stopRequested
-    ? record.busy ? t("computerUse.stopping", "Stopping…") : t("computerUse.stopped", "Stopped")
-    : permissionsMissing && (activity.action === "permissions" || activity.isError || record.runError)
-      ? t("computerUse.permissionsNeeded", "Permissions needed")
-    : activity.isError || record.runError ? t("computerUse.failed", "Action failed")
-    : running ? t("computerUse.working", "Using computer")
-    : record.busy ? t("computerUse.waiting", "Waiting for next action")
-    : permissionsReady ? t("computerUse.ready", "Ready")
-    : t("computerUse.finished", "Finished");
-  toggle.classList.toggle("computer-active", taskRunning);
-  toggle.innerHTML = ICONS.pointer;
-  const escapeHint = taskRunning ? ` · ${t("computerUse.escapeToStop", "Esc to stop")}` : "";
-  toggle.title = `${t("computerUse.title", "Computer use")} · ${label}${escapeHint}`;
-  toggle.setAttribute("aria-label", toggle.title);
-  toggle.setAttribute("aria-expanded", String(!el("computer-use-modal").hidden));
-  if (taskRunning) toggle.setAttribute("aria-keyshortcuts", "Escape");
-  else toggle.removeAttribute("aria-keyshortcuts");
-  for (const prefix of ["computer-use", "computer-use-dialog"]) {
-    const status = el(`${prefix}-status`);
-    status.textContent = label;
-    const action = el(`${prefix}-action`);
-    action.textContent = [activity.app, activity.action].filter(Boolean).join(" · ");
-    const preview = el(`${prefix}-preview`);
-    // Keep the image node across status updates, preserving keyboard focus.
-    if (preview.computerImage !== activity.image) {
-      preview.replaceChildren();
-      if (activity.image) preview.appendChild(openableImage(activity.image.dataUrl, activity.image.name || activity.imageApp));
-      preview.computerImage = activity.image;
-    }
-    const caption = activity.action === "permissions"
-      || permissionsMissing && (activity.isError || record.runError)
-      ? computerUsePermissionCaption(activity)
-      : activity.image && activity.live
-      ? t("computerUse.liveScreen", "Live screen · refreshed every {value0}s", { value0: COMPUTER_LIVE_MS / 1000 })
-      : activity.image
-      ? `${t("computerUse.snapshot", "Last captured screenshot")}${activity.imageApp ? ` · ${activity.imageApp}` : ""}`
-      : t("computerUse.noScreenshot", "No screenshot captured yet. Accessibility actions do not always return an image.");
-    el(`${prefix}-snapshot`).textContent = `${caption}${escapeHint}`;
-    const stopButton = el(`${prefix}-stop`);
-    stopButton.hidden = !record.busy;
-    stopButton.disabled = record.stopRequested;
-  }
-}
-
-function openComputerUse() {
-  closeOverlays("computer-use-modal");
-  el("computer-use-modal").hidden = false;
-  paintComputerUse();
-  void loadComputerUsePolicy();
-  el("computer-use-close").focus();
 }
 
 // ---------- turn changes ----------
@@ -6422,7 +6061,6 @@ let detailsChangesTimer = null;
 function paintDockToggles() {
   // The selected chat owns the dock throughout its lifetime. The welcome
   // page has no chat, even when another conversation is running.
-  paintComputerUse();
   const panel = el("details-panel");
   document.body.classList.toggle("chat-open", hasChat());
   const wasHidden = panel.hidden;
@@ -6518,7 +6156,7 @@ function sourceRow(source) {
     icon.className = "source-icon";
     icon.setAttribute("aria-hidden", "true");
     icon.innerHTML = source.kind === "mcp"
-      ? isComputerTool(`${source.name}__`) ? ICONS.pointer : ICONS.power
+      ? ICONS.power
       : source.kind === "web" ? ICONS.globe : ICONS.file;
     row.appendChild(icon);
   }
@@ -7018,7 +6656,6 @@ const OVERLAYS = [
   "question",
   "connect-modal",
   "sources-modal",
-  "computer-use-modal",
   "create-project-modal",
   "projects-modal",
   "worktrees-modal",
@@ -7046,7 +6683,6 @@ function closeOverlays(except) {
     if (id !== except) el(id).hidden = true;
     else el(id).classList.remove("rail-panel");
   }
-  el("computer-use-toggle").setAttribute("aria-expanded", String(!el("computer-use-modal").hidden));
   // The review's state is its card and the file it is showing, so closing the
   // panel drops it along with the markup rather than leaving it half-open.
 
@@ -9407,14 +9043,6 @@ async function requestAt() {
     closeAt();
     return;
   }
-  if ((!computerPolicy.value || computerPolicy.project !== state.project)
-      && !computerPolicy.loading
-      && computerPolicy.attemptedProject !== state.project) {
-    computerPolicy.attemptedProject = state.project;
-    void loadComputerUsePolicy().then(() => {
-      if (prompt.value.includes("@") && state.project) void requestAt();
-    });
-  }
   const seq = ++atSeq;
   let answer = null;
   try {
@@ -9440,28 +9068,7 @@ function applyAt(answer) {
   const token = prompt && Number.isFinite(start) && Number.isFinite(end)
     ? prompt.value.slice(start, end)
     : "";
-  const query = token.startsWith("@") ? token.slice(1).toLowerCase() : "";
-  const apps = (computerPolicy.project === state.project ? computerPolicy.value?.apps || [] : [])
-    .filter((app) => query && [app.displayName, app.id]
-      .some((text) => String(text || "").toLowerCase().includes(query)))
-    .sort((left, right) => {
-      const rank = (app) => {
-        const name = String(app.displayName || "").toLowerCase();
-        const id = String(app.id || "").toLowerCase();
-        return name.startsWith(query) || id.startsWith(query) ? 1 : 0;
-      };
-      return rank(right) - rank(left) || String(left.displayName).localeCompare(String(right.displayName));
-    })
-    .slice(0, 8)
-    .map((app) => {
-      const mention = String(app.displayName || "").includes(" ") ? app.id : app.displayName || app.id;
-      return {
-        label: `${app.displayName || app.id}${app.isRunning ? "" : ` · ${app.id}`}`,
-        insert: `@${mention} `,
-        kind: "app",
-      };
-    });
-  const rows = [...((answer && answer.rows) || []), ...apps];
+  const rows = (answer && answer.rows) || [];
   if (!rows.length) {
     closeAt();
     return;
@@ -9500,11 +9107,9 @@ function renderAt() {
     item.title =
       row.kind === "folder"
         ? t("ui.aFolderInThisProject", "{value0} — a folder in this project", { value0: row.label })
-        : row.kind === "app"
-          ? t("ui.anAppComputerUseCanTarget", "{value0} — an app Computer Use can target", { value0: row.label })
         : t("ui.referencedInThisMessage", "{value0} — referenced in this message", { value0: row.label });
     item.innerHTML =
-      `<span class="at-glyph">${row.kind === "folder" ? "\u25b8" : row.kind === "app" ? "\u2318" : "\u00b7"}</span>` +
+      `<span class="at-glyph">${row.kind === "folder" ? "\u25b8" : "\u00b7"}</span>` +
       `<span class="at-path">${escapeHtml(row.label)}</span>`;
     // The press would take the focus out of the message box and drop the caret
     // the row is completing, so it is swallowed and the click still arrives.
@@ -13110,26 +12715,6 @@ function init() {
     state.detailsOpen = !state.detailsOpen;
     paintDockToggles();
   };
-  el("computer-use-toggle").hidden = false;
-  el("computer-use-toggle").innerHTML = ICONS.pointer;
-  el("computer-use-toggle").title = t("computerUse.settingsTitle", "Computer use settings");
-  el("computer-use-toggle").setAttribute("aria-label", el("computer-use-toggle").title);
-  el("computer-use-toggle").onclick = openComputerUse;
-  el("computer-use-stop").onclick = stop;
-  el("computer-use-dialog-stop").onclick = stop;
-  el("computer-use-app-search").oninput = (event) => {
-    computerPolicy.search = event.target.value || "";
-    renderComputerUsePolicy();
-  };
-  el("computer-use-default").onchange = (event) => {
-    void changeComputerUsePolicy("set_default", "", event.target.value);
-  };
-  el("computer-use-close").innerHTML = ICONS.close;
-  el("computer-use-close").onclick = () => {
-    el("computer-use-modal").hidden = true;
-    paintComputerUse();
-    el("computer-use-toggle").focus();
-  };
   el("details-more").onclick = () => {
     const project = state.projects.find((project) => project.path === state.project);
     if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
@@ -13286,7 +12871,6 @@ function init() {
   const BACKDROP_DISMISS = {
     "agents-modal": "agents-close",
     "sources-modal": "sources-close",
-    "computer-use-modal": "computer-use-close",
     "confirm-modal": "confirm-cancel",
     "connect-modal": "login-cancel",
     "create-project-modal": "create-project-cancel",
@@ -13368,10 +12952,6 @@ function init() {
     }
     if (event.key === "Escape") {
       closePalette();
-      if (escapeStopsComputer()) {
-        event.preventDefault();
-        void stopThread(runningComputerThread());
-      }
       return;
     }
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -13408,10 +12988,7 @@ function init() {
       }
       const railControl = Object.entries(RAIL_PANELS).find(([, [id]]) => !el(id).hidden && el(id).classList.contains("rail-panel"))?.[0];
       el("message-preview").hidden = true;
-      const computerOpen = !el("computer-use-modal").hidden;
       const modalOpen = OVERLAYS.some((id) => !el(id).hidden);
-      const computer = escapeStopsComputer() ? runningComputerThread() : null;
-      if (computer) void stopThread(computer);
       closeSidebarCards();
       closeImage();
       closeModelMenu();
@@ -13428,7 +13005,6 @@ function init() {
       // hidden, so the turn continues instead of waiting out the timeout.
       if (!el("question").hidden) answerQuestion(true);
       closeOverlays();
-      if (computerOpen) el("computer-use-toggle").focus();
       if (railControl) el(railControl).focus();
       if (!modalOpen) {
         if (!el("projects-page").hidden) { closeProjectDirectory(); el("rail-projects").focus(); }

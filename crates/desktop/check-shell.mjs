@@ -314,9 +314,7 @@ check(
     managedPluginsPath,
   ) &&
     /path\.join\(__dirname, "\.\.", "\.\.", "plugins"\)/.test(managedPluginsPath) &&
-    /OXIDE_DESKTOP_PLUGINS: managedPluginsPath\(\)/.test(shell) &&
-    exists("plugins/oxide-computer-use/.oxide/plugin.json") &&
-    exists("plugins/oxide-computer-use/.mcp.json"),
+    /OXIDE_DESKTOP_PLUGINS: managedPluginsPath\(\)/.test(shell),
 );
 // The engine's half of the protocol: a request read by its own fields, answered
 // over the two envelopes the page and the window already agreed on. The command

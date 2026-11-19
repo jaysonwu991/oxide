@@ -160,6 +160,7 @@ pub fn parse(text: &str) -> Vec<Block> {
         if let Some(rest) = trimmed
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "))
         {
             flush(&mut paragraph, &mut blocks);
             let (checked, rest) = if let Some(rest) = rest.strip_prefix("[ ] ") {
@@ -195,6 +196,21 @@ pub fn parse(text: &str) -> Vec<Block> {
     blocks
 }
 
+/// The `)` that closes a link target, past any parentheses the URL itself
+/// carries, so `…/Foo_(bar)` keeps its tail.
+fn closing_paren(url: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, ch) in url.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(index),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 fn split_row(line: &str) -> Vec<String> {
     let line = line.trim();
     let line = line.strip_prefix('|').unwrap_or(line);
@@ -227,31 +243,52 @@ fn numbered(line: &str) -> Option<(String, &str)> {
 
 /// Parses emphasis, code, strikethrough and links out of one line of text.
 pub fn parse_inline(text: &str) -> Vec<Inline> {
+    parse_styled(text, Inline::new())
+}
+
+/// The same parse with a style every span inherits, so a link or a code span
+/// inside `**…**` keeps the bold it was written in instead of being emitted as
+/// the literal text between the markers.
+fn parse_styled(text: &str, style: Inline) -> Vec<Inline> {
     fn emit(current: &mut Inline, text: &str) {
         current.text.push_str(text);
     }
 
-    fn flush(spans: &mut Vec<Inline>, current: &mut Inline) {
+    let base = style;
+    let flush = |spans: &mut Vec<Inline>, current: &mut Inline| {
         if !current.text.is_empty() {
             spans.push(current.clone());
-            *current = Inline::new();
+            *current = base.clone();
         }
-    }
+    };
 
     let mut spans: Vec<Inline> = Vec::new();
-    let mut current = Inline::new();
+    let mut current = base.clone();
     let mut index = 0;
 
     while index < text.len() {
         let ch = text[index..].chars().next().unwrap();
         match ch {
+            '\\' => {
+                let escaped = text[index + 1..].chars().next();
+                match escaped {
+                    Some(next) if next.is_ascii_punctuation() => {
+                        emit(&mut current, &next.to_string());
+                        index += 1 + next.len_utf8();
+                    }
+                    _ => {
+                        emit(&mut current, "\\");
+                        index += 1;
+                    }
+                }
+            }
             '`' => match text[index + 1..].find('`') {
                 Some(offset) => {
                     flush(&mut spans, &mut current);
                     spans.push(Inline {
                         text: text[index + 1..index + 1 + offset].to_string(),
                         code: true,
-                        ..Inline::new()
+                        ..base.clone()
                     });
                     index = index + 1 + offset + 1;
                 }
@@ -281,12 +318,16 @@ pub fn parse_inline(text: &str) -> Vec<Inline> {
                 match found {
                     Some(offset) => {
                         flush(&mut spans, &mut current);
-                        spans.push(Inline {
-                            text: text[search_start..search_start + offset].to_string(),
-                            bold: doubled,
-                            italic: !doubled,
-                            ..Inline::new()
-                        });
+                        let mut emphasis = base.clone();
+                        if doubled {
+                            emphasis.bold = true;
+                        } else {
+                            emphasis.italic = true;
+                        }
+                        spans.extend(parse_styled(
+                            &text[search_start..search_start + offset],
+                            emphasis,
+                        ));
                         index = search_start + offset + marker;
                     }
                     None => {
@@ -299,11 +340,13 @@ pub fn parse_inline(text: &str) -> Vec<Inline> {
                 true => match text[index + 2..].find("~~") {
                     Some(offset) if offset > 0 => {
                         flush(&mut spans, &mut current);
-                        spans.push(Inline {
-                            text: text[index + 2..index + 2 + offset].to_string(),
-                            strike: true,
-                            ..Inline::new()
-                        });
+                        spans.extend(parse_styled(
+                            &text[index + 2..index + 2 + offset],
+                            Inline {
+                                strike: true,
+                                ..base.clone()
+                            },
+                        ));
                         index = index + 2 + offset + 2;
                     }
                     _ => {
@@ -321,17 +364,19 @@ pub fn parse_inline(text: &str) -> Vec<Inline> {
                 let target = tail.find(']').and_then(|label_end| {
                     let after = &tail[label_end + 1..];
                     let url = after.strip_prefix('(')?;
-                    let url_end = url.find(')')?;
+                    let url_end = closing_paren(url)?;
                     Some((label_end, url_end, &tail[..label_end], &url[..url_end]))
                 });
                 match target {
                     Some((label_end, url_end, label, url)) => {
                         flush(&mut spans, &mut current);
-                        spans.push(Inline {
-                            text: label.to_string(),
-                            link: Some(url.to_string()),
-                            ..Inline::new()
-                        });
+                        spans.extend(parse_styled(
+                            label,
+                            Inline {
+                                link: Some(url.to_string()),
+                                ..base.clone()
+                            },
+                        ));
                         index = index + 1 + label_end + 1 + 1 + url_end + 1;
                     }
                     None => {
@@ -364,6 +409,65 @@ mod tests {
         assert!(spans[3].code);
         assert_eq!(spans[5].text, "link");
         assert_eq!(spans[5].link.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn a_link_inside_emphasis_stays_a_link() {
+        let spans =
+            parse_inline("PR opened: **[#352 — Remove it](https://github.com/o/r/pull/352)**");
+        assert_eq!(spans.last().unwrap().text, "#352 — Remove it");
+        let link = spans.last().unwrap();
+        assert!(link.bold);
+        assert_eq!(
+            link.link.as_deref(),
+            Some("https://github.com/o/r/pull/352")
+        );
+        assert!(!spans.iter().any(|span| span.text.contains("](")));
+    }
+
+    #[test]
+    fn emphasis_inside_a_link_label_keeps_both() {
+        let spans = parse_inline("[**bold** and plain](https://example.com)");
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].bold);
+        assert_eq!(spans[0].link.as_deref(), Some("https://example.com"));
+        assert!(!spans[1].bold);
+        assert_eq!(spans[1].link.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn a_link_target_keeps_the_parentheses_it_carries() {
+        let spans = parse_inline("[bar](https://en.wikipedia.org/wiki/Foo_(bar)) after");
+        assert_eq!(
+            spans[0].link.as_deref(),
+            Some("https://en.wikipedia.org/wiki/Foo_(bar)")
+        );
+        assert_eq!(spans[1].text, " after");
+    }
+
+    #[test]
+    fn code_and_strikethrough_keep_the_emphasis_around_them() {
+        let spans = parse_inline("**run `cargo test` ~~now~~**");
+        let code = spans.iter().find(|span| span.code).unwrap();
+        assert_eq!(code.text, "cargo test");
+        assert!(code.bold);
+        let strike = spans.iter().find(|span| span.strike).unwrap();
+        assert!(strike.bold);
+    }
+
+    #[test]
+    fn an_escaped_marker_stays_text() {
+        let spans = parse_inline("a \\*literal\\* and \\`code\\`");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "a *literal* and `code`");
+        assert!(!spans[0].italic && !spans[0].code);
+    }
+
+    #[test]
+    fn plus_markers_make_bullets() {
+        let blocks = parse("+ one\n+ two");
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(blocks[0], Block::Bullet { .. }));
     }
 
     #[test]

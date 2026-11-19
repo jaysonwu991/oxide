@@ -120,7 +120,6 @@ pub struct ToolCard {
     /// The invocation a reader can copy. Unlike `detail`, this keeps a full
     /// multi-line shell command instead of the one-line transcript summary.
     pub copy_text: String,
-    pub app: Option<String>,
     pub status: Status,
     pub output: String,
     pub diff: Option<Value>,
@@ -302,112 +301,6 @@ impl Attachment {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ComputerUseActivity {
-    pub app: Option<String>,
-    pub action: String,
-    pub running: bool,
-    pub stopped: bool,
-    pub failed: bool,
-    pub image: Option<Attachment>,
-    pub image_app: Option<String>,
-    pub permissions: Option<ComputerUsePermissions>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ComputerUsePermissions {
-    pub accessibility: bool,
-    pub screen_recording: bool,
-}
-
-impl ComputerUsePermissions {
-    pub fn available(&self) -> bool {
-        self.accessibility && self.screen_recording
-    }
-}
-
-impl ComputerUseActivity {
-    pub fn needs_permissions_attention(&self) -> bool {
-        self.permissions
-            .as_ref()
-            .is_some_and(|permissions| !permissions.available())
-            && (self.action == "permissions" || self.failed)
-    }
-
-    pub fn permissions_ready(&self) -> bool {
-        self.action == "permissions"
-            && self
-                .permissions
-                .as_ref()
-                .is_some_and(ComputerUsePermissions::available)
-    }
-
-    pub fn permission_caption(&self) -> Option<&'static str> {
-        let permissions = self.permissions.as_ref()?;
-        Some(match (permissions.accessibility, permissions.screen_recording) {
-            (true, true) => "App control and screen capture permissions are available.",
-            (false, true) => {
-                "Enable Oxide under System Settings → Privacy & Security → Device Control & Data Access."
-            }
-            (true, false) => {
-                "Enable Oxide under System Settings → Privacy & Security → Screen & System Audio Recording."
-            }
-            (false, false) => {
-                "Enable Oxide under both Device Control & Data Access and Screen & System Audio Recording in System Settings → Privacy & Security."
-            }
-        })
-    }
-
-    pub fn status_label(&self) -> &'static str {
-        if self.stopped {
-            "Stopped"
-        } else if self.needs_permissions_attention() {
-            "Permissions needed"
-        } else if self.failed {
-            "Action failed"
-        } else if self.running {
-            "Using computer"
-        } else if self.permissions_ready() {
-            "Ready"
-        } else {
-            "Finished"
-        }
-    }
-
-    pub fn caption(&self) -> &'static str {
-        if self.action == "permissions" || self.needs_permissions_attention() {
-            return self.permission_caption().unwrap_or(
-                "No screenshot captured yet. Accessibility actions do not always return an image.",
-            );
-        }
-        if self.image.is_some() {
-            "Last captured screenshot"
-        } else {
-            "No screenshot captured yet. Accessibility actions do not always return an image."
-        }
-    }
-}
-
-/// Whether a tool belongs to an Oxide or Codex Computer Use server. MCP tool
-/// names are server-qualified, and a project may use either the standalone
-/// `computer-use` registration or Oxide's `oxide-computer-use` one.
-pub fn is_computer_tool(name: &str) -> bool {
-    let Some((server, tool)) = name.rsplit_once("__") else {
-        return false;
-    };
-    !tool.is_empty()
-        && (server == "computer-use"
-            || server == "computer_use"
-            || server.ends_with("-computer-use")
-            || server.ends_with("_computer_use"))
-}
-
-fn computer_action(name: &str) -> String {
-    name.rsplit_once("__")
-        .map(|(_, action)| action.replace('_', " "))
-        .unwrap_or_else(|| name.replace('_', " "))
-}
-
 fn argument(value: &Value) -> Value {
     if value.is_object() {
         value.clone()
@@ -440,14 +333,6 @@ fn tool_attachments(value: &Value) -> Vec<Attachment> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn parse_permissions(text: &str) -> Option<ComputerUsePermissions> {
-    let status = serde_json::from_str::<Value>(text.trim()).ok()?;
-    Some(ComputerUsePermissions {
-        accessibility: status["accessibility"].as_bool()?,
-        screen_recording: status["screen_recording"].as_bool()?,
-    })
 }
 
 #[derive(Clone, Debug)]
@@ -614,56 +499,6 @@ impl Chat {
         }
     }
 
-    /// The latest Computer Use call and the latest screenshot any Computer Use
-    /// call in this conversation returned. An accessibility-only result keeps
-    /// the earlier picture, matching Codex's persistent preview.
-    pub fn computer_use(&self) -> Option<ComputerUseActivity> {
-        let mut latest = None;
-        let mut image = None;
-        let mut permissions = None;
-        let mut permissions_seen = false;
-        for entry in self.entries.iter().rev() {
-            let Entry::Tool(card) = entry else {
-                continue;
-            };
-            if !is_computer_tool(&card.name) {
-                continue;
-            }
-            if !permissions_seen && card.name.ends_with("__permissions") {
-                permissions_seen = true;
-                permissions = parse_permissions(&card.output);
-            }
-            if image.is_none() {
-                if let Some(attachment) = card.media.last() {
-                    image = Some((attachment.clone(), card.app.clone()));
-                }
-            }
-            if latest.is_none() {
-                latest = Some((
-                    card.app.clone(),
-                    computer_action(&card.name),
-                    card.status == Status::Running,
-                    card.status == Status::Failed,
-                ));
-            }
-            if image.is_some() && latest.is_some() && permissions_seen {
-                break;
-            }
-        }
-        let (app, action, running, failed) = latest?;
-        let (image, image_app) = image.map_or((None, None), |(image, app)| (Some(image), app));
-        Some(ComputerUseActivity {
-            app,
-            action,
-            running: running && self.running(),
-            stopped: self.stop_requested && !self.running(),
-            failed,
-            image,
-            image_app,
-            permissions,
-        })
-    }
-
     /// Appends text to the answer at the end of the conversation, opening one
     /// when the last card is not an answer still streaming.
     fn append_text(&mut self, delta: &str) {
@@ -799,7 +634,6 @@ impl Chat {
                     name,
                     detail,
                     copy_text,
-                    app: args["app"].as_str().map(str::to_string),
                     status: Status::Running,
                     output: String::new(),
                     diff: None,
@@ -808,7 +642,7 @@ impl Chat {
             }
             "tool_execution_update" => {
                 let chunk = payload["partialResult"].as_str().unwrap_or_default();
-                if let Some(Entry::Tool(card)) = self.last_tool(payload["toolName"].as_str()) {
+                if let Some(Entry::Tool(card)) = self.open_tool(payload["toolName"].as_str()) {
                     card.output.push_str(chunk);
                     card.status = Status::Running;
                 }
@@ -816,7 +650,7 @@ impl Chat {
             "tool_execution_end" => {
                 let result = payload["result"].as_str().unwrap_or_default().to_string();
                 let failed = payload["isError"].as_bool().unwrap_or(false);
-                if let Some(Entry::Tool(card)) = self.last_tool(payload["toolName"].as_str()) {
+                if let Some(Entry::Tool(card)) = self.open_tool(payload["toolName"].as_str()) {
                     if !result.is_empty() {
                         card.output = result;
                     }
@@ -865,8 +699,12 @@ impl Chat {
             }
             "agent_end" => {
                 for entry in &mut self.entries {
-                    if let Entry::Assistant { streaming, .. } = entry {
-                        *streaming = false;
+                    match entry {
+                        Entry::Assistant { streaming, .. } => *streaming = false,
+                        Entry::Tool(card) if card.status == Status::Running => {
+                            card.status = Status::Done;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -874,19 +712,34 @@ impl Chat {
         }
     }
 
-    fn last_tool(&mut self, name: Option<&str>) -> Option<&mut Entry> {
+    /// The card a progress chunk or a result belongs to. The engine runs some
+    /// tools concurrently, and its events name the tool but not the call, so
+    /// the oldest card of that name still in flight is the one this event
+    /// closes; settling the newest would leave the earlier calls running for
+    /// good and keep their activity row saying so. A late event for a call
+    /// that has already closed falls back to the newest card of that name.
+    fn open_tool(&mut self, name: Option<&str>) -> Option<&mut Entry> {
         let name = name.map(str::to_string);
-        let is_match = |entry: &Entry| match entry {
+        let named = |entry: &Entry| match entry {
             Entry::Tool(card) => match name.as_deref() {
                 Some(name) => card.name == name,
                 None => true,
             },
             _ => false,
         };
-        if self.entries.last().map(is_match).unwrap_or(false) {
-            return self.entries.last_mut();
+        let open = |entry: &Entry| {
+            matches!(entry, Entry::Tool(card)
+                if card.status == Status::Running || card.status == Status::Pending)
+        };
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| open(entry) && named(entry))
+        {
+            return self.entries.get_mut(index);
         }
-        self.entries.iter_mut().rev().find(|entry| is_match(entry))
+        let index = self.entries.iter().rposition(named)?;
+        self.entries.get_mut(index)
     }
 
     /// The stored transcript, `session_messages` answered.
@@ -971,7 +824,6 @@ impl Chat {
                                     detail,
                                     name,
                                     copy_text,
-                                    app: args["app"].as_str().map(str::to_string),
                                     status: if failed { Status::Failed } else { Status::Done },
                                     output: output
                                         .strip_prefix("error:")
@@ -998,7 +850,6 @@ impl Chat {
                             name: "tool".to_string(),
                             detail: String::new(),
                             copy_text: String::new(),
-                            app: None,
                             status: Status::Done,
                             output,
                             diff: None,
@@ -1073,142 +924,59 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zb4kAAAAASUVORK5CYII=";
-
-    #[test]
-    fn computer_tool_names_are_server_qualified() {
-        assert!(is_computer_tool("computer-use__click"));
-        assert!(is_computer_tool("oxide-computer-use__get_app_state"));
-        assert!(is_computer_tool("computer_use__screenshot"));
-        assert!(!is_computer_tool("other__computer-use"));
-        assert!(!is_computer_tool("computer-use"));
-    }
-
-    #[test]
-    fn computer_use_keeps_the_last_screenshot_through_ax_only_results() {
-        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
-        chat.run = Some(7);
-        chat.apply(&json!({
-            "type": "tool_call",
-            "toolName": "oxide-computer-use__click",
-            "arguments": { "app": "Edge" },
-        }));
-        let running = chat.computer_use().unwrap();
-        assert!(running.running);
-        assert_eq!(running.app.as_deref(), Some("Edge"));
-        assert_eq!(running.action, "click");
-
-        chat.apply(&json!({
-            "type": "tool_execution_end",
-            "toolName": "oxide-computer-use__click",
-            "result": "Clicked",
-            "isError": false,
-            "attachments": [{ "name": "Edge", "dataUrl": PNG }],
-        }));
-        chat.apply(&json!({
-            "type": "tool_call",
-            "toolName": "oxide-computer-use__get_app_state",
-            "arguments": { "app": "Finder" },
-        }));
-        chat.apply(&json!({
-            "type": "tool_execution_end",
-            "toolName": "oxide-computer-use__get_app_state",
-            "result": "Accessibility tree",
-            "isError": false,
-            "attachments": [],
-        }));
-
-        let activity = chat.computer_use().unwrap();
-        assert!(!activity.running);
-        assert_eq!(activity.app.as_deref(), Some("Finder"));
-        assert_eq!(activity.action, "get app state");
-        assert_eq!(activity.image_app.as_deref(), Some("Edge"));
-        assert_eq!(activity.image.unwrap().data_url, PNG);
-    }
-
-    #[test]
-    fn permission_diagnostics_become_an_actionable_computer_use_state() {
-        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
-        chat.apply(&json!({
-            "type": "tool_call",
-            "toolName": "oxide-computer-use__permissions",
-            "arguments": {},
-        }));
-        chat.apply(&json!({
-            "type": "tool_execution_end",
-            "toolName": "oxide-computer-use__permissions",
-            "result": r#"{
-                "accessibility": false,
-                "screen_recording": true,
-                "launching_app": "/Applications/Oxide.app",
-                "guidance": "Grant access in System Settings."
-            }"#,
-            "isError": false,
-        }));
-
-        let activity = chat.computer_use().unwrap();
-        assert_eq!(
-            activity.permissions,
-            Some(ComputerUsePermissions {
-                accessibility: false,
-                screen_recording: true,
+    fn tool_states(chat: &Chat) -> Vec<(Status, String)> {
+        chat.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Tool(card) => Some((card.status, card.output.clone())),
+                _ => None,
             })
-        );
-        assert!(activity.needs_permissions_attention());
-        assert_eq!(activity.status_label(), "Permissions needed");
-        assert_eq!(
-            activity.caption(),
-            "Enable Oxide under System Settings → Privacy & Security → Device Control & Data Access."
-        );
+            .collect()
+    }
 
+    #[test]
+    fn batched_calls_of_one_tool_settle_the_card_that_was_waiting() {
+        let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
+        chat.run = Some(1);
+        for path in ["src/a.rs", "src/b.rs"] {
+            chat.apply(&json!({
+                "type": "tool_call",
+                "toolName": "read",
+                "arguments": { "path": path },
+            }));
+        }
         chat.apply(&json!({
-            "type": "tool_call",
-            "toolName": "oxide-computer-use__permissions",
-            "arguments": {},
+            "type": "tool_execution_end",
+            "toolName": "read",
+            "result": "a",
+            "isError": false,
         }));
         chat.apply(&json!({
             "type": "tool_execution_end",
-            "toolName": "oxide-computer-use__permissions",
-            "result": r#"{"accessibility": true, "screen_recording": true}"#,
+            "toolName": "read",
+            "result": "b",
             "isError": false,
         }));
-
-        let activity = chat.computer_use().unwrap();
-        assert!(!activity.needs_permissions_attention());
-        assert!(activity.permissions_ready());
-        assert_eq!(activity.status_label(), "Ready");
         assert_eq!(
-            activity.caption(),
-            "App control and screen capture permissions are available."
+            tool_states(&chat),
+            vec![
+                (Status::Done, "a".to_string()),
+                (Status::Done, "b".to_string())
+            ]
         );
     }
 
     #[test]
-    fn stored_tool_results_keep_their_call_and_image() {
+    fn a_turn_that_ends_closes_a_call_whose_result_never_came() {
         let mut chat = Chat::new("/tmp".to_string(), "New chat".to_string());
-        chat.load(&json!({
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "toolCalls": [{
-                        "id": "shot",
-                        "name": "computer-use__screenshot",
-                        "arguments": "{\"app\":\"Edge\"}"
-                    }]
-                },
-                {
-                    "role": "tool",
-                    "toolCallId": "shot",
-                    "content": "Captured screenshot",
-                    "attachments": [{ "name": "Edge", "dataUrl": PNG }]
-                }
-            ]
+        chat.run = Some(1);
+        chat.apply(&json!({
+            "type": "tool_call",
+            "toolName": "read",
+            "arguments": { "path": "src/a.rs" },
         }));
-        assert_eq!(chat.entries.len(), 1);
-        let activity = chat.computer_use().unwrap();
-        assert_eq!(activity.action, "screenshot");
-        assert_eq!(activity.image.unwrap().data_url, PNG);
+        chat.apply(&json!({ "type": "agent_end" }));
+        assert_eq!(tool_states(&chat), vec![(Status::Done, String::new())]);
     }
 
     #[test]

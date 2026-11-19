@@ -125,16 +125,6 @@ tree, managed with pnpm, and is built from its own directory.
 See [desktop-gpui.md](desktop-gpui.md) for the native app and
 [desktop.md](desktop.md) for the Electron app.
 
-### Oxide Computer Use distribution warning
-
-`Oxide Computer Use` is an experimental macOS helper. It has **not** received
-Apple Developer ID signing or Apple notarization unless you build it yourself
-with a valid identity; the documented default is an ad-hoc development
-signature. Gatekeeper can therefore block or warn about it, and rebuilding the
-ad-hoc bundle can invalidate previously granted Accessibility or Screen
-Recording permissions. See
-[the helper guide](../crates/desktop/computer-use/README.md).
-
 ## VS Code extension
 
 **Install the CLI first** ([Prebuilt binary](#prebuilt-binary)): the extension is

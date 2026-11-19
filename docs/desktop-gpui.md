@@ -401,21 +401,6 @@ reveal rather than two frames of the wrong page.
   controls: inline theme and language choices, segments for other choices, a
   switch for a flag, and a scale stepper.
 
-### Computer Use
-
-Oxide Desktop GPUI recognizes the shared `oxide-computer-use` MCP server and
-shows a mouse indicator, the latest returned screenshot, Stop task, and
-per-app policy controls in the transcript and project details. These are
-snapshots rather than an isolated background desktop or continuous video feed.
-The optional native helper adds a separate macOS app identity, launch services,
-permission diagnostics, and a native menu-bar stop control.
-
-**The helper has not been Apple Developer ID-signed or notarized for release.**
-Its documented default is an ad-hoc development build, so macOS Gatekeeper may
-warn about or block it. See the
-[helper guide](../crates/desktop/computer-use/README.md) and the
-[parity review](oxide-reins-parity.md) before installing it.
-
 ### Accessibility
 
 GPUI publishes the window through AccessKit on macOS, Windows and Linux. Oxide
