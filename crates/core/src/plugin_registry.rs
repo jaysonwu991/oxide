@@ -1363,43 +1363,43 @@ mod tests {
     fn syncs_managed_plugins_without_resetting_their_choice() {
         let dir = temp_dir("managed");
         let source_root = dir.join("bundled");
-        let source = source_root.join("computer-use");
-        write_plugin(&source, "oxide-computer-use", serde_json::json!({}));
+        let source = source_root.join("bundled-plugin");
+        write_plugin(&source, "bundled-plugin", serde_json::json!({}));
 
         assert_eq!(
             sync_managed_plugins_in(&dir, &source_root).unwrap(),
-            vec!["oxide-computer-use"]
+            vec!["bundled-plugin"]
         );
         let installed = load_state_in(&dir)
             .unwrap()
             .plugins
-            .remove("oxide-computer-use")
+            .remove("bundled-plugin")
             .unwrap();
         assert!(installed.managed);
         assert!(installed.enabled);
-        assert_eq!(installed.path, dir.join("managed/oxide-computer-use"));
+        assert_eq!(installed.path, dir.join("managed/bundled-plugin"));
         assert!(
             std::fs::read_to_string(installed.path.join(".claude-plugin/plugin.json"))
                 .unwrap()
                 .contains("\"version\": \"1.2.3\"")
         );
 
-        set_enabled_in(&dir, "oxide-computer-use", false).unwrap();
+        set_enabled_in(&dir, "bundled-plugin", false).unwrap();
         std::fs::write(
             source.join(".claude-plugin/plugin.json"),
-            r#"{"name":"oxide-computer-use","version":"2.0.0","description":"updated"}"#,
+            r#"{"name":"bundled-plugin","version":"2.0.0","description":"updated"}"#,
         )
         .unwrap();
         sync_managed_plugins_in(&dir, &source_root).unwrap();
         let installed = load_state_in(&dir)
             .unwrap()
             .plugins
-            .remove("oxide-computer-use")
+            .remove("bundled-plugin")
             .unwrap();
         assert!(!installed.enabled);
         assert_eq!(installed.version.as_deref(), Some("2.0.0"));
         assert_eq!(installed.description.as_deref(), Some("updated"));
-        assert!(uninstall_in(&dir, "oxide-computer-use")
+        assert!(uninstall_in(&dir, "bundled-plugin")
             .unwrap_err()
             .to_string()
             .contains("managed by Oxide"));

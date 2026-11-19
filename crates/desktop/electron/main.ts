@@ -23,7 +23,7 @@
 /// Nothing here is loaded from the network: the page is this crate's `ui/`
 /// directory, read from disk (or from the app's own archive once packaged), and
 /// the window may not navigate anywhere else.
-import { app, BrowserWindow, Menu, Notification, dialog, ipcMain, powerSaveBlocker, screen, shell } from "electron";
+import { app, BrowserWindow, Menu, Notification, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -304,78 +304,9 @@ function parsePacket(raw: unknown): PagePacket | undefined {
   }
 }
 
-/// The page one overlay window shows: a pulsing frame on the display's edge and a
-/// ring around the pointer. It takes no input, and `setContentProtection` keeps
-/// it out of the captures the model reads, so it never appears in a screenshot.
-const OVERLAY_PAGE = `<!doctype html><meta charset="utf-8"><style>
-html,body{margin:0;height:100%;overflow:hidden;background:transparent}
-#frame{position:fixed;inset:0;box-shadow:inset 0 0 0 3px rgba(59,130,246,.85),inset 0 0 38px 6px rgba(59,130,246,.45);animation:pulse 2.4s ease-in-out infinite}
-#ring{position:fixed;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:2px solid rgba(59,130,246,.95);background:rgba(59,130,246,.18);display:none}
-@keyframes pulse{50%{opacity:.55}}
-@media (prefers-reduced-motion:reduce){#frame{animation:none}}
-</style><div id="frame"></div><div id="ring"></div>`;
-
-let overlayWindows: BrowserWindow[] = [];
-let overlayTimer: NodeJS.Timeout | null = null;
-
-function closeOverlay(): void {
-  if (overlayTimer) clearInterval(overlayTimer);
-  overlayTimer = null;
-  for (const overlay of overlayWindows) if (!overlay.isDestroyed()) overlay.destroy();
-  overlayWindows = [];
-}
-
-function openOverlay(): void {
-  if (overlayWindows.length) return;
-  for (const display of screen.getAllDisplays()) {
-    const overlay = new BrowserWindow({
-      ...display.bounds,
-      frame: false,
-      transparent: true,
-      hasShadow: false,
-      focusable: false,
-      skipTaskbar: true,
-      resizable: false,
-      movable: false,
-      show: false,
-      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
-    });
-    overlay.setIgnoreMouseEvents(true);
-    overlay.setContentProtection(true);
-    overlay.setAlwaysOnTop(true, "screen-saver");
-    overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    void overlay.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(OVERLAY_PAGE)}`);
-    overlay.once("ready-to-show", () => overlay.showInactive());
-    overlayWindows.push(overlay);
-  }
-  overlayTimer = setInterval(() => {
-    const point = screen.getCursorScreenPoint();
-    overlayWindows.forEach((overlay) => {
-      if (overlay.isDestroyed()) return;
-      const bounds = overlay.getBounds();
-      const inside = point.x >= bounds.x && point.x < bounds.x + bounds.width && point.y >= bounds.y && point.y < bounds.y + bounds.height;
-      const script = inside
-        ? `(()=>{const r=document.getElementById("ring");r.style.display="block";r.style.left="${point.x - bounds.x}px";r.style.top="${point.y - bounds.y}px"})()`
-        : `document.getElementById("ring").style.display="none"`;
-      void overlay.webContents.executeJavaScript(script).catch(() => {});
-    });
-  }, 40);
-}
-
-app.on("before-quit", closeOverlay);
-
 ipcMain.on(TO_HOST, (event, message: unknown) => {
   const request = parsePacket(message);
   if (!request) return;
-  // The overlay is the window's own: it is a window of this process, drawn over
-  // every display while a Computer Use task runs and gone when the page says the
-  // task has ended.
-  if (request.params?.command === "computer_use_overlay" && typeof request.id === "number") {
-    if (request.params.args?.active === true) openOverlay();
-    else closeOverlay();
-    answerRequest(BrowserWindow.fromWebContents(event.sender), request.id, null);
-    return;
-  }
   if (request.params?.command === "set_native_language" && typeof request.id === "number") {
     const strings = request.params.args?.strings;
     if (strings && typeof strings === "object" && !Array.isArray(strings)) {

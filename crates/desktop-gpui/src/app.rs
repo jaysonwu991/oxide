@@ -122,16 +122,6 @@ pub struct FileViewer {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ComputerUsePolicy {
-    pub loading: bool,
-    pub error: Option<String>,
-    pub configured: bool,
-    pub server: String,
-    pub project: String,
-    pub value: Value,
-}
-
 #[derive(Clone)]
 pub struct ChangeReview {
     pub project: String,
@@ -215,7 +205,6 @@ pub enum Overlay {
         pinned: bool,
     },
     Approvals,
-    ComputerUse,
     Worktrees,
     WorktreeBranch {
         project: String,
@@ -339,7 +328,6 @@ pub struct Root {
     pub effort_drag_level: Option<String>,
     pub composer_tools_open: bool,
     pub approvals: Vec<String>,
-    pub computer_use_policy: ComputerUsePolicy,
     pub commands: Vec<Value>,
     pub at_answer: Value,
     pub at_chat: Option<u64>,
@@ -592,7 +580,6 @@ impl Root {
             effort_drag_level: None,
             composer_tools_open: false,
             approvals: Vec::new(),
-            computer_use_policy: ComputerUsePolicy::default(),
             commands: Vec::new(),
             at_answer: Value::Null,
             at_chat: None,
@@ -1399,115 +1386,6 @@ impl Root {
                                 .collect()
                         })
                         .unwrap_or_default();
-                }
-            },
-        );
-    }
-
-    pub fn open_computer_use(&mut self, cx: &mut Context<Self>) {
-        self.overlay = Some(Overlay::ComputerUse);
-        self.load_computer_use_policy(cx);
-    }
-
-    pub fn load_computer_use_policy(&mut self, cx: &mut Context<Self>) {
-        let Some(project) = self.current_project() else {
-            self.computer_use_policy = ComputerUsePolicy {
-                error: Some("Select a project to configure app access.".to_string()),
-                ..ComputerUsePolicy::default()
-            };
-            cx.notify();
-            return;
-        };
-        self.computer_use_policy.loading = true;
-        self.computer_use_policy.error = None;
-        self.computer_use_policy.project = project.clone();
-        self.call(
-            "computer_use_policy",
-            json!({ "project": project, "action": "list" }),
-            cx,
-            |root, result, cx| {
-                let expected = root.computer_use_policy.project.clone();
-                if root.current_project().as_deref() != Some(expected.as_str()) {
-                    return;
-                }
-                root.computer_use_policy.loading = false;
-                match result {
-                    Ok(value) => {
-                        root.computer_use_policy.configured =
-                            value["configured"].as_bool().unwrap_or(false);
-                        root.computer_use_policy.server =
-                            value["server"].as_str().unwrap_or_default().to_string();
-                        root.computer_use_policy.value = value["policy"].clone();
-                        root.computer_use_policy.error = (!root.computer_use_policy.configured)
-                            .then(|| {
-                                value["error"]
-                                    .as_str()
-                                    .unwrap_or(
-                                        "oxide-computer-use is not configured for this project",
-                                    )
-                                    .to_string()
-                            });
-                    }
-                    Err(error) => {
-                        root.computer_use_policy.configured = false;
-                        root.computer_use_policy.error = Some(error);
-                    }
-                }
-                cx.notify();
-            },
-        );
-    }
-
-    pub fn change_computer_use_policy(
-        &mut self,
-        action: String,
-        app: Option<String>,
-        mode: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(project) = self.current_project() else {
-            return;
-        };
-        let expected = project.clone();
-        self.computer_use_policy.loading = true;
-        self.computer_use_policy.error = None;
-        self.call(
-            "computer_use_policy",
-            json!({
-                "project": project,
-                "action": action,
-                "app": app,
-                "mode": mode,
-            }),
-            cx,
-            move |root, result, cx| match result {
-                Ok(value) => {
-                    if root.current_project().as_deref() != Some(expected.as_str()) {
-                        return;
-                    }
-                    root.computer_use_policy.loading = false;
-                    root.computer_use_policy.configured =
-                        value["configured"].as_bool().unwrap_or(false);
-                    root.computer_use_policy.server =
-                        value["server"].as_str().unwrap_or_default().to_string();
-                    root.computer_use_policy.value = value["policy"].clone();
-                    if !root.computer_use_policy.configured {
-                        root.computer_use_policy.error = Some(
-                            value["error"]
-                                .as_str()
-                                .unwrap_or("oxide-computer-use is not configured for this project")
-                                .to_string(),
-                        );
-                    }
-                    cx.notify();
-                }
-                Err(error) => {
-                    if root.current_project().as_deref() != Some(expected.as_str()) {
-                        return;
-                    }
-                    root.computer_use_policy.loading = false;
-                    root.computer_use_policy.error = Some(error);
-                    cx.notify();
                 }
             },
         );
@@ -3132,7 +3010,6 @@ impl Root {
         match name.as_str() {
             "help" => self.open_overlay(Overlay::Help, cx),
             "mcp" => self.open_overlay(Overlay::Mcp, cx),
-            "computer-use" => self.open_computer_use(cx),
             "model" => self.open_model_menu(cx),
             "agent" => self.open_overlay(Overlay::Agents, cx),
             "permissions" => self.open_overlay(Overlay::Approvals, cx),
@@ -4801,8 +4678,7 @@ fn slash_command(text: &str) -> Option<(&str, &str)> {
 fn performs_slash_command(name: &str, args: &str) -> bool {
     match name {
         "mcp" => args.is_empty(),
-        "help" | "model" | "agent" | "permissions" | "computer-use" | "trust" | "reasoning"
-        | "connect" => true,
+        "help" | "model" | "agent" | "permissions" | "trust" | "reasoning" | "connect" => true,
         "changes" | "terminal" | "pulls" | "customize" => args.is_empty(),
         _ => false,
     }
@@ -4920,7 +4796,6 @@ mod sidebar_resize_tests {
             "model",
             "agent",
             "permissions",
-            "computer-use",
             "trust",
             "reasoning",
         ] {

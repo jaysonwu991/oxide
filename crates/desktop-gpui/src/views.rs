@@ -682,20 +682,6 @@ pub fn topbar(
             theme,
         ))
         .on_click(cx.listener(|root, _, _, cx| root.toggle_repository_changes(cx)));
-    let computer_use_active = root
-        .chats
-        .get(root.active)
-        .and_then(|chat| chat.computer_use())
-        .is_some_and(|activity| activity.running);
-    let computer_use = icon_button(
-        "topbar-computer-use",
-        Icon::Pointer,
-        30.0,
-        theme,
-        computer_use_active,
-    )
-    .tooltip(tip("Computer use", theme))
-    .on_click(cx.listener(|root, _, _, cx| root.open_computer_use(cx)));
     let details_open = root.show_details && !root.show_changes;
     let details = icon_button("details-toggle", Icon::Details, 30.0, theme, details_open)
         .aria_label(if details_open {
@@ -717,7 +703,6 @@ pub fn topbar(
     content = content
         .child(new_chat)
         .child(changes)
-        .child(computer_use)
         .child(div().flex_none().w(px(4.0)));
     if has_chat {
         content = content.child(details);
@@ -2170,13 +2155,8 @@ fn detail_source_row(
                 _ => theme.faint(),
             };
             let name = server["name"].as_str().unwrap_or("MCP server").to_string();
-            let mark = if crate::model::is_computer_tool(name.as_str()) {
-                Icon::Pointer
-            } else {
-                Icon::Globe
-            };
             (
-                Some(mark),
+                Some(Icon::Globe),
                 name,
                 Some(state),
                 Some(color),
@@ -2401,125 +2381,6 @@ pub fn details(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -> impl I
                 },
             ));
         }
-    }
-
-    if let Some(activity) = root
-        .chats
-        .get(root.active)
-        .and_then(|chat| chat.computer_use())
-    {
-        let status = activity.status_label();
-        let action = [activity.app.clone(), Some(activity.action.clone())]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let mut card = div()
-            .id("details-computer-use")
-            .flex()
-            .flex_col()
-            .gap_2()
-            .mt_2()
-            .p_2()
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(if activity.failed {
-                theme.error()
-            } else if activity.running {
-                theme.accent()
-            } else {
-                theme.border()
-            })
-            .bg(theme.panel_2())
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(icons::icon(
-                        Icon::Pointer,
-                        15.0,
-                        if activity.running {
-                            theme.accent()
-                        } else if activity.failed {
-                            theme.error()
-                        } else {
-                            theme.faint()
-                        },
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text())
-                            .child("Computer Use"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.5))
-                            .text_color(if activity.failed {
-                                theme.error()
-                            } else if activity.running {
-                                theme.accent()
-                            } else {
-                                theme.faint()
-                            })
-                            .child(status),
-                    ),
-            )
-            .children((!action.is_empty()).then(|| {
-                div()
-                    .text_size(px(10.5))
-                    .text_color(theme.dim())
-                    .child(action)
-            }))
-            .children(activity.image.as_ref().and_then(|image| {
-                image.image.clone().map(|preview| {
-                    let data_url = image.data_url.clone();
-                    let name = activity
-                        .image_app
-                        .clone()
-                        .unwrap_or_else(|| image.name.clone());
-                    div()
-                        .id("details-computer-use-preview")
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w_full()
-                        .max_h(px(190.0))
-                        .overflow_hidden()
-                        .rounded(px(7.0))
-                        .bg(theme.background())
-                        .cursor_pointer()
-                        .child(gpui::img(preview).w_full().max_h(px(190.0)))
-                        .on_click(cx.listener(move |root, _, _, cx| {
-                            if let Some(image) = crate::model::image_from_data_url(&data_url) {
-                                root.overlay = Some(Overlay::ImagePreview {
-                                    name: name.clone(),
-                                    image,
-                                });
-                                cx.notify();
-                            }
-                        }))
-                })
-            }))
-            .child(
-                div()
-                    .text_size(px(10.5))
-                    .text_color(theme.faint())
-                    .child(activity.caption()),
-            );
-        if activity.running {
-            card = card.child(Button::new("Stop task").danger().render(
-                "details-computer-use-stop",
-                theme,
-                cx,
-                |root, _, cx| root.stop(cx),
-            ));
-        }
-        panel = panel.child(card);
     }
 
     panel = panel.child(div().h(px(8.0)));
@@ -3662,9 +3523,6 @@ fn status_letter(status: &str) -> &'static str {
 }
 
 fn tool_label(name: &str) -> &str {
-    if crate::model::is_computer_tool(name) {
-        return "Computer Use";
-    }
     match name {
         "tool" | "" => "Tool result",
         "bash" => "Command",
@@ -3700,9 +3558,6 @@ fn compact_tool_output(output: &str, limit: usize) -> (String, usize) {
 }
 
 fn tool_icon(name: &str) -> Icon {
-    if crate::model::is_computer_tool(name) {
-        return Icon::Pointer;
-    }
     if is_mcp_tool(name) {
         return Icon::Plug;
     }
@@ -8871,7 +8726,6 @@ mod tool_card_tests {
         assert_eq!(tool_icon("mock__echo"), Icon::Plug);
         assert_eq!(tool_icon("read_mcp_resource"), Icon::Plug);
         assert_eq!(tool_icon("task"), Icon::Tool);
-        assert_eq!(tool_icon("computer-use__screenshot"), Icon::Pointer);
     }
 }
 
@@ -8887,7 +8741,6 @@ mod details_source_tests {
             name: name.to_string(),
             detail: String::new(),
             copy_text: String::new(),
-            app: None,
             status: Status::Done,
             output: String::new(),
             diff: None,
@@ -8969,7 +8822,6 @@ mod transcript_activity_tests {
             name: "read".to_string(),
             detail: format!("file-{id}.rs"),
             copy_text: String::new(),
-            app: None,
             status: Status::Done,
             output: String::new(),
             diff: None,

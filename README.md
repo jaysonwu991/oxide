@@ -192,15 +192,6 @@ cd crates/desktop && pnpm install && pnpm start
 
 See [docs/desktop.md](docs/desktop.md) for the Electron desktop app and its packaging.
 
-## Oxide Computer Use
-
-**`Oxide Computer Use` is a development build and has not been signed with an
-Apple Developer ID or notarized by Apple.** It uses ad-hoc code signing when no
-identity is supplied, so macOS Gatekeeper can warn about or block it, and OS
-permissions may need to be granted again after rebuilding. Do not treat it as an
-Apple-verified production distribution. See the
-[helper guide](crates/desktop/computer-use/README.md) before installing it.
-
 ## VS Code extension
 
 Install the CLI first: the extension is a chat panel over your installed `oxide`

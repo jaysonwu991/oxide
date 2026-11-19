@@ -77,7 +77,7 @@ Codex's workflows must preserve those contracts.
 | Pull request review | Partial: `gh`/`glab` provide repository requests, description, checks, comments and diffs. No cross-repository personal review inbox, viewed-revision markers or cloud review service. |
 | Integrated terminal | Partial: real PTY and keyboard input, with a limited ANSI renderer. Full-screen terminal programs, complete terminal emulation and persistent hidden terminal sessions are not supported. |
 | File and artifact preview | Partial: images, text, Markdown, diagrams and CSV previews. No live document/spreadsheet/presentation authoring canvas or account artifact lifecycle. |
-| Browser/computer use | Configured MCP tools drive local apps. Tool images render as clickable previews during runs and when reopening a chat. No built-in browser session, continuous screen mirror, or isolated background input. |
+| Browser automation | Configured MCP tools drive a local browser. Tool images render as clickable previews during runs and when reopening a chat. No built-in browser session, continuous screen mirror, or isolated background input. |
 | Voice and image generation | No native recording/voice workflow or first-party generation UI. Provider/MCP capabilities depend on configuration. |
 | Notifications and activity | Implemented: unread/activity states, approval/question notifications, completion settings and keeping the machine awake during a turn. |
 | Settings, accessibility and release | Implemented: shared language/theme, keyboard remapping, native menu, focus behavior, platform installers and updater checks. Actual packaged accessibility and visual parity remain unverified. |
@@ -2139,31 +2139,7 @@ release used by the main installer table is published from Oxide Desktop GPUI. A
 `workflow_dispatch` build publishes nothing and needs no more than a read-only
 token.
 
-## Computer-Use screenshots
-
-> **Distribution warning:** the optional **Oxide Computer Use** helper is a
-> development build. It has not been signed with an Apple Developer ID or
-> notarized by Apple by default, so macOS Gatekeeper and permission prompts can
-> treat it as untrusted. Installing it does not establish Apple verification of
-> the helper, its runtime, or its installer integration.
-
-Desktop carries an app-managed `oxide-computer-use` plugin in
-`crates/desktop/plugins/oxide-computer-use`. At launch the harness refreshes the
-package under the shared plugin registry and enables it on first use; a later
-disable choice is preserved across app updates. The plugin contributes the
-`oxide-computer-use` MCP server, so Desktop users do not need to register that
-server separately. The runtime executable itself must still be installed and
-available on the user command path. CLI and VS Code users can register the same
-runtime with `oxide-computer-use install --client oxide`.
-
-Desktop uses the shared MCP registry and approval store for the plugin's tools.
-Discover them with `tool_search`; use `permissions` on newer server builds to
-check the actual MCP process. A `doctor` run from another terminal can report
-different macOS permissions. On macOS 27 and later, enable the hosting app
-(Oxide.app for Desktop) under **Privacy & Security → Device Control & Data
-Access** for app control and **Privacy & Security → Screen & System Audio
-Recording** for capture. Older macOS releases call these Accessibility and
-Screen Recording. Only the user can approve those grants.
+## MCP tool images
 
 MCP image content travels as media through `McpToolResult`, `ToolOutput` and
 `AgentEvent::ToolResult`. The JSON event's `attachments` carry data URLs, and
@@ -2171,49 +2147,3 @@ Desktop shows them on the originating run's tool card. Clicking a thumbnail
 opens the existing full-size image dialog. Stored tool results retain those
 images and restore the same previews when a chat is reopened. Remote image
 URLs are not fetched by this preview renderer.
-
-These previews are tool snapshots. The local server uses AXPress and AXValue
-where available, but pointer and keyboard events use the foreground desktop.
-This does not provide Codex's isolated background control or a continuous live
-preview. Screenshot image bytes keep their original dimensions so model
-coordinates do not silently change under coordinate-based tools.
-
-### Computer-use activity and native helper
-
-Computer-use tool cards carry a pointer glyph. A topbar pointer control opens the
-computer-use dialog even when the details dock has no room; the dock shows the
-same status and latest returned screenshot. Text-only actions preserve that
-snapshot with its original app label. Active calls, waiting between actions,
-failed actions and stopped turns have distinct states. **Stop task** uses the
-existing conversation cancellation path. Activity and screenshots belong to the
-originating conversation, including live background runs and restored sessions.
-These are snapshots, not a continuous stream or an input-isolated desktop.
-Electron keeps its live screen and click-through cursor overlay active for the
-whole turn after the first Computer Use call, including the waits between calls;
-Escape cancels that task. The bundled skill prefers accessibility operations
-and `background: true` keyboard delivery when possible, while pointer fallback
-still belongs to the foreground desktop.
-The `permissions` diagnostic is surfaced as **Ready** when both macOS grants are
-present, or **Permissions needed** with the missing grant named. It does not
-capture a screenshot, so that state is not presented as a finished screen action.
-
-An opt-in macOS companion app launches the configured `oxide-computer-use` runtime
-under a separate LaunchServices app instance, with private local MCP transport,
-a native cursor menu, permission diagnostics and a stop control. It is a separate
-development build and is not yet bundled into the Desktop installer. See the
-[helper build/connect guide](../crates/desktop/computer-use/README.md) and
-[Codex parity review](oxide-reins-parity.md). Packaging the runtime does not
-implement background input.
-
-The Computer-Use dialog also carries the runtime's app policy. It loads the
-default decision and launchable apps through the `app_policy` MCP tool, filters
-the app list, and exposes **Always allow**, **Allow once**, **Block** and
-**Revoke**. The same dialog switches the fallback between allowing and blocking
-unlisted apps. These controls call the server rather than editing its policy
-file, so bundle-path identity checks and one-time approval spending remain in
-one place.
-
-In the composer, `@` completion now combines project files with running apps
-reported by the Computer-Use runtime. An app whose display name contains spaces
-is inserted by its stable bundle or executable id, so the mention remains one
-token while the server receives the normal `@App` form.
