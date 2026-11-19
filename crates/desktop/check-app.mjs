@@ -2619,7 +2619,7 @@ const shellGlyphs = {
   "changes-toggle": "changes",
   "details-toggle": "details",
   "new-tab": "plus",
-  activity: "bell",
+  activity: "activity",
   "search-chats": "search",
   "new-chat": "pencil",
   "create-project-btn-tree": "plus",
@@ -3129,6 +3129,14 @@ check(
   "let every row of the log shrink below what it holds",
   /\.conversation > \* \{[^}]*min-width:\s*0/.test(sheet),
   String(sheet.indexOf(".conversation > *")),
+);
+check(
+  "kept the transcript's reading column at 820px, the width GPUI draws",
+  /\.msg,[^}]*\.run-error \{\s*max-width:\s*820px;/.test(sheet) &&
+    /const CONVERSATION_WIDTH: f32 = 820\.0;/.test(
+      readFileSync(new URL("../desktop-gpui/src/views.rs", import.meta.url), "utf8"),
+    ),
+  String(sheet.indexOf(".run-error {")),
 );
 check(
   "broke a long token inside a tool's output rather than widening the card",

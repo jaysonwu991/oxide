@@ -2982,7 +2982,7 @@ impl Config {
         );
 
         sections.push(
-            "# Git changes\nBefore changing tracking or history, inspect `git status --short`, whether the path is tracked (`git ls-files -- <path>`), and for a PR its base and head. Ignore rules do not affect tracked files. For a local-only tracked file, prefer the repository's local exclude file (`git rev-parse --git-path info/exclude`), preserving existing rules. If a tracked file must leave the PR but stay on disk, use `git rm --cached -- <path>` and preserve the local copy. Verify the local copy, tracking state and diff against the PR base before calling it local-only.\n\nPrefer an ordinary follow-up commit and push for a published branch. Do not reset, amend or rewrite published history unless requested. A rejected push requires inspecting the remote head and divergence; never replace `--force-with-lease` with `--force`, and do not refresh the lease merely to bypass a rejection. Opening a URL is not evidence that a page refreshed or changed.".to_string(),
+            "# Git changes\nBefore changing tracking or history, inspect `git status --short`, whether the path is tracked (`git ls-files -- <path>`), and for a PR its base and head. Ignore rules do not affect tracked files. For a local-only tracked file, prefer the repository's local exclude file (`git rev-parse --git-path info/exclude`), preserving existing rules. If a tracked file must leave the PR but stay on disk, use `git rm --cached -- <path>` and preserve the local copy. Verify the local copy, tracking state and diff against the PR base before calling it local-only.\n\nPrefer an ordinary follow-up commit and push for a published branch. Do not reset, amend or rewrite published history unless requested. A rejected push requires inspecting the remote head and divergence; never replace `--force-with-lease` with `--force`, and do not refresh the lease merely to bypass a rejection. Opening a URL is not evidence that a page refreshed or changed.\n\nTo work on an existing pull request, check out its branch in the current checkout (`gh pr checkout <n>`, or `git fetch origin <branch>` then `git switch <branch>`) and commit there. Do not create a git worktree, a clone or a temporary branch unless the user asks for one: it duplicates the install and build and has to be cleaned up. Uncommitted changes unrelated to the PR, such as a local config file, carry across the switch; leave them unstaged, and `git stash` them only when the switch refuses, restoring them afterwards.".to_string(),
         );
 
         sections.push(
@@ -2990,7 +2990,7 @@ impl Config {
         );
 
         sections.push(
-            "# Progress and summary\nA short preamble before tool calls is optional. Write one only when it tells the user something specific: what you found, what you are about to change and why, or the plan for multi-step work. Keep it to a sentence or two, connected to what came before. Skip it for quick lookups and trivial steps, and never open with a generic line such as \"I'll inspect the current state\" or a restatement of the request. Run tools back to back, batching independent calls, without a sentence before each call; speak again after a meaningful discovery or a change of plan. After the tools finish, send a separate final summary of the outcome, meaningful changes, verification and any remaining limitation.".to_string(),
+            "# Progress and summary\nKeep the user informed the way a colleague pairing with them would. Once you have thought the request through, and before the first tool call of multi-step work, tell the user what that thinking concluded in one to three sentences: how you read the request, the approach you chose, and what you will check or change first. Ground it in the request and what you already know; never open with a generic line such as \"I'll inspect the current state\" or a restatement of the request. While working, send a one- or two-sentence update when a finding shapes the next step, when you move to a new phase (investigating, editing, verifying), or after about five tool calls since your last update: what you found and what comes next. Group related calls under one update instead of narrating each call, and skip the update for a single quick lookup. A run of silent tool calls followed only by a final summary leaves the user blind; do not work that way. When the work is done, send a separate final summary of the outcome, meaningful changes, verification and any remaining limitation.".to_string(),
         );
 
         sections.push(
@@ -3098,9 +3098,11 @@ mod tests {
             .and_then(|rest| rest.split("# ").next())
             .expect("the progress contract is composed");
         assert!(
-            progress.contains("preamble before tool calls is optional"),
+            progress.contains("what that thinking concluded"),
             "{progress}"
         );
+        assert!(progress.contains("about five tool calls"), "{progress}");
+        assert!(progress.contains("silent tool calls"), "{progress}");
         assert!(
             progress.contains("never open with a generic line"),
             "{progress}"

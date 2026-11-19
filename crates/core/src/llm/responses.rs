@@ -50,6 +50,7 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
             }
             input.push(item);
         }
+        let mut media = Vec::new();
         for call in message.tool_calls.iter().flatten() {
             input.push(json!({"type":"function_call", "call_id":call.id,
                 "name":call.function.name,"arguments":call.function.arguments}));
@@ -63,7 +64,18 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
             {
                 input.push(json!({"type":"function_call_output", "call_id":call.id,
                     "output":tool_output(result)}));
+                let parts = tool_media(result);
+                if !parts.is_empty() {
+                    media.push(json!({"type":"input_text", "text":format!(
+                        "Media returned by the `{}` tool call `{}`:", call.function.name, call.id)}));
+                    media.extend(parts);
+                }
             }
+        }
+        // Gateways that translate Responses into Chat Completions reject media
+        // inside a tool message, so tool media rides in the next user message.
+        if !media.is_empty() {
+            input.push(json!({"role":"user","content":media}));
         }
     }
     let mut body = json!({"model":config.model,"input":input,"stream":true,"store":false,
@@ -95,18 +107,19 @@ pub fn request_body(config: &Config, messages: &[Message], tools: &[ToolSpec]) -
 
 fn tool_output(message: &Message) -> Value {
     // Gateways may translate Responses to Chat Completions without converting
-    // input_text blocks in tool results. Plain text uses the shared string form.
+    // input_text blocks in tool results, so every result uses the string form.
+    json!(message.display().unwrap_or_default())
+}
+
+fn tool_media(message: &Message) -> Vec<Value> {
     match &message.content {
-        None => json!(""),
-        Some(MessageContent::Text(text)) => json!(text),
-        Some(MessageContent::Parts(parts))
-            if parts
-                .iter()
-                .all(|part| matches!(part, ContentPart::Text { .. })) =>
-        {
-            json!(message.content.as_ref().unwrap().display())
-        }
-        _ => json!(content(message, false)),
+        Some(MessageContent::Parts(parts)) => content(message, false)
+            .into_iter()
+            .zip(parts)
+            .filter(|(_, part)| !matches!(part, ContentPart::Text { .. }))
+            .map(|(value, _)| value)
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -330,7 +343,15 @@ mod tests {
         assert!(body["input"][1].get("_oxide_model").is_none());
         assert_eq!(body["input"][2]["phase"], "commentary");
         assert_eq!(body["input"][3]["type"], "function_call");
-        assert_eq!(body["input"][4]["output"][1]["type"], "input_image");
+        assert!(body["input"][4]["output"].is_string());
+        assert_eq!(body["input"][5]["role"], "user");
+        assert_eq!(body["input"][5]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][5]["content"][1]["type"], "input_image");
+        assert_eq!(
+            body["input"][5]["content"][1]["image_url"],
+            "data:image/png;base64,abc"
+        );
+        assert!(!body["input"][4].to_string().contains("input_image"));
         let switched = Config {
             model: "gpt-5.6-terra".into(),
             reasoning: Reasoning::Off,

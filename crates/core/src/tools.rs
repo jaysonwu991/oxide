@@ -91,6 +91,26 @@ killed. Retry narrower rather than repeating it: scope it to a directory, exclud
 (`target/`, `node_modules/`, `.venv/`, `.git/`), or use the `grep`/`find` tools, which skip those \
 and honor .gitignore. Raise `timeout` only for a known-slow build.]";
 
+/// The timeout note for anything that is not a filesystem search: a test run,
+/// build or server that hangs is usually waiting on a watcher, an open handle
+/// or a prompt, and excluding `node_modules/` says nothing about that.
+const BASH_STALL_HINT: &str = "[the output above is what the command printed before it was \
+killed. Do not rerun it unchanged: a test, build or server that hangs is usually waiting on a \
+watcher, an open handle or an interactive prompt. Run the narrowest target directly (one test \
+file, non-watch mode such as `CI=1`, jest `--forceExit`), redirect long output to a file and \
+read its tail, or start a server in the background and wait on it with a bounded check.]";
+
+fn timeout_hint(command: &str) -> &'static str {
+    let searches = command
+        .split(|c: char| c.is_whitespace() || matches!(c, '|' | ';' | '&' | '(' | ')'))
+        .any(|word| matches!(word, "grep" | "rg" | "find" | "fd" | "ag" | "du" | "tree"));
+    if searches {
+        BASH_TIMEOUT_HINT
+    } else {
+        BASH_STALL_HINT
+    }
+}
+
 /// Appended to a failed shell command that required a relative module from a
 /// script outside the project. Node resolves `require('./...')` against the
 /// script's own directory, not the working directory, so the retry should move
@@ -5257,7 +5277,10 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         let captured = finish_bash_output(stdout, stderr, -1)
             .unwrap_or_default()
             .replace("\n[exit: -1]", "");
-        anyhow::bail!("command timed out after {secs}s\n{captured}\n{BASH_TIMEOUT_HINT}");
+        anyhow::bail!(
+            "command timed out after {secs}s\n{captured}\n{}",
+            timeout_hint(command)
+        );
     };
     let exit = status.code().unwrap_or(-1);
     #[cfg(unix)]
@@ -6726,6 +6749,21 @@ fn cleanup_truncated(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_timed_out_search_and_a_stalled_test_get_different_hints() {
+        assert_eq!(timeout_hint("grep -rn foo ."), BASH_TIMEOUT_HINT);
+        assert_eq!(
+            timeout_hint("cd src && find . -name '*.rs'"),
+            BASH_TIMEOUT_HINT
+        );
+        assert_eq!(
+            timeout_hint("pnpm exec nx test app -- --runInBand"),
+            BASH_STALL_HINT
+        );
+        assert_eq!(timeout_hint("cargo test"), BASH_STALL_HINT);
+    }
+
     use crate::ecosystem::McpExposure;
     use crate::llm::FunctionCall;
 
@@ -10703,8 +10741,12 @@ mod tests {
         .await;
         assert!(out.text.contains("timed out"), "{}", out.text);
         assert!(out.text.contains("important-line"), "{}", out.text);
-        assert!(out.text.contains("Retry narrower"), "{}", out.text);
-        assert!(out.text.contains("`grep`/`find` tools"), "{}", out.text);
+        assert!(
+            out.text.contains("Do not rerun it unchanged"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("node_modules"), "{}", out.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
