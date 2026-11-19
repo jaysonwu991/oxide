@@ -48,6 +48,14 @@ const CUMULATIVE_INPUT_REMINDER: &str = "The user has added one or more messages
 /// Rides on each request after a re-check's tool call. The summary it checks
 /// was already shown and committed, so a restated summary would read as a
 /// second copy of the same answer below the tool cards.
+/// Rides on the request after a stretch of tool steps that showed the user no
+/// text, so a long run reads as work in progress rather than silence.
+const PROGRESS_UPDATE_REMINDER: &str = "You have run several tool steps without telling the user anything. Alongside your next tool calls, or in your answer, write one or two sentences for the user: what you have found so far and what you are doing next. Do not narrate each call or restate the request.";
+
+/// Tool steps without visible text after which the model is asked for an
+/// update.
+const SILENT_TOOL_STEPS: usize = 5;
+
 const RECHECK_AFTER_TOOLS_REMINDER: &str = "Your earlier summary is already shown to the user above these tool calls. Do not restate it. Finish with only what this check established or changed, in one or two sentences, or correct the specific claim it disproved.";
 
 pub type RunFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -771,6 +779,15 @@ async fn run_loop(
         });
     let mut overflow_error: Option<String> = None;
     let mut recovered_overflow = false;
+    // The system prompt and tool schemas ride on every request. A provider
+    // that reports usage counts them; a gateway that reports zeros leaves only
+    // the history estimate, which would miss them entirely.
+    let mut request_overhead = if depth == 0 {
+        let (request, tools) = warmer_inputs(&config, &runtime, &cwd, &[]);
+        request_overhead_tokens(&request, &tools)
+    } else {
+        0
+    };
     {
         let mut selected = runtime
             .selected_mcp_tools
@@ -873,6 +890,7 @@ async fn run_loop(
     // request, since the reminder is news about the step it arrives on and
     // repeats as a phantom message on every step after it.
     let mut mid_run_input_reminder = false;
+    let mut silent_tool_steps = 0usize;
     // A provider may return the metadata tool without the requested answer.
     // Offer it at most once per run so an invalid title or an unwritable log
     // cannot turn that fallback into an unbounded request loop.
@@ -970,7 +988,11 @@ async fn run_loop(
             let growth =
                 crate::compact::estimate_tokens(&messages[measured_at.min(messages.len())..])
                     as u64;
-            let current = context_tokens.saturating_add(growth).max(history_tokens);
+            let current = if context_tokens > 0 {
+                context_tokens.saturating_add(growth).max(history_tokens)
+            } else {
+                history_tokens.saturating_add(request_overhead)
+            };
             if overflow_error.is_some()
                 || crate::compact::needs_compaction(current, context_window, compaction_budget)
             {
@@ -1141,6 +1163,10 @@ async fn run_loop(
         if rechecked_with_tools {
             request.push(Message::system(RECHECK_AFTER_TOOLS_REMINDER));
         }
+        if depth == 0 && silent_tool_steps >= SILENT_TOOL_STEPS {
+            silent_tool_steps = 0;
+            request.push(Message::system(PROGRESS_UPDATE_REMINDER));
+        }
         // A reminder makes this request the hidden nudge: it asks the model to
         // confirm work it already summarized, so a provider that answers it
         // with nothing must not fail the turn the user already saw complete.
@@ -1151,6 +1177,7 @@ async fn run_loop(
             request.push(Message::user(reminder));
         }
         let tool_specs = build_tool_specs(&config, &runtime, depth, offer_session_title);
+        request_overhead = request_overhead_tokens(&request[..1], &tool_specs);
         let started = std::time::Instant::now();
         // A candidate final answer must not reach a front-end before checks
         // that the Definition of Done already knows are outstanding. Buffer
@@ -1596,6 +1623,7 @@ async fn run_loop(
             rechecked_with_tools = recheck_open;
         }
         held_is_tail = false;
+        silent_tool_steps = if has_answer { 0 } else { silent_tool_steps + 1 };
         let _ = tx.send(AgentEvent::MessagePhase(phase));
         if let Some(text) = assistant.display().filter(|text| !text.trim().is_empty()) {
             if hold_stream || !has_answer {
@@ -2396,6 +2424,11 @@ pub(crate) fn warmer_inputs(
     request.extend(messages.iter().cloned());
     let tools = build_tool_specs(config, runtime, 0, needs_session_title(runtime, 0));
     (request, tools)
+}
+
+fn request_overhead_tokens(system: &[Message], tools: &[ToolSpec]) -> u64 {
+    crate::compact::estimate_tokens(system) as u64
+        + serde_json::to_vec(tools).map_or(0, |bytes| bytes.len() as u64 / 4)
 }
 
 fn needs_session_title(runtime: &Runtime, depth: usize) -> bool {
@@ -5831,13 +5864,16 @@ mod tests {
             if mode != "title" {
                 log.set_name("Existing work").unwrap();
             }
-            for message in [
-                Message::user("old request"),
-                Message::assistant("old answer", vec![]),
-                Message::user("continue"),
-            ] {
-                log.append(&message).unwrap();
-            }
+            log.append(&Message::user("old request")).unwrap();
+            log.append_with_usage(
+                &Message::assistant("old answer", vec![]),
+                Some(crate::compact::UsageRecord {
+                    input: 50,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+            log.append(&Message::user("continue")).unwrap();
             let mut runtime = test_runtime().await;
             runtime.session = Some(Arc::clone(&log));
             let config = Config {
@@ -6214,6 +6250,61 @@ mod tests {
             "fixed prompt overhead must remain counted"
         );
         assert!(context < 190_000, "summarized history must reclaim space");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A gateway that reports zero usage leaves only the local estimate, which
+    /// must still count the system prompt and tool schemas every request
+    /// carries, or a conversation outgrows the window without compacting.
+    #[tokio::test]
+    async fn a_gateway_without_usage_still_compacts_before_the_window_fills() {
+        let (addr, server) = sse_server(vec![
+            answer_body("Earlier work is complete."),
+            answer_body("Answer"),
+        ])
+        .await;
+        let dir = std::env::temp_dir().join(format!("oxide_no_usage_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let log = Arc::new(SessionLog::create_in(&dir, &dir).unwrap());
+        log.set_name("Existing thread").unwrap();
+        let history = vec![
+            Message::user(format!("OLD_HISTORY {}", "old ".repeat(400))),
+            Message::assistant("Earlier answer", vec![]),
+            Message::user("LATEST_USER_REQUEST"),
+        ];
+        for message in &history {
+            log.append(message).unwrap();
+        }
+        let mut runtime = test_runtime().await;
+        runtime.session = Some(Arc::clone(&log));
+        let mut config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            max_tokens: 100,
+            compaction: crate::compact::CompactionConfig {
+                reserve_tokens: 100,
+                keep_recent_tokens: 1,
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let (request, tools) = warmer_inputs(&config, &runtime, &dir, &[]);
+        let overhead = request_overhead_tokens(&request, &tools);
+        let history_tokens = crate::compact::estimate_tokens(&history) as u64;
+        config.context_window = history_tokens + overhead / 2 + 100;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        run(config, dir.clone(), history, tx, runtime).await;
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2, "one summary and one answer");
+        assert!(!requests[1].contains("OLD_HISTORY"));
+        assert!(requests[1].contains("LATEST_USER_REQUEST"));
+        let mut compacted = false;
+        while let Ok(event) = rx.try_recv() {
+            compacted |= matches!(event, AgentEvent::Compaction { .. });
+        }
+        assert!(compacted);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -6837,6 +6928,45 @@ mod tests {
             "a later request repeated the new-input notice: {}",
             bodies[1]
         );
+    }
+
+    /// A run of tool steps that shows the user nothing gets one request asking
+    /// for a progress update, and the count starts over after it.
+    #[tokio::test]
+    async fn silent_tool_steps_ask_for_a_progress_update() {
+        let mut bodies: Vec<String> = (0..6)
+            .map(|step| bash_call_body(&format!("echo step-{step}")))
+            .collect();
+        bodies.push(answer_body("done"));
+        let (addr, server) = sse_server(bodies).await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("hi")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let bodies = server.await.unwrap();
+        assert_eq!(bodies.len(), 7);
+        let nudged: Vec<usize> = bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, body)| body.contains("without telling the user anything"))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(nudged, vec![SILENT_TOOL_STEPS]);
     }
 
     /// A queued follow-up is not polled at the top of the loop: it enters at

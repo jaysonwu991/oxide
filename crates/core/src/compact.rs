@@ -186,6 +186,29 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
     messages.iter().map(estimate_message_tokens_usize).sum()
 }
 
+/// What one attached image costs a vision model: a full-size screenshot is
+/// about this many tokens on both the Anthropic and OpenAI routes. Its
+/// `[image]` display marker would otherwise count as two.
+const IMAGE_TOKENS: usize = 1_600;
+
+fn estimate_media_tokens(message: &Message) -> usize {
+    let Some(crate::llm::MessageContent::Parts(parts)) = &message.content else {
+        return 0;
+    };
+    parts
+        .iter()
+        .map(|part| match part {
+            crate::llm::ContentPart::Text { .. } => 0,
+            crate::llm::ContentPart::ImageUrl { .. } => IMAGE_TOKENS,
+            // A document is billed by its extracted pages; its decoded size
+            // over ten bytes per token keeps a PDF from counting as a marker.
+            crate::llm::ContentPart::File { file } => {
+                (file.file_data.len() * 3 / 4 / 10).max(IMAGE_TOKENS)
+            }
+        })
+        .sum()
+}
+
 fn estimate_message_tokens_usize(message: &Message) -> usize {
     let content = message.display().map(|text| text.len()).unwrap_or(0);
     let calls = message
@@ -200,7 +223,7 @@ fn estimate_message_tokens_usize(message: &Message) -> usize {
                 .sum::<usize>()
         })
         .unwrap_or(0);
-    (content + calls) / 4 + 4
+    (content + calls) / 4 + 4 + estimate_media_tokens(message)
 }
 
 /// Whether the context has crossed the auto-compaction threshold.
@@ -940,6 +963,19 @@ mod tests {
         let (read, modified) = extract_file_ops(&messages);
         assert_eq!(read, ["src/a.rs"]);
         assert_eq!(modified, ["src/b.rs"]);
+    }
+
+    #[test]
+    fn an_attached_image_counts_as_its_vision_tokens_not_its_marker() {
+        let image = crate::llm::ContentPart::ImageUrl {
+            image_url: crate::llm::ImageUrl {
+                url: "data:image/png;base64,AAAA".into(),
+                detail: None,
+            },
+        };
+        let text = estimate_tokens(&[Message::tool("call_1", "shot")]);
+        let shot = estimate_tokens(&[Message::tool_parts("call_1", "shot", vec![image])]);
+        assert!(shot >= text + IMAGE_TOKENS, "{shot} vs {text}");
     }
 
     #[test]
