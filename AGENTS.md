@@ -7,12 +7,12 @@ An optimized AI coding agent CLI written in Rust.
 - `crates/core/` (`oxide-core`): shared config, sessions, agent loop, tools, providers,
   approvals, trust, snapshots, MCP, skills and plugins.
 - `crates/cli/` (`oxide`): terminal binary, RPC mode and ratatui TUI.
-- `crates/desktop-gpui/` (`oxide-desktop-gpui`): the primary GPUI desktop app, a
+- `crates/desktop-tauri/` (`oxide-desktop-tauri`): the primary Tauri desktop app, a
   separate Cargo workspace that links `oxide-desktop`'s library half (the same
-  `commands::dispatch`, approvals, turns and stores) and draws it natively. It
-  is packaged by `package.sh` and released by `desktop-gpui.yml`.
-- `crates/desktop/` (`oxide-desktop`): the Electron desktop app during the
-  native migration. `electron/` hosts the window and preload; `src/` is the Rust
+  `commands::dispatch`, approvals, turns and stores) and hosts the shared desktop
+  page. It is packaged by `package.sh` and released by `desktop-tauri.yml`.
+- `crates/desktop/` (`oxide-desktop`): the independently supported Electron
+  desktop app. `electron/` hosts the window and preload; `src/` is the Rust
   harness. The bridge uses one JSON packet per line. `ui/` holds the page shared
   behavior checks exercise.
 - `editors/vscode/`: separate pnpm/TypeScript package. Runs the installed CLI with
@@ -22,8 +22,8 @@ An optimized AI coding agent CLI written in Rust.
 Detailed behavior contracts and file-by-file notes are in
 [docs/architecture-notes.md](docs/architecture-notes.md). Search that reference
 for the subsystem being changed; do not load it in full. Other focused guides
-live in `docs/` (`tools.md`, `configuration.md`, `desktop.md`, `vscode.md`,
-`tui.md`, `ecosystem.md`). Keep this file concise; put implementation history
+live in `docs/` (`tools.md`, `configuration.md`, `desktop-tauri.md`,
+`desktop.md`, `vscode.md`, `tui.md`, `ecosystem.md`). Keep this file concise; put implementation history
 and detailed explanations in the relevant guide.
 
 ## Shared contracts
@@ -55,12 +55,13 @@ and detailed explanations in the relevant guide.
 - `cd crates/desktop && cargo test` (desktop manager, turn, command, bridge and updater tests)
 - `cd crates/desktop && pnpm start` (build both halves and open the window)
 - `cd crates/desktop && pnpm run dist` (an installer for this platform under `artifacts/`; it compiles the window, builds the harness in release mode, and runs electron-builder)
-- `cd crates/desktop-gpui && cargo run` (the primary GPUI window; `--check` answers
+- `cd crates/desktop-tauri && cargo run` (the primary Tauri window; `--check` answers
   engine commands without a window, and `./package.sh` writes this platform's
   installer under `artifacts/`)
 - `node crates/desktop/check-app.mjs` (front-end behavior against a stubbed DOM and bridge)
 - `node crates/desktop/check-shell.mjs` (command/event contract, the window and preload, the window's own rules, the menu bar, the release and its installer, the packaging config, bundle)
-- `cd crates/desktop-gpui && cargo test && cargo clippy --all-targets -- -D warnings` (the primary front-end's parsers and transcript model; the release workflow also runs `--check` against the packaged binary)
+- `cd crates/desktop-tauri && cargo test && cargo clippy --all-targets -- -D warnings` (the Tauri host's packet routing, native service parity and menu rules; the release workflow also runs `--check` against the packaged binary)
+- `node crates/desktop-tauri/check-shell.mjs` (the Tauri host, shared page bridge, native services and release train)
 - `cd editors/vscode && pnpm test` (VS Code extension; `tsc -p .` then `node --test out/test/`)
 
 ## Conventions

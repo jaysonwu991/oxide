@@ -1,9 +1,9 @@
 name: Desktop (Electron)
 
 # Builds the Electron desktop app for macOS x64 and arm64, Linux x64 and
-# arm64, and Windows. GPUI is now the primary desktop and owns `desktop-latest`;
-# this workflow remains for versioned `desktop-v*` Electron releases during the
-# migration. Only the release job — the one that writes a release — is granted
+# arm64, and Windows. Tauri is the primary desktop and owns `desktop-latest`;
+# this workflow remains for versioned `desktop-v*` Electron releases. Only the
+# release job — the one that writes a release — is granted
 # `contents: write`; a build holds a read-only token.
 #
 # The app is two programs: Electron, which electron-builder packages, and the
@@ -256,9 +256,9 @@ jobs:
 
       # `/releases/latest` is the newest release of the repository, and three
       # components publish into it, so a permanent installer link cannot be
-      # `desktop-latest` belongs to the primary GPUI release. Electron keeps a
+      # `desktop-latest` belongs to the primary Tauri release. Electron keeps a
       # stable permanent address of its own for users who deliberately need the
-      # fallback during the transition.
+      # separately installable front-end.
       - name: Refresh the desktop-electron-latest alias
         env:
           GH_TOKEN: ${{ github.token }}
@@ -269,7 +269,7 @@ jobs:
           if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
               --title "Oxide Desktop Electron installers" \
-              --notes "The newest Electron desktop app installers. GPUI is the primary desktop application; use \`desktop-latest\` for its installers."
+              --notes "The newest Electron desktop app installers. Tauri is the primary desktop application; use \`desktop-latest\` for its installers."
           fi
           find release-assets -type f -print0 \
             | xargs -0 gh release upload "$alias_tag" --repo "${GITHUB_REPOSITORY}" --clobber

@@ -12,8 +12,8 @@
 //! what turns them into packets, and the engine in `src/main.rs` is what hands it
 //! each one. `commands` is the packet contract itself, `approval` and `ask` are
 //! the two brokers a turn waits on, and `bridge` is the pipe it all leaves
-//! through — all of them library modules so the GPUI front-end in
-//! `crates/desktop-gpui` runs the same engine in its own process.
+//! through — all of them library modules so the Tauri front-end in
+//! `crates/desktop-tauri` runs the same engine in its own process.
 
 pub mod approval;
 pub mod ask;

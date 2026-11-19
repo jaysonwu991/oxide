@@ -1016,7 +1016,7 @@ mod tests {
         fs::write(&binary, b"binary").unwrap();
         let installation = installation_of(&binary, "macos", None, None);
         let release = Release {
-            tag: "desktop-gpui-v0.35.0".to_string(),
+            tag: "desktop-tauri-v0.35.0".to_string(),
             version: "0.35.0".to_string(),
             asset: "Oxide-Beta-macos-arm64.dmg".to_string(),
             digest: Some(format!("sha256:{}", "0".repeat(64))),
@@ -1025,7 +1025,7 @@ mod tests {
         };
 
         let check = check_component_for(
-            Component::DesktopGpui,
+            Component::DesktopTauri,
             &release,
             &installation,
             "acme/oxide",
@@ -1033,11 +1033,11 @@ mod tests {
         );
 
         assert!(check.update_available && check.installable);
-        assert_eq!(check.component, Component::DesktopGpui);
-        assert_eq!(check.tag, "desktop-gpui-v0.35.0");
+        assert_eq!(check.component, Component::DesktopTauri);
+        assert_eq!(check.tag, "desktop-tauri-v0.35.0");
         assert_eq!(
             check.release_url,
-            "https://github.com/acme/oxide/releases/tag/desktop-gpui-v0.35.0"
+            "https://github.com/acme/oxide/releases/tag/desktop-tauri-v0.35.0"
         );
         assert_eq!(check.advice, None);
         fs::remove_dir_all(root).unwrap();

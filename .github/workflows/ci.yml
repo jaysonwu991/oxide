@@ -4,7 +4,8 @@ name: CI
 # (formatting, clippy, tests), the desktop app with its
 # front-end checks, and the VS Code extension. This
 # workflow only verifies; the tag-triggered release workflows (`cli.yml`,
-# `desktop.yml`, and `vscode.yml`) build the shippable artifacts.
+# `desktop-tauri.yml`, `desktop.yml`, and `vscode.yml`) build the shippable
+# artifacts.
 
 on:
   push:
@@ -121,8 +122,8 @@ jobs:
 
   # Formatting and linting are platform-independent, so run them once instead
   # of paying for Clippy's separate check graph on all three hosted runners.
-  desktop-gpui-lint:
-    name: desktop-gpui lint
+  desktop-tauri-lint:
+    name: desktop-tauri lint
     runs-on: ubuntu-24.04
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -133,41 +134,44 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-gpui-lint
-          workspaces: crates/desktop-gpui
+          key: desktop-tauri-lint
+          workspaces: crates/desktop-tauri
           cache-on-failure: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.8.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/desktop/pnpm-lock.yaml
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libwayland-dev \
-            libx11-xcb-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            libvulkan1 \
-            libvulkan-dev \
-            libasound2t64 \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
             libssl-dev \
-            libgbm1
+            patchelf
+      - name: Install the page's diagram packages
+        working-directory: crates/desktop
+        run: pnpm install --frozen-lockfile
       - name: Check formatting
-        working-directory: crates/desktop-gpui
+        working-directory: crates/desktop-tauri
         run: cargo fmt -- --check
-      - name: Lint the GPUI desktop
-        working-directory: crates/desktop-gpui
+      - name: Lint the Tauri desktop
+        working-directory: crates/desktop-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
 
-  # Build and test the debug profile on each platform the GPUI app ships to:
-  # its window system and GPU backend have per-platform branches. The optimized
-  # LTO build and installer stay tag-time work in `desktop-gpui.yml`; repeating
+  # Build and test the debug profile on each platform the Tauri app ships to.
+  # The optimized LTO build and installer stay tag-time work in
+  # `desktop-tauri.yml`; repeating
   # that profile on every PR doubled codegen work Electron's CI never did.
-  desktop-gpui:
-    name: desktop-gpui (${{ matrix.os }})
+  desktop-tauri:
+    name: desktop-tauri (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -181,44 +185,49 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-gpui
-          workspaces: crates/desktop-gpui
+          key: desktop-tauri
+          workspaces: crates/desktop-tauri
           cache-on-failure: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.8.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/desktop/pnpm-lock.yaml
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libwayland-dev \
-            libx11-xcb-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            libvulkan1 \
-            libvulkan-dev \
-            libasound2t64 \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
             libssl-dev \
-            libgbm1
-      - name: Test the GPUI desktop
-        working-directory: crates/desktop-gpui
+            patchelf
+      - name: Install the page's diagram packages
+        working-directory: crates/desktop
+        run: pnpm install --frozen-lockfile
+      - name: Test the Tauri desktop
+        working-directory: crates/desktop-tauri
         run: cargo test --locked
       - name: Build the debug front-end
-        working-directory: crates/desktop-gpui
+        working-directory: crates/desktop-tauri
         run: cargo build --locked
       - name: Check the engine contract
-        working-directory: crates/desktop-gpui
+        working-directory: crates/desktop-tauri
         shell: bash
         run: |
-          binary=./target/debug/oxide-desktop-gpui
+          binary=./target/debug/oxide-desktop-tauri
           if [ ! -f "$binary" ]; then
             binary="$binary.exe"
           fi
           "$binary" --check
+      - name: Check the Tauri host contract
+        run: node crates/desktop-tauri/check-shell.mjs
 
   # The extension is a standalone pnpm/TypeScript package, so it is not covered
   # by the Cargo jobs. Run its type check and unit tests on each platform the

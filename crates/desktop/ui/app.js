@@ -1,24 +1,49 @@
-// Oxide desktop front-end. The window is Electron's own renderer and the page
-// has no Node of its own (`nodeIntegration` off): the project/session/config
-// stores it reads are the CLI's, reached through the app's commands rather than
-// the filesystem.
+// Oxide desktop front-end. The same page is hosted by Electron and Tauri. It has
+// no Node of its own: the project/session/config stores it reads are the CLI's,
+// reached through the app's commands rather than the filesystem.
 //
 // A command is performed by name: one packet carries the name and the arguments,
 // and its answer carries that command's own value or the reason it failed.
 // Everything a run has to say while one is in flight arrives as a packet of its
 // own, and a handler is given the event's own `payload`.
 //
-// Both directions use the names this page has always read, which
-// `electron/preload.ts` installs before the page runs: a packet goes out on the
-// user bridge, which the preload hands to the window
-// (`electron/main.ts`), and the window answers through
+// Both directions use the names this page has always read. Electron's preload
+// installs the bridge before the page runs; Tauri exposes its global API when
+// requested in `tauri.conf.json`. A packet goes out on the user bridge, and the
+// window answers through
 // `window.__electrobun.receiveMessageFromHost`, which the preload leaves
 // filling a queue until a page takes it over — this page does, since it speaks
 // the wire itself. A window whose preload installs no user bridge still has the
 // event one, which carries the packet as the `host-message` event it was written
 // as; the page reads the same packet off either.
-const userBridge = window.__electrobunHostBridge;
+const nativeTauri = window.__TAURI__;
+if (!window.__electrobun) window.__electrobun = {};
+window.__electrobunPendingHostMessages = window.__electrobunPendingHostMessages || [];
+
+let userBridge = window.__electrobunHostBridge;
 const eventBridge = window.__electrobunSendToHost;
+
+if (!userBridge && nativeTauri?.core?.invoke && !eventBridge) {
+  userBridge = {
+    postMessage(raw) {
+      let request = null;
+      try {
+        request = JSON.parse(raw);
+      } catch {}
+      return nativeTauri.core.invoke("oxide_message", { message: raw }).catch((error) => {
+        if (request?.id != null) {
+          deliver({
+            type: "response",
+            id: request.id,
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    },
+  };
+  window.__electrobunHostBridge = userBridge;
+}
 
 function hostSend(packet) {
   if (userBridge) return userBridge.postMessage(JSON.stringify(packet));
@@ -30,10 +55,10 @@ const pending = new Map();
 const listeners = new Map();
 let nextRequest = 1;
 
-// The preload sets the namespace up, and the page fills it in rather than
-// loading a typed RPC layer this window does not use. A page the preload ran in
-// a sandboxed mode leaves nothing to fill in.
-if (!window.__electrobun) window.__electrobun = {};
+let pageEventsReady = false;
+const tauriListener = nativeTauri?.event?.listen
+  ? nativeTauri.event.listen("oxide:to-page", ({ payload }) => receiveMessageFromHost(payload))
+  : Promise.resolve();
 
 function deliver(packet) {
   if (packet.type === "response") {
@@ -58,6 +83,10 @@ async function receiveMessageFromHost(raw) {
     }
   }
   if (!packet || typeof packet !== "object") return;
+  if (!pageEventsReady && packet.type === "message") {
+    window.__electrobunPendingHostMessages.push(raw);
+    return;
+  }
   if (packet.type === "message") {
     for (const handler of listeners.get(packet.id) || []) {
       await handler({ event: packet.id, payload: packet.payload });
@@ -77,7 +106,7 @@ function drainPendingHostMessages() {
   const queued = window.__electrobunPendingHostMessages;
   if (!Array.isArray(queued) || !queued.length) return;
   window.__electrobunPendingHostMessages = [];
-  for (const packet of queued) receiveMessageFromHost(packet);
+  for (const packet of queued) void receiveMessageFromHost(packet);
 }
 
 function invoke(command, args = {}) {
@@ -134,25 +163,18 @@ const SIDEBAR_RECENT_LIMIT = 5;
 /// control's glyph is the same drawing on every machine. A character is not one
 /// — a `✕`, a `📁` or a `＋` is whatever shape and size the machine's own font
 /// gives it, which is how the composer's stroked paperclip ended up beside an
-/// emoji folder. A mark the native window draws is that window's own drawing,
-/// taken body for body from `crates/desktop-gpui/src/icons.rs` — its 24-unit
-/// box, its 1.6 weight and its round caps and joins — so one control wears one
-/// mark in both front-ends, and `check-app.mjs` holds the two tables together.
+/// emoji folder.
 function glyph(paths, box = 24) {
   return `<svg viewBox="0 0 ${box} ${box}" aria-hidden="true">${paths}</svg>`;
 }
 
-/// One glyph from the native window's table, in the box and at the weight it
-/// strokes every mark with. A drawing that fills a shape names `currentColor`
-/// where `icons.rs` names the white its alpha mask is cut from, since a page has
-/// no mask to tint.
-function gpui(body) {
+/// One glyph in the 24-unit box and 1.6 weight the desktop controls use.
+function glyphBody(body) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 }
 
-/// The native window's glyph bodies, kept in its own names so the two tables
-/// can be read side by side: `icons.rs` is where a mark is designed, and this is
-/// where the page keeps the same drawing.
+/// The shared glyph bodies. Electron, Tauri and the VS Code panel use these
+/// drawings rather than a character from the machine's fonts.
 const GLYPHS = {
   back: '<path d="M15 6l-6 6 6 6M9 12h12"/>',
   forward: '<path d="M9 6l6 6-6 6M3 12h12"/>',
@@ -241,40 +263,40 @@ function brandMark() {
 const ICONS = {
   // The marks the native table names for Plugins and Skills, worn by the
   // customize sidebar the way that window's own sidebar wears them.
-  puzzle: gpui(GLYPHS.customize),
-  book: gpui(GLYPHS.chat),
+  puzzle: glyphBody(GLYPHS.customize),
+  book: glyphBody(GLYPHS.chat),
 
   refresh: glyph('<path d="M20 7V3m0 4h-4M4 17v4m0-4h4M20 7a8 8 0 0 0-14-2M4 17a8 8 0 0 0 14 2" ' + STROKE_24 + '/>'),
   trash: glyph('<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" ' + STROKE_24 + '/>'),
-  back: gpui(GLYPHS.back),
-  globe: gpui(GLYPHS.globe),
-  folder: gpui(GLYPHS.folder),
-  file: gpui(GLYPHS.file),
-  search: gpui(GLYPHS.search),
-  close: gpui(GLYPHS.close),
-  plus: gpui(GLYPHS.plus),
-  more: gpui(GLYPHS.more),
-  compose: gpui(GLYPHS.pencil),
-  changes: gpui(GLYPHS.changes),
+  back: glyphBody(GLYPHS.back),
+  globe: glyphBody(GLYPHS.globe),
+  folder: glyphBody(GLYPHS.folder),
+  file: glyphBody(GLYPHS.file),
+  search: glyphBody(GLYPHS.search),
+  close: glyphBody(GLYPHS.close),
+  plus: glyphBody(GLYPHS.plus),
+  more: glyphBody(GLYPHS.more),
+  compose: glyphBody(GLYPHS.pencil),
+  changes: glyphBody(GLYPHS.changes),
   undo: glyph('<path d="m9 4-5 5 5 5M4 9h10a6 6 0 0 1 0 12h-3" ' + STROKE_24 + '/>'),
-  pin: gpui(GLYPHS.pin),
-  archive: gpui(GLYPHS.archive),
-  chat: gpui(GLYPHS.chat),
+  pin: glyphBody(GLYPHS.pin),
+  archive: glyphBody(GLYPHS.archive),
+  chat: glyphBody(GLYPHS.chat),
   computer: glyph('<rect x="3" y="4" width="18" height="13" rx="2" ' + STROKE_24 + '/><path d="M8 21h8M12 17v4" ' + STROKE_24 + '/>'),
-  branch: gpui(GLYPHS.branch),
-  worktree: gpui(GLYPHS.worktree),
-  gear: gpui(GLYPHS.settings),
+  branch: glyphBody(GLYPHS.branch),
+  worktree: glyphBody(GLYPHS.worktree),
+  gear: glyphBody(GLYPHS.settings),
   // A request's state is the color the row wears, as it is in the native
   // window: one drawing, three states.
-  pull: gpui(GLYPHS["pull-request"]),
-  check: gpui(GLYPHS.check),
-  terminal: gpui(GLYPHS.terminal),
-  tool: gpui(GLYPHS.tool),
-  plug: gpui(GLYPHS.plug),
-  caret: gpui(GLYPHS["chevron-down"]),
-  chevronRight: gpui(GLYPHS["chevron-right"]),
-  bolt: gpui(GLYPHS.bolt),
-  reset: gpui(GLYPHS.reset),
+  pull: glyphBody(GLYPHS["pull-request"]),
+  check: glyphBody(GLYPHS.check),
+  terminal: glyphBody(GLYPHS.terminal),
+  tool: glyphBody(GLYPHS.tool),
+  plug: glyphBody(GLYPHS.plug),
+  caret: glyphBody(GLYPHS["chevron-down"]),
+  chevronRight: glyphBody(GLYPHS["chevron-right"]),
+  bolt: glyphBody(GLYPHS.bolt),
+  reset: glyphBody(GLYPHS.reset),
   power: glyph(
     '<path d="M18.36 6.64a9 9 0 1 1-12.73 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
       '<path d="M12 2v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
@@ -2720,7 +2742,7 @@ function reasoningLabel(level) {
   return t(`reasoning.${level}`, level.charAt(0).toUpperCase() + level.slice(1));
 }
 
-/// The composer's one model control, `Model · Effort ⌄`, which the GPUI window
+/// The composer's one model control, `Model · Effort ⌄`, which the Tauri window
 /// draws from the same rules: the effort half is left off for a model that
 /// offers nothing but Auto.
 function updateChips() {
@@ -6943,7 +6965,7 @@ async function saveConnect() {
 
 // ---------- model and effort ----------
 //
-// One menu, the one the GPUI window draws: the composer's model chip opens it on
+// One menu, the one the Tauri window draws: the composer's model chip opens it on
 // a summary page — the effort in use above the model it runs on, a slider across
 // the model's levels and a reset to Auto — and the model's name opens the second
 // page, the catalog. A level is applied as the slider moves and the menu stays
@@ -6954,7 +6976,7 @@ let modelCatalogEpoch = 0;
 // Where the keyboard was before the menu took it.
 let modelMenuReturnFocus = null;
 // A press on one of the slider's stops is held until the button comes up, so a
-// drag across the track walks the levels the way the GPUI slider does.
+// drag across the track walks the levels the way the Tauri slider does.
 let effortDragging = false;
 // The newest read of the model's levels. A response that arrives after the
 // project or model moved on is dropped rather than painting its levels over the
@@ -6970,7 +6992,7 @@ const MODEL_WORDS = {
   codex: "Codex",
 };
 
-/// A model id the way the chip and the catalog name it, by the rules the GPUI
+/// A model id the way the chip and the catalog name it, by the rules the Tauri
 /// window's `model_display_name` follows: `gpt-5` reads as `GPT 5`.
 function modelDisplayName(model) {
   return String(model || "")
@@ -12980,7 +13002,7 @@ function init() {
     if (event.defaultPrevented) return;
     if (event.key === "Escape") {
       // The catalog is the menu's second page: Escape steps back to the
-      // summary first, the way the GPUI window's does.
+      // summary first, the way the Tauri window's does.
       if (modelPickerShown()) {
         event.preventDefault();
         showModelSummary();
@@ -13064,16 +13086,34 @@ function init() {
   updateSendState();
   renderWelcome();
   paintDockToggles();
-  initEvents();
+  const eventsReady = initEvents();
   loadTheme();
   // The sidebar is loaded rather than opened on: a project is not selected for
   // the reader on the way in, so the window starts with nothing open — the home
   // transcript, the composer and the project chip that takes a folder.
   loadProjects();
+  return eventsReady;
 }
 
-init();
-setTimeout(drainPendingHostMessages, 0);
+Promise.all([init(), tauriListener])
+  .then(async () => {
+    pageEventsReady = true;
+    drainPendingHostMessages();
+    if (nativeTauri?.core?.invoke) {
+      await nativeTauri.core.invoke("oxide_message", {
+        message: JSON.stringify({
+          type: "request",
+          id: nextRequest++,
+          method: "oxide_invoke",
+          params: { command: "native_ready", args: {} },
+        }),
+      });
+      drainPendingHostMessages();
+    }
+  })
+  .catch((error) => {
+    console.error("Oxide could not start its window:", error);
+  });
 
 // ============================================================================
 // CodeX-style tree view rendering
@@ -13460,34 +13500,28 @@ async function renderProjectsTree() {
     }
   }
   
-  for (const project of visibleProjects) {
+  for (const [projectIndex, project] of visibleProjects.entries()) {
     const projectGroup = document.createElement("div");
     projectGroup.className = "project-group";
+    projectGroup.setAttribute("role", "group");
     
     // Project header/button
     const projectItem = document.createElement("div");
     projectItem.className = "project-item" + (project.path === state.project ? " active" : "");
+    projectItem.setAttribute("role", "treeitem");
+    projectItem.setAttribute("tabindex", "0");
     
     const icon = document.createElement("div");
     icon.className = "icon";
     icon.innerHTML = ICONS.folder;
 
-    const collapse = document.createElement("button");
-    collapse.type = "button";
-    collapse.className = "project-collapse";
     const collapsed = state.collapsedSidebarProjects.has(project.id);
-    collapse.setAttribute("aria-expanded", String(!collapsed));
-    collapse.setAttribute("aria-label", t("ui.toggleProjectChats", "Expand or collapse chats in {value0}", { value0: project.name }));
-    collapse.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m5 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    collapse.onclick = (event) => {
-      event.stopPropagation();
-      const folded = !state.collapsedSidebarProjects.has(project.id);
-      if (folded) state.collapsedSidebarProjects.add(project.id);
-      else state.collapsedSidebarProjects.delete(project.id);
-      sessionsContainer.hidden = folded;
-      collapse.setAttribute("aria-expanded", String(!folded));
-    };
-    projectItem.append(collapse, icon);
+    projectItem.setAttribute("aria-expanded", String(!collapsed));
+    projectItem.setAttribute(
+      "aria-label",
+      t("ui.toggleProjectChats", "Expand or collapse chats in {value0}", { value0: project.name }),
+    );
+    projectItem.appendChild(icon);
     
     const name = document.createElement("div");
     name.className = "name";
@@ -13540,10 +13574,6 @@ async function renderProjectsTree() {
       newTaskIn(project);
     };
     projectItem.appendChild(newTaskBtn);
-
-    projectItem.onclick = () => {
-      selectProject(project);
-    };
 
     // Codex previews a project's summary from the row itself. The short delay
     // keeps an incidental pass down the sidebar quiet, and the preview never
@@ -13610,7 +13640,32 @@ async function renderProjectsTree() {
     // Threads for this project, grouped under its row.
     const sessionsContainer = document.createElement("div");
     sessionsContainer.className = "project-sessions";
+    sessionsContainer.id = `project-sessions-${projectIndex}`;
+    sessionsContainer.setAttribute("role", "group");
     sessionsContainer.hidden = collapsed;
+    projectItem.setAttribute("aria-controls", sessionsContainer.id);
+    const toggleProject = () => {
+      const folded = !state.collapsedSidebarProjects.has(project.id);
+      if (folded) state.collapsedSidebarProjects.add(project.id);
+      else state.collapsedSidebarProjects.delete(project.id);
+      sessionsContainer.hidden = folded;
+      projectItem.setAttribute("aria-expanded", String(!folded));
+    };
+    projectItem.onclick = toggleProject;
+    projectItem.onkeydown = (event) => {
+      if (event.target !== projectItem) return;
+      const folded = state.collapsedSidebarProjects.has(project.id);
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleProject();
+      } else if (event.key === "ArrowRight" && folded) {
+        event.preventDefault();
+        toggleProject();
+      } else if (event.key === "ArrowLeft" && !folded) {
+        event.preventDefault();
+        toggleProject();
+      }
+    };
 
     const expanded = state.expandedSidebarProjects.has(project.id);
     const visibleSessions = expanded

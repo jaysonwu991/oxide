@@ -1,11 +1,11 @@
-name: Desktop (GPUI)
+name: Desktop (Tauri)
 
-# Builds Oxide for Desktop, the primary GPUI front-end in
-# `crates/desktop-gpui`, for macOS x64 and arm64, Linux x64 and arm64, and
+# Builds Oxide for Desktop, the primary Tauri front-end in
+# `crates/desktop-tauri`, for macOS x64 and arm64, Linux x64 and arm64, and
 # Windows, and hands the installers it produced to the release job. The
-# `desktop-gpui-v*` train remains the internal transition tag; its stable-name
+# `desktop-tauri-v*` train names the release; its stable-name
 # artifacts feed the public `desktop-latest` alias. Electron remains available
-# from versioned `desktop-v*` releases as the fallback.
+# from versioned `desktop-v*` releases.
 #
 # Every architecture builds on its own host, so the binary carries the
 # architecture it is named after, including on Intel Macs.
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - "desktop-gpui-v*"
+      - "desktop-tauri-v*"
 
 permissions:
   contents: read
@@ -63,42 +63,45 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GPUI draws through the platform's own window system and a GPU backend:
-      # X11 and Wayland clients, fontconfig for the text system, Vulkan for the
-      # renderer, and the same audio/dbus libraries the framework's own
-      # dependencies link against.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.8.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/desktop/pnpm-lock.yaml
+
+      # Tauri renders through WebKitGTK on Linux. The page and diagram assets
+      # are the same files Electron packages.
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libwayland-dev \
-            libx11-xcb-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            libvulkan1 \
-            libvulkan-dev \
-            libasound2t64 \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
             libssl-dev \
-            libgbm1
+            patchelf
+
+      - name: Install the page's diagram packages
+        working-directory: crates/desktop
+        run: pnpm install --frozen-lockfile
 
       # The front-end's package is its own workspace, so its build lands in its
       # own `target/`, which is what this caches.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-gpui
-          workspaces: crates/desktop-gpui
+          key: desktop-tauri
+          workspaces: crates/desktop-tauri
           cache-on-failure: true
 
       - name: Set version from tag
-        if: startsWith(github.ref, 'refs/tags/desktop-gpui-v')
+        if: startsWith(github.ref, 'refs/tags/desktop-tauri-v')
         shell: bash
         run: bash ./scripts/set-version.sh "${GITHUB_REF_NAME}"
 
@@ -163,7 +166,7 @@ jobs:
       # and lays the bundle out — the app, its icon and its plugins on macOS; a
       # directory with the binary, icon and desktop entry elsewhere.
       - name: Build
-        working-directory: crates/desktop-gpui
+        working-directory: crates/desktop-tauri
         shell: bash
         run: bash ./package.sh ${{ matrix.arch }}
 
@@ -171,29 +174,29 @@ jobs:
       # build that could not reach the configuration, the session store or the
       # approval store fails here rather than on a reader's machine.
       - name: Check the engine contract
-        working-directory: crates/desktop-gpui
+        working-directory: crates/desktop-tauri
         shell: bash
         run: |
-          binary=./target/release/oxide-desktop-gpui
+          binary=./target/release/oxide-desktop-tauri
           if [ ! -f "$binary" ]; then
             binary="$binary.exe"
           fi
           "$binary" --check
 
-      # The installers `docs/desktop-gpui.md` lists under **Release assets**,
+      # The installers `docs/desktop-tauri.md` lists under **Release assets**,
       # named the same way from release to release so the permanent link works.
       - uses: actions/upload-artifact@v4
         with:
-          name: oxide-desktop-gpui-${{ matrix.artifact }}
+          name: oxide-desktop-tauri-${{ matrix.artifact }}
           path: |
-            crates/desktop-gpui/artifacts/*.dmg
-            crates/desktop-gpui/artifacts/*-Setup.tar.gz
+            crates/desktop-tauri/artifacts/*.dmg
+            crates/desktop-tauri/artifacts/*-Setup.tar.gz
           if-no-files-found: error
 
   release:
     name: publish release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/desktop-gpui-v')
+    if: startsWith(github.ref, 'refs/tags/desktop-tauri-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -201,7 +204,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
-          pattern: oxide-desktop-gpui-*
+          pattern: oxide-desktop-tauri-*
           merge-multiple: true
       # Keep the notes release-drafter already drafted for this tag; only create
       # a release when none exists yet. Upload everything before publishing,
@@ -214,13 +217,13 @@ jobs:
           set -euo pipefail
           if ! gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft \
-              --title "Oxide Desktop GPUI ${GITHUB_REF_NAME#desktop-gpui-}" --generate-notes
+              --title "Oxide Desktop Tauri ${GITHUB_REF_NAME#desktop-tauri-}" --generate-notes
           fi
           find release-assets -type f -print0 \
             | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
           gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
 
-      # The public installer address now points at GPUI. Keep the legacy alias
+      # The public installer address now points at Tauri. Keep the legacy alias
       # during the transition so links already handed out continue to resolve.
       - name: Refresh the desktop aliases
         env:
@@ -228,14 +231,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for alias_tag in desktop-latest desktop-gpui-latest; do
+          for alias_tag in desktop-latest desktop-tauri-latest desktop-gpui-latest; do
             if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
               gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
-                --title "Oxide Desktop GPUI installers" \
-                --notes "The newest desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-gpui-v*\` release is the one that names a version."
+                --title "Oxide Desktop Tauri installers" \
+                --notes "The newest desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-tauri-v*\` release is the one that names a version."
             else
               gh release edit "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
-                --title "Oxide Desktop GPUI installers"
+                --title "Oxide Desktop Tauri installers"
             fi
             gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" \
               --json assets --jq '.assets[].name' \

@@ -1629,10 +1629,10 @@ pub async fn check_updates() -> CmdResult<Value> {
     serde_json::to_value(check).map_err(err)
 }
 
-/// Checks the beta GPUI release train and reports whether this copy of the beta
+/// Checks the Tauri release train and reports whether this copy
 /// can replace itself in place.
-pub async fn check_gpui_updates(current: String) -> CmdResult<Value> {
-    let check = update::check_component(Component::DesktopGpui, &current)
+pub async fn check_tauri_updates(current: String) -> CmdResult<Value> {
+    let check = update::check_component(Component::DesktopTauri, &current)
         .await
         .map_err(err)?;
     serde_json::to_value(check).map_err(err)
@@ -1657,15 +1657,15 @@ pub async fn install_update(state: &DesktopState, token: Option<String>) -> CmdR
     install_component_update(state, Component::Desktop, update::current_version(), token).await
 }
 
-/// Installs the newest beta GPUI release from its own train. The beta binary
+/// Installs the newest Tauri release from its own train. The Tauri binary
 /// supplies its version because this library is built once for both front-ends
 /// and reports the stable app's package version.
-pub async fn install_gpui_update(
+pub async fn install_tauri_update(
     state: &DesktopState,
     current: String,
     token: Option<String>,
 ) -> CmdResult<Value> {
-    install_component_update(state, Component::DesktopGpui, &current, token).await
+    install_component_update(state, Component::DesktopTauri, &current, token).await
 }
 
 async fn install_component_update(
@@ -1720,15 +1720,15 @@ pub async fn download_update(state: &DesktopState, token: Option<String>) -> Cmd
     download_component_update(state, Component::Desktop, update::current_version(), token).await
 }
 
-/// Downloads the newest beta GPUI installer into the reader's Downloads folder,
-/// for beta copies whose release is an archive rather than a bundle this app can
+/// Downloads the newest Tauri installer into the reader's Downloads folder,
+/// for copies whose release is an archive rather than a bundle this app can
 /// replace in place.
-pub async fn download_gpui_update(
+pub async fn download_tauri_update(
     state: &DesktopState,
     current: String,
     token: Option<String>,
 ) -> CmdResult<Value> {
-    download_component_update(state, Component::DesktopGpui, &current, token).await
+    download_component_update(state, Component::DesktopTauri, &current, token).await
 }
 
 async fn download_component_update(
@@ -1799,8 +1799,8 @@ pub async fn auto_update(state: Arc<DesktopState>) {
     .await
 }
 
-/// The same launch install for one desktop release train, which is how the beta
-/// GPUI app keeps itself current the way the Electron app does. The caller names
+/// The same launch install for one desktop release train, which is how the
+/// Tauri app keeps itself current the way the Electron app does. The caller names
 /// the build it is running, since this library reports the stable package's own
 /// version. A train whose release is not one this copy can replace in place is
 /// left to the dialog.
@@ -2280,12 +2280,12 @@ pub async fn dispatch(
         }
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
         "check_updates" => command_value(check_updates().await),
-        "check_gpui_updates" => command_value(check_gpui_updates(arg(&args, "current")?).await),
+        "check_tauri_updates" => command_value(check_tauri_updates(arg(&args, "current")?).await),
         "install_update" => {
             command_value(install_update(&state, optional_arg(&args, "token")?).await)
         }
-        "install_gpui_update" => command_value(
-            install_gpui_update(
+        "install_tauri_update" => command_value(
+            install_tauri_update(
                 &state,
                 arg(&args, "current")?,
                 optional_arg(&args, "token")?,
@@ -2295,8 +2295,8 @@ pub async fn dispatch(
         "download_update" => {
             command_value(download_update(&state, optional_arg(&args, "token")?).await)
         }
-        "download_gpui_update" => command_value(
-            download_gpui_update(
+        "download_tauri_update" => command_value(
+            download_tauri_update(
                 &state,
                 arg(&args, "current")?,
                 optional_arg(&args, "token")?,

@@ -29,10 +29,10 @@
 /crates/desktop/artifacts/
 /crates/desktop/target/
 
-# The beta (GPUI) front-end's own cargo output and the installers `package.sh`
+# The Tauri front-end's own cargo output and the installers `package.sh`
 # writes.
-/crates/desktop-gpui/target/
-/crates/desktop-gpui/artifacts/
+/crates/desktop-tauri/target/
+/crates/desktop-tauri/artifacts/
 
 # Session dumps captured into the repo root
 /*.jsonl

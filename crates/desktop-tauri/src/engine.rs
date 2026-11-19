@@ -8,7 +8,7 @@
 //! approvals and configuration the Electron window does.
 //!
 //! A call is dispatched on the engine's own runtime and answered on a channel a
-//! GPUI task awaits, and every announcement the engine emits (a streaming turn,
+//! Tauri task awaits, and every announcement the engine emits (a streaming turn,
 //! an approval, a terminal, an update) arrives on `packets` in the same packet
 //! shape the page reads: `{type: "message", id: <event>, payload}`.
 
@@ -71,7 +71,7 @@ impl Engine {
         sync_plugins();
         runtime.spawn(oxide_desktop::commands::auto_update_component(
             Arc::clone(&state),
-            oxide_core::updates::Component::DesktopGpui,
+            oxide_core::updates::Component::DesktopTauri,
             env!("CARGO_PKG_VERSION").to_string(),
         ));
         runtime.spawn(oxide_desktop::commands::auto_catalog(Arc::clone(&state)));

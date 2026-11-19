@@ -1,7 +1,7 @@
 # Installation and updates
 
-How to install the `oxide` CLI, Oxide Desktop GPUI, the Electron desktop
-fallback, and the VS Code extension, and how to keep an installation current or
+How to install the `oxide` CLI, Oxide Desktop Tauri, Oxide Desktop Electron,
+and the VS Code extension, and how to keep an installation current or
 remove it. For configuration after install, see
 [configuration.md](configuration.md).
 
@@ -65,8 +65,8 @@ both names.
 ## From source
 
 Requires a stable Rust toolchain (edition 2021). The workspace splits the shared
-agent core (`crates/core`) and terminal CLI (`crates/cli`). Oxide Desktop GPUI
-(`crates/desktop-gpui`) and the Electron app (`crates/desktop`) are separate
+agent core (`crates/core`) and terminal CLI (`crates/cli`). Oxide Desktop Tauri
+(`crates/desktop-tauri`) and the Electron app (`crates/desktop`) are separate
 Cargo workspaces; the VS Code extension in `editors/vscode` is a separate pnpm
 package.
 
@@ -74,12 +74,12 @@ package.
 cargo install --path crates/cli
 ```
 
-## Oxide Desktop GPUI
+## Oxide Desktop Tauri
 
-The primary desktop app is the native GPUI window in `crates/desktop-gpui`. Use
-it instead of the Electron app unless you specifically need an
-Electron-only compatibility path. Prebuilt packages are drafted under
-**Oxide Desktop GPUI v...** releases on the `desktop-gpui-v*` train, and the
+The primary desktop app is the Tauri window in `crates/desktop-tauri`. Use
+it instead of Electron unless you specifically need the independent Electron
+distribution. Prebuilt packages are drafted under
+**Oxide Desktop Tauri v...** releases on the `desktop-tauri-v*` train, and the
 newest of each platform is also on the `desktop-latest`
 [release](https://github.com/jaysonwu991/oxide/releases/tag/desktop-latest),
 whose files are replaced on every publish. Since `/releases/latest` names the
@@ -88,9 +88,10 @@ one — `desktop-latest` is what a permanent link is built on.
 
 The native app ships a disk image for macOS (Apple Silicon and Intel), and
 `tar.gz` packages for Windows x64 and Linux x64/arm64. [README.md](../README.md#installers)
-links each of them; [desktop-gpui.md](desktop-gpui.md) explains the packaging.
+links each of them; [desktop-tauri.md](desktop-tauri.md) explains the packaging.
 The Electron window remains available from versioned `desktop-v*` releases and
-the separate `desktop-electron-latest` alias as a compatibility fallback.
+the separate `desktop-electron-latest` alias as its independently supported
+distribution.
 
 On macOS, an app that was not notarized — a build made without both the
 Developer ID certificate and the App Store Connect key — opens as **damaged**
@@ -106,7 +107,7 @@ A notarized release needs none of this.
 To build the primary app from source:
 
 ```sh
-cd crates/desktop-gpui && cargo run
+cd crates/desktop-tauri && cargo run
 ```
 
 To build the Electron app:
@@ -122,7 +123,7 @@ Both Node and Rust are needed: the window is TypeScript 7, and the engine it
 talks to is the Rust binary this package compiles. The package keeps its own
 tree, managed with pnpm, and is built from its own directory.
 
-See [desktop-gpui.md](desktop-gpui.md) for the native app and
+See [desktop-tauri.md](desktop-tauri.md) for the native app and
 [desktop.md](desktop.md) for the Electron app.
 
 ## VS Code extension
@@ -198,9 +199,9 @@ overrides both for one launch). Only the TUI shows it — a `-p`/`--mode json`/
 changelog and the day it went out, which a dialog draws so the reader reads what
 changed without leaving it) and the `asset` (its `name`, `url` and the `digest`
 GitHub reports) — which is what a front-end reads instead of parsing the prose.
-`--component <cli|desktop-gpui|desktop|extension>` and `--current <VERSION>`
+`--component <cli|desktop-tauri|desktop|extension>` and `--current <VERSION>`
 decide which release train the report is about and what it is compared against:
-the CLI's own train (`v*`) by default, Oxide Desktop GPUI's (`desktop-gpui-v*`),
+the CLI's own train (`v*`) by default, Oxide Desktop Tauri's (`desktop-tauri-v*`),
 Electron's (`desktop-v*`), or the VS Code extension's
 (`extension-v*`), with each component's artifact for this platform in `asset`.
 That is how each desktop front-end resolves its own release and how the
