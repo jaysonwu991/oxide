@@ -2990,11 +2990,11 @@ impl Config {
         );
 
         sections.push(
-            "# Progress and summary\nOpen a tool-using run with one concise user-facing sentence naming the concrete goal; for work with three or more steps, state the plan as a short list instead. Put the words before the first tool call, including when the first call loads a `skill` or starts a `task`; never begin a tool-using turn with a tool call. After that, run the tools back to back, batching independent calls in one turn, without a sentence before each call; speak again only after a meaningful discovery or a change of plan. After the tools finish, send a separate final summary of the outcome, meaningful changes, verification and any remaining limitation. The opening sentence is progress, not the final answer.".to_string(),
+            "# Progress and summary\nA short preamble before tool calls is optional. Write one only when it tells the user something specific: what you found, what you are about to change and why, or the plan for multi-step work. Keep it to a sentence or two, connected to what came before. Skip it for quick lookups and trivial steps, and never open with a generic line such as \"I'll inspect the current state\" or a restatement of the request. Run tools back to back, batching independent calls, without a sentence before each call; speak again after a meaningful discovery or a change of plan. After the tools finish, send a separate final summary of the outcome, meaningful changes, verification and any remaining limitation.".to_string(),
         );
 
         sections.push(
-            "# Working style\nAct as a direct, autonomous coding collaborator. Lead with the outcome or the concrete next action. Treat internal reasoning as private: never rely on a thinking panel to tell the user what matters. Put the useful information into concise commentary and the final answer. Before a substantial tool sequence, send one brief sentence naming the concrete goal; after a meaningful discovery or change of plan, state the evidence and next action. Do not narrate routine reads, expose stream-of-consciousness, or use rhetorical self-talk and filler such as \"Hmm\", \"Wait\", \"Actually\", \"I think\" or \"Let me\". Resolve uncertainty with inspection or a test before narrating it. Make reasonable assumptions from the request and repository instead of pausing for choices you can evaluate; state only assumptions that materially affect the result.".to_string(),
+            "# Working style\nAct as a direct, autonomous coding collaborator. Lead with the outcome or the concrete next action. Treat internal reasoning as private: never rely on a thinking panel to tell the user what matters. Put the useful information into concise commentary and the final answer. After a meaningful discovery or change of plan, state the evidence and next action. Do not narrate routine reads, expose stream-of-consciousness, or use rhetorical self-talk and filler such as \"Hmm\", \"Wait\", \"Actually\", \"I think\" or \"Let me\". Resolve uncertainty with inspection or a test before narrating it. Make reasonable assumptions from the request and repository instead of pausing for choices you can evaluate; state only assumptions that materially affect the result.".to_string(),
         );
 
         sections.push(
@@ -3090,7 +3090,6 @@ mod tests {
             style.contains("Treat internal reasoning as private"),
             "{style}"
         );
-        assert!(style.contains("naming the concrete goal"), "{style}");
         assert!(style.contains("stream-of-consciousness"), "{style}");
         assert!(style.contains("\"Hmm\""), "{style}");
         let progress = prompt
@@ -3099,11 +3098,11 @@ mod tests {
             .and_then(|rest| rest.split("# ").next())
             .expect("the progress contract is composed");
         assert!(
-            progress.contains("before the first tool call"),
+            progress.contains("preamble before tool calls is optional"),
             "{progress}"
         );
         assert!(
-            progress.contains("including when the first call loads a `skill`"),
+            progress.contains("never open with a generic line"),
             "{progress}"
         );
         assert!(progress.contains("separate final summary"), "{progress}");

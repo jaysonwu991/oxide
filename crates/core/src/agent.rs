@@ -1429,18 +1429,7 @@ async fn run_loop(
         } else {
             MessagePhase::Commentary
         };
-        let response_text = if depth == 0
-            && !has_answer
-            && !tool_calls.is_empty()
-            && !recheck_open
-            && held_summary.is_none()
-            && !run_already_opened(&messages)
-        {
-            tool_first_opening(&tool_calls).to_string()
-        } else {
-            turn.content
-        };
-        let assistant = Message::assistant(response_text, tool_calls.clone())
+        let assistant = Message::assistant(turn.content, tool_calls.clone())
             .with_thinking(turn.thinking.clone());
 
         if tool_calls.is_empty() {
@@ -2089,44 +2078,6 @@ fn redirect_shell_search(call: &mut ToolCall, cwd: &Path) -> bool {
     call.function.name = "grep".to_string();
     call.function.arguments = search.to_string();
     true
-}
-
-/// Whether the assistant has already spoken since the last user message. The
-/// generic lead-in belongs to the start of a run; repeating it before every
-/// later tool call only fills the transcript with identical sentences.
-fn run_already_opened(messages: &[Message]) -> bool {
-    messages
-        .iter()
-        .rev()
-        .take_while(|message| message.role != "user")
-        .any(|message| {
-            message.role == "assistant"
-                && message
-                    .display()
-                    .is_some_and(|text| !text.trim().is_empty())
-        })
-}
-
-/// Providers may return a tool call without any text. Every front-end should
-/// still open a tool-using turn with words, so the core supplies a short,
-/// truthful lead-in when the model omitted one.
-fn tool_first_opening(calls: &[ToolCall]) -> &'static str {
-    let has = |names: &[&str]| {
-        calls
-            .iter()
-            .any(|call| names.contains(&call.function.name.as_str()))
-    };
-    if has(&["skill"]) {
-        "I'll load the relevant skill guidance, then apply it to the request."
-    } else if has(&["write", "edit"]) {
-        "I'll inspect the relevant code, make the requested change, and verify it."
-    } else if has(&["read", "grep", "find", "ls"]) {
-        "I'll inspect the relevant files first, then act on what I find."
-    } else if has(&["bash"]) {
-        "I'll inspect the current state and run the needed checks."
-    } else {
-        "I'll work through the request and report back with the result."
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7105,21 +7056,14 @@ mod tests {
         }
         assert!(errors.is_empty(), "{errors:?}");
         let finished = finished.expect("the run finished");
-        // The opening sentence stays ahead of the work, and the check's answer
-        // adds nothing to the summary the run had already given.
+        // The check's answer adds nothing to the summary the run had already given.
         let summaries = finished
             .iter()
             .filter(|message| message.role == "assistant")
             .filter_map(|message| message.display())
+            .filter(|text| !text.trim().is_empty())
             .collect::<Vec<_>>();
-        assert_eq!(
-            summaries,
-            vec![
-                "I'll inspect the relevant code, make the requested change, and verify it."
-                    .to_string(),
-                "Upgrade complete.".to_string(),
-            ]
-        );
+        assert_eq!(summaries, vec!["Upgrade complete.".to_string()]);
         assert!(
             finished.iter().any(|message| message.role == "tool"),
             "the re-check ran a tool"
@@ -7344,7 +7288,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn a_tool_first_response_emits_words_before_the_tool_event() {
+    async fn a_tool_first_response_is_not_given_a_fabricated_opening() {
         let dir = std::env::temp_dir().join(format!("oxide_tool_opening_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
@@ -7377,21 +7321,20 @@ for line in sys.stdin:
         )
         .await;
 
-        let mut opening = None;
+        let mut texts = Vec::new();
         let mut commentary_phase = None;
         let mut first_tool = None;
         let mut final_phase = None;
         let mut final_answer = None;
         for (index, event) in std::iter::from_fn(|| rx.try_recv().ok()).enumerate() {
             match event {
-                AgentEvent::Text(text)
-                    if text
-                        == "I'll inspect the relevant files first, then act on what I find." =>
-                {
-                    opening = Some(index);
-                }
                 AgentEvent::ToolCall { .. } if first_tool.is_none() => first_tool = Some(index),
-                AgentEvent::Text(text) if text == "Found the files." => final_answer = Some(index),
+                AgentEvent::Text(text) => {
+                    if text == "Found the files." {
+                        final_answer = Some(index);
+                    }
+                    texts.push(text);
+                }
                 AgentEvent::MessagePhase(MessagePhase::Commentary) => {
                     commentary_phase = Some(index)
                 }
@@ -7399,13 +7342,12 @@ for line in sys.stdin:
                 _ => {}
             }
         }
-        let opening = opening.expect("the fallback opening was emitted");
+        assert_eq!(texts, vec!["Found the files.".to_string()]);
         let commentary_phase = commentary_phase.expect("commentary phase was emitted");
         let first_tool = first_tool.expect("the tool call was emitted");
         let final_answer = final_answer.expect("the final answer was emitted");
         let final_phase = final_phase.expect("final-answer phase was emitted");
         assert!(commentary_phase < first_tool);
-        assert!(opening < first_tool, "{opening} < {first_tool}");
         assert!(first_tool < final_answer, "{first_tool} < {final_answer}");
         assert!(final_answer < final_phase);
         assert_eq!(server.await.unwrap().len(), 2);
@@ -7415,10 +7357,9 @@ for line in sys.stdin:
             .iter()
             .filter(|message| message.role == "assistant")
             .collect::<Vec<_>>();
-        assert_eq!(
-            stored_assistant[0].display().as_deref(),
-            Some("I'll inspect the relevant files first, then act on what I find.")
-        );
+        assert!(stored_assistant[0]
+            .display()
+            .is_none_or(|text| text.trim().is_empty()));
         assert!(stored_assistant[0].tool_calls.is_some());
         assert_eq!(
             stored_assistant[1].display().as_deref(),
@@ -7493,17 +7434,13 @@ for line in sys.stdin:
             }
         }
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(texts.len(), 2, "opening and merged answer: {texts:?}");
-        assert_eq!(
-            texts[0].1,
-            "I'll inspect the relevant code, make the requested change, and verify it."
-        );
-        assert_eq!(texts[1].1, "Upgrade complete.\n\nVerified on disk.");
+        assert_eq!(texts.len(), 1, "only the merged answer: {texts:?}");
+        assert_eq!(texts[0].1, "Upgrade complete.\n\nVerified on disk.");
         // The candidate final answer was withheld until the check completed,
         // so no front-end saw it before the verification result.
         assert!(!texts.iter().any(|(_, text)| text == "Upgrade complete."));
-        assert!(thought_done.iter().all(|at| *at != texts[1].0));
-        assert!(usage.iter().all(|at| *at != texts[1].0));
+        assert!(thought_done.iter().all(|at| *at != texts[0].0));
+        assert!(usage.iter().all(|at| *at != texts[0].0));
 
         let finished = finished.expect("the run finished");
         let summaries: Vec<String> = finished
@@ -7684,36 +7621,6 @@ for line in sys.stdin:
         ] {
             assert!(!concurrency_safe(name), "{name} must stay sequential");
         }
-    }
-
-    #[test]
-    fn the_generic_opening_is_given_once_per_run() {
-        let user = Message::user("do it");
-        assert!(!run_already_opened(std::slice::from_ref(&user)));
-        let opened = Message::assistant("I'll look.".to_string(), vec![tool_call("read")]);
-        assert!(run_already_opened(&[user.clone(), opened.clone()]));
-        let next = Message::user("again");
-        assert!(!run_already_opened(&[user, opened, next]));
-    }
-
-    #[test]
-    fn a_tool_first_response_gets_a_user_facing_opening() {
-        assert_eq!(
-            tool_first_opening(&[tool_call("skill")]),
-            "I'll load the relevant skill guidance, then apply it to the request."
-        );
-        assert_eq!(
-            tool_first_opening(&[tool_call("read"), tool_call("edit")]),
-            "I'll inspect the relevant code, make the requested change, and verify it."
-        );
-        assert_eq!(
-            tool_first_opening(&[tool_call("grep")]),
-            "I'll inspect the relevant files first, then act on what I find."
-        );
-        assert_eq!(
-            tool_first_opening(&[tool_call("bash")]),
-            "I'll inspect the current state and run the needed checks."
-        );
     }
 
     #[test]
