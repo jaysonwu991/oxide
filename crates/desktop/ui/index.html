@@ -66,22 +66,12 @@
           <span class="sidebar-brand">Oxide</span>
 
           <button
-            id="activity"
-            class="icon"
-            title="Activity"
-            aria-label="Activity"
-            aria-expanded="false"
-            aria-controls="activity-panel"
-            data-i18n-title="activity.title"
-            data-i18n-aria="activity.title"
-          ><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2.2-7 4.1 14 2.3-7H21"/></svg><span id="activity-dot" class="activity-dot" hidden></span></button>
-          <button
             id="filter-chats"
             class="icon"
             aria-label="Focus on active chats"
             aria-pressed="false"
             data-i18n-aria="sidebar.focusActive"
-          ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"/></svg></button>
+          ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M4.5 12h15M7.5 18h9"/></svg><span id="activity-dot" class="activity-dot" hidden></span></button>
           <button
             id="search-chats"
             class="icon"
@@ -104,25 +94,27 @@
       <div id="sidebar-projects" class="projects-section">
         <div class="projects-header">
           <button id="projects-collapse" class="projects-title" type="button" aria-expanded="true" aria-controls="projects-tree"><span data-i18n="sidebar.projects">Projects</span><span id="projects-collapse-icon" aria-hidden="true"></span></button>
-          <button
-            id="projects-options"
-            class="icon"
-            type="button"
-            title="Organize projects"
-            aria-label="Organize projects"
-            aria-haspopup="menu"
-            aria-expanded="false"
-            data-i18n-title="sidebar.organizeProjects"
-            data-i18n-aria="sidebar.organizeProjects"
-          ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></svg></button>
-          <button
-            id="create-project-btn-tree"
-            class="icon"
-            title="New project&#10;Pick the folders to include"
-            aria-label="New project"
-            data-i18n-title="sidebar.newProject"
-            data-i18n-aria="sidebar.newProject"
-          ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button>
+          <div class="projects-actions">
+            <button
+              id="projects-options"
+              class="icon"
+              type="button"
+              title="Organize projects"
+              aria-label="Organize projects"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              data-i18n-title="sidebar.organizeProjects"
+              data-i18n-aria="sidebar.organizeProjects"
+            ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></svg></button>
+            <button
+              id="create-project-btn-tree"
+              class="icon"
+              title="New project&#10;Pick the folders to include"
+              aria-label="New project"
+              data-i18n-title="sidebar.newProject"
+              data-i18n-aria="sidebar.newProject"
+            ><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button>
+          </div>
         </div>
         <div id="projects-tree" class="projects-tree"></div>
       </div>

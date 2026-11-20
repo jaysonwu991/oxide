@@ -2578,7 +2578,6 @@ const shellGlyphs = {
   "changes-toggle": "changes",
   "details-toggle": "details",
   "new-tab": "plus",
-  activity: "activity",
   "search-chats": "search",
   "new-chat": "pencil",
   "create-project-btn-tree": "plus",
@@ -2761,7 +2760,8 @@ const sheetRules = [...sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors
   selectors.trim(),
   body,
 ]);
-const sidebarActionRule = (selectors) => /\.row-(?:add|more|pin|archive)|\.session-pull/.test(selectors);
+const sidebarActionRule = (selectors) =>
+  /\.row-(?:add|more|pin|archive)|\.session-pull|\.projects-actions/.test(selectors);
 const inertSidebarActionSurface = (selectors, body) =>
   selectors.includes(".project-item::after") &&
   selectors.includes(".session-item::after") &&
@@ -2984,16 +2984,20 @@ check(
   ) && /\(event\.metaKey \|\| event\.ctrlKey\) && event\.key >= "1"/.test(source),
   shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
 );
-// The sidebar owns the Activity bell; the rail must not duplicate it.
+// Codex's sidebar pairs the activity filter with search. Activity itself stays
+// in the command menu; the filter carries the attention mark and Projects use
+// the section's reveal-on-hover actions.
 const newChatButton = buttonFor("new-chat");
 check(
-  "placed the plain title, activity and search above the New Chat action",
+  "placed the title, activity filter and search above the New Chat action",
   shellAt('id="new-chat"') > 0 &&
     shellAt('id="new-chat"') < shellAt('class="projects-section"') &&
-    shellAt('class="sidebar-brand"') < shellAt('id="activity"') &&
-    shellAt('id="activity"') < shellAt('id="search-chats"') &&
+    shellAt('class="sidebar-brand"') < shellAt('id="filter-chats"') &&
+    shellAt('id="filter-chats"') < shellAt('id="search-chats"') &&
     shellAt('id="search-chats"') < shellAt('id="new-chat"') &&
     shell.includes('<span class="sidebar-brand">Oxide</span>') &&
+    !shell.includes('id="activity"') &&
+    /id="filter-chats"[\s\S]*?id="activity-dot"/.test(shell) &&
     !shell.includes('id="rail-activity"') && !source.includes('"rail-activity"') &&
     !shell.includes('id="sidebar-add"') && !shell.includes('id="add-menu"') &&
     newChatButton.includes(`title="New Chat&#10;`) &&
@@ -3011,6 +3015,11 @@ check(
     newProjectButton.includes(`<path d="${windowGlyphs.plus}"`) &&
     /<\/svg>$/.test(newProjectButton),
   newProjectButton,
+);
+check(
+  "revealed the Projects actions on hover or keyboard focus",
+  /\.projects-actions \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none/.test(sheet) &&
+    /\.projects-header:hover \.projects-actions,[\s\S]*?\.projects-header:focus-within \.projects-actions/.test(sheet),
 );
 
 // A scrollbar is painted over the last pixels of the box it scrolls, so every
@@ -9036,6 +9045,131 @@ app.state.session = beforeDisclosureSession;
 app.state.expandedSidebarProjects.clear();
 await app.renderProjectsTree();
 
+// ---------- the Projects header's nested menus ----------
+
+// Codex keeps the parent menu in place while a row opens its choices beside
+// it. The two organizations and the manual order are the same controls in
+// Electron and Tauri because both render this page.
+console.log("the Projects header menus");
+const menuBefore = {
+  projects: app.state.projects,
+  sessions: app.state.sessions,
+  project: app.state.project,
+  projectName: app.state.projectName,
+  session: app.state.session,
+  chatSort: app.state.chatSort,
+  sidebarView: app.state.sidebarView,
+  manualChatOrder: app.state.manualChatOrder,
+};
+app.state.projects = [{ id: "/tmp/menu-project", path: "/tmp/menu-project", name: "menu-project", registered: true }];
+app.state.sessions = [
+  { id: "menu-old", name: "Older chat", cwd: "/tmp/menu-project", created_at: 1, modified_at: 1, message_count: 1, preview: "" },
+  { id: "menu-new", name: "Newer chat", cwd: "/tmp/menu-project", created_at: 2, modified_at: 2, message_count: 1, preview: "" },
+];
+app.state.project = "/tmp/menu-project";
+app.state.projectName = "menu-project";
+app.state.session = null;
+app.state.chatSort = "updated";
+app.state.sidebarView = "project";
+app.state.manualChatOrder = [];
+await app.renderProjectsTree();
+elementFor("projects-options").onclick();
+const projectsMenu = document.body.querySelector(".sidebar-menu-card");
+check(
+  "opened Codex's two Projects menu choices",
+  projectsMenu?.children.length === 2 &&
+    projectsMenu.children[0].outline().includes("Organize sidebar") &&
+    projectsMenu.children[1].outline().includes("Sort chats by"),
+  projectsMenu?.outline() || "no menu",
+);
+projectsMenu.children[0].click();
+const organizeMenu = document.body.querySelector(".sidebar-submenu-card");
+check(
+  "opened the organization choices beside the parent menu",
+  Boolean(document.body.querySelector(".sidebar-menu-card")) &&
+    projectsMenu.children[0].getAttribute("aria-expanded") === "true" &&
+    organizeMenu?.children.length === 4 &&
+    organizeMenu.children[0].outline().includes("By project") &&
+    organizeMenu.children[1].outline().includes("In one list"),
+  document.body.outline(),
+);
+organizeMenu.children[1].click();
+check(
+  "switched the sidebar to one combined chat list and closed both menus",
+  app.state.sidebarView === "list" &&
+    !document.body.querySelector(".sidebar-menu-card") &&
+    !document.body.querySelector(".sidebar-submenu-card") &&
+    elementFor("projects-tree").querySelectorAll(".project-group").length === 0,
+  document.body.outline(),
+);
+app.state.sidebarView = "project";
+await app.renderProjectsTree();
+elementFor("projects-options").onclick();
+const sortRoot = document.body.querySelector(".sidebar-menu-card");
+sortRoot.children[1].click();
+const sortMenu = document.body.querySelector(".sidebar-submenu-card");
+check(
+  "offered Codex's updated and manual chat order",
+  Boolean(document.body.querySelector(".sidebar-menu-card")) &&
+    sortMenu?.children.length === 2 &&
+    sortMenu.children[0].outline().includes("Last updated") &&
+    sortMenu.children[1].outline().includes("Manual"),
+  sortMenu?.outline() || "no sort submenu",
+);
+sortMenu.children[1].click();
+check(
+  "selected manual order and seeded it from the visible chat order",
+  app.state.chatSort === "manual" &&
+    app.state.manualChatOrder.join(" ") === "menu-new menu-old" &&
+    !document.body.querySelector(".sidebar-submenu-card"),
+  `${app.state.chatSort} / ${app.state.manualChatOrder.join(" ")}`,
+);
+app.state.manualChatOrder = ["menu-old", "menu-new"];
+await app.renderProjectsTree();
+const manualRows = () => [...elementFor("projects-tree").querySelectorAll(".session-item")];
+const menuDrag = (clientY = 0) => ({
+  clientY,
+  dataTransfer: { setData() {}, effectAllowed: "", dropEffect: "" },
+  preventDefault() {},
+});
+check(
+  "painted chats in their saved manual order",
+  manualRows().map((row) => row.dataset.session).join(" ") === "menu-old menu-new",
+  manualRows().map((row) => row.dataset.session).join(" "),
+);
+app.state.sidebarView = "list";
+await app.renderProjectsTree();
+const combinedRows = () => [...elementFor("projects-tree").querySelectorAll(".recent-session-item")];
+check(
+  "kept manual order in the combined chat list",
+  combinedRows().map((row) => row.dataset.session).join(" ") === "menu-old menu-new",
+  combinedRows().map((row) => row.dataset.session).join(" "),
+);
+app.state.sidebarView = "project";
+await app.renderProjectsTree();
+const [manualFirst, manualSecond] = manualRows();
+manualFirst.fire("dragstart", menuDrag());
+manualSecond.fire("dragstart", menuDrag());
+manualFirst.fire("dragover", menuDrag());
+manualFirst.fire("drop", menuDrag());
+await nextTick();
+check(
+  "moved a chat in manual order without asking the session store to sort it",
+  app.state.manualChatOrder.join(" ") === "menu-new menu-old" &&
+    manualRows().map((row) => row.dataset.session).join(" ") === "menu-new menu-old",
+  `${app.state.manualChatOrder.join(" ")} / ${manualRows().map((row) => row.dataset.session).join(" ")}`,
+);
+manualFirst.fire("dragend", menuDrag());
+app.state.projects = menuBefore.projects;
+app.state.sessions = menuBefore.sessions;
+app.state.project = menuBefore.project;
+app.state.projectName = menuBefore.projectName;
+app.state.session = menuBefore.session;
+app.state.chatSort = menuBefore.chatSort;
+app.state.sidebarView = menuBefore.sidebarView;
+app.state.manualChatOrder = menuBefore.manualChatOrder;
+await app.renderProjectsTree();
+
 // ---------- a thread's pull request ----------
 
 // A thread that opened a pull request carries it on its row, colored by the
@@ -10477,8 +10611,7 @@ check(
   "switched the sidebar to activity without opening an overlay",
   elementFor("sidebar-projects").hidden &&
     !elementFor("activity-panel").hidden &&
-    !elementFor("activity-panel").classList.contains("overlay") &&
-    elementFor("activity").getAttribute("aria-expanded") === "true",
+    !elementFor("activity-panel").classList.contains("overlay"),
 );
 check(
   "opened activity quiet when nothing is waiting",
@@ -10493,9 +10626,9 @@ const activityBody = elementFor("activity-body");
 const activityHeading = (index) => activityBody.children[index]?.textContent;
 const activityRowTitle = (index) => activityBody.children[index]?.querySelector(".activity-row-title")?.textContent;
 check(
-  "marked the bell and listed the approval the window is holding",
+  "marked the activity filter and listed the approval the window is holding",
   elementFor("activity-dot").hidden === false &&
-    elementFor("activity").className.includes("asking") &&
+    elementFor("filter-chats").className.includes("asking") &&
     activityHeading(0) === "Priority" &&
     activityRowTitle(1) === "A tool is waiting for your approval",
   `${elementFor("activity-dot").hidden} / ${activityHeading(0)} / ${activityRowTitle(1)}`,
@@ -10503,10 +10636,10 @@ check(
 app.state.pendingApproval = null;
 app.paintActivityDot();
 check(
-  "let go of the bell's asking state with the approval",
-  elementFor("activity").className.includes("asking") === false &&
+  "let go of the filter's asking state with the approval",
+  elementFor("filter-chats").className.includes("asking") === false &&
     elementFor("activity-dot").hidden === true,
-  `${elementFor("activity").className} / ${elementFor("activity-dot").hidden}`,
+  `${elementFor("filter-chats").className} / ${elementFor("activity-dot").hidden}`,
 );
 const activityToday = new Date();
 activityToday.setHours(12, 0, 0, 0);
@@ -10548,10 +10681,9 @@ app.state.sessions = heldActivitySessions;
 app.state.session = heldActivitySession;
 app.closeActivity();
 check(
-  "closed activity and gave the bell its state back",
+  "closed activity and returned the sidebar to projects",
   elementFor("activity-panel").hidden === true &&
-    elementFor("sidebar-projects").hidden === false &&
-    elementFor("activity").getAttribute("aria-expanded") === "false",
+    elementFor("sidebar-projects").hidden === false,
   String(elementFor("activity-panel").hidden),
 );
 // The archive lists what the sidebar leaves out, and puts one back through the

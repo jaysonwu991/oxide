@@ -1851,6 +1851,22 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 /* Only the glyph: the words live in the tooltip, like every other control. */
 .projects-header button { margin-left: auto; padding: 2px 4px; border-radius: 6px; }
 .projects-header button:hover { background: var(--panel-2); }
+.projects-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.projects-actions button { margin-left: 0; }
+.projects-header:hover .projects-actions,
+.projects-header:focus-within .projects-actions,
+.projects-actions:has([aria-expanded="true"]) {
+  opacity: 1;
+  pointer-events: auto;
+}
 
 /* The scrollbar already owns its lane; keep the rows close to that edge. */
 .projects-tree { flex: 1; overflow-y: auto; padding: 4px 4px 14px 4px; display: flex; flex-direction: column; gap: 2px; }
@@ -1871,8 +1887,14 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
   transition: background 0.15s;
 }
 .project-item.dragging { opacity: 0.5; }
+.session-item.dragging { opacity: 0.5; }
+.recent-session-item.dragging { opacity: 0.5; }
 .project-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .project-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.session-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.session-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.recent-session-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.recent-session-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .project-item:hover { background: var(--panel-2); }
 .project-item.active { color: var(--text); }
 .project-item .icon { font-size: 12px; color: var(--dim); width: 16px; display: flex; align-items: center; justify-content: center; }
@@ -2909,11 +2931,10 @@ body.settings-open .topbar { grid-column: 1 / -1; }
 .sidebar-top .new-chat svg { color: var(--dim); }
 .sidebar-actions .icon { padding: 5px; border-radius: 7px; color: var(--dim); }
 .sidebar-actions .icon:hover { color: var(--text); background: var(--panel-2); }
-#activity { position: relative; }
-#activity[aria-expanded="true"] { color: var(--accent); background: var(--panel-2); }
+#filter-chats { position: relative; }
 
-/* The dot is the whole of what the bell says: the view behind it is what is
-   listed, so the mark is that something is there rather than what it is. */
+/* The dot is the whole of what the filter says about activity: the mark is
+   that something is there rather than what it is. */
 .activity-dot {
   position: absolute;
   top: 4px;
@@ -2924,7 +2945,7 @@ body.settings-open .topbar { grid-column: 1 / -1; }
   background: var(--accent);
 }
 
-#activity.asking .activity-dot { background: var(--tool); }
+#filter-chats.asking .activity-dot { background: var(--tool); }
 
 /* ---------- find in chat ---------- */
 
@@ -3782,8 +3803,10 @@ body.projects-open { grid-template-columns: var(--rail-width) minmax(0, 1fr); }
 .projects-section.projects-collapsed .sidebar-recents { margin-top: 4px; }
 .sidebar-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
 .sidebar-menu-item:hover, .sidebar-menu-item:focus-visible { background: var(--panel-3); outline: none; }
+.sidebar-menu-item[aria-expanded="true"] { background: var(--panel-3); }
 .sidebar-menu-item .sidebar-menu-trail { margin-left: auto; color: var(--dim); display: inline-flex; }
 .sidebar-menu-card { width: 232px; padding: 6px; }
+.sidebar-submenu-card { width: 200px; padding: 6px; }
 
 #filter-chats.active { background: var(--panel-3); color: var(--text); }
 .sidebar-tip { position: fixed; z-index: 80; display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--text); font-size: 12px; white-space: nowrap; box-shadow: 0 6px 18px rgba(0, 0, 0, .35); }
