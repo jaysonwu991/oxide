@@ -7267,7 +7267,7 @@ check(
 // line of the title it belongs to rather than at the row's far edge.
 check(
   "styled the running-thread mark in both listings",
-  /\.session-item \.session-run \{[^}]*position:\s*absolute/.test(sheet) &&
+  /\.session-item \.session-run \{[^}]*flex:\s*none/.test(sheet) &&
     /\.session-row \.session-run \{[^}]*align-self:\s*flex-start/.test(sheet) &&
     (sheet.match(/\.session-run \.spinner \{\s*border-color:\s*var\(--accent\)/g) || [])
       .length === 2,

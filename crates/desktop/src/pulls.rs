@@ -19,6 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// How long a state read from a forge stands before it is read again.
 pub const STATE_TTL: u64 = 300;
 
+const READING: u32 = 2;
+
 /// A thread's pull request as a row draws it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PullView {
@@ -44,6 +46,9 @@ struct CachedState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Cache {
+    /// Which reading rules produced `sessions`; a cache from older rules is
+    /// read again rather than trusted.
+    version: u32,
     sessions: HashMap<String, ThreadLinks>,
     states: HashMap<String, CachedState>,
 }
@@ -171,10 +176,15 @@ impl PullStore {
 
 impl Cache {
     fn load(path: &Path) -> Self {
-        std::fs::read(path)
+        let mut cache: Self = std::fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if cache.version != READING {
+            cache.sessions.clear();
+            cache.version = READING;
+        }
+        cache
     }
 
     fn save(&self, path: &Path) {
@@ -213,16 +223,81 @@ impl Cache {
     }
 }
 
-/// The requests a thread's log names. A log that cannot be read is a thread with
-/// no links, which is also what an empty one holds.
+/// The requests a thread itself raised or changed: the links a forge CLI
+/// printed for a `pr create` or `mr update`-style command. A link that only
+/// appears in a listing, a search, a file or the conversation is some other
+/// request, and a row that carried it would claim work the thread never did.
 fn links_in(path: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    pulls::links(&text)
-        .into_iter()
-        .map(|pull| pull.url)
-        .collect()
+    let mut reporting: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut found: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(message) = entry.get("message") else {
+            continue;
+        };
+        if let Some(calls) = message.get("tool_calls").and_then(|calls| calls.as_array()) {
+            for call in calls {
+                let function = &call["function"];
+                if function["name"].as_str() != Some("bash") {
+                    continue;
+                }
+                let arguments = function["arguments"].as_str().unwrap_or_default();
+                let command = serde_json::from_str::<serde_json::Value>(arguments)
+                    .ok()
+                    .and_then(|value| value["command"].as_str().map(str::to_string))
+                    .unwrap_or_default();
+                if raises_request(&command) {
+                    if let Some(id) = call["id"].as_str() {
+                        reporting.insert(id.to_string());
+                    }
+                }
+            }
+        }
+        let Some(id) = message.get("tool_call_id").and_then(|id| id.as_str()) else {
+            continue;
+        };
+        if !reporting.contains(id) {
+            continue;
+        }
+        let output = match &message["content"] {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Array(parts) => parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => continue,
+        };
+        for pull in pulls::links(&output) {
+            if !found.contains(&pull.url) {
+                found.push(pull.url);
+            }
+        }
+    }
+    found
+}
+
+fn raises_request(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    words.windows(3).any(|window| {
+        matches!(
+            (window[0], window[1], window[2]),
+            (
+                "gh",
+                "pr",
+                "create" | "edit" | "ready" | "merge" | "reopen" | "close"
+            ) | (
+                "glab",
+                "mr",
+                "create" | "update" | "merge" | "reopen" | "close"
+            )
+        )
+    })
 }
 
 fn now_secs() -> u64 {
@@ -261,15 +336,38 @@ mod tests {
         }
     }
 
+    fn raising_log(url: &str) -> String {
+        let call = json!({"message": {"role": "assistant", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "bash", "arguments": json!({"command": "gh pr create --fill"}).to_string()}
+        }]}});
+        let result = json!({"message": {"role": "tool", "tool_call_id": "c1", "content": url}});
+        let other = json!({"message": {"role": "tool", "tool_call_id": "c0", "content": "https://github.com/owner/repo/pull/999"}});
+        format!("{call}\n{other}\n{result}\n")
+    }
+
+    #[test]
+    fn only_requests_a_thread_raised_are_listed() {
+        let dir = temp_dir();
+        let log = dir.join("thread.jsonl");
+        let mut text = raising_log("https://github.com/owner/repo/pull/7");
+        text.push_str(
+            &json!({"message": {"role": "assistant", "content": "see https://github.com/owner/repo/pull/8"}})
+                .to_string(),
+        );
+        std::fs::write(&log, text).unwrap();
+        assert_eq!(
+            links_in(&log),
+            vec!["https://github.com/owner/repo/pull/7".to_string()]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn a_thread_is_read_for_its_links_once_until_its_log_moves() {
         let dir = temp_dir();
         let log = dir.join("thread.jsonl");
-        std::fs::write(
-            &log,
-            "{\"text\":\"opened https://github.com/owner/repo/pull/7\"}",
-        )
-        .unwrap();
+        std::fs::write(&log, raising_log("https://github.com/owner/repo/pull/7")).unwrap();
         let store = PullStore::open_at(dir.join("pulls.json"));
         let thread = summary("t1", &log, 10);
         let views = store.annotate(std::slice::from_ref(&thread));
@@ -295,6 +393,7 @@ mod tests {
     fn a_state_last_read_long_ago_is_stale_again() {
         let dir = temp_dir();
         let cache = json!({
+            "version": 2,
             "sessions": {},
             "states": {
                 "https://github.com/owner/repo/pull/7": { "state": "merged", "checked_at": now_secs() },
@@ -332,6 +431,7 @@ mod tests {
         )
         .unwrap();
         let cache = json!({
+            "version": 2,
             "sessions": {},
             "states": {
                 "https://github.com/owner/repo/pull/7": { "state": "merged", "checked_at": now_secs() },

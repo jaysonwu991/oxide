@@ -814,7 +814,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("oxide_pulls_proj_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = store.with_file_name("thread.jsonl");
-        std::fs::write(&log, "done: https://github.com/owner/repo/pull/42\n").unwrap();
+        let call = serde_json::json!({"message": {"role": "assistant", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "bash", "arguments": "{\"command\":\"gh pr create --fill\"}"}
+        }]}});
+        let result = serde_json::json!({"message": {"role": "tool", "tool_call_id": "c1", "content": "https://github.com/owner/repo/pull/42"}});
+        std::fs::write(&log, format!("{call}\n{result}\n")).unwrap();
         let thread = SessionSummary {
             id: "pull-thread".to_string(),
             name: None,
@@ -844,6 +849,7 @@ mod tests {
         std::fs::write(
             store.with_file_name("pulls.json"),
             serde_json::json!({
+                "version": 2,
                 "sessions": {
                     "pull-thread": {
                         "modified_at": 5,
