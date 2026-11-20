@@ -4755,10 +4755,15 @@ check(
   activity.head.hidden === false &&
     activity.body.hidden === true &&
     activity.label.textContent === "2 tool calls" &&
+    activity.label.hidden === true &&
+    activity.mark.hidden === true &&
+    activity.kinds.hidden === false &&
+    activity.kinds.querySelectorAll(".ta-kind").map((node) => node.children[1]?.textContent).join(",") === "Read,Searched" &&
+    activity.kinds.querySelectorAll(".ta-kind-icon").length === 2 &&
     activity.status.innerHTML.includes("running") &&
     activity.head.getAttribute("role") === "button" &&
     activity.head.getAttribute("aria-expanded") === "false",
-  `${activity.label.textContent} / ${activity.status.textContent}`,
+  `${activity.label.textContent} / ${activity.kinds.textContent} / ${activity.status.textContent}`,
 );
 app.finishTool(activityRead, "one", { elapsed: 4 });
 app.finishTool(activitySearch, "two", { elapsed: 7 });

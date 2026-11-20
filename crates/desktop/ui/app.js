@@ -5114,6 +5114,24 @@ function toolDisplayIcon(name) {
   return ICONS.tool;
 }
 
+/// The action a grouped tool row names. A run of calls should read like the
+/// work the reader watched happen, not like a count of engine events.
+function toolActivityAction(name) {
+  const action = {
+    read: "Read",
+    bash: "Ran",
+    write: "Edited",
+    edit: "Edited",
+    find: "Searched",
+    grep: "Searched",
+    ls: "Listed",
+    web_search: "Searched web",
+    web_fetch: "Fetched",
+    webfetch: "Fetched",
+  }[name] || toolDisplayName(name);
+  return { action, icon: toolDisplayIcon(name) };
+}
+
 /// A tool a connected server answers, or one of the resource reads the core
 /// names as MCP rather than built-in: the same test `tools.rs` applies when it
 /// keeps a result.
@@ -5174,11 +5192,14 @@ function createToolActivity(transcript) {
   mark.setAttribute("aria-hidden", "true");
   const label = document.createElement("span");
   label.className = "ta-label";
+  const kinds = document.createElement("span");
+  kinds.className = "ta-kinds";
+  kinds.setAttribute("aria-hidden", "true");
   const detail = document.createElement("span");
   detail.className = "ta-detail";
   const status = document.createElement("span");
   status.className = "ta-state";
-  head.append(caret, mark, label, detail, status);
+  head.append(caret, mark, label, kinds, detail, status);
   const body = document.createElement("div");
   body.className = "tabody";
   block.append(head, body);
@@ -5189,6 +5210,7 @@ function createToolActivity(transcript) {
     body,
     mark,
     label,
+    kinds,
     detail,
     status,
     tools: [],
@@ -5218,6 +5240,7 @@ function paintToolActivity(activity) {
       : t("ui.failedToolCalls", "{count} failed", { count: failed })}`;
   }
   activity.block.classList.toggle("single", count === 1);
+  activity.block.classList.toggle("multi", count > 1);
   activity.block.classList.toggle("failed", unresolved);
   activity.head.hidden = count === 1;
   activity.body.hidden = count > 1 && !activity.expanded;
@@ -5230,7 +5253,44 @@ function paintToolActivity(activity) {
     activity.head.removeAttribute("aria-expanded");
   }
   activity.label.textContent = label;
+  activity.label.hidden = count > 1 && !failed;
   activity.mark.innerHTML = current ? toolDisplayIcon(current.name) : ICONS.power;
+  activity.mark.hidden = count > 1;
+  activity.kinds.hidden = count <= 1;
+  if (count > 1) {
+    const actions = [];
+    const grouped = new Map();
+    for (const tool of activity.tools) {
+      const item = toolActivityAction(tool.name);
+      let group = grouped.get(item.action);
+      if (!group) {
+        group = { ...item, count: 0 };
+        grouped.set(item.action, group);
+        actions.push(group);
+      }
+      group.count += 1;
+    }
+    activity.kinds.replaceChildren();
+    for (const item of actions) {
+      const kind = document.createElement("span");
+      kind.className = "ta-kind";
+      const icon = document.createElement("span");
+      icon.className = "ta-kind-icon";
+      icon.innerHTML = item.icon;
+      const text = document.createElement("span");
+      text.textContent = item.action;
+      kind.append(icon, text);
+      if (item.count > 1) {
+        const count = document.createElement("span");
+        count.className = "ta-kind-count";
+        count.textContent = String(item.count);
+        kind.appendChild(count);
+      }
+      activity.kinds.appendChild(kind);
+    }
+  } else {
+    activity.kinds.replaceChildren();
+  }
   activity.detail.textContent = runningTool ? toolSummary(runningTool.name, runningTool.args).text : "";
   activity.status.innerHTML = runningTool ? '<span class="spinner"></span>running' : "";
   activity.head.setAttribute(
