@@ -85,7 +85,7 @@ Tauri release train (`check_tauri_updates`, `install_tauri_update` and
 | Platform | Artifact |
 | --- | --- |
 | macOS arm64 / x64 | `Oxide-macos-<arch>.dmg` containing `Oxide.app` |
-| Linux x64 / arm64 | `Oxide-linux-<arch>-Setup.tar.gz` |
+| Linux x64 / arm64 | `Oxide-linux-x86_64-Setup.AppImage` / `Oxide-linux-arm64-Setup.AppImage`, and `Oxide-linux-<arch>-Setup.tar.gz` |
 | Windows x64 | `Oxide-win-<arch>-Setup.tar.gz` |
 
 The bundle keeps the same product name, identifier, icon and installer asset

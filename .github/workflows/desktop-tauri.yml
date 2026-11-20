@@ -191,6 +191,7 @@ jobs:
           path: |
             crates/desktop-tauri/artifacts/*.dmg
             crates/desktop-tauri/artifacts/*-Setup.tar.gz
+            crates/desktop-tauri/artifacts/*.AppImage
           if-no-files-found: error
 
   release:
