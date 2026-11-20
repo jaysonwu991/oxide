@@ -492,7 +492,8 @@ The regions, top to bottom:
   the transcript rather than a box around it, so a long run reads as a log, and
   only the card still being written and the one that failed keep a surface, each
   carrying its state on its left edge (accent, error). Adjacent calls collapse
-  into one expandable activity row with the call count and the failures it
+  into one expandable activity row that names what happened — `Read`,
+  `Searched`, `Ran`, `Edited` and their counts — alongside the failures it
   recovered; an error followed by a successful call is named `recovered` and
   stays quiet, while an unresolved final failure colors the activity row red.
   Progress commentary between runs stays outside it, and a step boundary with

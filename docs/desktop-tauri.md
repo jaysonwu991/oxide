@@ -77,6 +77,10 @@ Other requests dispatch through the same `oxide_desktop::commands::dispatch`
 contract as Electron. The page's generic update commands are mapped to the
 Tauri release train (`check_tauri_updates`, `install_tauri_update` and
 `download_tauri_update`) so a Tauri build never offers an Electron installer.
+On macOS, an update restart waits for the replaced process to exit before
+opening the bundle through LaunchServices. Tauri's default `open -n` relaunch
+briefly creates a second application instance, which leaves two Oxide Dock
+icons during an update.
 
 ## Packaging
 

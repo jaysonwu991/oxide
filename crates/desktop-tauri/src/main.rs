@@ -12,6 +12,10 @@ mod menu;
 use engine::Engine;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -143,10 +147,77 @@ async fn forward_packets(
 ) {
     while let Some(packet) = packets.recv().await {
         if packet["type"] == "message" && packet["id"] == "restart" {
-            app.restart();
+            restart_app(&app);
         }
         delivery.send(&app, packet.to_string());
     }
+}
+
+/// Relaunches the app after an update without briefly running two copies.
+///
+/// Tauri's macOS restart uses `open -n`, which explicitly asks LaunchServices
+/// for a second instance while the old process is still alive. That gives the
+/// Dock two Oxide tiles during an update and breaks the expectation that an
+/// installed release replaces the running one. Wait until this process has
+/// exited, then open the bundle normally so LaunchServices reuses Oxide's one
+/// application identity.
+fn restart_app(app: &AppHandle) -> ! {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(executable) = std::env::current_exe() {
+            if let Some(bundle) = bundle_of(&executable) {
+                match schedule_macos_restart(&bundle) {
+                    Ok(()) => {
+                        app.cleanup_before_exit();
+                        std::process::exit(0);
+                    }
+                    Err(error) => {
+                        eprintln!("[oxide] scheduling restart through LaunchServices: {error}");
+                    }
+                }
+            }
+        }
+    }
+    app.restart()
+}
+
+#[cfg(target_os = "macos")]
+fn bundle_of(executable: &Path) -> Option<PathBuf> {
+    executable
+        .ancestors()
+        .find(|ancestor| {
+            ancestor.extension() == Some(std::ffi::OsStr::new("app"))
+                && ancestor.join("Contents").join("Info.plist").is_file()
+        })
+        .map(Path::to_path_buf)
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_macos_restart(bundle: &Path) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = macos_restart_command(bundle, std::process::id());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_restart_command(bundle: &Path, pid: u32) -> Command {
+    const WAIT_THEN_OPEN: &str =
+        "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open -g \"$2\"";
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(WAIT_THEN_OPEN)
+        .arg("oxide-restart")
+        .arg(pid.to_string())
+        .arg(bundle);
+    command
 }
 
 fn native_ready(app: &AppHandle, state: &HostState) -> Result<(), String> {
@@ -347,7 +418,10 @@ fn route_update_command(request: &Request) -> (String, Value) {
     let current = env!("CARGO_PKG_VERSION");
     let mut args = request.args.clone();
     match request.command.as_str() {
-        "check_updates" => ("check_tauri_updates".to_string(), args),
+        "check_updates" => {
+            args["current"] = json!(current);
+            ("check_tauri_updates".to_string(), args)
+        }
         "install_update" => {
             args["current"] = json!(current);
             ("install_tauri_update".to_string(), args)
@@ -496,6 +570,25 @@ mod tests {
         assert!(!is_openable_url(""));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_restart_waits_before_opening_one_application_instance() {
+        let bundle = Path::new("/Applications/Oxide.app");
+        let command = macos_restart_command(bundle, 42);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args[0], "-c");
+        assert!(args[1].contains("kill -0 \"$1\""));
+        assert!(args[1].ends_with("exec /usr/bin/open -g \"$2\""));
+        assert!(!args.iter().any(|arg| arg == "-n"));
+        assert_eq!(args[2], "oxide-restart");
+        assert_eq!(args[3], "42");
+        assert_eq!(args[4], bundle.to_string_lossy());
+    }
+
     #[test]
     fn maps_the_shared_page_updates_to_the_tauri_release_train() {
         let request = Request {
@@ -505,7 +598,10 @@ mod tests {
         };
         assert_eq!(
             route_update_command(&request),
-            ("check_tauri_updates".to_string(), json!({}))
+            (
+                "check_tauri_updates".to_string(),
+                json!({ "current": env!("CARGO_PKG_VERSION") }),
+            )
         );
 
         let request = Request {
