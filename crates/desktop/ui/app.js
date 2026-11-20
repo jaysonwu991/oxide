@@ -343,6 +343,15 @@ let nextDraft = 1;
 // The thread a paint pass is writing into, when it is not the one on screen.
 let paintThread = null;
 
+const storedManualChatOrder = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem("oxide.sidebar.manualChatOrder") || "[]");
+    return Array.isArray(value) ? value.filter((id) => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+})();
+
 /// The view fields the window itself owns: the thread it has open and where it
 /// runs. A background turn's paint pass reads its own thread's folder instead
 /// (see `paintingThread`), which is why they are not plain state.
@@ -355,7 +364,10 @@ const state = {
   expandedSidebarProjects: new Set(),
   collapsedSidebarProjects: new Set(),
   projectsCollapsed: false,
-  chatSort: sidebarPref("chatSort", "updated"),
+  chatSort: sidebarPref("chatSort", "updated") === "created"
+    ? "updated"
+    : sidebarPref("chatSort", "updated"),
+  manualChatOrder: storedManualChatOrder,
   sidebarView: sidebarPref("sidebarView", "project"),
   chatFilter: "all",
   // New context sent during a run waits by default. Steering is a deliberate
@@ -10594,7 +10606,6 @@ function openActivity() {
   if (!state.prefs.sidebar_visible) void savePrefs({ sidebar_visible: true });
   el("sidebar-projects").hidden = true;
   el("activity-panel").hidden = false;
-  el("activity").setAttribute("aria-expanded", "true");
   renderActivity();
 }
 
@@ -10602,7 +10613,6 @@ function closeActivity() {
   if (el("activity-panel").hidden) return;
   el("activity-panel").hidden = true;
   el("sidebar-projects").hidden = false;
-  el("activity").setAttribute("aria-expanded", "false");
 }
 
 function renderActivity() {
@@ -10667,15 +10677,15 @@ function renderActivity() {
   }
 }
 
-/// The dot on the bell: something the window holds or a thread that is working
-/// or finished unread, which is what the view behind it would list.
+/// The dot on the activity filter: something the window holds or a thread that
+/// is working or finished unread, which is what Activity would list.
 function paintActivityDot() {
   const dot = el("activity-dot");
   if (!dot) return;
   const busy = [...threads.values()].some((record) => record.busy || record.unread);
   const waiting = Boolean(state.pendingApproval || state.pendingQuestion);
   dot.hidden = !(busy || waiting);
-  el("activity").classList.toggle("asking", waiting);
+  el("filter-chats").classList.toggle("asking", waiting);
   paintBadge();
   if (!el("activity-panel").hidden) renderActivity();
 }
@@ -11088,7 +11098,7 @@ function notifyWaiting(kind, detail) {
 }
 
 /// The number on the dock or task bar is the threads that finished unread — the
-/// same count the sidebar's dots and the bell are showing.
+/// same count the sidebar's dots and activity filter are showing.
 function paintBadge() {
   const unread = [...threads.values()].filter((record) => record.unread).length;
   if (unread === state.badge) return;
@@ -12637,7 +12647,6 @@ function init() {
     state.searchIndex = 0;
     searchSoon(el("search-input").value);
   });
-  el("activity").onclick = () => (el("activity-panel").hidden ? openActivity() : closeActivity());
   el("archived-close").onclick = closeArchived;
   // The find bar's own keys: Enter walks forward, Shift+Enter back, and Escape
   // puts the bar away without the conversation losing its place.
@@ -13201,6 +13210,7 @@ Promise.all([init(), tauriListener])
 // Flattened project/session order, matching how the tree renders them, so
 // `⌘1`…`⌘9` select the thread standing at that place in the sidebar.
 function orderedSessions() {
+  if (state.sidebarView === "list") return arrangedSessions(listedSessions());
   const byProject = new Map();
   for (const project of state.projects) byProject.set(project.path, []);
   for (const session of listedSessions()) {
@@ -13208,7 +13218,9 @@ function orderedSessions() {
     if (list) list.push(session);
   }
   const ordered = [];
-  for (const project of state.projects) ordered.push(...(byProject.get(project.path) || []));
+  for (const project of state.projects) {
+    ordered.push(...arrangedSessions(byProject.get(project.path) || []));
+  }
   return ordered;
 }
 
@@ -13216,6 +13228,8 @@ function orderedSessions() {
 /// a move of the whole row — the project and the threads under it — rather than
 /// of a thread, which is why this is one id and not a list.
 let draggedProjectId = null;
+let draggedSessionId = null;
+let draggedSessionProject = "";
 let dropMarkedRow = null;
 
 /// The projects in the order a drop would leave them: the dragged row taken out
@@ -13239,6 +13253,19 @@ function reorderedProjects(projects, fromId, toId, after) {
 /// which is the row that cannot be dropped onto itself.
 function dropAfter(event, row) {
   if (!draggedProjectId || draggedProjectId === row.dataset.project) return null;
+  const box = row.getBoundingClientRect();
+  return event.clientY > box.top + box.height / 2;
+}
+
+function sessionDropAfter(event, row) {
+  if (
+    state.chatSort !== "manual" ||
+    !draggedSessionId ||
+    draggedSessionId === row.dataset.session ||
+    (state.sidebarView !== "list" && draggedSessionProject !== row.dataset.project)
+  ) {
+    return null;
+  }
   const box = row.getBoundingClientRect();
   return event.clientY > box.top + box.height / 2;
 }
@@ -13296,6 +13323,21 @@ async function dropProject(fromId, toId, after) {
   renderProjectsTree();
 }
 
+function dropSession(fromId, toId, after) {
+  if (!fromId || !toId || fromId === toId) return;
+  const order = state.manualChatOrder.length
+    ? [...state.manualChatOrder]
+    : updatedChatOrder(listedSessions());
+  const fromIndex = order.indexOf(fromId);
+  if (fromIndex < 0) return;
+  order.splice(fromIndex, 1);
+  const targetIndex = order.indexOf(toId);
+  if (targetIndex < 0) return;
+  order.splice(after ? targetIndex + 1 : targetIndex, 0, fromId);
+  saveManualChatOrder(order);
+  renderProjectsTree();
+}
+
 let sidebarCardTrigger = null;
 let sidebarCardHoverTimer = null;
 let sidebarCardReturnFocus = false;
@@ -13310,6 +13352,7 @@ function cancelSidebarCardHover() {
 
 function closeSidebarCards(except = null) {
   cancelSidebarCardHover();
+  closeSidebarSubmenu();
   for (const card of document.body.querySelectorAll(".sidebar-floating-card")) {
     if (card !== except) card.remove();
   }
@@ -13562,21 +13605,57 @@ function setSidebarPref(key, value) {
   } catch {}
 }
 
+function saveManualChatOrder(order) {
+  state.manualChatOrder = order;
+  try {
+    localStorage.setItem("oxide.sidebar.manualChatOrder", JSON.stringify(order));
+  } catch {}
+}
+
+function updatedChatOrder(sessions) {
+  return [...sessions]
+    .sort((a, b) => Number(b.modified_at || b.created_at || 0) - Number(a.modified_at || a.created_at || 0))
+    .map((session) => session.id);
+}
+
+function manualOrderFor(sessions) {
+  const original = new Map(sessions.map((session, index) => [session.id, index]));
+  const position = new Map(
+    state.manualChatOrder.map((id, index) => [id, index]),
+  );
+  return [...sessions].sort((a, b) => {
+    const aIndex = position.get(a.id);
+    const bIndex = position.get(b.id);
+    if (aIndex !== undefined && bIndex !== undefined) return aIndex - bIndex;
+    if (aIndex !== undefined) return -1;
+    if (bIndex !== undefined) return 1;
+    return (original.get(a.id) || 0) - (original.get(b.id) || 0);
+  });
+}
+
 /// Threads in the order and subset the sidebar's own controls ask for.
 function arrangedSessions(sessions) {
   let rows = sessions;
   if (state.chatFilter === "running") rows = rows.filter((session) => turnInThread(session.id));
   else if (state.chatFilter === "pulls") rows = rows.filter((session) => pullOf(session));
+  if (state.chatSort === "manual") return manualOrderFor(rows);
   const field = state.chatSort === "created" ? "created_at" : "modified_at";
   return [...rows].sort((a, b) => Number(b[field] || 0) - Number(a[field] || 0));
 }
 
-function sidebarMenuItem(label, { trail = "", checked = false, onclick }) {
+function sidebarMenuItem(
+  label,
+  { trail = "", checked = false, hasPopup = false, onclick },
+) {
   const item = document.createElement("button");
   item.type = "button";
   item.className = "sidebar-menu-item";
   item.setAttribute("role", checked ? "menuitemradio" : "menuitem");
   if (checked) item.setAttribute("aria-checked", "true");
+  if (hasPopup) {
+    item.setAttribute("aria-haspopup", "menu");
+    item.setAttribute("aria-expanded", "false");
+  }
   const text = document.createElement("span");
   text.textContent = label;
   item.append(text);
@@ -13591,8 +13670,44 @@ function sidebarMenuItem(label, { trail = "", checked = false, onclick }) {
   return item;
 }
 
-/// A small menu under a sidebar button: a list of rows, or rows that open a
-/// second list of choices in place of the first.
+let sidebarSubmenuCard = null;
+let sidebarSubmenuParent = null;
+
+function closeSidebarSubmenu() {
+  sidebarSubmenuCard?.remove();
+  sidebarSubmenuParent?.setAttribute("aria-expanded", "false");
+  sidebarSubmenuCard = null;
+  sidebarSubmenuParent = null;
+}
+
+function showSidebarSubmenu(parent, items, rootCard) {
+  if (sidebarSubmenuParent === parent && sidebarSubmenuCard) {
+    closeSidebarSubmenu();
+    return;
+  }
+  closeSidebarSubmenu();
+  sidebarSubmenuParent = parent;
+  parent.setAttribute("aria-expanded", "true");
+  const card = document.createElement("div");
+  card.className = "sidebar-floating-card sidebar-submenu-card";
+  card.setAttribute("role", "menu");
+  card.append(...items);
+  document.body.appendChild(card);
+  const parentRect = parent.getBoundingClientRect();
+  const rootRect = rootCard.getBoundingClientRect();
+  const width = card.offsetWidth || 200;
+  const left = rootRect.right + 5;
+  card.style.left = `${left + width <= window.innerWidth - 10 ? left : Math.max(8, rootRect.left - width - 5)}px`;
+  card.style.top = `${Math.max(8, parentRect.top - 5)}px`;
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeSidebarCards();
+  });
+  card.querySelector("button")?.focus();
+  sidebarSubmenuCard = card;
+}
+
+/// A small menu under a sidebar button. A row that carries its own choices
+/// opens them beside the menu rather than replacing the list the reader is in.
 function showSidebarMenu(trigger, build) {
   if (trigger.getAttribute("aria-expanded") === "true") {
     closeSidebarCards();
@@ -13606,12 +13721,9 @@ function showSidebarMenu(trigger, build) {
   const card = document.createElement("div");
   card.className = "sidebar-floating-card sidebar-menu-card";
   card.setAttribute("role", "menu");
-  const paint = (items) => {
-    card.replaceChildren(...items);
-    card.querySelector("button")?.focus();
-  };
   const close = closeSidebarCards;
-  paint(build(paint, close));
+  const openSubmenu = (parent, items) => showSidebarSubmenu(parent, items, card);
+  card.append(...build(openSubmenu, close));
   document.body.appendChild(card);
   const rect = trigger.getBoundingClientRect();
   card.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - card.offsetWidth - 10))}px`;
@@ -13623,11 +13735,19 @@ function showSidebarMenu(trigger, build) {
 }
 
 function openOrganizeMenu(trigger) {
-  showSidebarMenu(trigger, (paint, close) => {
+  showSidebarMenu(trigger, (openSubmenu, close) => {
     const chevron = ICONS.chevronRight;
     const root = () => [
-      sidebarMenuItem(t("sidebar.organizeSidebar", "Organize sidebar"), { trail: chevron, onclick: () => paint(organize()) }),
-      sidebarMenuItem(t("sidebar.sortChatsBy", "Sort chats by"), { trail: chevron, onclick: () => paint(sort()) }),
+      sidebarMenuItem(t("sidebar.organizeSidebar", "Organize sidebar"), {
+        trail: chevron,
+        hasPopup: true,
+        onclick: (item) => openSubmenu(item, organize()),
+      }),
+      sidebarMenuItem(t("sidebar.sortChatsBy", "Sort chats by"), {
+        trail: chevron,
+        hasPopup: true,
+        onclick: (item) => openSubmenu(item, sort()),
+      }),
     ];
     const organize = () => [
       ...[
@@ -13661,11 +13781,14 @@ function openOrganizeMenu(trigger) {
     const sort = () =>
       [
         ["updated", t("sidebar.sortUpdated", "Last updated")],
-        ["created", t("sidebar.sortCreated", "Created")],
+        ["manual", t("sidebar.sortManual", "Manual")],
       ].map(([value, label]) =>
         sidebarMenuItem(label, {
           checked: state.chatSort === value,
           onclick: () => {
+            if (value === "manual" && state.chatSort !== "manual") {
+              saveManualChatOrder(updatedChatOrder(listedSessions()));
+            }
             setSidebarPref("chatSort", value);
             close();
             renderProjectsTree();
@@ -13953,6 +14076,41 @@ async function renderProjectsTree() {
         "session-item" +
         (session.id === state.session ? " active" : "") +
         (running ? " running" : "");
+      sessionItem.dataset.session = session.id;
+      sessionItem.dataset.project = project.path;
+      sessionItem.draggable = state.chatSort === "manual";
+      sessionItem.addEventListener("dragstart", (event) => {
+        if (state.chatSort !== "manual") return;
+        draggedSessionId = session.id;
+        draggedSessionProject = project.path;
+        sessionItem.classList.add("dragging");
+        event.dataTransfer?.setData("text/plain", sessionLabel(session));
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      });
+      sessionItem.addEventListener("dragend", () => {
+        draggedSessionId = null;
+        draggedSessionProject = "";
+        clearDropMark();
+        sessionItem.classList.remove("dragging");
+      });
+      sessionItem.addEventListener("dragover", (event) => {
+        const after = sessionDropAfter(event, sessionItem);
+        if (after === null) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        markDrop(sessionItem, after);
+      });
+      sessionItem.addEventListener("dragleave", (event) => {
+        if (isInside(event.relatedTarget, sessionItem)) return;
+        clearDropMarkOf(sessionItem);
+      });
+      sessionItem.addEventListener("drop", (event) => {
+        const after = sessionDropAfter(event, sessionItem);
+        clearDropMark();
+        if (after === null) return;
+        event.preventDefault();
+        dropSession(draggedSessionId, session.id, after);
+      });
 
       const label = sessionLabel(session);
       // A thread that runs in a worktree says so on its row: the project's own
@@ -14066,9 +14224,11 @@ async function renderProjectsTree() {
   recentTitle.textContent = t("sidebar.recents", "Recents");
   recentSection.appendChild(recentTitle);
 
-  const recentSessions = [...listedSessions()]
-    .sort((a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0))
-    .slice(0, state.sidebarView === "list" ? Infinity : SIDEBAR_RECENT_LIMIT);
+  const recentSessions = state.sidebarView === "list"
+    ? arrangedSessions(listedSessions())
+    : [...listedSessions()]
+      .sort((a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0))
+      .slice(0, SIDEBAR_RECENT_LIMIT);
   for (const session of recentSessions) {
     const row = document.createElement("button");
     row.type = "button";
@@ -14076,6 +14236,41 @@ async function renderProjectsTree() {
       "recent-session-item" +
       (session.id === state.session ? " active" : "") +
       (turnInThread(session.id) ? " running" : "");
+    row.dataset.session = session.id;
+    row.dataset.project = sessionProject(session);
+    row.draggable = state.chatSort === "manual";
+    row.addEventListener("dragstart", (event) => {
+      if (state.chatSort !== "manual") return;
+      draggedSessionId = session.id;
+      draggedSessionProject = sessionProject(session);
+      row.classList.add("dragging");
+      event.dataTransfer?.setData("text/plain", sessionLabel(session));
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    row.addEventListener("dragend", () => {
+      draggedSessionId = null;
+      draggedSessionProject = "";
+      clearDropMark();
+      row.classList.remove("dragging");
+    });
+    row.addEventListener("dragover", (event) => {
+      const after = sessionDropAfter(event, row);
+      if (after === null) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      markDrop(row, after);
+    });
+    row.addEventListener("dragleave", (event) => {
+      if (isInside(event.relatedTarget, row)) return;
+      clearDropMarkOf(row);
+    });
+    row.addEventListener("drop", (event) => {
+      const after = sessionDropAfter(event, row);
+      clearDropMark();
+      if (after === null) return;
+      event.preventDefault();
+      dropSession(draggedSessionId, session.id, after);
+    });
     const name = document.createElement("div");
     name.className = "name";
     name.textContent = sessionLabel(session);

@@ -153,10 +153,16 @@ Linux retain their native window controls.
 
 A narrow navigation rail stays available when the sidebar is hidden. It opens
 a new chat, projects, the command menu, worktrees, Customize
-and settings. The sidebar header places the plain Oxide title, activity bell
-and search together above New Chat. Activity is also available from the command
-menu when the sidebar is hidden. These controls use the same actions and
-saved preferences as their keyboard and menu counterparts.
+and settings. The sidebar header places the plain Oxide title, activity filter
+and search together above New Chat. The filter carries the unread and attention
+mark; Activity remains available from the command menu. The Projects header
+keeps its organize and new-project actions beside the title, revealing them on
+hover or keyboard focus. Its organize menu keeps the parent list visible and
+opens **Organize sidebar** and **Sort chats by** beside it. Organization chooses
+between project groups and one combined list; sorting follows the latest update
+or the reader's manual order. In manual order, chat rows can be dragged within
+their project, and that order is restored on the next launch. These controls use
+the same actions and saved preferences as their keyboard and menu counterparts.
 
 The rail's Projects control opens a full-page directory with project search,
 activity sorting, Create project, and each row's options, pin and new-chat actions.
@@ -1521,7 +1527,7 @@ already in front and the reader is still blocked.
 
 Two more of the system's own are in the same section: the dock or task bar number
 (`set_badge`) is the threads that finished unread — the same count the sidebar's
-dots and the bell show, kept in step by the one function that computes it — and
+dots and activity filter show, kept in step by the one function that computes it — and
 **keep the machine awake while a turn runs** holds a
 `powerSaveBlocker` for exactly as long as a turn is in flight.
 
@@ -1561,17 +1567,17 @@ original text when lowercasing expands a Unicode character. Search snippets
 retain only the characters around the match rather than allocating a character
 array for an entire long message.
 
-**Activity** (the sidebar bell, or **Command menu → Activity**) replaces the
-project tree with a chat feed, leaving the transcript and composer available.
-The bell stays highlighted until toggled off or Escape restores the tree.
+**Activity** (**Command menu → Activity**) replaces the project tree with a
+chat feed, leaving the transcript and composer available. Escape restores the
+tree.
 Priority contains pending approvals/questions and pinned, running or unread
 chats. Remaining chats appear once under Today, Yesterday or Earlier, based on
 local calendar dates. Rows pair their title with the project name and a two-line
 stored preview, with the selected chat highlighted and running/unread marks.
 Opening a chat keeps the feed visible. The command menu reveals the sidebar if
-it was hidden. The bell carries a dot for pending, running or unread activity,
-in the tool colour while an answer is required; **Clear these marks** shares
-the `⇧Esc` action.
+it was hidden. The activity filter carries a dot for pending, running or unread
+activity, in the tool colour while an answer is required; **Clear these marks**
+shares the `⇧Esc` action.
 
 **Archived chats** (**Add → Archived chats…**) lists what the sidebar leaves out
 — `archived_sessions` answers with the same views over the other half of the
