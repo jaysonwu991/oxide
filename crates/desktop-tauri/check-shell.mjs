@@ -144,7 +144,7 @@ check(
   "packaged the same updater asset names as Electron",
   /Oxide-macos-\$arch\.dmg/.test(packageScript) &&
     /Oxide-linux-\$arch-Setup\.tar\.gz/.test(packageScript) &&
-    /Oxide-win-\$arch-Setup\.tar\.gz/.test(packageScript),
+    /Oxide-win-\$arch-Setup\.exe/.test(packageScript),
 );
 
 console.log("the migration's end");

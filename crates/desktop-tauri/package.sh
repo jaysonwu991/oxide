@@ -4,7 +4,7 @@
 # The Electron app hands both of its halves to electron-builder. This front-end
 # is one native binary, so this script is what turns it into the thing people
 # install: a `.app` in a `.dmg` on macOS, and a `.tar.gz` bundle — binary, icon
-# and desktop entry — on Linux and Windows. The names it writes are the ones
+# and desktop entry — on Linux, an NSIS `Setup.exe` on Windows, plus an `.AppImage` on Linux. The names it writes are the ones
 # `.github/workflows/desktop-tauri.yml` uploads and the ones the shared updater
 # resolves. Electron remains available from its own versioned
 # releases.
@@ -260,7 +260,6 @@ stage="$artifact_dir/stage"
 mkdir -p "$stage"
 if [ "$platform" = "win" ]; then
   binary="target/release/oxide-desktop-tauri.exe"
-  package="$artifact_dir/Oxide-win-$arch-Setup.tar.gz"
 else
   binary="target/release/oxide-desktop-tauri"
   package="$artifact_dir/Oxide-linux-$arch-Setup.tar.gz"
@@ -300,5 +299,61 @@ The folder's plugins/ directory is installed into the shared plugin store at
 launch, exactly as Electron's bundled plugins are.
 README
 
+if [ "$platform" = "win" ]; then
+  if ! command -v makensis >/dev/null 2>&1; then
+    echo "error: makensis (NSIS) is required to build the Windows installer" >&2
+    exit 1
+  fi
+  installer="$artifact_dir/Oxide-win-$arch-Setup.exe"
+  MSYS2_ARG_CONV_EXCL="*" makensis -V2 \
+    "-DVERSION=$version" \
+    "-DSTAGE=$(cygpath -w "$stage")" \
+    "-DOUTFILE=$(cygpath -w "$installer")" \
+    "$(cygpath -w "$here/assets/installer.nsi")"
+  echo "wrote $installer"
+  exit 0
+fi
+
 tar -czf "$package" -C "$stage" .
 echo "wrote $package"
+
+if [ "$platform" = "linux" ]; then
+  case "$arch" in
+    x64) appimage_arch=x86_64 ;;
+    *) appimage_arch=arm64 ;;
+  esac
+  case "$arch" in
+    x64) tool_arch=x86_64 ;;
+    *) tool_arch=aarch64 ;;
+  esac
+  appdir="$artifact_dir/Oxide.AppDir"
+  rm -rf "$appdir"
+  mkdir -p "$appdir/usr/bin"
+  cp "$binary" "$appdir/usr/bin/oxide-desktop-tauri"
+  if [ -d "$plugins" ]; then
+    cp -R "$plugins" "$appdir/usr/bin/plugins"
+  fi
+  cp "$here/../desktop/icons/icon.png" "$appdir/oxide.png"
+  cp "$stage/oxide.desktop" "$appdir/oxide.desktop"
+  cat > "$appdir/AppRun" <<'APPRUN'
+#!/bin/sh
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/usr/bin/oxide-desktop-tauri" "$@"
+APPRUN
+  chmod +x "$appdir/AppRun"
+
+  tool="${APPIMAGETOOL:-}"
+  if [ -z "$tool" ]; then
+    tool="$artifact_dir/appimagetool"
+    curl -fsSL -o "$tool" \
+      "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$tool_arch.AppImage"
+    chmod +x "$tool"
+  fi
+  appimage="$artifact_dir/Oxide-linux-$appimage_arch-Setup.AppImage"
+  ARCH="$tool_arch" APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --no-appstream "$appdir" "$appimage"
+  rm -rf "$appdir"
+  if [ -z "${APPIMAGETOOL:-}" ]; then
+    rm -f "$tool"
+  fi
+  echo "wrote $appimage"
+fi
