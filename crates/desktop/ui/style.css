@@ -1903,8 +1903,8 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .session-item.active { background: var(--panel-3); color: var(--text); }
 /* The thread a turn is running in says so on its own row: the reader may be
    looking at another one, so the sidebar is what names the working thread. The
-   mark sits in the row's indent gutter, clear of the ✕. */
-.session-item .session-run { position: absolute; left: 28px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; }
+   mark takes the slot a pull request mark would, at the row's end, and yields it to the row actions. */
+.session-item .session-run { flex: none; width: 20px; height: 20px; justify-content: center; display: flex; align-items: center; z-index: 1; background: var(--session-control-bg); border-radius: 5px; }
 .session-item .session-run .spinner { border-color: var(--accent); border-top-color: transparent; }
 /* The title remains the flexible cell: a long one ellipsizes rather than
    pushing the pin and archive actions out of the row. */
@@ -1976,6 +1976,11 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .recent-session-item:hover { background: var(--panel-2); color: var(--text); }
 .recent-session-item.active { background: var(--panel-3); color: var(--text); }
 .recent-session-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-pull { flex: none; display: flex; align-items: center; color: var(--faint); }
+.recent-pull svg { width: 14px; height: 14px; }
+.recent-pull.state-open { color: var(--success); }
+.recent-pull.state-merged { color: var(--pull-merged); }
+.recent-pull.state-closed { color: var(--error); }
 .recent-session-item .spinner { border-color: var(--accent); border-top-color: transparent; }
 
 .row-add {
@@ -2068,6 +2073,8 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .session-pull.state-merged { color: var(--pull-merged); }
 .session-pull.state-closed { color: var(--error); }
 .session-item:hover .session-pull,
+.session-item:hover .session-run,
+.session-item:focus-within .session-run,
 .session-item:focus-within .session-pull { opacity: 0; pointer-events: none; }
 .session-item .session-pull:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .session-item:has(.session-pull:focus-visible) .session-pull { opacity: 1; pointer-events: auto; }
@@ -3771,8 +3778,13 @@ body.projects-open { grid-template-columns: var(--rail-width) minmax(0, 1fr); }
 .projects-header button.projects-title svg { width: 14px; height: 14px; display: block; transition: transform 0.12s; }
 .projects-header button.projects-title[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .projects-header button.icon { margin-left: 0; }
-.projects-section.projects-collapsed .projects-tree { display: none; }
+.projects-section.projects-collapsed .projects-tree .project-group { display: none; }
+.projects-section.projects-collapsed .sidebar-recents { margin-top: 4px; }
 .sidebar-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
 .sidebar-menu-item:hover, .sidebar-menu-item:focus-visible { background: var(--panel-3); outline: none; }
 .sidebar-menu-item .sidebar-menu-trail { margin-left: auto; color: var(--dim); display: inline-flex; }
 .sidebar-menu-card { width: 232px; padding: 6px; }
+
+#filter-chats.active { background: var(--panel-3); color: var(--text); }
+.sidebar-tip { position: fixed; z-index: 80; display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--text); font-size: 12px; white-space: nowrap; box-shadow: 0 6px 18px rgba(0, 0, 0, .35); }
+.sidebar-tip kbd { padding: 1px 6px; border-radius: 5px; background: var(--panel-3); color: var(--dim); font: inherit; font-size: 11px; }

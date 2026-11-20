@@ -356,6 +356,7 @@ const state = {
   collapsedSidebarProjects: new Set(),
   projectsCollapsed: false,
   chatSort: sidebarPref("chatSort", "updated"),
+  sidebarView: sidebarPref("sidebarView", "project"),
   chatFilter: "all",
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
@@ -9504,6 +9505,13 @@ function toggleSidebar() {
 /// dispatcher and the menu the window asks for all read it.
 const SHORTCUTS = [
   {
+    id: "focus-active",
+    key: "settings.actionFocusActive",
+    fallback: "Focus on active chats",
+    chords: ["mod+alt+u"],
+    run: () => toggleActiveFocus(),
+  },
+  {
     id: "command-menu",
     key: "settings.actionCommandMenu",
     fallback: "Command menu",
@@ -9711,7 +9719,10 @@ function chordMatches(chord, event) {
   if (parts.ctrl && !event.ctrlKey) return false;
   if (parts.alt !== Boolean(event.altKey)) return false;
   if (parts.shift !== Boolean(event.shiftKey)) return false;
-  return String(event.key).toLowerCase() === parts.key;
+  if (String(event.key).toLowerCase() === parts.key) return true;
+  // Option rewrites the character on a Mac (⌥U is a dead accent key), so an
+  // Alt chord falls back to the physical key it names.
+  return parts.alt && parts.key.length === 1 && event.code === `Key${parts.key.toUpperCase()}`;
 }
 
 function shortcutChords(action) {
@@ -12476,7 +12487,15 @@ function init() {
   el("projects-collapse-icon").innerHTML = ICONS.caret;
   el("projects-collapse").onclick = () => setProjectsCollapsed(!state.projectsCollapsed);
   el("projects-options").onclick = () => openOrganizeMenu(el("projects-options"));
-  el("filter-chats").onclick = () => openFilterMenu(el("filter-chats"));
+  const focusButton = el("filter-chats");
+  focusButton.onclick = () => toggleActiveFocus();
+  focusButton.addEventListener("mouseenter", () => showFocusTip(focusButton));
+  focusButton.addEventListener("focus", () => {
+    if (focusButton.matches(":focus-visible")) showFocusTip(focusButton);
+  });
+  focusButton.addEventListener("mouseleave", hideFocusTip);
+  focusButton.addEventListener("blur", hideFocusTip);
+  paintActiveFocus();
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
   const newChatBtn = el("new-chat");
@@ -13611,6 +13630,19 @@ function openOrganizeMenu(trigger) {
       sidebarMenuItem(t("sidebar.sortChatsBy", "Sort chats by"), { trail: chevron, onclick: () => paint(sort()) }),
     ];
     const organize = () => [
+      ...[
+        ["project", t("sidebar.byProject", "By project")],
+        ["list", t("sidebar.inOneList", "In one list")],
+      ].map(([value, label]) =>
+        sidebarMenuItem(label, {
+          checked: state.sidebarView === value,
+          onclick: () => {
+            setSidebarPref("sidebarView", value);
+            close();
+            renderProjectsTree();
+          },
+        }),
+      ),
       sidebarMenuItem(t("sidebar.expandAll", "Expand all projects"), {
         onclick: () => {
           state.collapsedSidebarProjects.clear();
@@ -13628,7 +13660,7 @@ function openOrganizeMenu(trigger) {
     ];
     const sort = () =>
       [
-        ["updated", t("sidebar.sortUpdated", "Updated")],
+        ["updated", t("sidebar.sortUpdated", "Last updated")],
         ["created", t("sidebar.sortCreated", "Created")],
       ].map(([value, label]) =>
         sidebarMenuItem(label, {
@@ -13644,23 +13676,54 @@ function openOrganizeMenu(trigger) {
   });
 }
 
-function openFilterMenu(trigger) {
-  showSidebarMenu(trigger, (_paint, close) =>
-    [
-      ["all", t("sidebar.filterAll", "All chats")],
-      ["running", t("sidebar.filterRunning", "Running")],
-      ["pulls", t("sidebar.filterPulls", "With a pull request")],
-    ].map(([value, label]) =>
-      sidebarMenuItem(label, {
-        checked: state.chatFilter === value,
-        onclick: () => {
-          state.chatFilter = value;
-          close();
-          renderProjectsTree();
-        },
-      }),
-    ),
-  );
+function focusLabel() {
+  return state.chatFilter === "running"
+    ? t("sidebar.showAllChats", "Show all chats")
+    : t("sidebar.focusActive", "Focus on active chats");
+}
+
+function paintActiveFocus() {
+  const button = el("filter-chats");
+  if (!button) return;
+  const on = state.chatFilter === "running";
+  button.classList.toggle("active", on);
+  button.setAttribute("aria-pressed", String(on));
+  button.setAttribute("aria-label", focusLabel());
+  button.removeAttribute("title");
+}
+
+function toggleActiveFocus() {
+  hideFocusTip();
+  state.chatFilter = state.chatFilter === "running" ? "all" : "running";
+  paintActiveFocus();
+  renderProjectsTree();
+}
+
+let focusTip = null;
+
+function hideFocusTip() {
+  focusTip?.remove();
+  focusTip = null;
+}
+
+/// The words sit in a tip of the window's own so the chord can be drawn beside
+/// them as keys; a native tooltip is one string.
+function showFocusTip(button) {
+  hideFocusTip();
+  const action = SHORTCUTS.find((entry) => entry.id === "focus-active");
+  const tip = document.createElement("div");
+  tip.className = "sidebar-tip";
+  tip.setAttribute("role", "tooltip");
+  const text = document.createElement("span");
+  text.textContent = focusLabel();
+  const chord = document.createElement("kbd");
+  chord.textContent = formatChord(shortcutChords(action)[0] || "");
+  tip.append(text, chord);
+  document.body.appendChild(tip);
+  const rect = button.getBoundingClientRect();
+  tip.style.left = `${Math.max(8, Math.min(rect.left - 20, window.innerWidth - tip.offsetWidth - 8))}px`;
+  tip.style.top = `${rect.bottom + 6}px`;
+  focusTip = tip;
 }
 
 function setProjectsCollapsed(collapsed) {
@@ -13701,7 +13764,7 @@ async function renderProjectsTree() {
     }
   }
   
-  for (const [projectIndex, project] of visibleProjects.entries()) {
+  for (const [projectIndex, project] of (state.sidebarView === "list" ? [] : visibleProjects).entries()) {
     const projectGroup = document.createElement("div");
     projectGroup.className = "project-group";
     projectGroup.setAttribute("role", "group");
@@ -13917,7 +13980,7 @@ async function renderProjectsTree() {
       const pull = pullOf(session);
       if (pull) {
         sessionItem.classList.add("has-pull");
-        sessionItem.appendChild(pullButton(pull));
+        if (!running) sessionItem.appendChild(pullButton(pull));
       }
 
       if (running) {
@@ -14005,7 +14068,7 @@ async function renderProjectsTree() {
 
   const recentSessions = [...listedSessions()]
     .sort((a, b) => (b.modified_at || b.created_at || 0) - (a.modified_at || a.created_at || 0))
-    .slice(0, SIDEBAR_RECENT_LIMIT);
+    .slice(0, state.sidebarView === "list" ? Infinity : SIDEBAR_RECENT_LIMIT);
   for (const session of recentSessions) {
     const row = document.createElement("button");
     row.type = "button";
@@ -14020,6 +14083,15 @@ async function renderProjectsTree() {
       session.worktree ? `worktree ${session.worktree}` : projectNameOf(sessionProject(session))
     }`;
     row.appendChild(name);
+    const pull = pullOf(session);
+    if (pull) {
+      const mark = document.createElement("span");
+      mark.className = `recent-pull state-${pull.state || "unknown"}`;
+      mark.title = pullTitle(pull);
+      mark.setAttribute("aria-hidden", "true");
+      mark.innerHTML = ICONS.pull;
+      row.appendChild(mark);
+    }
     if (turnInThread(session.id)) {
       const spinner = document.createElement("span");
       spinner.className = "spinner";
