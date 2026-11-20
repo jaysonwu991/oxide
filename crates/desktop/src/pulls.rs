@@ -425,11 +425,13 @@ mod tests {
     fn the_state_of_a_link_a_row_names_is_the_state_that_was_read() {
         let dir = temp_dir();
         let log = dir.join("thread.jsonl");
-        std::fs::write(
-            &log,
-            "https://github.com/owner/repo/pull/7\nhttps://gitlab.com/group/app/-/merge_requests/2\n",
-        )
-        .unwrap();
+        let call = json!({"message": {"role": "assistant", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": json!({"command": "gh pr create --fill"}).to_string()}},
+            {"id": "c2", "type": "function", "function": {"name": "bash", "arguments": json!({"command": "glab mr create --fill"}).to_string()}}
+        ]}});
+        let first = json!({"message": {"role": "tool", "tool_call_id": "c1", "content": "https://github.com/owner/repo/pull/7"}});
+        let second = json!({"message": {"role": "tool", "tool_call_id": "c2", "content": "https://gitlab.com/group/app/-/merge_requests/2"}});
+        std::fs::write(&log, format!("{call}\n{first}\n{second}\n")).unwrap();
         let cache = json!({
             "version": 2,
             "sessions": {},
