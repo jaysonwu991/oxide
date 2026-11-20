@@ -354,6 +354,9 @@ const state = {
   sessions: [],
   expandedSidebarProjects: new Set(),
   collapsedSidebarProjects: new Set(),
+  projectsCollapsed: false,
+  chatSort: sidebarPref("chatSort", "updated"),
+  chatFilter: "all",
   // New context sent during a run waits by default. Steering is a deliberate
   // choice because it changes the work already in progress.
   followUpBehavior: savedFollowUpBehavior(),
@@ -11967,6 +11970,8 @@ function openCreateProject() {
   el("create-project-path").value = "";
   el("create-project-source-options").open = false;
   el("create-project-folders").innerHTML = "";
+  renderCreateProjectFolders();
+  el("create-project-source-box").classList.remove("readonly");
   el("create-project-error").hidden = true;
   el("create-project-sources").hidden = false;
   el("create-project-title").textContent = t("dialog.createProject.title", "Create project");
@@ -11985,12 +11990,14 @@ function openEditProject(project) {
   renderCreateProjectFolders();
   el("create-project-error").hidden = true;
   // A registered project is one source folder in the desktop model. Editing
-  // changes its display name only; do not offer add/remove folder controls whose
-  // changes the command cannot persist.
-  el("create-project-sources").hidden = true;
+  // changes its display name only, so the folder is listed without the add and
+  // remove controls whose changes the command cannot persist.
+  el("create-project-sources").hidden = false;
+  el("create-project-source-box").classList.add("readonly");
   el("create-project-title").textContent = t("ui.editProject", "Edit project");
   el("create-project-save").textContent = t("common.save", "Save");
   el("create-project-remove").hidden = false;
+  el("create-project-remove").textContent = t("dialog.createProject.removeLocal", "Remove local project");
   el("create-project-modal").hidden = false;
   el("create-project-name").focus();
 }
@@ -12039,17 +12046,27 @@ function renderCreateProjectFolders() {
   for (const folder of createProjectState.folders) {
     const item = document.createElement("div");
     item.className = "folder-item";
+    item.innerHTML = ICONS.folder;
     const pathEl = document.createElement("span");
     pathEl.className = "folder-item-path";
-    pathEl.textContent = folder;
+    pathEl.textContent = folderBasename(folder);
+    pathEl.title = folder;
     const removeBtn = document.createElement("button");
-    removeBtn.className = "folder-item-remove ghost small";
-    removeBtn.textContent = t("common.remove", "Remove");
+    removeBtn.type = "button";
+    removeBtn.className = "folder-item-remove";
+    removeBtn.title = t("common.remove", "Remove");
+    removeBtn.setAttribute("aria-label", `${t("common.remove", "Remove")} ${folderBasename(folder)}`);
+    removeBtn.innerHTML = ICONS.close;
     removeBtn.onclick = () => removeCreateProjectFolder(folder);
     item.appendChild(pathEl);
     item.appendChild(removeBtn);
     container.appendChild(item);
   }
+  const has = createProjectState.folders.length > 0;
+  el("create-project-source-box").classList.toggle("has-folders", has);
+  el("create-project-add-row").hidden = !has;
+  el("create-project-where-label").textContent = t("dialog.createProject.thisComputer", "This computer");
+  el("create-project-where").hidden = !has;
 }
 
 function showCreateProjectError(message) {
@@ -12456,6 +12473,10 @@ function init() {
   // The language is the core's to resolve, so the page asks before it paints
   // anything of its own; the markup it was authored in stands until then.
   void loadLanguage();
+  el("projects-collapse-icon").innerHTML = ICONS.caret;
+  el("projects-collapse").onclick = () => setProjectsCollapsed(!state.projectsCollapsed);
+  el("projects-options").onclick = () => openOrganizeMenu(el("projects-options"));
+  el("filter-chats").onclick = () => openFilterMenu(el("filter-chats"));
   const createBtnTree = el("create-project-btn-tree");
   if (createBtnTree) createBtnTree.onclick = openCreateProject;
   const newChatBtn = el("new-chat");
@@ -12467,6 +12488,7 @@ function init() {
   };
   el("projects-close").onclick = () => (el("projects-modal").hidden = true);
   el("create-project-add-folder").onclick = addCreateProjectFolder;
+  el("create-project-add-row").onclick = addCreateProjectFolder;
   el("create-project-cancel").onclick = () => (el("create-project-modal").hidden = true);
   el("create-project-close").onclick = () => el("create-project-cancel").click();
   el("create-project-save").onclick = saveCreateProject;
@@ -13506,6 +13528,147 @@ async function archiveSession(session) {
   }
 }
 
+function sidebarPref(key, fallback) {
+  try {
+    return localStorage.getItem(`oxide.sidebar.${key}`) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function setSidebarPref(key, value) {
+  state[key] = value;
+  try {
+    localStorage.setItem(`oxide.sidebar.${key}`, value);
+  } catch {}
+}
+
+/// Threads in the order and subset the sidebar's own controls ask for.
+function arrangedSessions(sessions) {
+  let rows = sessions;
+  if (state.chatFilter === "running") rows = rows.filter((session) => turnInThread(session.id));
+  else if (state.chatFilter === "pulls") rows = rows.filter((session) => pullOf(session));
+  const field = state.chatSort === "created" ? "created_at" : "modified_at";
+  return [...rows].sort((a, b) => Number(b[field] || 0) - Number(a[field] || 0));
+}
+
+function sidebarMenuItem(label, { trail = "", checked = false, onclick }) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "sidebar-menu-item";
+  item.setAttribute("role", checked ? "menuitemradio" : "menuitem");
+  if (checked) item.setAttribute("aria-checked", "true");
+  const text = document.createElement("span");
+  text.textContent = label;
+  item.append(text);
+  const mark = document.createElement("span");
+  mark.className = "sidebar-menu-trail";
+  mark.innerHTML = trail || (checked ? ICONS.check : "");
+  item.append(mark);
+  item.onclick = (event) => {
+    event.stopPropagation();
+    onclick(item);
+  };
+  return item;
+}
+
+/// A small menu under a sidebar button: a list of rows, or rows that open a
+/// second list of choices in place of the first.
+function showSidebarMenu(trigger, build) {
+  if (trigger.getAttribute("aria-expanded") === "true") {
+    closeSidebarCards();
+    return;
+  }
+  closeSidebarCards();
+  sidebarCardTrigger = trigger;
+  sidebarCardReturnFocus = true;
+  sidebarCardOrigin = "click";
+  trigger.setAttribute("aria-expanded", "true");
+  const card = document.createElement("div");
+  card.className = "sidebar-floating-card sidebar-menu-card";
+  card.setAttribute("role", "menu");
+  const paint = (items) => {
+    card.replaceChildren(...items);
+    card.querySelector("button")?.focus();
+  };
+  const close = closeSidebarCards;
+  paint(build(paint, close));
+  document.body.appendChild(card);
+  const rect = trigger.getBoundingClientRect();
+  card.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - card.offsetWidth - 10))}px`;
+  card.style.top = `${rect.bottom + 6}px`;
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeSidebarCards();
+  });
+  card.querySelector("button")?.focus();
+}
+
+function openOrganizeMenu(trigger) {
+  showSidebarMenu(trigger, (paint, close) => {
+    const chevron = ICONS.chevronRight;
+    const root = () => [
+      sidebarMenuItem(t("sidebar.organizeSidebar", "Organize sidebar"), { trail: chevron, onclick: () => paint(organize()) }),
+      sidebarMenuItem(t("sidebar.sortChatsBy", "Sort chats by"), { trail: chevron, onclick: () => paint(sort()) }),
+    ];
+    const organize = () => [
+      sidebarMenuItem(t("sidebar.expandAll", "Expand all projects"), {
+        onclick: () => {
+          state.collapsedSidebarProjects.clear();
+          close();
+          renderProjectsTree();
+        },
+      }),
+      sidebarMenuItem(t("sidebar.collapseAll", "Collapse all projects"), {
+        onclick: () => {
+          for (const project of state.projects || []) state.collapsedSidebarProjects.add(project.id);
+          close();
+          renderProjectsTree();
+        },
+      }),
+    ];
+    const sort = () =>
+      [
+        ["updated", t("sidebar.sortUpdated", "Updated")],
+        ["created", t("sidebar.sortCreated", "Created")],
+      ].map(([value, label]) =>
+        sidebarMenuItem(label, {
+          checked: state.chatSort === value,
+          onclick: () => {
+            setSidebarPref("chatSort", value);
+            close();
+            renderProjectsTree();
+          },
+        }),
+      );
+    return root();
+  });
+}
+
+function openFilterMenu(trigger) {
+  showSidebarMenu(trigger, (_paint, close) =>
+    [
+      ["all", t("sidebar.filterAll", "All chats")],
+      ["running", t("sidebar.filterRunning", "Running")],
+      ["pulls", t("sidebar.filterPulls", "With a pull request")],
+    ].map(([value, label]) =>
+      sidebarMenuItem(label, {
+        checked: state.chatFilter === value,
+        onclick: () => {
+          state.chatFilter = value;
+          close();
+          renderProjectsTree();
+        },
+      }),
+    ),
+  );
+}
+
+function setProjectsCollapsed(collapsed) {
+  state.projectsCollapsed = collapsed;
+  el("sidebar-projects").classList.toggle("projects-collapsed", collapsed);
+  el("projects-collapse").setAttribute("aria-expanded", String(!collapsed));
+}
+
 async function renderProjectsTree() {
   if (!el("projects-page").hidden) renderProjectDirectory();
   const container = el("projects-tree");
@@ -13568,7 +13731,7 @@ async function renderProjectsTree() {
     
     const count = document.createElement("div");
     count.className = "count";
-    const sessionsForProject = sessionsByProject[project.path] || [];
+    const sessionsForProject = arrangedSessions(sessionsByProject[project.path] || []);
     count.textContent = sessionsForProject.length;
     projectItem.appendChild(count);
 
@@ -13954,8 +14117,8 @@ async function removeProject(project) {
 
   try {
     const choice = await confirmDialog(
-      t("dialog.createProject.remove", "Remove project"),
-      t("ui.removeFromTheSidebarItsSessionsStayOnDiskUseOxideSessionsDeleteFromTheProjectFol", "Remove “{value0}” from the sidebar?\n\nIts sessions stay on disk. Use oxide session delete from the project folder to delete sessions permanently.", { value0: project.name }),
+      t("dialog.removeProject.title", "Remove {value0}?", { value0: project.name }),
+      t("dialog.removeProject.message", "This only removes the project from the app. Files on your computer and existing chats won't be deleted."),
       t("dialog.createProject.remove", "Remove project"),
     );
     if (!choice) return;

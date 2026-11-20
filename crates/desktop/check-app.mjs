@@ -3959,7 +3959,7 @@ elementFor("create-project-path").value = "~/Projects/oxide";
 app.addCreateProjectTypedPath();
 check("took the typed path as a folder", app.createProjectState.folders.length === 1, JSON.stringify(app.createProjectState.folders));
 check("named the project after the folder", elementFor("create-project-name").value === "oxide", elementFor("create-project-name").value);
-check("listed the folder as removable", elementFor("create-project-folders").outline().includes("~/Projects/oxide"), elementFor("create-project-folders").outline());
+check("listed the folder as removable", elementFor("create-project-folders").outline().includes("oxide"), elementFor("create-project-folders").outline());
 
 calls.length = 0;
 await app.saveCreateProject();
@@ -7706,7 +7706,7 @@ check(
 );
 check(
   "kept project removal non-destructive and explained CLI cleanup",
-  elementFor("confirm-alt").hidden && /oxide session delete/.test(elementFor("confirm-message").textContent),
+  elementFor("confirm-alt").hidden && /only removes the project from the app/.test(elementFor("confirm-message").textContent) && /existing chats won't be deleted/.test(elementFor("confirm-message").textContent),
 );
 calls.length = 0;
 elementFor("confirm-ok").onclick(press({ target: elementFor("confirm-ok") }));
@@ -7726,7 +7726,7 @@ const removeDiscovered = app.removeProject(discoveredTarget);
 await nextTick();
 check(
   "offered removal without deleting a discovered project's chats",
-  elementFor("confirm-title").textContent === "Remove project" &&
+  /^Remove .+\?$/.test(elementFor("confirm-title").textContent) &&
     elementFor("confirm-ok").textContent === "Remove project",
   elementFor("confirm-title").textContent,
 );
@@ -7868,7 +7868,8 @@ actionCard.querySelector(".edit-project").click();
 check(
   "made project editing name-only instead of offering discarded folder changes",
   elementFor("create-project-modal").hidden === false &&
-    elementFor("create-project-sources").hidden === true &&
+    elementFor("create-project-sources").hidden === false &&
+    elementFor("create-project-remove").textContent === "Remove local project" &&
     elementFor("create-project-title").textContent === "Edit project",
   `${elementFor("create-project-modal").hidden} / ${elementFor("create-project-sources").hidden}`,
 );
