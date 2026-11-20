@@ -6100,6 +6100,41 @@ function openProjectDetails() {
   return closeReview();
 }
 
+/// The requests the thread on screen reported, listed under the project card,
+/// and — while it has reported none — the row that attaches an existing one.
+function paintDetailsPulls(project) {
+  const session = (state.sessions || []).find((entry) => entry.id === state.session);
+  const pulls = session?.pulls || [];
+  const list = el("details-pulls");
+  list.replaceChildren(
+    ...pulls.map((pull) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "details-row details-pull-row";
+      row.title = pullTitle(pull);
+      const icon = document.createElement("span");
+      icon.setAttribute("aria-hidden", "true");
+      icon.className = `details-pull-icon state-${pull.state || "unknown"}`;
+      icon.innerHTML = ICONS.pull;
+      const name = document.createElement("span");
+      name.className = "details-pull-name";
+      name.textContent = pull.label;
+      row.append(icon, name);
+      const stateLabel = pullStateLabel(pull);
+      if (stateLabel) {
+        const badge = document.createElement("span");
+        badge.className = `details-pull state-${pull.state}`;
+        badge.textContent = stateLabel;
+        row.append(badge);
+      }
+      row.onclick = () => openExternal(pull.url);
+      return row;
+    }),
+  );
+  el("details-pulls-block").hidden = !pulls.length;
+  el("details-existing-pull").hidden = !project || pulls.length > 0;
+}
+
 async function refreshProjectDetails() {
   const project = runFolder();
   const read = ++detailsRead;
@@ -6130,6 +6165,7 @@ async function refreshProjectDetails() {
   branchRow.onclick = () => {
     if (pull) openExternal(pull.url);
   };
+  paintDetailsPulls(project);
   el("details-sources").textContent = project ? t("ui.loadingSources", "Loading sources…") : t("ui.selectAProjectToSeeItsSources", "Select a project to see its sources.");
   if (!project) return;
   const current = () => read === detailsRead && project === runFolder();
@@ -12742,6 +12778,8 @@ function init() {
     if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
   };
   el("details-changes").onclick = openRepositoryChanges;
+  el("details-existing-pull").onclick = () => void openPulls();
+  el("details-existing-pull-icon").innerHTML = ICONS.pull;
   el("details-add-source").onclick = openSources;
   el("details-view-sources").onclick = openSources;
   el("sources-close").onclick = () => { el("sources-modal").hidden = true; el("details-view-sources").focus(); };

@@ -826,6 +826,13 @@ button.details-row:disabled:hover { color: var(--text); }
 #details-branch { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; color: var(--faint); }
 #details-branch span { overflow: hidden; text-overflow: ellipsis; }
 #details-branch svg, .source-row svg { width: 17px; height: 17px; flex: none; }
+.details-action { margin-left: auto; flex: none; color: var(--faint); font-size: 12px; }
+.details-pulls-block { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 12px; }
+.details-pulls-head { color: var(--faint); font-size: 12px; padding-bottom: 4px; }
+.details-pull-row .details-pull-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.details-pull-icon.state-open { color: var(--success); }
+.details-pull-icon.state-merged { color: var(--pull-merged, var(--accent)); }
+.details-pull-icon.state-closed { color: var(--error); }
 .details-sources-head { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); margin-top: 10px; padding-top: 12px; color: var(--faint); font-size: 12px; }
 #details-sources { color: var(--faint); font-size: 12px; }
 #details-view-sources { color: var(--faint); }
