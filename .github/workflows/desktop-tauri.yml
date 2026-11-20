@@ -87,6 +87,15 @@ jobs:
             libssl-dev \
             patchelf
 
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+
       - name: Install the page's diagram packages
         working-directory: crates/desktop
         run: pnpm install --frozen-lockfile
@@ -192,6 +201,7 @@ jobs:
             crates/desktop-tauri/artifacts/*.dmg
             crates/desktop-tauri/artifacts/*-Setup.tar.gz
             crates/desktop-tauri/artifacts/*.AppImage
+            crates/desktop-tauri/artifacts/*-Setup.exe
           if-no-files-found: error
 
   release:

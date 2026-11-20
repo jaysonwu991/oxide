@@ -4,7 +4,7 @@
 # The Electron app hands both of its halves to electron-builder. This front-end
 # is one native binary, so this script is what turns it into the thing people
 # install: a `.app` in a `.dmg` on macOS, and a `.tar.gz` bundle — binary, icon
-# and desktop entry — on Linux and Windows, plus an `.AppImage` on Linux. The names it writes are the ones
+# and desktop entry — on Linux, an NSIS `Setup.exe` on Windows, plus an `.AppImage` on Linux. The names it writes are the ones
 # `.github/workflows/desktop-tauri.yml` uploads and the ones the shared updater
 # resolves. Electron remains available from its own versioned
 # releases.
@@ -260,7 +260,6 @@ stage="$artifact_dir/stage"
 mkdir -p "$stage"
 if [ "$platform" = "win" ]; then
   binary="target/release/oxide-desktop-tauri.exe"
-  package="$artifact_dir/Oxide-win-$arch-Setup.tar.gz"
 else
   binary="target/release/oxide-desktop-tauri"
   package="$artifact_dir/Oxide-linux-$arch-Setup.tar.gz"
@@ -299,6 +298,21 @@ Unpack this folder somewhere it can stay and run oxide-desktop-tauri.
 The folder's plugins/ directory is installed into the shared plugin store at
 launch, exactly as Electron's bundled plugins are.
 README
+
+if [ "$platform" = "win" ]; then
+  if ! command -v makensis >/dev/null 2>&1; then
+    echo "error: makensis (NSIS) is required to build the Windows installer" >&2
+    exit 1
+  fi
+  installer="$artifact_dir/Oxide-win-$arch-Setup.exe"
+  MSYS2_ARG_CONV_EXCL="*" makensis -V2 \
+    "-DVERSION=$version" \
+    "-DSTAGE=$(cygpath -w "$stage")" \
+    "-DOUTFILE=$(cygpath -w "$installer")" \
+    "$(cygpath -w "$here/assets/installer.nsi")"
+  echo "wrote $installer"
+  exit 0
+fi
 
 tar -czf "$package" -C "$stage" .
 echo "wrote $package"
