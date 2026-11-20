@@ -123,13 +123,18 @@ check(
 );
 check(
   "relaunched only after the engine accepts the restart",
-  /packet\["id"\] == "restart"/.test(main) && /app\.restart\(\)/.test(main),
+  /packet\["id"\] == "restart"/.test(main) &&
+    /restart_app\(&app\)/.test(main) &&
+    /while kill -0 \\"\$1\\"/.test(main) &&
+    /exec \/usr\/bin\/open -g/.test(main),
 );
 
 console.log("the release contract");
 check(
   "mapped generic page updates to the Tauri train",
-  /"check_updates" => \("check_tauri_updates"/.test(main) &&
+  /"check_updates" => \{[\s\S]*?args\["current"\] = json!\(current\);[\s\S]*?\("check_tauri_updates"/.test(
+    main,
+  ) &&
     /"install_update" =>/.test(main) &&
     /"download_update" =>/.test(main) &&
     /Component::DesktopTauri/.test(updates),
