@@ -207,6 +207,8 @@ const GLYPHS = {
   archive: '<path d="M4 8h16M5 8v11h14V8M3 4h18v4H3ZM9 12h6"/>',
   "chevron-down": '<path d="M5.5 8.6 12 14.8l6.5-6.2"/>',
   "chevron-right": '<path d="m8.6 5.5 6.2 6.5-6.2 6.5"/>',
+  copy:
+    '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   paperclip:
     '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" stroke-width="1.8"/>',
   lock: '<path d="M8 10V7a4 4 0 0 1 8 0v3"/><rect x="5.5" y="10" width="13" height="9.5" rx="2.4" stroke-width="1.8"/>',
@@ -274,6 +276,7 @@ const ICONS = {
   file: glyphBody(GLYPHS.file),
   search: glyphBody(GLYPHS.search),
   close: glyphBody(GLYPHS.close),
+  copy: glyphBody(GLYPHS.copy),
   plus: glyphBody(GLYPHS.plus),
   more: glyphBody(GLYPHS.more),
   compose: glyphBody(GLYPHS.pencil),
@@ -832,6 +835,34 @@ function setStatus(text, level = "info") {
   state.statusText = text;
   state.statusLevel = level;
   paintStatus();
+}
+
+/// Writes text to the clipboard from the page. Electron exposes the modern
+/// clipboard API; the hidden field is the fallback for a protected webview that
+/// refuses it, and still uses the document's own copy command.
+async function copyText(text) {
+  const value = String(text ?? "");
+  try {
+    if (globalThis.navigator?.clipboard?.writeText) {
+      await globalThis.navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {}
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  field.style.pointerEvents = "none";
+  document.body.appendChild(field);
+  field.select?.();
+  try {
+    return document.execCommand?.("copy") !== false;
+  } catch {
+    return false;
+  } finally {
+    field.remove();
+  }
 }
 
 function showToast(text, level = "info", action = null) {
@@ -5046,16 +5077,27 @@ function appendThinking(delta) {
 // that would fill the card header without saying what the call does.
 const CMD_NOISE = /^(?:export\b|cd\b|date\b|pwd\b|true\b|:|echo\b|printf\b|set\b)/;
 
+function toolArgs(argsJson) {
+  try {
+    const args = JSON.parse(argsJson || "{}");
+    return args && typeof args === "object" ? args : {};
+  } catch {
+    return {};
+  }
+}
+
+/// The executable text a call carried. A shell card's command is copied exactly
+/// as the tool will run it, without the shortened summary the header displays.
+function toolCommand(name, argsJson) {
+  if (name !== "bash") return "";
+  return String(toolArgs(argsJson).command || "");
+}
+
 /// The one-line subject a tool card shows. Shell calls drop the boilerplate
 /// (the PATH export every desktop shell needs, the `cd` prefix, `echo` labels)
 /// and keep the first real statement; other tools show their subject.
 function toolSummary(name, argsJson) {
-  let args = {};
-  try {
-    args = JSON.parse(argsJson || "{}");
-  } catch (error) {
-    args = {};
-  }
+  const args = toolArgs(argsJson);
   const subject =
     name === "grep" || name === "find"
       ? args.pattern
@@ -5078,7 +5120,7 @@ function toolSummary(name, argsJson) {
     text = parts.find((part) => !CMD_NOISE.test(part)) || parts[parts.length - 1] || raw;
   }
   return {
-    text: text.length > 96 ? `${text.slice(0, 96)}…` : text,
+    text,
     title: title || text,
   };
 }
@@ -5233,9 +5275,9 @@ function paintToolActivity(activity) {
   const current = runningTool || activity.tools.at(-1);
   const unresolved = failed > 0 && !runningTool && Boolean(activity.tools.at(-1)?.isError);
   const recovered = failed > 0 && !runningTool && !unresolved;
-  let label = t("ui.toolCalls", "{count} tool calls", { count });
+  let summary = t("ui.toolCalls", "{count} tool calls", { count });
   if (failed) {
-    label += ` · ${recovered
+    summary += ` · ${recovered
       ? t("ui.recoveredToolCalls", "{count} recovered", { count: failed })
       : t("ui.failedToolCalls", "{count} failed", { count: failed })}`;
   }
@@ -5252,8 +5294,8 @@ function paintToolActivity(activity) {
     activity.head.removeAttribute("role");
     activity.head.removeAttribute("aria-expanded");
   }
-  activity.label.textContent = label;
-  activity.label.hidden = count > 1 && !failed;
+  activity.label.textContent = t("ui.toolActivity", "Tool activity");
+  activity.label.hidden = count <= 1;
   activity.mark.innerHTML = current ? toolDisplayIcon(current.name) : ICONS.power;
   activity.mark.hidden = count > 1;
   activity.kinds.hidden = count <= 1;
@@ -5291,18 +5333,22 @@ function paintToolActivity(activity) {
   } else {
     activity.kinds.replaceChildren();
   }
-  activity.detail.textContent = runningTool ? toolSummary(runningTool.name, runningTool.args).text : "";
-  activity.status.innerHTML = runningTool ? '<span class="spinner"></span>running' : "";
+  activity.detail.textContent = current ? toolSummary(current.name, current.args).text : "";
+  activity.status.innerHTML = runningTool
+    ? `<span class="spinner"></span>${t("ui.running", "Running")}`
+    : unresolved
+      ? t("ui.failed", "Failed")
+      : "";
   activity.head.setAttribute(
     "aria-label",
     count > 1
-      ? `${label}${runningTool ? ", running" : ""}. ${activity.expanded ? "Collapse" : "Expand"} tool activity`
-      : label,
+      ? `${summary}${runningTool ? ", running" : ""}. ${activity.expanded ? "Collapse" : "Expand"} tool activity`
+      : summary,
   );
   activity.head.title = count > 1
-    ? activity.expanded
-      ? "Hide tool activity"
-      : "Show tool activity"
+    ? `${summary} — ${activity.expanded
+      ? t("ui.hideToolActivity", "Hide tool activity")
+      : t("ui.showToolActivity", "Show tool activity")}`
     : "";
 }
 
@@ -5325,12 +5371,42 @@ function placeTool(tool, transcript = runTranscript()) {
   paintToolActivity(activity);
 }
 
+function toolCopyButton(label, textFor) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "tool-copy";
+  button.innerHTML = ICONS.copy;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  let reset = null;
+  button.onclick = async (event) => {
+    event?.stopPropagation?.();
+    if (!(await copyText(textFor()))) {
+      showToast(t("ui.couldNotCopy", "Could not copy to the clipboard."), "error");
+      return;
+    }
+    clearTimeout(reset);
+    button.innerHTML = ICONS.check;
+    button.classList.add("copied");
+    button.title = t("ui.copied", "Copied");
+    button.setAttribute("aria-label", button.title);
+    reset = setTimeout(() => {
+      button.innerHTML = ICONS.copy;
+      button.classList.remove("copied");
+      button.title = label;
+      button.setAttribute("aria-label", label);
+    }, 1600);
+  };
+  button.onkeydown = (event) => event.stopPropagation?.();
+  return button;
+}
+
 /// Builds one tool card. `startTool` wires it for a live call; the stored
 /// transcript calls it too so a reopened thread reads the same way.
 function createToolCard(name, args) {
   const block = document.createElement("div");
   block.chatTool = { name, args };
-  block.className = "tool running";
+  block.className = `tool running${name === "bash" ? " tool-command" : ""}`;
   const head = document.createElement("div");
   head.className = "thead";
   // The caret the card folds by: the same drawing the change card and its rows
@@ -5356,7 +5432,22 @@ function createToolCard(name, args) {
   const tstate = document.createElement("span");
   tstate.className = "tstate";
   tstate.innerHTML = '<span class="spinner"></span>running';
-  head.append(caret, tname, targ, tstate);
+  const actions = document.createElement("span");
+  actions.className = "tool-actions";
+  const command = toolCommand(name, args);
+  if (command) {
+    actions.appendChild(toolCopyButton(
+      t("ui.copyCommand", "Copy command"),
+      () => command,
+    ));
+  }
+  const outputCopy = toolCopyButton(
+    t("ui.copyOutput", "Copy output"),
+    () => tool.full,
+  );
+  outputCopy.hidden = true;
+  actions.appendChild(outputCopy);
+  head.append(caret, tname, targ, actions, tstate);
   const pre = document.createElement("pre");
   pre.className = "tbody";
   const hint = document.createElement("div");
@@ -5371,6 +5462,8 @@ function createToolCard(name, args) {
     pre,
     hint,
     tstate,
+    actions,
+    outputCopy,
     done: false,
     full: "",
     live: "",
@@ -5461,6 +5554,7 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0, a
   }
   tool.done = true;
   tool.full = output || "";
+  tool.outputCopy.hidden = !tool.full;
   tool.block.classList.remove("running");
   if (isError) tool.block.classList.add("error");
   tool.quiet =

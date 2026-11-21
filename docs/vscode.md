@@ -354,8 +354,10 @@ instead of entering the transcript. Ordinary commentary from that step remains
 visible before its tool cards and answer. Commentary is rendered without a
 speaker label; only the final answer carries the Oxide label. The result the CLI
 stores as a message of its own is folded into the card it answers rather than
-shown beside it. The
-tail is counted in those stored messages, so reopening a long thread
+shown beside it. Tool rows use the same friendly labels, activity chips and
+latest-call summary as the desktop transcript, and expose `Copy command` beside
+a shell call and `Copy output` once a result lands. The tail is counted in those
+stored messages, so reopening a long thread
 shows several of its turns rather than its last reply only. A replayed card
 carries the change its own
 arguments describe — an `edit`'s replacements — rather than one

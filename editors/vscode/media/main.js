@@ -813,6 +813,21 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   }
 
+  function copyFromView(text, button, label) {
+    vscode.postMessage({ k: "copyText", text: String(text ?? "") });
+    button.innerHTML = TOOL_ICONS.check;
+    button.classList.add("copied");
+    button.title = t("ui.copied", "Copied");
+    button.setAttribute("aria-label", button.title);
+    clearTimeout(button.copyTimer);
+    button.copyTimer = setTimeout(() => {
+      button.innerHTML = TOOL_ICONS.copy;
+      button.classList.remove("copied");
+      button.title = label;
+      button.setAttribute("aria-label", label);
+    }, 1600);
+  }
+
   transcript.followLatest = true;
   transcript.followScrollTop = transcript.scrollTop;
 
@@ -1543,6 +1558,66 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   // Leading shell noise (`export PATH=…;`, `cd …;`) and label/utility statements
   // that would fill the card header without saying what the call does.
   const CMD_NOISE = /^(?:export\b|cd\b|date\b|pwd\b|true\b|:|echo\b|printf\b|set\b)/;
+  const TOOL_ICONS = {
+    terminal: '<svg viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/></svg>',
+    file: '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
+    edit: '<svg viewBox="0 0 24 24"><path d="M16.5 3.75 20.25 7.5M7.5 16.5 4.5 17.25 5.25 14.25 18 1.5 21.75 5.25ZM10.5 4.5H3v16.5h16.5V13.5"/></svg>',
+    search: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.4 15.4 4.6 4.6"/></svg>',
+    folder: '<svg viewBox="0 0 24 24"><path d="M3 6h7l2 3h9v11H3ZM3 9h18"/></svg>',
+    globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg>',
+    plug: '<svg viewBox="0 0 24 24"><path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>',
+    tool: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+    copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+    check: '<svg viewBox="0 0 24 24"><path d="m5.5 12.5 4.2 4.2 8.8-9"/></svg>',
+  };
+
+  function isMcpTool(name) {
+    return name.includes("__") ||
+      ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(name);
+  }
+
+  function toolDisplayName(name) {
+    return {
+      tool: "Tool result",
+      "": "Tool result",
+      bash: "Command",
+      read: "Read",
+      write: "Write",
+      edit: "Edit",
+      find: "Find",
+      grep: "Search",
+      ls: "List",
+      web_search: "Web search",
+      web_fetch: "Web fetch",
+      webfetch: "Web fetch",
+    }[name] || name;
+  }
+
+  function toolIcon(name) {
+    if (isMcpTool(name)) return TOOL_ICONS.plug;
+    if (name === "read") return TOOL_ICONS.file;
+    if (name === "write" || name === "edit") return TOOL_ICONS.edit;
+    if (name === "find" || name === "grep") return TOOL_ICONS.search;
+    if (name === "ls") return TOOL_ICONS.folder;
+    if (name === "web_search" || name === "web_fetch" || name === "webfetch") return TOOL_ICONS.globe;
+    if (name === "bash") return TOOL_ICONS.terminal;
+    return TOOL_ICONS.tool;
+  }
+
+  function toolActivityAction(name) {
+    return {
+      read: "Read",
+      bash: "Ran",
+      write: "Edited",
+      edit: "Edited",
+      find: "Searched",
+      grep: "Searched",
+      ls: "Listed",
+      web_search: "Searched web",
+      web_fetch: "Fetched",
+      webfetch: "Fetched",
+    }[name] || toolDisplayName(name);
+  }
 
   function toolSummary(name, rawArgs) {
     let args = {};
@@ -1576,7 +1651,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
       text = parts.find((part) => !CMD_NOISE.test(part)) || parts[parts.length - 1] || subject;
     }
     return {
-      text: text.length > 96 ? `${text.slice(0, 96)}…` : text,
+      text,
       title: search && args.path ? `${JSON.stringify(subject)} · ${args.path}` : subject || text,
     };
   }
@@ -1652,16 +1727,37 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     return `<div class="diff"><div class="diff-path">${escapeHtml(target || "diff")}</div><pre>${diffLines(diff)}</pre></div>`;
   }
 
+  function toolCopyButton(label, textFor) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tool-copy";
+    button.innerHTML = TOOL_ICONS.copy;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.addEventListener("click", (event) => {
+      event?.stopPropagation?.();
+      copyFromView(textFor(), button, label);
+    });
+    button.addEventListener("keydown", (event) => event?.stopPropagation?.());
+    return button;
+  }
+
   function toolCard(item) {
     const wrap = document.createElement("div");
-    wrap.className = "tool";
+    wrap.className = `tool${item.name === "bash" ? " tool-command" : ""}`;
     const head = document.createElement("div");
     head.className = "thead";
     // Whether the header is a control is decided per paint, once the card knows
     // what it holds: only a card with something behind it is a button.
     const name = document.createElement("span");
     name.className = "tname";
-    name.textContent = String(item.name || "tool");
+    const nameIcon = document.createElement("span");
+    nameIcon.className = "tname-icon";
+    nameIcon.setAttribute("aria-hidden", "true");
+    nameIcon.innerHTML = toolIcon(item.name);
+    const nameText = document.createElement("span");
+    nameText.textContent = toolDisplayName(String(item.name || "tool"));
+    name.append(nameIcon, nameText);
     const arg = document.createElement("span");
     arg.className = "targ";
     const args = parseArgs(item.args);
@@ -1679,7 +1775,22 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     }
     const state = document.createElement("span");
     state.className = "tstate";
-    head.append(name, arg, state);
+    const actions = document.createElement("span");
+    actions.className = "tool-actions";
+    const command = item.name === "bash" ? String(parseArgs(item.args).command || "") : "";
+    if (command) {
+      actions.appendChild(toolCopyButton(
+        t("ui.copyCommand", "Copy command"),
+        () => command,
+      ));
+    }
+    const outputCopy = toolCopyButton(
+      t("ui.copyOutput", "Copy output"),
+      () => String(item.output || ""),
+    );
+    outputCopy.hidden = true;
+    actions.appendChild(outputCopy);
+    head.append(name, arg, actions, state);
     const pre = document.createElement("pre");
     pre.className = "tbody";
     // The card's second fold handle, under the output it kept: the words that
@@ -1692,7 +1803,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     hint.tabIndex = 0;
     hint.setAttribute("aria-expanded", "false");
     wrap.append(head, pre, hint);
-    return { el: wrap, pre, hint, state, head, summary };
+    return { el: wrap, pre, hint, state, head, actions, outputCopy, summary };
   }
 
   function parseArgs(raw) {
@@ -1817,6 +1928,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     entry.el.classList.toggle("error", Boolean(!item.running && item.isError));
     entry.el.classList.toggle("unknown", Boolean(!item.running && item.unknown));
     entry.el.classList.toggle("expanded", Boolean(entry.expanded));
+    entry.outputCopy.hidden = Boolean(item.running) || !String(item.output || "");
     if (item.running) {
       setFold(entry, false);
       // The call's own start, carried in the item: a card rebuilt from a `state`
@@ -2522,19 +2634,20 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     caret.textContent = "\u203a";
     const mark = document.createElement("span");
     mark.className = "ta-icon";
-    mark.textContent = "\u2699";
     const label = document.createElement("span");
     label.className = "ta-label";
+    const kinds = document.createElement("span");
+    kinds.className = "ta-kinds";
     const detail = document.createElement("span");
     detail.className = "ta-detail";
     const state = document.createElement("span");
     state.className = "ta-state";
-    head.append(caret, mark, label, detail, state);
+    head.append(caret, mark, label, kinds, detail, state);
     const body = document.createElement("div");
     body.className = "tabody";
     wrap.append(head, body);
     transcript.appendChild(wrap);
-    const activity = { wrap, head, body, label, detail, state, tools: [], expanded: false };
+    const activity = { wrap, head, body, mark, label, kinds, detail, state, tools: [], expanded: false };
     head.addEventListener("click", () => toggleToolActivity(activity));
     head.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
@@ -2551,9 +2664,9 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     const current = running || activity.tools.at(-1);
     const unresolved = failed > 0 && !running && Boolean(activity.tools.at(-1)?.item.isError);
     const recovered = failed > 0 && !running && !unresolved;
-    let label = t("ui.toolCalls", "{count} tool calls", { count });
+    let summary = t("ui.toolCalls", "{count} tool calls", { count });
     if (failed) {
-      label += ` \u00b7 ${recovered
+      summary += ` \u00b7 ${recovered
         ? t("ui.recoveredToolCalls", "{count} recovered", { count: failed })
         : t("ui.failedToolCalls", "{count} failed", { count: failed })}`;
     }
@@ -2569,23 +2682,57 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
       activity.head.removeAttribute("role");
       activity.head.removeAttribute("aria-expanded");
     }
-    activity.label.textContent = label;
-    activity.detail.textContent = running
-      ? toolSummary(running.item.name, running.item.args).text
+    activity.label.textContent = t("ui.toolActivity", "Tool activity");
+    activity.label.hidden = count <= 1;
+    activity.mark.setAttribute("aria-hidden", "true");
+    activity.mark.innerHTML = current ? toolIcon(current.item.name) : TOOL_ICONS.tool;
+    activity.mark.hidden = count > 1;
+    activity.kinds.hidden = count <= 1;
+    activity.kinds.textContent = "";
+    if (count > 1) {
+      const grouped = new Map();
+      for (const tool of activity.tools) {
+        const action = toolActivityAction(tool.item.name);
+        grouped.set(action, (grouped.get(action) || 0) + 1);
+      }
+      for (const [action, amount] of grouped) {
+        const kind = document.createElement("span");
+        kind.className = "ta-kind";
+        const icon = document.createElement("span");
+        icon.className = "ta-kind-icon";
+        icon.setAttribute("aria-hidden", "true");
+        const tool = activity.tools.find((item) => toolActivityAction(item.item.name) === action);
+        icon.innerHTML = toolIcon(tool?.item.name || "");
+        const text = document.createElement("span");
+        text.textContent = action;
+        kind.append(icon, text);
+        if (amount > 1) {
+          const number = document.createElement("span");
+          number.className = "ta-kind-count";
+          number.textContent = String(amount);
+          kind.appendChild(number);
+        }
+        activity.kinds.appendChild(kind);
+      }
+    }
+    activity.detail.textContent = current
+      ? toolSummary(current.item.name, current.item.args).text
       : "";
     activity.state.innerHTML = running
       ? `<span class="spinner"></span>${t("ui.running", "Running")}`
-      : "";
+      : unresolved
+        ? t("ui.failed", "Failed")
+        : "";
     activity.head.setAttribute(
       "aria-label",
       count > 1
-        ? `${label}. ${activity.expanded ? "Collapse" : "Expand"} tool activity`
-        : label,
+        ? `${summary}. ${activity.expanded ? "Collapse" : "Expand"} tool activity`
+        : summary,
     );
     activity.head.title = count > 1
-      ? activity.expanded
-        ? "Hide tool activity"
-        : "Show tool activity"
+      ? `${summary} \u2014 ${activity.expanded
+        ? t("ui.hideToolActivity", "Hide tool activity")
+        : t("ui.showToolActivity", "Show tool activity")}`
       : "";
   }
 

@@ -388,7 +388,7 @@ pre,
 
 :is(.assistant .body, .user .body, .markdown-input) p,
 :is(.assistant .body, .user .body, .markdown-input) li {
-  line-height: 1.55;
+  line-height: 1.65;
   overflow-wrap: anywhere;
 }
 
@@ -2432,24 +2432,39 @@ button.dialog-row:focus-visible {
   border-radius: 10px;
   background: transparent;
   overflow: hidden;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
 }
 
 .tool-activity {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   width: 100%;
   min-width: 0;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  padding: 3px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.tool-activity:not(.single) {
+  background: color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 62%, transparent);
+}
+
+.tool-activity:not(.single):hover,
+.tool-activity:not(.single):focus-within {
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
 }
 
 .tool-activity .tahead {
   display: flex;
   align-items: center;
-  gap: 7px;
-  min-height: 30px;
-  padding: 4px 6px;
-  border-radius: 8px;
+  gap: 8px;
+  min-height: 36px;
+  padding: 5px 8px;
+  border-radius: 9px;
 }
 
 .tool-activity .tahead[role="button"] {
@@ -2481,7 +2496,8 @@ button.dialog-row:focus-visible {
 
 .tool-activity .ta-label {
   flex: none;
-  font-size: 0.9em;
+  color: var(--vscode-foreground);
+  font-size: 0.91em;
   font-weight: 600;
 }
 
@@ -2501,17 +2517,83 @@ button.dialog-row:focus-visible {
   white-space: nowrap;
 }
 
+.tool-activity .ta-kinds {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tool-activity .ta-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  border-radius: 999px;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.1));
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+.tool-activity .ta-kind-icon {
+  display: inline-flex;
+  color: var(--vscode-descriptionForeground);
+}
+
+.tool-activity .ta-kind-icon svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tool-activity .ta-kind-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+  font-size: 0.76em;
+  line-height: 1;
+}
+
 .tool-activity .ta-state {
   gap: 5px;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.76em;
+  color: var(--vscode-focusBorder, var(--vscode-charts-blue, #4a9eff));
+  font-size: 0.78em;
+  font-weight: 500;
+}
+
+.tool-activity.failed .ta-state {
+  color: var(--vscode-errorForeground, var(--vscode-charts-red, #f14c4c));
+}
+
+.tool-activity .ta-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .tool-activity .tabody {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding-left: 18px;
+  padding: 0 4px 3px 25px;
 }
 
 .tool-activity.single .tabody {
@@ -2525,14 +2607,21 @@ button.dialog-row:focus-visible {
   box-shadow: inset 0 0 0 1px var(--vscode-panel-border, rgba(128, 128, 128, 0.24));
 }
 
+.tool:not(.expanded):not(.running):not(.error):hover,
+.tool:not(.expanded):not(.running):not(.error):focus-within {
+  background: color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 70%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-panel-border, #555) 65%, transparent);
+}
+
 .tool.error {
   box-shadow: inset 0 0 0 1px var(--vscode-editorError-foreground, var(--vscode-charts-red, #f14c4c));
 }
 
 .thead {
-  min-height: 30px;
+  min-height: 34px;
   align-items: center;
-  padding: 5px 8px;
+  gap: 8px;
+  padding: 6px 9px;
   border-radius: 8px;
 }
 
@@ -2551,29 +2640,110 @@ button.dialog-row:focus-visible {
 }
 
 .tname {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--vscode-font-family);
-  font-size: 0.9em;
+  font-size: 0.92em;
   font-weight: 600;
 }
 
+.tname-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+}
+
+.tname-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .targ {
-  font-size: 0.82em;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.tool.tool-command .targ::before {
+  content: "$ ";
+  color: var(--vscode-descriptionForeground);
 }
 
 .tstate {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.1));
   font-size: 0.76em;
-  opacity: 0.72;
+  opacity: 0.86;
+}
+
+.tool-actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.tool-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  flex: none;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.78;
+}
+
+.tool-copy:hover,
+.tool-copy:focus-visible {
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+  color: var(--vscode-foreground);
+  opacity: 1;
+}
+
+.tool-copy:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.tool-copy.copied {
+  color: var(--vscode-charts-green, #89d185);
+  opacity: 1;
+}
+
+.tool-copy svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .tbody {
-  margin: 0 8px 7px;
-  padding: 6px 8px;
+  margin: 0 9px 8px;
+  padding: 8px 10px;
   max-height: 7em;
-  border-radius: 7px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  border-radius: 8px;
   background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
   color: var(--vscode-descriptionForeground);
-  font-size: 0.86em;
-  line-height: 1.4;
+  font-size: 0.87em;
+  line-height: 1.55;
 }
 
 .tool.expanded .tbody,

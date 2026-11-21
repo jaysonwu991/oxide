@@ -1259,6 +1259,15 @@ globalThis.window = {
   requestAnimationFrame: (callback) => setTimeout(callback, 0),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
 };
+const copiedTexts = [];
+Object.defineProperty(globalThis, "navigator", {
+  configurable: true,
+  value: {
+    clipboard: {
+      writeText: async (text) => copiedTexts.push(String(text)),
+    },
+  },
+});
 /// Hands a packet to the page the way the host's own `evaluate_javascript` does.
 const receive = (packet) => globalThis.window.__electrobun.receiveMessageFromHost(packet);
 globalThis.localStorage = globalThis.window.localStorage;
@@ -4729,7 +4738,9 @@ check(
   replayActivities.length === 2 &&
     replayActivities[0].querySelector(".tahead").hidden === false &&
     replayActivities[0].querySelector(".tabody").hidden === true &&
-    replayActivities[0].querySelector(".ta-label").textContent === "2 tool calls" &&
+    replayActivities[0].querySelector(".ta-label").textContent === "Tool activity" &&
+    replayActivities[0].querySelector(".tahead").getAttribute("aria-label").startsWith("2 tool calls") &&
+    replayActivities[0].querySelectorAll(".ta-kind").some((node) => node.children[1]?.textContent === "Read") &&
     String(replayActivities[1].className).includes("single"),
   String(replayActivities.length),
 );
@@ -4759,13 +4770,14 @@ check(
   "showed only the activity row while its calls run",
   activity.head.hidden === false &&
     activity.body.hidden === true &&
-    activity.label.textContent === "2 tool calls" &&
-    activity.label.hidden === true &&
+    activity.label.textContent === "Tool activity" &&
+    activity.label.hidden === false &&
     activity.mark.hidden === true &&
     activity.kinds.hidden === false &&
     activity.kinds.querySelectorAll(".ta-kind").map((node) => node.children[1]?.textContent).join(",") === "Read,Searched" &&
     activity.kinds.querySelectorAll(".ta-kind-icon").length === 2 &&
-    activity.status.innerHTML.includes("running") &&
+    activity.status.innerHTML.includes("Running") &&
+    activity.head.getAttribute("aria-label").startsWith("2 tool calls") &&
     activity.head.getAttribute("role") === "button" &&
     activity.head.getAttribute("aria-expanded") === "false",
   `${activity.label.textContent} / ${activity.kinds.textContent} / ${activity.status.textContent}`,
@@ -4782,17 +4794,18 @@ const activityFailure = app.startTool("edit", JSON.stringify({ path: "src/two.rs
 app.finishTool(activityFailure, "oldText matched twice", { isError: true });
 check(
   "counted a failed call in the activity row",
-  activity.label.textContent === "3 tool calls · 1 failed" &&
+  activity.head.getAttribute("aria-label").startsWith("3 tool calls · 1 failed") &&
+    activity.status.innerHTML === "Failed" &&
     String(activity.block.className).includes("failed"),
-  activity.label.textContent,
+  activity.head.getAttribute("aria-label"),
 );
 const activityRecovery = app.startTool("read", JSON.stringify({ path: "src/two.rs" }));
 app.finishTool(activityRecovery, "corrected", { elapsed: 3 });
 check(
   "quieted a failure once a later call recovered the activity",
-  activity.label.textContent === "4 tool calls · 1 recovered" &&
+  activity.head.getAttribute("aria-label").startsWith("4 tool calls · 1 recovered") &&
     !String(activity.block.className).includes("failed"),
-  `${activity.label.textContent} / ${activity.block.className}`,
+  `${activity.head.getAttribute("aria-label")} / ${activity.block.className}`,
 );
 activity.head.onclick();
 check(
@@ -4961,6 +4974,17 @@ check(
   "marked a command call with the terminal glyph",
   String(plainCard.head.children[1].children[0].innerHTML) === app.ICONS.terminal,
   String(plainCard.head.children[1].children[0].innerHTML),
+);
+copiedTexts.length = 0;
+await plainCard.actions.children[0].onclick({ stopPropagation() {} });
+await plainCard.actions.children[1].onclick({ stopPropagation() {} });
+check(
+  "copied the command exactly and the result from the tool row",
+  copiedTexts[0] === "cargo test" &&
+    copiedTexts[1] === "ok\nline two\nline three\nline four\n" &&
+    !plainCard.actions.children[1].hidden &&
+    plainCard.actions.children[0].title === "Copied",
+  JSON.stringify(copiedTexts),
 );
 for (const [name, mark] of [
   ["bash", "terminal"],
