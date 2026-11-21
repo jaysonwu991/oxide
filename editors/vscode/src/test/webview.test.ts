@@ -3991,13 +3991,18 @@ describe("webview tool card", () => {
     assert.equal(activities.length, 1);
     assert.equal(head.hidden, false);
     assert.equal(activity.querySelector(".tabody")!.hidden, true);
-    assert.equal(activity.querySelector(".ta-label")!.textContent, "3 tool calls · 1 failed");
+    assert.equal(activity.querySelector(".ta-label")!.textContent, "Tool activity");
+    assert.match(head.getAttribute("aria-label")!, /^3 tool calls · 1 failed/);
+    assert.deepEqual(
+      activity.querySelectorAll(".ta-kind").map((kind) => kind.children[1]?.textContent),
+      ["Read", "Searched", "Edited"],
+    );
     assert.equal(head.getAttribute("role"), "button");
     assert.equal(head.getAttribute("aria-expanded"), "false");
     assert.equal(activity.classList.contains("failed"), true);
 
     send({ k: "push", item: { id: 5, kind: "tool", name: "read", args: '{"path":"src/two.rs"}', output: "corrected", running: false } });
-    assert.equal(activity.querySelector(".ta-label")!.textContent, "4 tool calls · 1 recovered");
+    assert.match(head.getAttribute("aria-label")!, /^4 tool calls · 1 recovered/);
     assert.equal(activity.classList.contains("failed"), false);
 
     head.fire("click");
@@ -4029,7 +4034,8 @@ describe("webview tool card", () => {
     }));
     const activities = byId.get("transcript")!.querySelectorAll(".tool-activity");
     assert.equal(activities.length, 2);
-    assert.equal(activities[0].querySelector(".ta-label")!.textContent, "2 tool calls");
+    assert.equal(activities[0].querySelector(".ta-label")!.textContent, "Tool activity");
+    assert.match(activities[0].querySelector(".tahead")!.getAttribute("aria-label")!, /^2 tool calls/);
     assert.equal(activities[1].classList.contains("single"), true);
   });
 
@@ -4127,6 +4133,36 @@ describe("webview tool card", () => {
     assert.equal(card.querySelector(".thint")!.textContent, "Show 4 more lines");
     byId.get("transcript")!.fire("click", { target: card.querySelector(".thint")! });
     assert.equal(card.querySelector(".tbody")!.textContent, output);
+  });
+
+  it("copies the complete command and result from a tool row", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    const command = 'export PATH="$PATH:/opt/bin"; cargo test --all';
+    send({
+      k: "push",
+      item: {
+        id: 42,
+        kind: "tool",
+        name: "bash",
+        args: JSON.stringify({ command }),
+        output: "all tests passed\n",
+        running: false,
+        isError: false,
+      },
+    });
+    const card = find(byId.get("transcript")!, "tool")!;
+    const buttons = card.querySelectorAll(".tool-copy");
+    assert.equal(card.querySelector(".tname")!.children[1]!.textContent, "Command");
+    assert.equal(buttons.length, 2);
+    assert.equal(buttons[1].hidden, false);
+
+    buttons[0].fire("click", { stopPropagation() {} });
+    assert.deepEqual(last(posted), { k: "copyText", text: command });
+    buttons[1].fire("click", { stopPropagation() {} });
+    assert.deepEqual(last(posted), { k: "copyText", text: "all tests passed\n" });
+    assert.equal(buttons[1].classList.contains("copied"), true);
+    assert.match(shell, /case "copyText":\s*await vscode\.env\.clipboard\.writeText\(message\.text \?\? ""\);/);
   });
 
   it("shows the entire failed edit diagnostic even when its first lines wrap", () => {

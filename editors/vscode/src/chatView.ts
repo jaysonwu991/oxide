@@ -30,6 +30,8 @@ const ICONS = {
 
 interface WebviewMessage {
   k?: string;
+  /// Composer text, or the text a transcript copy control asks the host to put
+  /// on the editor clipboard.
   text?: string;
   mode?: "queue" | "steer";
   id?: number;
@@ -135,6 +137,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return;
       case "pickFiles":
         await this.controller.pickFiles();
+        return;
+      case "copyText":
+        await vscode.env.clipboard.writeText(message.text ?? "");
         return;
       case "removeChip":
         if (typeof message.id === "number") this.controller.removeChip(message.id);

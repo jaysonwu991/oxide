@@ -494,7 +494,9 @@ The regions, top to bottom:
   carrying its state on its left edge (accent, error). Adjacent calls collapse
   into one expandable activity row that names what happened — `Read`,
   `Searched`, `Ran`, `Edited` and their counts — alongside the failures it
-  recovered; an error followed by a successful call is named `recovered` and
+  recovered. The row keeps the latest call's subject visible, and every tool
+  row offers `Copy command` for the untruncated shell command and `Copy output`
+  for the complete result. An error followed by a successful call is named `recovered` and
   stays quiet, while an unresolved final failure colors the activity row red.
   Progress commentary between runs stays outside it, and a step boundary with
   no public reasoning adds no thought row. The reply's own text
