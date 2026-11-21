@@ -3810,7 +3810,9 @@ body.projects-open { grid-template-columns: var(--rail-width) minmax(0, 1fr); }
 .create-project-source-box.readonly .create-project-add-row, .create-project-source-box.readonly .folder-item-remove { display: none; }
 .create-project-source-box.readonly .folder-list { margin: 0; }
 .projects-header button.projects-title { display: inline-flex; align-items: center; gap: 2px; margin: 0 auto 0 0; padding: 2px 4px; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; }
-.projects-header button.projects-title svg { width: 14px; height: 14px; display: block; transition: transform 0.12s; }
+.projects-header button.projects-title svg { width: 14px; height: 14px; display: block; color: transparent; transition: color 0.12s, transform 0.12s; }
+.projects-header:hover button.projects-title svg,
+.projects-header:focus-within button.projects-title svg { color: var(--dim); }
 .projects-header button.projects-title[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .projects-header button.icon { margin-left: 0; }
 .projects-section.projects-collapsed .projects-tree .project-group { display: none; }

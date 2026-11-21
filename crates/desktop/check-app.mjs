@@ -3021,6 +3021,11 @@ check(
   /\.projects-actions \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none/.test(sheet) &&
     /\.projects-header:hover \.projects-actions,[\s\S]*?\.projects-header:focus-within \.projects-actions/.test(sheet),
 );
+check(
+  "revealed the Projects disclosure on hover or keyboard focus",
+  /\.projects-title svg \{[^}]*color:\s*transparent/.test(sheet) &&
+    /\.projects-header:hover button\.projects-title svg,[\s\S]*?\.projects-header:focus-within button\.projects-title svg \{\s*color:\s*var\(--dim\)/.test(sheet),
+);
 
 // A scrollbar is painted over the last pixels of the box it scrolls, so every
 // list that scrolls keeps that lane clear with its own right padding: a row ends
@@ -9086,6 +9091,12 @@ check(
     projectsMenu.children[0].outline().includes("Organize sidebar") &&
     projectsMenu.children[1].outline().includes("Sort chats by"),
   projectsMenu?.outline() || "no menu",
+);
+document.fire("click", { target: elementFor("projects-options") });
+check(
+  "kept the Projects menu open when its trigger's click reached the document",
+  Boolean(document.body.querySelector(".sidebar-menu-card")),
+  document.body.outline(),
 );
 projectsMenu.children[0].click();
 const organizeMenu = document.body.querySelector(".sidebar-submenu-card");
