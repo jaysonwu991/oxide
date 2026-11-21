@@ -128,9 +128,9 @@ struct CachedModels {
     reasoning: BTreeMap<String, ModelReasoning>,
 }
 
-/// Callbacks the client invokes while a turn streams, so the caller can show
-/// the work in progress: reasoning text as the model emits it, and transient
-/// failures that are about to be retried.
+/// Callbacks the client invokes while a turn streams: user-facing text,
+/// provider reasoning that the caller may retain without painting it as
+/// transcript content, and transient failures that are about to be retried.
 ///
 /// A retried attempt re-sends its output from the start, so `text` and
 /// `thinking` may repeat fragments a failed attempt already delivered;

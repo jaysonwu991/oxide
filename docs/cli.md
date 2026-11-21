@@ -884,12 +884,14 @@ extended-thinking `budget_tokens` (scaled by level and kept below `max_tokens`).
 Thinking blocks returned by Anthropic are replayed on later turns so multi-step
 tool use keeps its reasoning context.
 
-Some providers keep reasoning private and return no thinking text. Oxide also
-keeps every provider's reasoning out of the user-facing transcript, so the
-absence of a visible thinking block does not mean effort was disabled. If a gateway
-rejects an explicit effort setting, Oxide reports that rejection instead of
-silently removing the setting. Choose `auto` for the provider default or a
-backend that supports the selected effort.
+Some providers keep reasoning private and return no thinking text. Oxide retains
+any reasoning a provider does return on the stored assistant message for
+protocol replay, but keeps every provider's reasoning out of the user-facing
+transcript. The absence of a visible thinking block therefore says nothing
+about whether effort was disabled. If a gateway rejects an explicit effort
+setting, Oxide reports that rejection instead of silently removing the setting.
+Choose `auto` for the provider default or a backend that supports the selected
+effort.
 
 ### The model's own levels
 
@@ -930,8 +932,8 @@ and `high` send `high`, and `xhigh` and `max` send `max`, each with
 The effort selector is shown only when the provider's listing or the pi.dev
 catalog gives the model a nonempty set of levels. CLI, Desktop, and Extension
 hide it when neither source says the model reasons. Model names never supply
-fallback choices. Thinking text returned by the provider still appears in the
-transcript.
+fallback choices. Thinking text returned by the provider is retained for
+protocol replay and is not painted in the transcript.
 
 Set the starting level with `--reasoning auto|off|minimal|low|medium|high|xhigh|max`,
 the `OXIDE_REASONING` environment variable, or `"reasoning": "..."` in
@@ -943,28 +945,24 @@ choice to the shared `config.json`, so it survives restarting and is also used
 by Desktop and VS Code. Resuming a session keeps this shared choice. Explicit
 `--reasoning` and `OXIDE_REASONING` values override it for a run.
 
-### Reasoning in the transcript
+### Reasoning in the protocol, not the transcript
 
 Reasoning that a provider streams (`reasoning_content`, `reasoning`, or
 `reasoning_text` on OpenAI-compatible APIs, `thinking` blocks on Anthropic) is
-shown in place, before the answer it produced:
+stored on the assistant message but is not shown in the transcript. Useful
+progress instead arrives as the model's ordinary commentary, followed by tool
+cards and the final answer. This applies to summaries as well as raw
+chain-of-thought, since providers do not label the two consistently.
 
-```
-✦ Thought for 1.4s
-  The failing test reads a file that moved, so the fix belongs in the loader.
-```
-
-The block streams as `✦ Thinking` and picks up its duration once the model moves
-on. Press Ctrl+T to collapse reasoning to its label
-(`✦ Thought for 1.4s · Ctrl+T to expand`) and again to expand it;
-`hideThinkingBlock` in the global `settings.json` makes Oxide start collapsed,
-matching Pi. Reasoning is stored in the session as thinking blocks: Anthropic
-replays them on later turns, and a DeepSeek thinking-mode request puts them back
-as `reasoning_content` on every earlier assistant message — the API rejects a
-request that drops an earlier turn's reasoning, whether it made a tool call or
-gave the final answer, and `deepseek-flash` skips reasoning on quick tool calls
-and short answers, so that field is sent empty rather than left out; every other
-OpenAI-compatible request strips them. While a
+Anthropic thinking blocks are replayed on later turns, and a DeepSeek
+thinking-mode request puts them back as `reasoning_content` on every earlier
+assistant message — the API rejects a request that drops an earlier turn's
+reasoning, whether it made a tool call or gave the final answer, and
+`deepseek-flash` skips reasoning on quick tool calls and short answers, so that
+field is sent empty rather than left out; every other OpenAI-compatible request
+strips them. The TUI keeps Ctrl+T and `hideThinkingBlock` as compatibility for
+reasoning events supplied by an older stream; current runs do not add such a
+block. While a
 turn is in flight the status row names the phase (`thinking...`,
 `running tool...`, `compacting...`, `summarizing branch...`) and reports
 transient stream failures as `retrying (1/3) in 1s...` before the client backs
@@ -1237,7 +1235,8 @@ Available slots are `accent`, `user`, `assistant`, `success`, `tool`, `error`,
 `info`, `dim`, `border`, `tool_pending_bg`, `tool_success_bg`, `tool_error_bg`,
 `usage_bar_bg`, `usage_bar_fg`, `usage_bar_label`, `thinking_off`,
 `thinking_low`, `thinking_medium`, `thinking_high`, and `thinking_text`. The
-`thinking_text` slot colors the `✦ Thinking` label and the reasoning body.
+`thinking_text` colors the label and body of a compatibility reasoning block
+from an older stream.
 The transcript, dialogs,
 autocomplete, status row, input, and footer use these semantic roles.
 `tool_*_bg` fill the background behind a tool's header, body, and

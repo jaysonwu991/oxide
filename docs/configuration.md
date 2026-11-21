@@ -73,18 +73,20 @@ so the harness avoids adding a separate broad verification pass. The requested
 reasoning level is still honored. For adaptive Claude models, `off` explicitly
 sends `thinking.type = disabled`, since omitting the field can leave thinking on.
 Adaptive Anthropic Messages requests explicitly set `thinking.display = summarized`
-(including Claude through Portkey), so newer models return visible summaries
-instead of their default empty, signed thinking blocks. This controls visibility,
-not the requested effort.
+(including Claude through Portkey), so newer models return summaries instead
+of their default empty, signed thinking blocks. Oxide retains that reasoning
+with the assistant message for protocol replay but keeps it out of the
+transcript. The display setting controls what the provider returns, not the
+requested effort or what Oxide paints.
 
 Portkey models resolve capabilities through their upstream catalogs: Anthropic
 for Claude, OpenAI for GPT, and Z.AI for GLM. GPT uses Portkey's `/responses`
-endpoint with `reasoning.summary: auto`, streaming available summaries into the
-thinking panel and preserving encrypted reasoning across tool calls for the same
-model. Parallel tool calls replay as call/result pairs so gateways translating
-Responses into Chat Completions receive a completed tool turn before the next
-call. Explicit Off sends `reasoning.effort: none`; Auto leaves effort at the
-provider default. GLM uses its native `thinking.type` and effort mapping. A model
+endpoint with `reasoning.summary: auto`, preserving any available summary and
+encrypted reasoning on the assistant turn for protocol replay across tool calls
+for the same model. Parallel tool calls replay as call/result pairs so gateways
+translating Responses into Chat Completions receive a completed tool turn
+before the next call. Explicit Off sends `reasoning.effort: none`; Auto leaves
+effort at the provider default. GLM uses its native `thinking.type` and effort mapping. A model
 switch refreshes the advertised levels; summaries still depend on upstream access
 and whether the model emits one for that response.
 

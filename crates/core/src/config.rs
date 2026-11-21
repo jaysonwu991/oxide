@@ -1582,7 +1582,7 @@ fn default_true() -> bool {
 }
 
 /// Reads `hideThinkingBlock` from the global `settings.json`, Pi's key for
-/// whether reasoning blocks start collapsed.
+/// whether compatibility reasoning blocks start collapsed.
 pub fn load_hide_thinking_block() -> bool {
     let path = settings_path();
     let Ok(text) = std::fs::read_to_string(path) else {

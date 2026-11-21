@@ -828,7 +828,7 @@ pub struct App {
     pub steering: Steering,
     pub follow_ups: Steering,
     pub expand_tools: bool,
-    /// Whether reasoning blocks are shown in full or collapsed to a label.
+    /// Whether compatibility reasoning blocks are shown in full or collapsed.
     pub show_thinking_blocks: bool,
     pub lines: Vec<Line<'static>>,
     /// How each rendered line attaches to the one above it, so a copy knows
@@ -1297,7 +1297,7 @@ impl App {
         self.render_dirty_from = Some(0);
     }
 
-    /// Toggle whether reasoning blocks are expanded or collapsed to a label,
+    /// Toggle whether compatibility reasoning blocks are expanded or collapsed,
     /// like Pi's `app.thinking.toggle`.
     pub fn toggle_thinking_blocks(&mut self) {
         self.show_thinking_blocks = !self.show_thinking_blocks;
@@ -1307,8 +1307,8 @@ impl App {
         self.render_dirty_from = Some(0);
     }
 
-    /// Appends a streamed reasoning fragment to the block in progress, opening
-    /// a new one when the previous block already has a duration.
+    /// Appends a compatibility reasoning fragment to the block in progress,
+    /// opening a new one when the previous block already has a duration.
     pub fn push_thinking_delta(&mut self, delta: String) {
         if !matches!(
             self.items.last(),

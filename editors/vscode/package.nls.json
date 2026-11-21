@@ -31,7 +31,7 @@
   "extension.setting.excludeTools": "Comma-separated tool denylist passed with --exclude-tools.",
   "extension.setting.additionalArguments": "Extra arguments appended to every oxide invocation.",
   "extension.setting.followUpBehavior": "How follow-up messages behave while Oxide is running. Press Cmd/Ctrl+Shift+Enter to do the opposite for one message.",
-  "extension.setting.showThinking": "Show the model's reasoning in the transcript as a collapsible block.",
+  "extension.setting.showThinking": "Compatibility control for reasoning blocks streamed by an older CLI. Current runs keep provider reasoning out of the transcript.",
   "extension.setting.autoContext": "Track the file you are editing as a chip in the composer, sent with the next message as context. The chip is read when the message goes, so unsaved edits are included; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. Turn this off to attach only what you add by hand.",
   "extension.setting.askApprovals": "Ask before running a tool a permission rule gates (`--ask-approvals`). The question appears in the transcript and the turn waits for it; **Always allow** is remembered per project in the shared `approvals.json`, so the terminal and the desktop app honour it too. Turn this off to run gated tools without a prompt (`--no-ask-approvals`). Either way the flag is passed explicitly, so this setting — not `askApprovals` in the shared `settings.json` — decides for a run started from the panel.",
   "extension.setting.notifyOnFinish": "Show a notification when a run finishes while the chat view is hidden.",

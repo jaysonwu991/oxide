@@ -355,10 +355,11 @@ visible before its tool cards and answer. Commentary is rendered without a
 speaker label; only the final answer carries the Oxide label. The result the CLI
 stores as a message of its own is folded into the card it answers rather than
 shown beside it. Tool rows use the same friendly labels, activity chips and
-latest-call summary as the desktop transcript, and expose `Copy command` beside
-a shell call and `Copy output` once a result lands. The tail is counted in those
-stored messages, so reopening a long thread
-shows several of its turns rather than its last reply only. A replayed card
+latest-call summary as the desktop transcript. A shell call exposes `Copy
+command`, and a finished call with non-empty output exposes `Copy output` for
+the complete textual result. The tail is counted in those stored messages, so
+reopening a long thread shows several of its turns rather than its last reply
+only. A replayed card
 carries the change its own
 arguments describe — an `edit`'s replacements — rather than one
 built against the file as it stands, which is no longer the state the call found;
@@ -1023,12 +1024,14 @@ block is created only by a `thinking_delta`, so a turn that merely starts one
 never leaves an empty block in the transcript. When a stream drops and the CLI
 retries, `auto_retry_start` drops the item the failed attempt was streaming
 into, so the retry's fresh output does not extend the partial reply.
-Adjacent tool items share one expandable activity row with their call and
-recovered-failure counts and the current running action. A final failure stays
-red; an earlier failure followed by a successful call is named `recovered` and
-does not color the whole activity. A single tool keeps its normal card; ordinary
-assistant commentary ends the activity so later tools cannot absorb it. The same
-grouping is rebuilt when a stored thread is replayed.
+Adjacent tool items share one expandable `Tool activity` row with action chips
+and the latest call's subject. Its accessible name and tooltip carry the call
+count and recovered or unresolved failures, while `Running` or `Failed` stays
+visible in the row. A final failure stays red; an earlier failure followed by a
+successful call is named `recovered` and does not color the whole activity. A
+single tool keeps its normal card; ordinary assistant commentary ends the
+activity so later tools cannot absorb it. The same grouping is rebuilt when a
+stored thread is replayed.
 
 `context` carries the composer's pending context *and* attachments — the tracked
 file's chip travels in the same list, marked `auto`, so the view can paint it as

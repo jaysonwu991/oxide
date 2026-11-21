@@ -218,11 +218,12 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   a saved thread shows the same commentary, tool steps and answers without
   replaying internal reasoning. Codex-style commentary and final-answer phases
   are carried separately: commentary has no speaker label, while the final
-  answer does. Every tool-using turn opens with a short goal sentence before its
-  first call — including when loading a skill — and closes with a separate
-  summary. A candidate final summary is held back while required edits, tests,
-  review reads or external side effects remain unchecked; users see it only
-  after the verification result is in. A running
+  answer does. Multi-step tool work opens with a short, specific preamble when
+  it helps explain the approach or first check; quick lookups may go straight
+  to the call. The turn closes with a separate summary. A candidate final
+  summary is held back while required edits, tests, review reads or external
+  side effects remain unchecked; users see it only after the verification
+  result is in. A running
   `task` subagent reports its own
   progress — a live `Elapsed` on any tool panel, a
   `↳ <agent> · <activity> · <n> call(s)` line, and a status row naming the
