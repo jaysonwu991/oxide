@@ -837,9 +837,9 @@ function setStatus(text, level = "info") {
   paintStatus();
 }
 
-/// Writes text to the clipboard from the page. Electron exposes the modern
-/// clipboard API; the hidden field is the fallback for a protected webview that
-/// refuses it, and still uses the document's own copy command.
+/// Writes text to the clipboard from the page. The host webview's modern
+/// clipboard API is preferred; a protected webview that refuses it falls back
+/// to the hidden field and the document's own copy command.
 async function copyText(text) {
   const value = String(text ?? "");
   try {
@@ -5087,7 +5087,7 @@ function toolArgs(argsJson) {
 }
 
 /// The executable text a call carried. A shell card's command is copied exactly
-/// as the tool will run it, without the shortened summary the header displays.
+/// as it was passed to the tool, without the shortened summary the header shows.
 function toolCommand(name, argsJson) {
   if (name !== "bash") return "";
   return String(toolArgs(argsJson).command || "");

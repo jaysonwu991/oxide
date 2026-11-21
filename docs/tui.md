@@ -120,7 +120,7 @@ wherever the word was typed.
 | Up / Down | Move through the suggestion list, or recall input history when it is closed. |
 | Shift+Tab / Ctrl+R | Cycle the thinking level through the levels the active model advertises: `auto`, then those levels, wrapping around. A model whose provider listing and remembered pi.dev entry give it none has no selector, so the key does nothing. |
 | Ctrl+O | Expand or collapse tool-output details, and compaction/branch summaries. |
-| Ctrl+T | Show or hide reasoning (`✦ Thinking`) blocks. |
+| Ctrl+T | Show or hide compatibility reasoning (`✦ Thinking`) blocks supplied by an older stream. Current model reasoning stays out of the transcript. |
 | Ctrl+V | Paste the clipboard into the message box the way Pi does: the path a copied file names (one per line for a multi-select copy), the scratch path a clipboard image is written to, or plain clipboard text. The model reads the path, so a pasted image arrives through its file rather than as a pending attachment. A file this app may not read is written out as the pasteboard's own picture instead, so the inserted path still points at something the run can read; where the pasteboard carries none, macOS gates the Desktop, Documents and Downloads folders behind a per-app grant. |
 | PgUp / PgDn / mouse wheel | Scroll the transcript. |
 | Ctrl+A | Jump to the start of the message box (when it is not empty). |

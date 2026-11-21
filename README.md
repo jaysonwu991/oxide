@@ -202,10 +202,9 @@ not a Cargo workspace member) that drives the same `oxide` binary from a chat
 panel and from editor actions. It shells out to `oxide --mode rpc`, so it reads
 the same provider logins, `config.json`, `sessions/`, `trust.json`, `AGENTS.md`,
 agents, skills, plugins, and MCP servers as the terminal and both desktop
-front-ends:
-streaming Markdown replies with `✦ Thinking` blocks and tool cards, editor
-actions for the selection, the CLI's own session list, and `@path` references
-that attach a file's text or an image.
+front-ends: streaming Markdown replies, progress commentary and tool cards,
+editor actions for the selection, the CLI's own session list, and `@path`
+references that attach a file's text or an image.
 
 ```sh
 cd editors/vscode

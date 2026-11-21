@@ -6,10 +6,10 @@ VS Code. The extension runs your installed `oxide` binary as a subprocess
 `settings.json`, project trust, sessions, `AGENTS.md`, agents, skills, plugins
 and MCP servers as the terminal and the desktop app — nothing is reconfigured.
 
-- **Chat panel**: streaming replies rendered as Markdown, reasoning
-  blocks, tool cards with file diffs, token/cost usage, and a composer that
-  offers the same explicit **Queue** / **Steer** choice as the desktop while a
-  turn runs. It is contributed twice — an **Oxide**
+- **Chat panel**: streaming replies rendered as Markdown, progress commentary,
+  tool cards with file diffs, token/cost usage, and a composer that offers the
+  same explicit **Queue** / **Steer** choice as the desktop while a turn runs.
+  It is contributed twice — an **Oxide**
   icon in the activity bar and a **Chat** pane in the secondary side bar, the
   strip Copilot Chat lives in — and both panes show the same thread. Its icons
   are the desktop app's: the diamond split into a rust **Ox** half and a cyan
@@ -168,7 +168,7 @@ door, if you would rather use the picker there.
 | `oxide.tools` | *(empty)* | `--tools` allowlist, e.g. `read,grep,find,ls` for a read-only run. |
 | `oxide.excludeTools` | *(empty)* | `--exclude-tools` denylist. |
 | `oxide.additionalArguments` | `[]` | Extra argv appended to every invocation. |
-| `oxide.showThinking` | `true` | Show the reply's reasoning blocks. |
+| `oxide.showThinking` | `true` | Compatibility control for reasoning blocks streamed by an older CLI. Current runs keep provider reasoning out of the transcript. |
 | `oxide.autoContext` | `true` | Track the file you are editing as a chip in the composer, sent with the next message as context. The chip follows the file and the lines selected in it, and both are read when the message goes, so unsaved edits are included and a selection sends just the lines it names; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. |
 | `oxide.askApprovals` | `true` | `--ask-approvals`: ask in the transcript before running a tool a permission rule gates. **Always allow** is remembered per project in the shared `approvals.json`. Off passes `--no-ask-approvals`. Either flag is passed explicitly, so this setting decides for panel runs (the shared `settings.json` key still decides for the terminal). |
 | `oxide.followUpBehavior` | `queue` | How a message typed while a turn runs is delivered: `queue` waits for the current response and becomes the next turn, `steer` injects it before the model's next step. `Enter` and **Send** follow it, `Ctrl+Shift+Enter` (`⌘⇧Enter`) sends the other way once, and a queued message's own menu toggles it. |

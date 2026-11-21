@@ -31,7 +31,7 @@
   "extension.setting.excludeTools": "通过 --exclude-tools 传递的工具禁止列表，以逗号分隔。",
   "extension.setting.additionalArguments": "每次调用 oxide 时附加的额外参数。",
   "extension.setting.followUpBehavior": "Oxide 运行期间后续消息的送达方式。按 Cmd/Ctrl+Shift+Enter 可为单条消息使用另一种方式。",
-  "extension.setting.showThinking": "在对话记录中将模型思考过程显示为可折叠内容。",
+  "extension.setting.showThinking": "兼容旧版 CLI 流式发送的思考块。当前运行不会在对话记录中显示模型思考过程。",
   "extension.setting.autoContext": "在输入框中将正在编辑的文件作为标签追踪，并随下一条消息发送为上下文。发送时读取文件，因此包含未保存的更改。点击标签的 ✕ 或“清空”后，此文件将暂时不再自动附加，直到切换文件。关闭此设置后仅附加手动添加的内容。",
   "extension.setting.askApprovals": "运行受权限规则限制的工具前询问（--ask-approvals）。问题显示在对话记录中，回合会等待回答。“始终允许”按项目保存在共享 approvals.json 中，终端和桌面端也会遵循。关闭后无需询问即可运行受限工具（--no-ask-approvals）。此标志始终显式传递，因此由此设置决定面板启动的运行，而非共享 settings.json 中的 askApprovals。",
   "extension.setting.notifyOnFinish": "对话视图隐藏时，在运行结束后显示通知。",

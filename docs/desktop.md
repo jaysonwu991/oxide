@@ -492,15 +492,18 @@ The regions, top to bottom:
   the transcript rather than a box around it, so a long run reads as a log, and
   only the card still being written and the one that failed keep a surface, each
   carrying its state on its left edge (accent, error). Adjacent calls collapse
-  into one expandable activity row that names what happened — `Read`,
-  `Searched`, `Ran`, `Edited` and their counts — alongside the failures it
-  recovered. The row keeps the latest call's subject visible, and every tool
-  row offers `Copy command` for the untruncated shell command and `Copy output`
-  for the complete result. An error followed by a successful call is named `recovered` and
-  stays quiet, while an unresolved final failure colors the activity row red.
+  into one expandable `Tool activity` row with action chips such as `Read`,
+  `Searched`, `Ran` and `Edited`, carrying a count when an action repeats. The
+  row keeps the latest call's subject and `Running` or `Failed` state visible;
+  its accessible name and tooltip carry the call count plus recovered or
+  unresolved failures. A shell row offers `Copy command` for the exact command,
+  and a finished row with non-empty output offers `Copy output` for the complete
+  textual result. An error followed by a successful call is named `recovered`
+  and stays quiet, while an unresolved final failure colors the activity row
+  red.
   Progress commentary between runs stays outside it, and a step boundary with
-  no public reasoning adds no thought row. The reply's own text
-  above the dimmer output below it. They expand automatically for
+  no public reasoning adds no thought row. The reply's own text stays above the
+  dimmer output below it. They expand automatically for
   diffs and errors and can be clicked open/closed — a card wears the fold caret
   only once it has output behind it, so a card showing everything it printed
   stays the text it looks like instead of offering a fold that does nothing, and
