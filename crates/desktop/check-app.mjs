@@ -2476,6 +2476,14 @@ check(
   `rail: ${idsIn(railUtilities)} · composer: ${idsIn(composerLeft)}`,
 );
 check(
+  "pinned Settings to the rail footer without duplicate chat exits",
+  /\.rail-utilities \{[^}]*margin-top: auto;/.test(sheet) &&
+    /\.navigation-rail \{[^}]*padding: 12px 8px 0;/.test(sheet) &&
+    !shell.includes('id="customize-chat"') &&
+    !shell.includes('id="settings-close"') &&
+    !shell.includes("Back to chat"),
+);
+check(
   "kept update access above Settings in the rail utilities",
   ["theme", "language", "update"].every((id) => !railUtilities.includes(`id="${id}"`)) &&
     railUtilities.includes('id="rail-update"') &&
@@ -10352,6 +10360,13 @@ check(
 // leaves Enter to be a newline.
 app.state.prefs.send_key = "mod-enter";
 const prompt = elementFor("prompt");
+prompt.value = "first line";
+calls.length = 0;
+prompt.fire("keydown", { key: "Enter", shiftKey: true, preventDefault() {} });
+check(
+  "kept Shift+Enter as a newline rather than a send",
+  prompt.value === "first line\n" && !calls.some(([name]) => name === "send_prompt"),
+);
 prompt.value = "a message";
 calls.length = 0;
 prompt.fire("keydown", { key: "Enter", shiftKey: false, preventDefault() {} });
@@ -10492,6 +10507,8 @@ check("the rail opens the existing command menu", elementFor("command-menu").hid
 app.closeCommandMenu();
 elementFor("settings").onclick();
 check("the rail opens the existing settings sheet", elementFor("settings-modal").hidden === false);
+elementFor("settings").onclick();
+check("the rail's Settings control closes the sheet", elementFor("settings-modal").hidden === true);
 app.closeSettings();
 check("removed the duplicate rail search", !shell.includes('id="rail-search"'));
 elementFor("search-chats").focus();

@@ -27,11 +27,13 @@ use crate::update_notice;
 use anyhow::{Context, Result};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    EventStream, KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use futures::StreamExt;
 use oxide_core::updates::Component;
@@ -85,6 +87,13 @@ pub async fn run(
     let snapshots = Snapshots::open(&cwd).ok().map(Arc::new);
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
+    let keyboard_enhancement = matches!(supports_keyboard_enhancement(), Ok(true));
+    if keyboard_enhancement {
+        execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
     execute!(
         stdout,
         EnterAlternateScreen,
@@ -109,6 +118,9 @@ pub async fn run(
     )
     .await;
 
+    if keyboard_enhancement {
+        execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)?;
+    }
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
