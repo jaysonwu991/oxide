@@ -12962,7 +12962,10 @@ function init() {
   // The renderer cannot navigate to a remote page, so a link click opens the
   // platform browser through the app instead of reloading the app window.
   document.addEventListener("click", (event) => {
-    if (!event.target?.closest?.(".sidebar-floating-card,.row-more")) closeSidebarCards();
+    const target = event.target;
+    const inCard = target?.closest?.(".sidebar-floating-card");
+    const inTrigger = sidebarCardTrigger && (target === sidebarCardTrigger || sidebarCardTrigger.contains?.(target));
+    if (!inCard && !inTrigger) closeSidebarCards();
     const link = event.target?.closest?.("a[href]") || null;
     if (!link) return;
     event.preventDefault();
