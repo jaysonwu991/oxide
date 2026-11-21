@@ -174,6 +174,24 @@ function exerciseEditor() {
     check("editing inside formatting", editor.value === "**boXld**");
     editor.value = "hello";
     end();
+    const shiftEnter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+    editor.dispatchEvent(shiftEnter);
+    check(
+      "Shift+Enter inserts a newline from the key event",
+      shiftEnter.defaultPrevented && editor.value === "hello\n",
+    );
+    type("world");
+    check("Shift+Enter leaves the caret on the new line", editor.value === "hello\nworld");
+    editor.value = "hello";
+    end();
+    const paragraph = new InputEvent("beforeinput", { inputType: "insertParagraph", bubbles: true, cancelable: true });
+    editor.dispatchEvent(paragraph);
+    check(
+      "WebKit's paragraph input inserts the same newline",
+      paragraph.defaultPrevented && editor.value === "hello\n",
+    );
+    editor.value = "hello";
+    end();
     editor.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertLineBreak", bubbles: true, cancelable: true }));
     check("newline is visible before typing", editor.textContent === "hello\n" && editor.querySelector("[data-editor-padding]"));
     const selection = window.getSelection();

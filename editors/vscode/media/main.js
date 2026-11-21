@@ -404,6 +404,15 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     const prefix = item[2] == null ? item[1] : item[1].replace(/\d+/, String(Number(item[2]) + 1));
     return { start, end, text: `\n${prefix}${item[3] ? "[ ] " : ""}` };
   }
+  function insertLineBreak() {
+    const start = selectionOffset(false);
+    const end = selectionOffset(true);
+    const edit = lineBreakEdit(start, end);
+    source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
+    remember();
+    paint(edit.start + edit.text.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  }
   function indentList(direction) {
     const start = selectionOffset(false);
     const end = selectionOffset(true);
@@ -541,7 +550,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
       editor.dispatchEvent(new Event("input", { bubbles: true }));
       return;
     }
-    if (!["insertText", "insertLineBreak"].includes(event.inputType)) return;
+    if (!["insertText", "insertLineBreak", "insertParagraph"].includes(event.inputType)) return;
     if (event.inputType === "insertText" && event.data === " ") leaveInlineCode(1);
     if (event.inputType === "insertText" && event.data === " ") {
       const start = selectionOffset(false);
@@ -560,11 +569,13 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     // Applying text to the Markdown model avoids inheriting a code/bold span
     // when the caret is immediately after its closing delimiter.
     event.preventDefault();
+    if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
+      insertLineBreak();
+      return;
+    }
     const start = selectionOffset(false);
     const end = selectionOffset(true);
-    const edit = event.inputType === "insertLineBreak"
-      ? lineBreakEdit(start, end)
-      : { start, end, text: event.data || "" };
+    const edit = { start, end, text: event.data || "" };
     source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
     remember();
     paint(edit.start + edit.text.length);
@@ -575,6 +586,11 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   editor.addEventListener("input", commit);
   editor.addEventListener("keydown", (event) => {
     if (event.isComposing || composing) return;
+    if (event.key === "Enter" && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      insertLineBreak();
+      return;
+    }
     if (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.altKey && handlesTab()) {
       const direction = event.shiftKey ? -1 : 1;
       if (indentList(direction) || adjustHeading(direction)) {

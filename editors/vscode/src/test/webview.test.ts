@@ -222,6 +222,11 @@ class StubElement {
     this.listeners.set(kind, list);
   }
 
+  dispatchEvent(event: { type: string; defaultPrevented?: boolean }): boolean {
+    for (const handler of this.listeners.get(event.type) ?? []) handler(event);
+    return !event.defaultPrevented;
+  }
+
   setAttribute(name: string, value: string): void {
     this.attributes[name] = value;
   }
@@ -506,6 +511,9 @@ function loadRenderer(options: { image?: StubImage; now?: () => number; width?: 
     clearInterval: () => {},
     Date: { now: options.now ?? Date.now },
     Element: StubElement,
+    Event: class {
+      constructor(readonly type: string) {}
+    },
     Image: function Image() {
       return image;
     },
@@ -1970,7 +1978,7 @@ describe("webview composer", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage());
     const input = byId.get("input")!;
-    input.value = "first\nsecond";
+    input.value = "first";
     input.fire("input");
 
     let prevented = false;
@@ -1978,12 +1986,15 @@ describe("webview composer", () => {
       prevented = true;
     };
     input.fire("keydown", { key: "Enter", shiftKey: true, preventDefault });
-    assert.equal(prevented, false, "Shift+Enter is a newline");
+    assert.equal(prevented, true, "the composer owns Shift+Enter");
+    assert.equal(input.value, "first\n", "Shift+Enter inserts the newline");
     assert.equal(
       posted.some((message) => message.k === "send"),
       false,
     );
 
+    input.value = "first\nsecond";
+    input.fire("input");
     input.fire("keydown", { key: "Enter", shiftKey: false, preventDefault });
     assert.equal(prevented, true);
     assert.equal(last(posted).k, "send");

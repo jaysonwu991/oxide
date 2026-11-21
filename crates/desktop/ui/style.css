@@ -2871,8 +2871,6 @@ body.settings-open .topbar { grid-column: 1 / -1; }
 .settings-head { display: flex; align-items: center; gap: 10px; padding: 0 12px 24px; }
 .settings-head h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.3px; }
 .settings-nav { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
-.settings-back { margin-top: auto; text-align: left; color: var(--dim); display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
-.settings-back:hover { background: var(--panel-2); color: var(--text); }
 
 .settings-tab {
   text-align: left;
@@ -3431,7 +3429,7 @@ body.customizing > .main { display: none; }
 .settings-page-heading h1 { font-size: 26px; font-weight: 600; letter-spacing: -.7px; margin: 0 0 8px; }
 .settings-page-heading p { margin: 0; color: var(--dim); font-size: 13px; line-height: 1.6; }
 .settings-tab { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 10px 12px; min-height: 40px; }
-.settings-tab svg, .settings-back svg { width: 18px; height: 18px; flex: none; }
+.settings-tab svg { width: 18px; height: 18px; flex: none; }
 .settings-theme-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; width: 100%; }
 .settings-theme-list .theme-option { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; min-width: 0; background: var(--panel); }
 .settings-theme-list .theme-option.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -3447,7 +3445,7 @@ body.customizing > .main { display: none; }
 .settings-switch input:checked { background: var(--accent); border-color: var(--accent); }
 .settings-switch input:checked::after { transform: translateX(14px); background: var(--bg); }
 .settings-switch input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.customize-sidebar nav button, .customize-sidebar > button, .customize-installed button, .customize-heading button, .settings-field > button { display: flex; align-items: center; gap: 10px; }
+.customize-sidebar nav button, .customize-installed button, .customize-heading button, .settings-field > button { display: flex; align-items: center; gap: 10px; }
 .customize-sidebar svg, .customize-heading button svg, .settings-field > button svg, .plugin-actions svg, .marketplace-controls svg { width: 18px; height: 18px; flex: none; }
 .plugin-glyph svg { width: 22px; height: 22px; }
 .plugin-actions { flex-direction: row; gap: 2px; }
@@ -3574,7 +3572,7 @@ textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 75%
 
 .navigation-rail {
   gap: 5px;
-  padding: 12px 8px;
+  padding: 12px 8px 0;
   background: var(--sidebar);
   border-right-color: var(--border);
 }
@@ -3730,13 +3728,6 @@ body.settings-open .topbar-content { visibility: hidden; border-left-color: tran
 .settings-tab-action { padding-right: 9px; }
 .settings-tab-arrow { margin-left: auto; color: var(--faint); font-size: 18px; line-height: 1; }
 .settings-search-empty { margin: 8px 10px; color: var(--faint); font-size: 12.5px; line-height: 1.5; }
-.settings-back {
-  min-height: 36px;
-  margin-top: auto;
-  padding: 8px 10px;
-  border-radius: 9px;
-  font-size: 13.5px;
-}
 .settings-pages { padding: 62px clamp(38px, 6vw, 110px) 80px; }
 .settings-page { max-width: 820px; }
 .settings-page-heading { margin-bottom: 34px; }

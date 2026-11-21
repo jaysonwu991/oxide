@@ -3972,6 +3972,15 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     const prefix = item[2] == null ? item[1] : item[1].replace(/\d+/, String(Number(item[2]) + 1));
     return { start, end, text: `\n${prefix}${item[3] ? "[ ] " : ""}` };
   }
+  function insertLineBreak() {
+    const start = selectionOffset(false);
+    const end = selectionOffset(true);
+    const edit = lineBreakEdit(start, end);
+    source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
+    remember();
+    paint(edit.start + edit.text.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  }
   function indentList(direction) {
     const start = selectionOffset(false);
     const end = selectionOffset(true);
@@ -4109,7 +4118,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
       editor.dispatchEvent(new Event("input", { bubbles: true }));
       return;
     }
-    if (!["insertText", "insertLineBreak"].includes(event.inputType)) return;
+    if (!["insertText", "insertLineBreak", "insertParagraph"].includes(event.inputType)) return;
     if (event.inputType === "insertText" && event.data === " ") leaveInlineCode(1);
     if (event.inputType === "insertText" && event.data === " ") {
       const start = selectionOffset(false);
@@ -4128,11 +4137,13 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     // Applying text to the Markdown model avoids inheriting a code/bold span
     // when the caret is immediately after its closing delimiter.
     event.preventDefault();
+    if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
+      insertLineBreak();
+      return;
+    }
     const start = selectionOffset(false);
     const end = selectionOffset(true);
-    const edit = event.inputType === "insertLineBreak"
-      ? lineBreakEdit(start, end)
-      : { start, end, text: event.data || "" };
+    const edit = { start, end, text: event.data || "" };
     source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
     remember();
     paint(edit.start + edit.text.length);
@@ -4143,6 +4154,11 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   editor.addEventListener("input", commit);
   editor.addEventListener("keydown", (event) => {
     if (event.isComposing || composing) return;
+    if (event.key === "Enter" && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      insertLineBreak();
+      return;
+    }
     if (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.altKey && handlesTab()) {
       const direction = event.shiftKey ? -1 : 1;
       if (indentList(direction) || adjustHeading(direction)) {
@@ -9541,7 +9557,8 @@ function paletteKey(event) {
     renderPalette();
     return true;
   }
-  if ((event.key === "Enter" || event.key === "Tab") && matches.length) {
+  if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+    if (!matches.length) return false;
     runPaletteEntry(matches[state.paletteIndex] || matches[0]);
     return true;
   }
@@ -12575,12 +12592,12 @@ function init() {
   }
   for (const [id, icon] of Object.entries({
     "customize-plugins": "puzzle", "customize-skills": "book", "customize-mcps": "globe",
-    "customize-chat": "back", "plugins-refresh": "refresh", "plugins-add": "plus",
-    "skills-refresh": "refresh", "settings-close": "back",
+    "plugins-refresh": "refresh", "plugins-add": "plus",
+    "skills-refresh": "refresh",
   })) {
     const control = el(id);
     const label = document.createElement("span");
-    label.textContent = id === "settings-close" ? "Back to chat" : control.textContent;
+    label.textContent = control.textContent;
     control.innerHTML = ICONS[icon];
     if (id !== "plugins-refresh") control.appendChild(label);
   }
@@ -12594,7 +12611,6 @@ function init() {
   el("rail-update").onclick = openUpdateNotice;
   el("rail-customize").onclick = () => openCustomize();
   for (const view of ["plugins", "skills", "mcps"]) el(`customize-${view}`).onclick = () => openCustomize(view);
-  el("customize-chat").onclick = () => { closeCustomize(); el("rail-home").focus(); };
   el("plugin-search").oninput = renderPlugins;
   el("plugins-refresh").onclick = loadPluginCatalog;
   el("skills-refresh").onclick = () => openCustomize("skills");
@@ -12726,7 +12742,6 @@ function init() {
   el("help").onclick = toggleHelp;
   el("connect").onclick = openConnect;
   el("settings").onclick = () => (el("settings-modal").hidden ? openSettings() : closeSettings());
-  el("settings-close").onclick = closeSettings;
   el("settings-search").oninput = () => filterSettingsSections(el("settings-search").value);
   for (const [section, parts] of Object.entries(SETTINGS_SECTIONS)) {
     el(parts.tab).onclick = () => showSettingsSection(section);
@@ -13191,6 +13206,7 @@ function init() {
   el("prediction").onclick = () => acceptPrediction();
   el("prompt").addEventListener("keydown", (event) => {
     if (event.isComposing) return;
+    if (event.defaultPrevented) return;
     if (atKey(event)) {
       event.preventDefault();
       return;
