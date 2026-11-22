@@ -201,12 +201,6 @@ pub fn install(app: &AppHandle, state: &NativeMenu) -> Result<(), String> {
         &state.text("settings.actionTerminal", "Terminal"),
         Some(&state.accelerator("terminal", "Ctrl+`")),
     )?;
-    let pull_requests = item(
-        app,
-        "open-pulls",
-        &state.text("menu.pulls", "Pull requests…"),
-        None,
-    )?;
     let sidebar = item(
         app,
         "toggle-sidebar",
@@ -243,7 +237,6 @@ pub fn install(app: &AppHandle, state: &NativeMenu) -> Result<(), String> {
             &separator(app)?,
             &panel,
             &terminal,
-            &pull_requests,
             &separator(app)?,
             &sidebar,
             &back,
@@ -309,7 +302,6 @@ pub fn handle(app: &AppHandle, event: &MenuEvent) {
         "zoom-reset" => ("zoom", json!({ "action": "reset" })),
         "toggle-panel" => ("toggle-panel", json!({})),
         "open-terminal" => ("open-terminal", json!({})),
-        "open-pulls" => ("open-pulls", json!({})),
         "toggle-sidebar" => ("toggle-sidebar", json!({})),
         "history-back" => ("history", json!({ "action": "back" })),
         "history-forward" => ("history", json!({ "action": "forward" })),

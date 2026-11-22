@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 /// scale rather than a point size: 1.0 is the window as it was drawn.
 pub const MIN_FONT_SCALE: f64 = 0.7;
 pub const MAX_FONT_SCALE: f64 = 1.6;
+pub const MIN_TERMINAL_FONT_SIZE: f64 = 8.0;
+pub const MAX_TERMINAL_FONT_SIZE: f64 = 28.0;
 
 /// What a press of the send key does: `enter` sends and Shift+Enter is a
 /// newline, or `mod-enter` sends and Enter is a newline.
@@ -45,6 +47,10 @@ pub struct Prefs {
     pub follow_up: String,
     #[serde(default = "default_font_scale")]
     pub font_scale: f64,
+    #[serde(default = "default_terminal_font")]
+    pub terminal_font: String,
+    #[serde(default = "default_terminal_font_size")]
+    pub terminal_font_size: f64,
     #[serde(default = "default_true")]
     pub sidebar_visible: bool,
     /// Whether the composer offers the next message the reader is likely to send.
@@ -81,6 +87,14 @@ fn default_font_scale() -> f64 {
     1.0
 }
 
+fn default_terminal_font() -> String {
+    "Oxide Terminal".to_string()
+}
+
+fn default_terminal_font_size() -> f64 {
+    12.5
+}
+
 fn default_notifications() -> String {
     "background".to_string()
 }
@@ -95,6 +109,8 @@ impl Default for Prefs {
             send_key: default_send_key(),
             follow_up: default_follow_up(),
             font_scale: default_font_scale(),
+            terminal_font: default_terminal_font(),
+            terminal_font_size: default_terminal_font_size(),
             sidebar_visible: true,
             predictions: false,
             notifications: default_notifications(),
@@ -163,6 +179,12 @@ impl Prefs {
                 "send_key" => self.send_key = choice(key, value, &SEND_KEYS)?,
                 "follow_up" => self.follow_up = choice(key, value, &FOLLOW_UP_BEHAVIORS)?,
                 "font_scale" => self.font_scale = scale(value)?,
+                "terminal_font" => {
+                    self.terminal_font = terminal_font(value)?;
+                }
+                "terminal_font_size" => {
+                    self.terminal_font_size = terminal_font_size(value)?;
+                }
                 "sidebar_visible" => self.sidebar_visible = boolean(key, value)?,
                 "predictions" => self.predictions = boolean(key, value)?,
                 "notifications" => self.notifications = choice(key, value, &NOTIFICATION_MODES)?,
@@ -217,6 +239,16 @@ impl Prefs {
             self.font_scale = default_font_scale();
         }
         self.font_scale = self.font_scale.clamp(MIN_FONT_SCALE, MAX_FONT_SCALE);
+        self.terminal_font = self.terminal_font.trim().to_string();
+        if self.terminal_font.is_empty() {
+            self.terminal_font = default_terminal_font();
+        }
+        if !self.terminal_font_size.is_finite() {
+            self.terminal_font_size = default_terminal_font_size();
+        }
+        self.terminal_font_size = self
+            .terminal_font_size
+            .clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE);
         self.shortcuts
             .retain(|action, chord| !action.trim().is_empty() && !chord.trim().is_empty());
     }
@@ -242,6 +274,27 @@ fn scale(value: &Value) -> Result<f64> {
     Ok(number.clamp(MIN_FONT_SCALE, MAX_FONT_SCALE))
 }
 
+fn terminal_font(value: &Value) -> Result<String> {
+    let Some(font) = value.as_str() else {
+        anyhow::bail!("invalid `terminal_font`: expected a font family");
+    };
+    let font = font.trim();
+    if font.is_empty() || font.len() > 200 {
+        anyhow::bail!("invalid `terminal_font`: expected a font family");
+    }
+    Ok(font.to_string())
+}
+
+fn terminal_font_size(value: &Value) -> Result<f64> {
+    let Some(size) = value.as_f64() else {
+        anyhow::bail!("invalid `terminal_font_size`: expected a number");
+    };
+    if !size.is_finite() {
+        anyhow::bail!("invalid `terminal_font_size`: expected a number");
+    }
+    Ok(size.clamp(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE))
+}
+
 fn boolean(key: &str, value: &Value) -> Result<bool> {
     value
         .as_bool()
@@ -255,6 +308,8 @@ pub fn describe(prefs: &Prefs) -> Value {
         "send_key": prefs.send_key,
         "follow_up": prefs.follow_up,
         "font_scale": prefs.font_scale,
+        "terminal_font": prefs.terminal_font,
+        "terminal_font_size": prefs.terminal_font_size,
         "sidebar_visible": prefs.sidebar_visible,
         "predictions": prefs.predictions,
         "notifications": prefs.notifications,
@@ -289,6 +344,8 @@ mod tests {
         assert_eq!(prefs.send_key, "enter");
         assert_eq!(prefs.follow_up, "queue");
         assert_eq!(prefs.font_scale, 1.0);
+        assert_eq!(prefs.terminal_font, "Oxide Terminal");
+        assert_eq!(prefs.terminal_font_size, 12.5);
         assert!(prefs.sidebar_visible);
         assert!(prefs.shortcuts.is_empty());
     }
@@ -303,6 +360,8 @@ mod tests {
                     "send_key": "mod-enter",
                     "follow_up": "steer",
                     "font_scale": 1.25,
+                    "terminal_font": "Berkeley Mono",
+                    "terminal_font_size": 14.0,
                     "sidebar_visible": false,
                     "shortcuts": { "command-menu": "mod+shift+k" },
                 })
@@ -313,6 +372,8 @@ mod tests {
         prefs.save_to(&path).unwrap();
         assert_eq!(Prefs::load_from(&path).unwrap(), prefs);
         assert_eq!(prefs.shortcuts["command-menu"], "mod+shift+k");
+        assert_eq!(prefs.terminal_font, "Berkeley Mono");
+        assert_eq!(prefs.terminal_font_size, 14.0);
     }
 
     #[test]
@@ -326,6 +387,14 @@ mod tests {
             .apply(json!({ "font_scale": 0.1 }).as_object().unwrap())
             .unwrap();
         assert_eq!(prefs.font_scale, MIN_FONT_SCALE);
+        prefs
+            .apply(json!({ "terminal_font_size": 40.0 }).as_object().unwrap())
+            .unwrap();
+        assert_eq!(prefs.terminal_font_size, MAX_TERMINAL_FONT_SIZE);
+        prefs
+            .apply(json!({ "terminal_font_size": 2.0 }).as_object().unwrap())
+            .unwrap();
+        assert_eq!(prefs.terminal_font_size, MIN_TERMINAL_FONT_SIZE);
     }
 
     #[test]
@@ -344,6 +413,10 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("sidebar_visible"));
+        assert!(refused(json!({ "terminal_font": "   " }))
+            .unwrap_err()
+            .to_string()
+            .contains("terminal_font"));
         assert!(refused(json!({ "shortcuts": [1, 2] }))
             .unwrap_err()
             .to_string()
