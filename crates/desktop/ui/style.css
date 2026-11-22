@@ -3399,6 +3399,8 @@ body.terminal-maximized .bottom-panel.terminal-mode { flex: 1 1 auto; min-height
   font-variant-ligatures: none;
   font-feature-settings: "liga" 0, "calt" 0;
   outline: none;
+  /* The terminal draws its own cursor cell. */
+  caret-color: transparent;
   cursor: text;
   user-select: text;
   -webkit-user-select: text;

@@ -22,6 +22,11 @@ and [vscode.md](vscode.md).
 - VS Code extension (`editors/vscode`) that drives the same `oxide` binary from
   a chat panel in the activity bar, with editor actions for the selection and
   the CLI's own sessions and configuration (see [vscode.md](vscode.md)).
+- Native editing in rendered surfaces: the desktop terminal and both Markdown
+  composers handle Edit-menu copy, cut, paste, undo and redo directly. Copying
+  from a composer yields Markdown source, terminal copy is selection-only, and
+  a selection that crosses between the terminal and transcript remains the
+  window's copy.
 - Interface language: British English (the default) or Simplified Chinese, chosen
   once for the terminal, both desktop front-ends and the panel through the shared
   `language` setting, `--language`, `OXIDE_LANG`, `oxide language` or

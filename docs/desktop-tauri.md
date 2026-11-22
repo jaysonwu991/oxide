@@ -13,6 +13,12 @@ the product UI. This makes a layout, transcript, composer or workflow change
 visible in both hosts unless a Tauri-specific check catches a host integration
 gap first.
 
+The shared page owns native editing. Tauri's Edit-menu roles reach the focused
+webview editing host, so the Markdown composer maps copy, cut, undo and redo to
+its source model, while the terminal exposes itself as an editing host but
+routes paste to the PTY, copies only terminal selections and refuses native DOM
+edits.
+
 ```mermaid
 graph TD
     Tauri["Tauri window<br/>crates/desktop-tauri"] --> Page["Shared page<br/>crates/desktop/ui"]

@@ -339,7 +339,8 @@ requests unanswerable.
 
 The menu bar is the window's own: `installMenu` builds it with
 `Menu.buildFromTemplate` from the platform's own roles (`about`, `quit`,
-`hideOthers`, `undo`/`copy`/`paste`, `minimize`/`zoom`/`close`) plus the items
+`hideOthers`, `undo`/`redo`/`cut`/`copy`/`paste`/`selectAll`,
+`minimize`/`zoom`/`close`) plus the items
 the app answers itself: **Check for Updates…**, which sends the page the
 `check-updates` event and so ends at the same dialog the rail update button
 opens, and the **File** menu's **New Tab** (`⌘T`/`Ctrl+T`) and **Close Tab**
@@ -348,6 +349,10 @@ inventing a second tab model. macOS is the only platform that gets one;
 everywhere else the window is the app, as it was before. `check-shell.mjs` reads
 the menu back out of `electron/main.ts` and holds its shape: the roles, those
 clicks, and the update check sitting after **About**.
+The Edit roles operate on the focused native editing host. Plain inputs use the
+webview's editor directly; the Markdown composer maps copy, cut, undo and redo
+back to its Markdown model, and the terminal is an editing host whose native
+edits are refused in favor of its PTY copy and paste handlers.
 
 The window restores to 1200×800, opens filling the screen — the way Codex's own
 window does, maximized rather than kiosk-fullscreen so the menu bar and traffic
@@ -1426,7 +1431,12 @@ in Terminal. Its PATH is also enriched for the shorter environment a GUI launch
 inherits, and it receives `TERM=xterm-256color`, `COLORTERM=truecolor`, and the
 `TERM_PROGRAM` facts prompt tools use. Selection copies with ⌘C / Ctrl+Shift+C
 and the clipboard pastes with ⌘V / Ctrl+V (Ctrl+Shift+V also works everywhere);
-bracketed paste is honored when the shell enables it.
+bracketed paste is honored when the shell enables it, and a non-text paste asks
+the host clipboard for the copied path or picture. The surface is an editing host
+so the native Edit menu routes those chords to its copy and paste events; its
+`beforeinput` and cut are refused, so the shell's output is never changed by the
+webview's editor. Copy is selection-only, and a selection crossing from the
+terminal into the transcript is left to the window's own copy.
 The cursor is painted as the shell's own blinking block, with a hollow block
 when that pane is not focused. The bundled **Oxide Terminal** family is
 JetBrains Mono NL Nerd Font Mono, so Powerline separators and common prompt
@@ -1742,6 +1752,10 @@ references: Backspace, Delete, word deletion or a selected-range deletion that
 intersects a reference removes the entire reference. Quoted paths, spaces and
 line suffixes remain part of the reference, and Undo restores it in one step.
 Code spans and surrounding prose keep normal editing behavior.
+The native Edit menu's copy, cut, undo and redo commands go through the same
+Markdown source and history: copying a rendered heading or emphasis yields its
+Markdown, and a native undo is not a second browser history layered over the
+composer's own.
 
 Bare website addresses such as `github.com`, `www.example.org` and
 `docs.example.dev/setup` are linked in the composer with HTTPS destinations.

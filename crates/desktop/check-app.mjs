@@ -182,9 +182,11 @@ class StubElement {
   setAttribute(name, value) {
     (this.attributes ||= {})[name] = String(value);
     if (name === "type") this.type = String(value);
+    if (name === "contenteditable") this.isContentEditable = String(value) !== "false";
   }
   removeAttribute(name) {
     if (this.attributes) delete this.attributes[name];
+    if (name === "contenteditable" && this.id !== "prompt") this.isContentEditable = false;
   }
   getAttribute(name) {
     return (this.attributes || {})[name] ?? null;
@@ -11147,6 +11149,88 @@ check(
 // keeping a buffer of its own.
 terminalWrites.length = 0;
 const sendKey = (key, extra = {}) => app.terminalKey({ key, preventDefault() {}, ...extra });
+// The native Edit menu reaches the focused editing host, not `terminalKey`.
+// Exercise paste, copy, cut and input from that path as the host would.
+const terminalSurface = app.focusedTerminalPane().surface;
+check(
+  "made the terminal an editing host for native copy and paste",
+  terminalSurface.getAttribute("contenteditable") === "true" &&
+    terminalSurface.getAttribute("autocapitalize") === "off" &&
+    terminalSurface.getAttribute("autocorrect") === "off" &&
+    terminalSurface.spellcheck === false,
+  terminalSurface.outline(),
+);
+let nativePastePrevented = false;
+terminalSurface.dispatchEvent({
+  type: "paste",
+  clipboardData: { getData: () => "echo native paste" },
+  preventDefault() {
+    nativePastePrevented = true;
+  },
+});
+check(
+  "sent a native Edit-menu paste to the shell",
+  nativePastePrevented && terminalWrites.join("|") === "echo native paste",
+  JSON.stringify(terminalWrites),
+);
+let emptyCopyPrevented = false;
+terminalSurface.dispatchEvent({
+  type: "copy",
+  preventDefault() {
+    emptyCopyPrevented = true;
+  },
+});
+check("kept a native copy from taking the whole terminal", emptyCopyPrevented);
+const originalMixedSelection = globalThis.window.getSelection;
+globalThis.window.getSelection = () => ({
+  isCollapsed: false,
+  rangeCount: 1,
+  getRangeAt: () => ({
+    startContainer: app.focusedTerminalPane().surface,
+    endContainer: elementFor("transcript"),
+  }),
+  toString: () => "half a shell and half a chat",
+});
+let mixedCopyPrevented = false;
+terminalSurface.dispatchEvent({
+  type: "copy",
+  preventDefault() {
+    mixedCopyPrevented = true;
+  },
+});
+check("left a copy that crossed into the conversation to the window", !mixedCopyPrevented);
+check("left the mixed-selection copy chord to the window", sendKey("c", { metaKey: true }) === false);
+globalThis.window.getSelection = originalMixedSelection;
+let terminalCutPrevented = false;
+terminalSurface.dispatchEvent({
+  type: "cut",
+  preventDefault() {
+    terminalCutPrevented = true;
+  },
+});
+check("kept a native cut from editing terminal output", terminalCutPrevented);
+let nativeInputPrevented = false;
+terminalSurface.dispatchEvent({
+  type: "beforeinput",
+  preventDefault() {
+    nativeInputPrevented = true;
+  },
+});
+check("kept the editing host from changing terminal output", nativeInputPrevented);
+terminalWrites.length = 0;
+clipboardTextAnswer = "/tmp/native-paste.png";
+terminalSurface.dispatchEvent({
+  type: "paste",
+  clipboardData: { getData: () => "" },
+  preventDefault() {},
+});
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "read a native non-text paste through the host clipboard",
+  terminalWrites.join("|") === "/tmp/native-paste.png",
+  JSON.stringify(terminalWrites),
+);
+terminalWrites.length = 0;
 app.focusedTerminalPane().screen.bracketedPaste = true;
 app.pasteTerminalText("echo one\r\necho two");
 app.focusedTerminalPane().screen.bracketedPaste = false;
