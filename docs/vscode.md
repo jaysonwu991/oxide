@@ -678,6 +678,9 @@ keeps the room the corner action and the phase need.
   painted in it as it is typed (`installMarkdownInput`, the editor the desktop
   app's composer uses too). The sheet gives it two lines to open in
   (`min-height: calc(2lh + 12px)`) and a 200px cap, past which it scrolls.
+  Native copy and cut write the Markdown source under the selection, and native
+  undo and redo advance the same per-thread history as the editor's keyboard
+  path.
 - **Toolbar** — the **Attach** icon (the file picker), the phase while there is
   one worth a line (an idle panel says nothing rather than sitting on a dot; a
   running turn's phase moves into the Stop button's tooltip so the row stays one
@@ -1321,6 +1324,8 @@ references: Backspace, Delete, word deletion or a selected-range deletion that
 intersects a reference removes the entire reference. Quoted paths, spaces and
 line suffixes remain part of the reference, and Undo restores it in one step.
 Code spans and surrounding prose keep normal editing behavior.
+Native copy, cut, undo and redo use the composer's Markdown source and history,
+so a rendered heading or emphasis is copied as the Markdown that was typed.
 
 The two composers are the same renderer read back, so what `renderMarkdown`
 draws and `readMarkdown` reads have to agree. Every construct the box can draw

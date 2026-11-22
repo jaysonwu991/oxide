@@ -505,6 +505,49 @@ function exerciseEditor() {
     Object.defineProperty(paste, "clipboardData", { value: { items: [], getData: () => "**safe** <script>alert(1)</script>" } });
     editor.dispatchEvent(paste);
     check("safe Markdown paste", editor.querySelector("strong")?.textContent === "safe" && !editor.querySelector("script") && editor.value.includes("<script>"));
+    // Native copy/cut write clipboard text, and native undo/redo arrive as
+    // beforeinput history commands after the application menu handles the chord.
+    const clipboard = { plain: "" };
+    const clipboardEvent = (type) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", {
+        value: {
+          setData: (kind, text) => {
+            if (kind === "text/plain") clipboard.plain = text;
+          },
+        },
+      });
+      return event;
+    };
+    editor.value = "**bold** and `code`";
+    editor.setSelectionRange(0, editor.value.length);
+    const copy = clipboardEvent("copy");
+    editor.dispatchEvent(copy);
+    check(
+      "native copy keeps the Markdown source",
+      copy.defaultPrevented && clipboard.plain === "**bold** and `code`",
+      clipboard.plain,
+    );
+    editor.value = "before **bold** after";
+    const cutStart = editor.value.indexOf("**bold**");
+    editor.setSelectionRange(cutStart, cutStart + "**bold**".length);
+    clipboard.plain = "";
+    const cut = clipboardEvent("cut");
+    editor.dispatchEvent(cut);
+    check(
+      "native cut keeps the Markdown source and removes only that range",
+      cut.defaultPrevented && clipboard.plain === "**bold**" && editor.value === "before  after",
+      JSON.stringify({ copied: clipboard.plain, value: editor.value }),
+    );
+    editor.value = "native undo";
+    end();
+    type("!");
+    const nativeUndo = new InputEvent("beforeinput", { inputType: "historyUndo", bubbles: true, cancelable: true });
+    editor.dispatchEvent(nativeUndo);
+    check("native undo follows the composer history", nativeUndo.defaultPrevented && editor.value === "native undo");
+    const nativeRedo = new InputEvent("beforeinput", { inputType: "historyRedo", bubbles: true, cancelable: true });
+    editor.dispatchEvent(nativeRedo);
+    check("native redo follows the composer history", nativeRedo.defaultPrevented && editor.value === "native undo!");
     editor.value = "IME ";
     end();
     editor.dispatchEvent(new CompositionEvent("compositionstart"));

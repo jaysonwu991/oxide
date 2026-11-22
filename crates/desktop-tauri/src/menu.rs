@@ -149,6 +149,8 @@ pub fn install(app: &AppHandle, state: &NativeMenu) -> Result<(), String> {
     let select_all =
         PredefinedMenuItem::select_all(app, Some(&state.text("ui.selectAll", "Select All")))
             .map_err(|error| error.to_string())?;
+    // Native edit roles act on the focused editing host. The shared page handles
+    // the composer and terminal clipboard/history events.
     let edit_menu = Submenu::with_items(
         app,
         state.text("composer.edit", "Edit"),

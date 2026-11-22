@@ -533,6 +533,8 @@ function installMenu(): void {
           { label: t("ui.closeTab", "Close Tab"), accelerator: "CmdOrCtrl+W", click: () => announceTab("close") },
         ],
       },
+      // Native edit roles act on the focused editing host. The shared page's
+      // composer and terminal handle their DOM clipboard/history events.
       {
         label: t("composer.edit", "Edit"),
         submenu: [

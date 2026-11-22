@@ -236,6 +236,18 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     return Math.max(0, at);
   }
 
+  // Native copy and cut must carry the Markdown the reader typed, not the text
+  // left after the renderer consumed its delimiters.
+  function selectedMarkdown() {
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null;
+    const start = selectionOffset(false);
+    const end = selectionOffset(true);
+    return { start, end, text: source.slice(start, end) };
+  }
+
   function pointAt(offset) {
     if (offset >= source.length && editor.lastChild) {
       const tail = editor.querySelector?.("[data-editor-tail]");
@@ -333,6 +345,17 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     history.push(source);
     if (history.length > 100) history.shift();
     historyIndex = history.length - 1;
+  }
+
+  // One history step serves both page keydown and the native Edit menu's
+  // `historyUndo`/`historyRedo` input events.
+  function travelHistory(redo) {
+    const next = Math.max(0, Math.min(history.length - 1, historyIndex + (redo ? 1 : -1)));
+    if (next === historyIndex) return;
+    historyIndex = next;
+    source = history[historyIndex];
+    paint(source.length);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
   function commit() {
@@ -488,6 +511,13 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   }
   editor.addEventListener("beforeinput", (event) => {
     if (composing || event.isComposing) return;
+    // On macOS the native Undo/Redo menu roles can consume the chord before
+    // keydown. Route the resulting input command through this tab's history.
+    if (event.inputType === "historyUndo" || event.inputType === "historyRedo") {
+      event.preventDefault();
+      travelHistory(event.inputType === "historyRedo");
+      return;
+    }
     if (event.inputType.startsWith("delete")) {
       let start = selectionOffset(false);
       let end = selectionOffset(true);
@@ -605,11 +635,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     }
     if (!(event.metaKey || event.ctrlKey) || !["z", "y"].includes(event.key.toLowerCase())) return;
     event.preventDefault();
-    const redo = event.key.toLowerCase() === "y" || event.shiftKey;
-    historyIndex = Math.max(0, Math.min(history.length - 1, historyIndex + (redo ? 1 : -1)));
-    source = history[historyIndex];
-    paint(source.length);
-    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    travelHistory(event.key.toLowerCase() === "y" || event.shiftKey);
   });
   editor.addEventListener("click", (event) => {
     const box = event.target?.closest?.("input[data-editor-task]");
@@ -628,6 +654,26 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     source = source.slice(0, at + 1) + (checked ? "x" : " ") + source.slice(at + 2);
     remember();
     paint();
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  // Native Edit-menu clipboard events operate on the rendered DOM. Keep their
+  // selection and deletion anchored to the Markdown model instead.
+  editor.addEventListener("copy", (event) => {
+    if (composing) return;
+    const selected = selectedMarkdown();
+    if (!selected?.text || !event.clipboardData?.setData) return;
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", selected.text);
+  });
+  editor.addEventListener("cut", (event) => {
+    if (composing) return;
+    const selected = selectedMarkdown();
+    if (!selected?.text || !event.clipboardData?.setData) return;
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", selected.text);
+    source = source.slice(0, selected.start) + source.slice(selected.end);
+    remember();
+    paint(selected.start);
     editor.dispatchEvent(new Event("input", { bubbles: true }));
   });
   editor.addEventListener("paste", (event) => {
