@@ -5085,6 +5085,14 @@ pub(crate) fn project_command_path(cwd: &Path) -> Option<OsString> {
     Some(project_runtime_path(cwd, &home, &inherited))
 }
 
+/// The PATH a user-facing shell should receive. GUI launches commonly start
+/// with launchd's short PATH even though the reader's terminal has their tools;
+/// this keeps the inherited order and adds the standard user and package-manager
+/// locations the built-in shell already uses.
+pub fn user_command_path(cwd: &Path) -> Option<OsString> {
+    project_command_path(cwd)
+}
+
 fn project_runtime_path(cwd: &Path, home: &Path, inherited: &std::ffi::OsStr) -> OsString {
     let augmented = augment_path(inherited, home);
     let Some(version) = std::fs::read_to_string(cwd.join(".nvmrc")).ok() else {

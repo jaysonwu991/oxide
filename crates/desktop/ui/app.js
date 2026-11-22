@@ -856,13 +856,29 @@ async function copyText(text) {
   field.style.pointerEvents = "none";
   document.body.appendChild(field);
   field.select?.();
+  let copied = false;
   try {
-    return document.execCommand?.("copy") !== false;
-  } catch {
-    return false;
-  } finally {
-    field.remove();
-  }
+    copied = typeof document.execCommand === "function" && document.execCommand("copy");
+  } catch {}
+  field.remove();
+  if (copied) return true;
+  try {
+    await invoke("write_clipboard", { text: value });
+    return true;
+  } catch {}
+  return false;
+}
+
+/// Reads the pasteboard's text through the webview first and the desktop host
+/// second. The host path uses the same clipboard reader as the CLI editor, so a
+/// copied image becomes a path and a copied file keeps its path.
+async function readClipboardText() {
+  try {
+    if (globalThis.navigator?.clipboard?.readText) {
+      return String(await globalThis.navigator.clipboard.readText());
+    }
+  } catch {}
+  return (await invoke("read_clipboard_text")) ?? "";
 }
 
 function showToast(text, level = "info", action = null) {
@@ -11463,6 +11479,7 @@ function newTerminalScreen(cols, rows) {
     style: terminalStyle(),
     pending: "",
     cursorVisible: true,
+    bracketedPaste: false,
   };
 }
 
@@ -11525,6 +11542,14 @@ function applyTerminalCsi(screen, params, final) {
     .map((value) => (value === "" ? 0 : Number(value)))
     .filter((value) => Number.isFinite(value));
   const first = numbers[0] ?? 0;
+  if (params === "?2004" && final === "h") {
+    screen.bracketedPaste = true;
+    return;
+  }
+  if (params === "?2004" && final === "l") {
+    screen.bracketedPaste = false;
+    return;
+  }
   if (params.includes("?25") && final === "h") {
     screen.cursorVisible = true;
     return;
@@ -11839,6 +11864,19 @@ function terminalPaneView(pane) {
     event.preventDefault();
     event.stopPropagation();
   });
+  surface.addEventListener("copy", (event) => {
+    const text = terminalSelection(surface);
+    if (!text) return;
+    event.preventDefault();
+    if (event.clipboardData?.setData) event.clipboardData.setData("text/plain", text);
+    else void copyText(text);
+  });
+  surface.addEventListener("paste", (event) => {
+    event.preventDefault();
+    const text = event.clipboardData?.getData?.("text/plain");
+    if (text) pasteTerminalText(text, pane.id);
+    else void pasteTerminalClipboard(pane.id);
+  });
   surface.addEventListener("click", () => focusTerminalPane(pane.id));
   head.append(title, cwd, controls);
   section.append(head, surface);
@@ -12107,6 +12145,50 @@ function terminalWrite(data, id = state.terminal.focused) {
   });
 }
 
+/// The selected text when the selection stays inside this terminal. A selection
+/// dragged into the conversation is left to the window's own copy rather than
+/// being half terminal output and half chat.
+function terminalSelection(surface) {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return "";
+  const range = selection.getRangeAt(0);
+  const start = range.startContainer;
+  const end = range.endContainer;
+  if (!surface.contains(start) || !surface.contains(end)) return "";
+  return selection.toString();
+}
+
+function copyTerminalSelection(pane) {
+  const text = terminalSelection(pane?.surface);
+  if (!text) return false;
+  void copyText(text).then((copied) => {
+    if (!copied) showToast(t("ui.couldNotCopy", "Could not copy to the clipboard."), "error");
+  });
+  return true;
+}
+
+/// A shell enables bracketed paste when it can keep a multi-line paste on the
+/// prompt until Enter. Without it, line feeds become the carriage returns the
+/// shell reads as Enter.
+function pasteTerminalText(text, id = state.terminal.focused) {
+  const pane = terminalPane(id);
+  if (!pane || !text) return;
+  const normalized = String(text).replace(/\r\n?/g, "\n");
+  const data = pane.screen?.bracketedPaste
+    ? `\x1b[200~${normalized}\x1b[201~`
+    : normalized.replace(/\n/g, "\r");
+  terminalWrite(data, id);
+}
+
+async function pasteTerminalClipboard(id = state.terminal.focused) {
+  if (id == null) return;
+  try {
+    pasteTerminalText(await readClipboardText(), id);
+  } catch {
+    showToast(t("terminal.pasteFailed", "Could not paste from the clipboard."), "error");
+  }
+}
+
 const TERMINAL_KEYS = {
   Enter: "\r",
   Backspace: "\x7f",
@@ -12128,6 +12210,20 @@ const TERMINAL_KEYS = {
 /// buffer of its own.
 function terminalKey(event, id = state.terminal.focused) {
   if (id == null) return false;
+  const key = String(event.key || "").toLowerCase();
+  const copyChord = (event.metaKey && !event.ctrlKey && !event.shiftKey) ||
+    (event.ctrlKey && event.shiftKey);
+  const pasteChord = (event.metaKey && !event.ctrlKey && !event.shiftKey) ||
+    (event.ctrlKey && (event.shiftKey || !isMac())) ||
+    (event.shiftKey && event.key === "Insert");
+  if (copyChord && key === "c") {
+    copyTerminalSelection(terminalPane(id));
+    return true;
+  }
+  if (pasteChord && key === "v") {
+    void pasteTerminalClipboard(id);
+    return true;
+  }
   if (event.metaKey) return false;
   if (event.ctrlKey && event.key.length === 1) {
     const code = event.key.toUpperCase().charCodeAt(0);

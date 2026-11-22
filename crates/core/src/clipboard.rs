@@ -1,4 +1,4 @@
-//! System clipboard writes for the TUI.
+//! System clipboard writes.
 //!
 //! Copying always emits an OSC 52 escape sequence, which travels through SSH
 //! and tmux, and additionally tries a native clipboard command so terminals
@@ -12,8 +12,19 @@ pub fn copy(text: &str) -> Result<()> {
     stdout.write_all(osc52(text).as_bytes())?;
     stdout.flush()?;
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    copy_native(text);
+    copy_platform(text);
     Ok(())
+}
+
+/// Copies `text` without writing to this process's output. Desktop front-ends
+/// have no terminal to receive OSC 52, so their copy fallback uses the native
+/// pasteboard directly.
+pub fn copy_system(text: &str) -> Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    if copy_platform(text) {
+        return Ok(());
+    }
+    anyhow::bail!("no system clipboard command is available")
 }
 
 /// OSC 52 payload, wrapped in a DCS passthrough when running under tmux or
@@ -33,7 +44,7 @@ fn osc52(text: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn copy_native(text: &str) -> bool {
+fn copy_platform(text: &str) -> bool {
     if pipe_into("pbcopy", &[], text) {
         return true;
     }
@@ -48,7 +59,7 @@ fn copy_native(text: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn copy_native(text: &str) -> bool {
+fn copy_platform(text: &str) -> bool {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
     if wayland && pipe_into("wl-copy", &[], text) {
         return true;
@@ -59,7 +70,21 @@ fn copy_native(text: &str) -> bool {
     pipe_into("xsel", &["--clipboard", "--input"], text)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "windows")]
+fn copy_platform(text: &str) -> bool {
+    pipe_into(
+        "powershell.exe",
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+        ],
+        text,
+    )
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn pipe_into(command: &str, args: &[&str], text: &str) -> bool {
     use std::process::{Command, Stdio};
     let mut child = match Command::new(command)
