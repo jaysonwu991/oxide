@@ -900,6 +900,10 @@ check(
     ) &&
     workflowJobs[1].includes("OXIDE_DESKTOP_ARCH: ${{ matrix.arch }}") &&
     workflowJobs[1].includes("targets: ${{ matrix.platform == 'macos-latest' && matrix.arch == 'x64' && 'x86_64-apple-darwin' || '' }}") &&
+    workflowJobs[1].includes('app_dir=artifacts/mac') &&
+    workflowJobs[1].includes('[ "${{ matrix.arch }}" = "arm64" ] && app_dir="$app_dir-arm64"') &&
+    workflowJobs[1].includes('"$app_dir/Oxide.app/Contents/MacOS/Oxide"') &&
+    workflowJobs[1].includes('"$app_dir/Oxide.app/Contents/Resources/harness/oxide-desktop"') &&
     workflowJobs[1].includes("actual=\"$(lipo -archs \"$binary\")\"") &&
     workflowJobs[1].includes("pnpm run dist --${{ matrix.arch }}"),
 );
