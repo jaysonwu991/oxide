@@ -88,6 +88,13 @@ describe("view contributions", () => {
     }
   });
 
+  it("opens the editor's own integrated terminal", () => {
+    const source = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
+    assert.match(source, /registerCommand\("oxide\.openTerminal"/);
+    assert.match(source, /vscode\.window\.createTerminal\(\{ name: "Oxide", cwd:/);
+    assert.match(source, /terminal\.show\(\)/);
+  });
+
   it("ships an icon for each container", () => {
     for (const container of [...activitybar, ...secondarySidebar]) {
       assert.ok(fs.existsSync(path.join(root, container.icon)), `${container.icon} exists`);

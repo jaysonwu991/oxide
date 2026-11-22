@@ -1150,7 +1150,7 @@ const invoke = async (command, args = {}) => {
       return [...repositoryStates].map((entry) => ({ ...entry }));
     case "terminal_open":
       terminalOpened.push({ ...args });
-      return { id: 7, cwd: args.project };
+      return { id: 7, cwd: args.project, shell: "zsh" };
     case "terminal_write":
       terminalWrites.push(args.data);
       return null;
@@ -1325,7 +1325,8 @@ vm.runInThisContext(
     " openSearch, closeSearch, requestSearch, renderSearchResults, openSearchRow," +
     " openActivity, closeActivity, renderActivity, paintActivityDot, activityGroups," +
     " openArchived, closeArchived, renderArchived, openFind, closeFind, stepFind, findHits," +
-    " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal," +
+    " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal, restartTerminal," +
+    " clearTerminal, setTerminalMaximized, toggleTerminalMaximized," +
     " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
     " PANEL_TABS, changeActions, shapeChange, readRepositoryIndex," +
     " openPulls, readPulls, renderPulls, readPull, pullDetailNodes, renderMemories," +
@@ -5231,6 +5232,7 @@ check(
   "led with a file tile, and offered Undo before Review",
   String(head.children[0].className) === "changes-icon" &&
     head.children[0].innerHTML === app.ICONS.changes &&
+    head.querySelector(".changes-actions").children[0].innerHTML.startsWith(app.ICONS.undo) &&
     head.querySelector(".changes-actions").children[0].textContent === "Undo" &&
     head.querySelector(".changes-actions").children[1].textContent === "View changes",
   `${head.children[0].className} / ${head.querySelector(".changes-actions").children.map((b) => b.textContent).join(", ")}`,
@@ -5262,6 +5264,21 @@ check(
   "folded the rows past what the card shows behind their count",
   card.children[2].hidden === false && card.children[2].children[0].textContent === "Show 3 more files",
   card.children[2].children[0].textContent,
+);
+const extensionChangesSource = readFileSync(
+  new URL("../../editors/vscode/src/core/changes.ts", import.meta.url),
+  "utf8",
+);
+const extensionTranscriptSource = readFileSync(
+  new URL("../../editors/vscode/media/main.js", import.meta.url),
+  "utf8",
+);
+check(
+  "kept the VS Code card on the same three-file fold and wording",
+  /export const CHANGES_VISIBLE = 3;/.test(extensionChangesSource) &&
+    /Show \$\{hidden\} more file/.test(extensionChangesSource) &&
+    /changes\.moreFile/.test(extensionTranscriptSource) &&
+    /t\("topbar\.viewChanges", "View changes"\)/.test(extensionTranscriptSource),
 );
 const changedRow = list.children[0];
 check(
@@ -10890,19 +10907,19 @@ check("returned the review to old/new columns", !elementFor("review-modal").clas
 localStorage.setItem = originalReviewStorageWrite;
 const reviewDivider = elementFor("panel-resizer");
 reviewDivider.fire("keydown", { key: "ArrowLeft", preventDefault() {} });
-check("resized the side panel with the keyboard", reviewDivider.getAttribute("aria-valuenow") === "57");
+check("resized the side panel with the keyboard", reviewDivider.getAttribute("aria-valuenow") === "376");
 reviewDivider.fire("keydown", { key: "Home", preventDefault() {} });
-check("clamped the side panel to its minimum", reviewDivider.getAttribute("aria-valuenow") === "30");
+check("clamped the side panel to its minimum", reviewDivider.getAttribute("aria-valuenow") === "300");
 reviewDivider.fire("keydown", { key: "End", preventDefault() {} });
-check("clamped the side panel to its maximum", reviewDivider.getAttribute("aria-valuenow") === "70");
+check("clamped the side panel to its maximum", reviewDivider.getAttribute("aria-valuenow") === "560");
 reviewDivider.fire("dblclick", {});
-check("reset the side panel width", reviewDivider.getAttribute("aria-valuenow") === "55");
+check("reset the side panel width", reviewDivider.getAttribute("aria-valuenow") === "360");
 console.log("the panel and its terminal");
-// The panel is one dock with two bodies: a tab is a body made visible and the
-// other put away, and the panel is only there while one of them is.
+// The panel is one dock with three bodies: a tab is a body made visible and the
+// others put away, and the panel is only there while one of them is.
 app.openPanel("review");
 check(
-  "opened the panel on its review tab",
+  "opened the panel on its Changes tab",
   elementFor("bottom-panel").hidden === false &&
     elementFor("review-modal").hidden === false &&
     elementFor("panel-terminal").hidden === true &&
@@ -10910,9 +10927,10 @@ check(
     elementFor("panel-tab-review").getAttribute("aria-selected") === "true",
   `${elementFor("bottom-panel").hidden} / ${elementFor("review-modal").hidden} / ${elementFor("panel-terminal").hidden}`,
 );
-await app.openTerminal();
+elementFor("details-terminal").onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
 check(
-  "switched its body to a shell in the thread's folder",
+  "opened a shell from the project's Terminal row",
   terminalOpened.length === 1 &&
     terminalOpened[0].project === "/tmp/oxide" &&
     app.state.terminal.id === 7 &&
@@ -10920,6 +10938,60 @@ check(
     elementFor("review-modal").hidden === true &&
     document.activeElement === elementFor("terminal-surface"),
   `${JSON.stringify(terminalOpened[0])} / ${app.state.terminal.id}`,
+);
+check(
+  "docked Terminal below the conversation with VS Code's shell controls",
+  elementFor("bottom-panel").classList.contains("terminal-mode") &&
+    elementFor("terminal-tools").hidden === false &&
+    elementFor("terminal-shell").textContent === "zsh",
+  `${elementFor("bottom-panel").className} / ${elementFor("terminal-shell").textContent}`,
+);
+app.openPanel("pulls");
+app.syncPanel();
+check(
+  "kept the dock while Pull requests was its selected body",
+  elementFor("bottom-panel").hidden === false &&
+    elementFor("panel-pulls").hidden === false &&
+    elementFor("review-modal").hidden === true &&
+    elementFor("panel-terminal").hidden === true &&
+    !elementFor("bottom-panel").classList.contains("terminal-mode") &&
+    elementFor("terminal-tools").hidden === true,
+);
+elementFor("panel-tab-pulls").fire("keydown", { key: "ArrowRight", preventDefault() {} });
+check(
+  "wrapped the panel tabs and moved focus with the selected tab",
+  app.state.panelTab === "review" &&
+    elementFor("panel-tab-review").getAttribute("aria-selected") === "true" &&
+    elementFor("panel-tab-review").tabIndex === 0 &&
+    elementFor("panel-tab-pulls").tabIndex === -1,
+);
+check(
+  "offered Terminal and Pull requests beside the project's Changes",
+  typeof elementFor("details-terminal").onclick === "function" &&
+    typeof elementFor("details-pull-requests").onclick === "function",
+);
+await app.openTerminal();
+terminalWrites.length = 0;
+app.clearTerminal();
+check(
+  "cleared the surface and asked the shell for a fresh prompt",
+  elementFor("terminal-surface").children.length === 1 &&
+    elementFor("terminal-surface").children[0].children.length === 0 &&
+    terminalWrites.join("|") === "\x0c",
+  terminalWrites.join("|"),
+);
+app.toggleTerminalMaximized();
+check(
+  "gave Terminal VS Code's maximize and restore control",
+  document.body.classList.contains("terminal-maximized") &&
+    elementFor("terminal-maximize").getAttribute("aria-pressed") === "true" &&
+    elementFor("terminal-maximize").getAttribute("aria-label") === "Restore terminal",
+);
+app.toggleTerminalMaximized();
+check(
+  "restored the conversation above Terminal",
+  !document.body.classList.contains("terminal-maximized") &&
+    elementFor("terminal-maximize").getAttribute("aria-pressed") === "false",
 );
 // What the shell writes is drawn: colours are runs, a carriage return goes back
 // to the start of the line, and a line feed starts the next one.
@@ -10993,6 +11065,10 @@ check(
   "put the shell away with the panel",
   elementFor("bottom-panel").hidden === true &&
     elementFor("review-modal").hidden === true &&
+    elementFor("panel-pulls").hidden === true &&
+    !elementFor("bottom-panel").classList.contains("terminal-mode") &&
+    elementFor("terminal-tools").hidden === true &&
+    !document.body.classList.contains("terminal-maximized") &&
     app.state.terminal.id === null &&
     terminalClosed.includes(7),
   `${elementFor("bottom-panel").hidden} / ${terminalClosed.join(",")}`,
@@ -11281,9 +11357,10 @@ pullsDetail = {
   ],
   files: [{ path: "crates/desktop/src/terminal.rs", additions: 100, deletions: 2 }],
 };
-await app.openPulls();
+elementFor("details-pull-requests").onclick();
+await new Promise((resolve) => setTimeout(resolve, 0));
 check(
-  "listed the repository's open requests",
+  "listed the repository's open requests from the project's Pull requests row",
   elementFor("bottom-panel").hidden === false &&
     elementFor("panel-pulls").hidden === false &&
     elementFor("pulls-list").children.length === 1 &&

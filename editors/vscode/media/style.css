@@ -1039,8 +1039,7 @@ pre,
 
 .changes {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
-  border-left: 3px solid var(--vscode-charts-purple, #c586c0);
-  border-radius: 8px;
+  border-radius: 14px;
   margin: 0 0 10px;
   background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
   overflow: hidden;
@@ -1048,20 +1047,24 @@ pre,
 
 .changes-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  font-size: 0.85em;
+  gap: 10px;
+  padding: 12px;
 }
 
 .changes-open {
+  flex: none;
+  width: 42px;
+  height: 42px;
   display: inline-flex;
   align-items: center;
-  padding: 2px;
-  border: none;
-  border-radius: 3px;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  border-radius: 8px;
   color: var(--vscode-descriptionForeground);
-  background: none;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
   cursor: pointer;
 }
 
@@ -1070,39 +1073,82 @@ pre,
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
 }
 
+.changes-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .changes-title {
-  font-weight: 600;
+  color: var(--vscode-foreground);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .changes-total {
-  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.9em;
+  font-size: 0.88em;
   color: var(--vscode-descriptionForeground);
 }
 
 /* Walks the turn's files over the panel, one row at a time: the row it lands on
    opens that file in VS Code's diff editor, which is where the two sides are
    drawn, so nothing here paints a diff of its own — the counterpart of the
-   desktop app's Review button. Undo, beside it, is its counterpart of that
-   card's Undo: it puts the turn back through the CLI's own restore. */
-.changes-review,
-.changes-undo {
+   desktop app's View changes button. Undo, before it, is the same card's
+   restore. */
+.changes-actions {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.changes-review {
   flex: 0 0 auto;
-  padding: 1px 7px;
+  padding: 4px 10px;
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  border-radius: 3px;
+  border-radius: 6px;
   color: var(--vscode-descriptionForeground);
   background: none;
   font: inherit;
-  font-size: 0.9em;
+  font-size: 0.92em;
   cursor: pointer;
+}
+
+.changes-undo {
+  display: inline-flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 4px 0;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  background: none;
+  font: inherit;
+  font-size: 0.92em;
+  cursor: pointer;
+}
+
+.changes-undo-icon {
+  display: inline-flex;
+  align-items: center;
 }
 
 .changes-review:hover,
 .changes-undo:hover {
   color: var(--vscode-foreground);
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.changes-undo:hover {
+  background: none;
 }
 
 /* What a card reads instead of offering its Undo again, which the host sets
@@ -1116,15 +1162,17 @@ pre,
 /* The row under a listing longer than the card shows, painted with the words
    the host composed and folding the rows past it away. */
 .changes-more {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  padding: 3px 8px;
+  padding: 8px 12px;
   border: none;
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
-  background: none;
+  background: var(--vscode-sideBarSectionHeader-background, rgba(128, 128, 128, 0.08));
   color: var(--vscode-descriptionForeground);
   font: inherit;
-  font-size: 0.85em;
+  font-size: 0.9em;
   text-align: left;
   cursor: pointer;
 }
@@ -1132,6 +1180,16 @@ pre,
 .changes-more:hover {
   color: var(--vscode-foreground);
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.changes-more-caret {
+  display: inline-flex;
+  color: var(--vscode-descriptionForeground);
+  transition: transform 0.1s;
+}
+
+.changes-more.expanded .changes-more-caret {
+  transform: rotate(180deg);
 }
 
 .changes-list {
@@ -1143,12 +1201,13 @@ pre,
 .change-row {
   display: flex;
   flex: 0 0 auto;
-  align-items: baseline;
-  gap: 6px;
+  align-items: center;
+  gap: 9px;
   width: 100%;
-  min-height: 36px;
-  padding: var(--row-padding);
-  border: none;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 0;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.18));
   background: none;
   color: inherit;
   font: inherit;
@@ -1157,47 +1216,51 @@ pre,
   cursor: pointer;
 }
 
+.change-row:first-child {
+  border-top: 0;
+}
+
 .change-row:hover,
 .change-row:focus-visible {
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
 }
 
-.change-badge {
-  flex: 0 0 auto;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.75em;
-  font-weight: 700;
-  padding: 0 3px;
-  border-radius: 3px;
-  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
-}
-
-.change-badge.change-added {
-  color: var(--vscode-charts-green, #89d185);
-}
-
-.change-badge.change-deleted {
-  color: var(--vscode-charts-red, #f14c4c);
-}
-
-.change-badge.change-modified {
-  color: var(--vscode-charts-blue, #4a9eff);
-}
-
 .change-path {
   flex: 1 1 auto;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.85em;
+  font-size: 0.92em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.change-directory {
+  color: var(--vscode-descriptionForeground);
+}
+
+.change-filename {
+  color: var(--vscode-foreground);
+  font-weight: 500;
+}
+
 .change-detail {
+  display: inline-flex;
+  gap: 6px;
   flex: 0 0 auto;
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.8em;
   color: var(--vscode-descriptionForeground);
+}
+
+.stats-add {
+  color: var(--vscode-gitDecoration-addedResourceForeground, #89d185);
+}
+
+.stats-del {
+  color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
+}
+
+.stats-gap {
+  display: none;
 }
 
 .diff pre {
@@ -2761,16 +2824,21 @@ button.dialog-row:focus-visible {
 .changes-head {
   min-height: 42px;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 12px;
 }
 
-.changes-review,
-.changes-undo {
+.changes-review {
   min-height: var(--control-size);
   padding: 4px 10px;
   line-height: var(--ui-line-height);
   border-radius: 6px;
+}
+
+.changes-undo {
+  min-height: var(--control-size);
+  padding: 4px 0;
+  line-height: var(--ui-line-height);
 }
 
 footer {

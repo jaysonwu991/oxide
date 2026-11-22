@@ -2426,7 +2426,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   /// opens VS Code's own diff editor for that file (the host serves the baseline
   /// side out of the snapshot) and the header opens the whole turn in the
   /// multi-file diff, so the panel carries no diff format of its own. What each
-  /// row says, and how it is badged, is composed by the host.
+  /// row says is composed by the host.
   ///
   /// Review opens VS Code's Changes editor; file rows open their own diff directly.
   function changesCard(item) {
@@ -2441,16 +2441,39 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     open.innerHTML = CHANGES_ICON;
     open.title = t("ui.openEveryFileInVSCodeSDiffEditor", "Open every file in VS Code's diff editor");
     open.setAttribute("aria-label", open.title);
+    const summary = document.createElement("div");
+    summary.className = "changes-summary";
     const label = document.createElement("span");
     label.className = "changes-title";
     const fileCount = (item.rows || []).length;
     label.textContent = t(fileCount === 1 ? "changes.editedFile" : "changes.editedFiles", item.title || `Edited ${fileCount} files`, { count: fileCount });
-    head.append(open, label);
-    if (item.totals) {
+    summary.appendChild(label);
+    if (item.totals || item.added || item.removed) {
       const total = document.createElement("span");
       total.className = "changes-total";
-      total.textContent = item.totals;
-      head.appendChild(total);
+      if (Number.isFinite(item.added) || Number.isFinite(item.removed)) {
+        if (item.added) {
+          const add = document.createElement("span");
+          add.className = "stats-add";
+          add.textContent = `+${item.added}`;
+          total.appendChild(add);
+        }
+        if (item.removed) {
+          if (item.added) {
+            const gap = document.createElement("span");
+            gap.className = "stats-gap";
+            gap.textContent = " ";
+            total.appendChild(gap);
+          }
+          const del = document.createElement("span");
+          del.className = "stats-del";
+          del.textContent = `−${item.removed}`;
+          total.appendChild(del);
+        }
+      } else {
+        total.textContent = item.totals;
+      }
+      summary.appendChild(total);
     }
     // What a card says instead of its action once the turn has been put back,
     // and the action itself: both are painted from the item's own state, so a
@@ -2459,13 +2482,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     note.className = "changes-note";
     note.textContent = t("ui.undone", "Undone");
     note.hidden = true;
-    head.appendChild(note);
+    const actions = document.createElement("div");
+    actions.className = "changes-actions";
     const rows = item.rows || [];
     if (rows.length) {
       const review = document.createElement("button");
       review.type = "button";
       review.className = "changes-review";
-      review.textContent = t("ui.review", "Review");
+      review.textContent = t("topbar.viewChanges", "View changes");
       review.title = t("ui.openEveryFileInVSCodeSDiffEditor", "Open every file in VS Code's diff editor");
       review.setAttribute("aria-label", review.title);
       review.addEventListener("click", () => vscode.postMessage({ k: "openAllChanges", id: item.id }));
@@ -2475,11 +2499,16 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
       undo.textContent = t("ui.undo", "Undo");
       undo.title = t("ui.putThisTurnSFilesBackToHowTheRunFoundThem", "Put this turn's files back to how the run found them");
       undo.setAttribute("aria-label", undo.title);
+      const undoIcon = document.createElement("span");
+      undoIcon.className = "changes-undo-icon";
+      undoIcon.innerHTML = UNDO_ICON;
+      undo.appendChild(undoIcon);
       undo.addEventListener("click", () => {
         vscode.postMessage({ k: "undoChanges", id: item.id });
       });
-      head.append(review, undo);
+      actions.append(undo, review);
     }
+    head.append(open, summary, note, actions);
     wrap.appendChild(head);
 
     const list = document.createElement("div");
@@ -2490,17 +2519,44 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
       el.className = "change-row";
       el.dataset.index = String(row.index);
       el.dataset.action = "openChangeDiff";
-      const badge = document.createElement("span");
-      badge.className = `change-badge change-${row.status || "modified"}`;
-      badge.textContent = row.letter || "M";
       const name = document.createElement("span");
       name.className = "change-path";
-      name.textContent = row.path;
+      const split = Math.max(row.path.lastIndexOf("/"), row.path.lastIndexOf("\\")) + 1;
+      const directory = document.createElement("span");
+      directory.className = "change-directory";
+      directory.textContent = row.path.slice(0, split);
+      const filename = document.createElement("span");
+      filename.className = "change-filename";
+      filename.textContent = row.path.slice(split);
+      name.append(directory, filename);
       const detail = document.createElement("span");
       detail.className = "change-detail";
-      detail.textContent = row.detail === "binary" ? t("changes.binary", "binary") : row.detail === "no line changes" ? t("changes.noLines", "no line changes") : row.detail;
-      el.append(badge, name, detail);
-      el.title = row.title || row.path;
+      if (row.binary) {
+        detail.textContent = t("changes.binary", "binary");
+      } else if (row.added || row.removed) {
+        if (row.added) {
+          const add = document.createElement("span");
+          add.className = "stats-add";
+          add.textContent = `+${row.added}`;
+          detail.appendChild(add);
+        }
+        if (row.removed) {
+          if (row.added) {
+            const gap = document.createElement("span");
+            gap.className = "stats-gap";
+            gap.textContent = " ";
+            detail.appendChild(gap);
+          }
+          const del = document.createElement("span");
+          del.className = "stats-del";
+          del.textContent = `−${row.removed}`;
+          detail.appendChild(del);
+        }
+      } else {
+        detail.textContent = t("changes.noLines", "no line changes");
+      }
+      el.append(name, detail);
+      el.title = `${row.title || row.path} · ${t(`changes.${row.status}`, row.status)}`;
       list.appendChild(el);
     }
     wrap.appendChild(list);
@@ -2509,25 +2565,32 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     // — including the way back — are the host's.
     if (item.more) {
       const hiddenCount = rows.length - item.more.visible;
-      const more = { ...item.more,
-        closed: t(hiddenCount === 1 ? "changes.moreCompactOne" : "changes.moreCompact", item.more.closed, { count: hiddenCount }),
-        open: t("sidebar.showLess", item.more.open),
-      };
+      const closed = t(hiddenCount === 1 ? "changes.moreFile" : "changes.moreFiles", item.more.closed, { count: hiddenCount });
+      const open = t("sidebar.showLess", item.more.open);
       let all = false;
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "changes-more";
       toggle.dataset.action = "changesMore";
-      toggle.textContent = more.closed;
+      toggle.setAttribute("aria-expanded", "false");
+      const toggleLabel = document.createElement("span");
+      toggleLabel.className = "changes-more-label";
+      toggleLabel.textContent = closed;
+      const toggleCaret = document.createElement("span");
+      toggleCaret.className = "changes-more-caret";
+      toggleCaret.innerHTML = CARET_ICON;
+      toggle.append(toggleLabel, toggleCaret);
       toggle.addEventListener("click", () => {
         all = !all;
         for (const [index, row] of [...list.children].entries()) {
-          row.hidden = !all && index >= more.visible;
+          row.hidden = !all && index >= item.more.visible;
         }
-        toggle.textContent = all ? more.open : more.closed;
+        toggleLabel.textContent = all ? open : closed;
+        toggle.setAttribute("aria-expanded", String(all));
+        toggle.classList.toggle("expanded", all);
       });
       for (const [index, row] of [...list.children].entries()) {
-        if (index >= more.visible) row.hidden = true;
+        if (index >= item.more.visible) row.hidden = true;
       }
       wrap.appendChild(toggle);
     }
@@ -3523,7 +3586,11 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   /// is what a click there opens. It is drawn in the card's header beside the
   /// listing's name, so the whole-turn action reads as the header itself.
   const CHANGES_ICON =
-    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 3v18" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 7h5M4 11h6M20 13h-5M20 17h-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 9.5h7M12 6v7M8.5 16.5h7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  const UNDO_ICON =
+    '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="m9 4-5 5 5 5M4 9h10a6 6 0 0 1 0 12h-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const CARET_ICON =
+    '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M5.5 8.6 12 14.8l6.5-6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   /// The box's own ✕ appears once there is something to clear: it is the field's
   /// affordance rather than the host's, so it is the field it reads.

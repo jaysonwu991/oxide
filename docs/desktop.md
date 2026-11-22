@@ -1394,17 +1394,31 @@ a message. A row needing a folder is left out when there is none.
 `⌘K` used to be the model picker. The picker is the model chip and `/model` now,
 which is where Codex keeps it too.
 
-## The bottom panel: Review and the terminal
+## The workspace panel: Changes, terminal and pull requests
 
-The review, terminal and pull-request tabs open beside the conversation, with
-`⌘J` to show or hide the panel. A separator resizes its width from 30% to 70%
-with the pointer or Left/Right keys (Shift moves faster); Home/End select the
-limits and double-click restores 55%. The width survives relaunch. Windows at
-1100px or narrower stack the panel below the conversation. Both panes scroll
-independently. Review defaults to old/new columns; **Unified diff** toggles a
-saved single-column view. It is only there while one of its bodies is: closing the
-review with `Escape` puts the dock away too, unless the terminal is what is
-showing. The review pane still reads what it always did — a turn's card, or the
+The **Changes** and **Pull requests** tabs open in a right-hand workspace rail
+beside the conversation, with `⌘J` to show or hide it. The rail starts at Codex's
+compact width (360px) and a separator resizes it from 300px to 560px with the
+pointer or Left/Right keys (Shift moves faster); Home/End select the limits and
+double-click restores 360px. Left/Right, Home and End also walk the tabs as one
+group. The width survives relaunch. Windows at 1100px or narrower stack the panel
+below the conversation. The project summary offers Terminal and the repository's
+pull requests beside Changes, while both desktop hosts also expose them from the
+native View menu.
+
+**Terminal** follows VS Code's integrated-terminal layout instead of using the
+side rail: the dock spans the editor area below the conversation, keeps its tab
+row, and carries the shell name, new-terminal, clear and maximize controls.
+Maximizing gives the terminal the editor area and restores the conversation from
+the same control. The shell is the reader's real `$SHELL` in the thread's project
+or worktree, with `TERM=xterm-256color`, `COLORTERM=truecolor`, shell-native line
+editing, resizing and exit reporting. The VS Code extension keeps delegating to
+VS Code's own terminal, so its shell, profile and terminal settings remain the
+editor's rather than a second emulator.
+
+**Changes** defaults to old/new columns; **Unified diff** toggles a saved
+single-column view. Closing Changes puts the dock away unless another tab is
+showing. The pane still reads what it always did — a turn's card, or the
 repository's uncommitted changes — and gained what it writes.
 
 **Review.** In the repository scope each file now carries the staging action its

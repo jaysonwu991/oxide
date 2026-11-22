@@ -734,7 +734,7 @@ const announcedIds = [...new Set(menuEvents.map(([id]) => id))].sort();
 check(
   "announced the window's own actions over the channel a turn's events travel on",
   announcedIds.join(",") ===
-      "command-menu,history,open-settings,open-terminal,toggle-panel,toggle-sidebar,zoom" &&
+      "command-menu,history,open-pulls,open-settings,open-terminal,toggle-panel,toggle-sidebar,zoom" &&
     announcedIds.every((id) => app.includes(`listen("${id}"`)),
   announcedIds.join(", "),
 );

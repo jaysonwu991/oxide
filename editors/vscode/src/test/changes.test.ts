@@ -154,7 +154,7 @@ describe("a turn's changed files", () => {
 });
 
 describe("what a change row says", () => {
-  it("badges the status the way git spells it", () => {
+  it("names the status the way git spells it", () => {
     assert.equal(changeLetter("added"), "A");
     assert.equal(changeLetter("modified"), "M");
     assert.equal(changeLetter("deleted"), "D");
@@ -177,10 +177,10 @@ describe("what a change row says", () => {
     assert.equal(changesMore(CHANGES_VISIBLE), null);
     assert.equal(changesMore(0), null);
     const six = changesMore(CHANGES_VISIBLE + 1);
-    assert.deepEqual(six, { visible: CHANGES_VISIBLE, closed: "+1 more file", open: "Show less" });
+    assert.deepEqual(six, { visible: CHANGES_VISIBLE, closed: "Show 1 more file", open: "Show less" });
     // Singular where it should be, which is the row's own words rather than the
     // view's.
-    assert.equal(changesMore(CHANGES_VISIBLE + 4)?.closed, "+4 more files");
+    assert.equal(changesMore(CHANGES_VISIBLE + 4)?.closed, "Show 4 more files");
   });
 
   it("leaves the total blank for a turn that changed no lines", () => {
@@ -200,6 +200,9 @@ describe("what a change row says", () => {
         status: "modified",
         letter: "M",
         detail: "+2 −1",
+        added: 2,
+        removed: 1,
+        binary: false,
         title: "Show src/main.rs in VS Code's diff editor",
         index: 0,
       },
@@ -208,6 +211,9 @@ describe("what a change row says", () => {
         status: "added",
         letter: "A",
         detail: "binary",
+        added: 5,
+        removed: 0,
+        binary: true,
         title: "Show docs/new.md in VS Code's diff editor",
         index: 1,
       },
