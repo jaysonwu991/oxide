@@ -1340,6 +1340,7 @@ vm.runInThisContext(
     " clearTerminal, setTerminalMaximized, toggleTerminalMaximized, terminalPane, focusedTerminalPane," +
     " openTerminalPane, splitTerminal, closeTerminalPane, renderTerminalPanes, focusTerminalPane," +
     " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
+    " terminalStartingView, clearTerminalStarting, initTerminalResize," +
     " PANEL_BODIES, changeActions, shapeChange, readRepositoryIndex, renderMemories," +
     " maybePredict, showPrediction, clearPrediction, acceptPrediction, runSlashCommand," +
     " notifyFinished, notifyWaiting, notificationsAllowed, paintBadge, paintAwake," +
@@ -10978,6 +10979,18 @@ check(
     elementFor("panel-terminal").hidden === true,
   `${elementFor("bottom-panel").hidden} / ${elementFor("review-modal").hidden} / ${elementFor("panel-terminal").hidden}`,
 );
+const startingTerminal = app.terminalStartingView("/tmp/oxide");
+check(
+  "painted a terminal-shaped frame while the shell starts",
+  startingTerminal.className.includes("terminal-pane-starting") &&
+    startingTerminal.querySelector(".terminal-boot-line").children[1].className === "spinner" &&
+    startingTerminal.querySelector(".terminal-boot-path").textContent === "/tmp/oxide" &&
+    elementFor("terminal-panes").children[0] === startingTerminal &&
+    elementFor("terminal-context").textContent === "/tmp/oxide" &&
+    elementFor("panel-terminal").getAttribute("aria-busy") === "true",
+  `${startingTerminal.className} / ${elementFor("panel-terminal").getAttribute("aria-busy")}`,
+);
+app.clearTerminalStarting();
 await app.openTerminal();
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(
@@ -10991,10 +11004,29 @@ check(
   `${JSON.stringify(terminalOpened[0])} / ${app.state.terminal.focused}`,
 );
 check(
-  "docked Terminal below the conversation with VS Code's shell controls",
+  "docked Terminal below the conversation with a compact shell header",
   elementFor("bottom-panel").classList.contains("terminal-mode") &&
-    elementFor("terminal-shell").textContent === "zsh",
-  `${elementFor("bottom-panel").className} / ${elementFor("terminal-shell").textContent}`,
+    elementFor("terminal-resizer").hidden === false &&
+    elementFor("terminal-shell").textContent === "zsh" &&
+    elementFor("terminal-context").textContent === "/tmp/oxide",
+  `${elementFor("bottom-panel").className} / ${elementFor("terminal-context").textContent}`,
+);
+const terminalResizer = elementFor("terminal-resizer");
+const startingHeight = Number(terminalResizer.getAttribute("aria-valuenow"));
+terminalResizer.fire("keydown", { key: "ArrowUp", preventDefault() {} });
+check(
+  "resized the conversation and terminal together",
+  Number(terminalResizer.getAttribute("aria-valuenow")) === startingHeight + 16 &&
+    document.body.style.getPropertyValue("--terminal-height") === `${startingHeight + 16}px`,
+  `${startingHeight} / ${terminalResizer.getAttribute("aria-valuenow")}`,
+);
+check(
+  "rendered Terminal as one inset pane with a compact tab bar",
+  sheet.includes(".terminal-panes {") &&
+    sheet.includes("--terminal-bg:") &&
+    sheet.includes('.terminal-panes[data-layout="single"] .terminal-pane-head { display: none; }') &&
+    sheet.includes(".terminal-bar {") &&
+    sheet.includes(".terminal-resizer {"),
 );
 check(
   "drew the shell's cursor as its own terminal cell",
@@ -11043,7 +11075,7 @@ check(
 );
 app.toggleTerminalMaximized();
 check(
-  "gave Terminal VS Code's maximize and restore control",
+  "gave Terminal a native maximize and restore control",
   document.body.classList.contains("terminal-maximized") &&
     elementFor("terminal-maximize").getAttribute("aria-pressed") === "true" &&
     elementFor("terminal-maximize").getAttribute("aria-label") === "Restore terminal",
@@ -11129,6 +11161,7 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 check(
   "put the shell away with the panel",
   elementFor("bottom-panel").hidden === true &&
+    elementFor("terminal-resizer").hidden === true &&
     elementFor("review-modal").hidden === true &&
     !elementFor("bottom-panel").classList.contains("terminal-mode") &&
     !document.body.classList.contains("terminal-maximized") &&

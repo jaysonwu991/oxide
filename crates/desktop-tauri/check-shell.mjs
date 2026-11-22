@@ -153,6 +153,16 @@ check(
     /Oxide-linux-\$arch-Setup\.tar\.gz/.test(packageScript) &&
     /Oxide-win-\$arch-Setup\.exe/.test(packageScript),
 );
+check(
+  "built the Intel bundle from the x86_64 target on Apple Silicon",
+  /matrix\.platform == 'macos-latest' && matrix\.arch == 'x64' && 'x86_64-apple-darwin'/.test(
+    workflow,
+  ) &&
+    /rust_target=x86_64-apple-darwin/.test(packageScript) &&
+    /cargo build --release --target "\$rust_target"/.test(packageScript) &&
+    /binary="target\/\$rust_target\/release\/oxide-desktop-tauri"/.test(packageScript) &&
+    /binary=\.\/artifacts\/Oxide\.app\/Contents\/MacOS\/oxide-desktop-tauri/.test(workflow),
+);
 
 console.log("the migration's end");
 check(

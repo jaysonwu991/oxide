@@ -98,6 +98,12 @@ platform. macOS signing and notarization use the imported Developer ID and App
 Store Connect credentials when configured; otherwise the bundle is signed
 ad-hoc.
 
+The macOS x64 bundle is cross-compiled with the `x86_64-apple-darwin` Rust
+target on an Apple Silicon runner. It keeps the same Intel artifact name and is
+smoke-tested through Rosetta before upload. `macos-x64-release-cache.yml` seeds
+the shared Cargo cache from the default branch whenever a lockfile changes,
+because GitHub does not share caches between different release tags.
+
 Linux needs WebKitGTK 4.1 and GTK 3 at runtime. Windows uses the system WebView2
 runtime. On macOS Tauri uses the system WKWebView.
 

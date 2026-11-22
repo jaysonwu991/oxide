@@ -1405,16 +1405,24 @@ Left/Right keys (Shift moves faster); Home/End select the limits and
 double-click restores 360px. The width survives relaunch. Windows at 1100px or
 narrower stack the panel below the conversation.
 
-**Terminal** follows VS Code's integrated-terminal layout instead of using the
-side rail: the dock spans the editor area below the conversation, keeps its tab
-row, and carries the detected shell name, new-terminal, split-right,
-split-down, clear and maximize controls. `⌘D`/`Ctrl+D` and
-`⌘⇧D`/`Ctrl+Shift+D` split the focused pane right and down. Each pane has its
-own header, cwd, focus, split controls and close action; the divider resizes the
-two panes. Maximizing gives the terminal the editor area and restores the
-conversation from the same control. The shell is the reader's real `$SHELL` in
-the thread's project or worktree, with `TERM=xterm-256color`,
-`COLORTERM=truecolor`, shell-native line editing, resizing and exit reporting.
+**Terminal** follows macOS Terminal's compact bottom-window shape instead of
+using the side rail: the dock spans the editor area below the conversation, has
+one restrained header with the current cwd and shell, and carries new-terminal,
+split-right, split-down, clear and maximize controls. A single pane has no
+duplicate inner titlebar; splitting adds compact per-pane tab headers. The
+conversation/terminal boundary resizes with the pointer or Up/Down keys, and
+`⌘D`/`Ctrl+D` and `⌘⇧D`/`Ctrl+Shift+D` split the focused pane right and down.
+The pane divider resizes the two panes, and the dock height survives relaunch.
+Maximizing gives the terminal the editor area and restores the conversation from
+the same control.
+
+The dock paints a terminal-shaped startup frame while the PTY is being opened,
+then replaces it with the real shell surface, so the first frame is never an
+empty rectangle. The shell surface uses an inset near-black canvas, a tight
+monospace grid, native overlay scrollbars and a solid block cursor. The shell is
+the reader's real `$SHELL` in the thread's project or worktree, with
+`TERM=xterm-256color`, `COLORTERM=truecolor`, shell-native line editing,
+resizing and exit reporting.
 The cursor is painted as the shell's own blinking block, with a hollow block
 when that pane is not focused. The bundled **Oxide Terminal** family is
 JetBrains Mono NL Nerd Font Mono, so Powerline separators and common prompt
@@ -2005,17 +2013,23 @@ through GitHub itself, so metadata describing a feed it does not read is
 deliberately not published.
 
 Builds are per-platform: a macOS build produces only the macOS artifact, so a
-release is five builds (macOS arm64, macOS x64, Linux x64, Linux arm64, Windows x64), each
-on a runner of its own platform — the Linux arm64 artifact on an arm64 runner
-rather than cross-compiled, so the engine and the AppImage are both native.
+release is five builds (macOS arm64, macOS x64, Linux x64, Linux arm64, Windows x64).
+Both Mac artifacts build on Apple Silicon: the x64 job adds the
+`x86_64-apple-darwin` Rust target, compiles the harness for Intel, and lets
+electron-builder fetch the matching Intel Electron files. The Linux arm64
+artifact builds on an arm64 runner rather than cross-compiled, so the engine and
+the AppImage are both native. `macos-x64-release-cache.yml` seeds the shared
+Cargo caches from the default branch when a lockfile changes, since release tags
+cannot restore each other's caches.
 macOS is the only platform that is signed and notarized; the hardened runtime it
 runs under needs the entitlements in `build/entitlements.mac.plist` (the JIT and
 unsigned-executable-memory Electron's own JavaScript engine needs, and the third
 that lets the app run the engine it ships, which is signed as part of the
 bundle), which `electron-builder.yml` points both `entitlements` and
-`entitlementsInherit` at. The macOS x64 build runs on an Intel runner, and each
-job selects its own architecture with `pnpm run dist --<arch>` so Electron and
-the native harness match. The Windows installer is a one-click, per-user install
+`entitlementsInherit` at. Each Mac job selects its own architecture with
+`pnpm run dist --<arch>`; the x64 harness is staged into `target/release` after
+its cross-build so Electron and the native harness match inside the bundle. The
+Windows installer is a one-click, per-user install
 (`oneClick: true`, `perMachine: false`), which is what lets the app offer it as
 an install rather than as a file to unpack.
 
