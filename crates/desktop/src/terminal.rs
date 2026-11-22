@@ -26,6 +26,30 @@ pub fn default_shell() -> String {
     }
 }
 
+/// Shells that take the usual login and interactive switches. A login shell
+/// reads the profile that installs Homebrew and other user tool paths; the
+/// interactive flag is what makes zsh read `.zshrc`, where prompt themes start.
+#[cfg(not(windows))]
+fn shell_arguments(shell: &str) -> &'static [&'static str] {
+    let name = Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell);
+    if matches!(
+        name,
+        "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh" | "tcsh" | "csh"
+    ) {
+        &["-l", "-i"]
+    } else {
+        &[]
+    }
+}
+
+#[cfg(windows)]
+fn shell_arguments(_shell: &str) -> &'static [&'static str] {
+    &[]
+}
+
 /// One live terminal: the pair the shell is attached to, and the two ends of it
 /// this process writes to.
 pub struct Terminal {
@@ -51,13 +75,20 @@ impl Terminal {
                 pixel_height: 0,
             })
             .context("opening a pseudoterminal")?;
-        let mut command = CommandBuilder::new(default_shell());
+        let shell = default_shell();
+        let mut command = CommandBuilder::new(&shell);
+        command.args(shell_arguments(&shell));
         command.cwd(cwd);
-        // The terminal is the reader's own shell, so it gets the environment they
-        // would have: without this the child inherits only what this process
-        // holds, which is the app's, not a login shell's.
+        // The app inherits launchd's small environment rather than the one the
+        // reader's terminal has. The login shell repairs that from their profile;
+        // the enriched PATH is the fallback for shells with no profile.
+        if let Some(path) = oxide_core::tools::user_command_path(cwd) {
+            command.env("PATH", path);
+        }
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        command.env("TERM_PROGRAM", "Oxide");
+        command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         let child = pair
             .slave
             .spawn_command(command)
@@ -153,6 +184,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn common_unix_shells_load_login_and_interactive_startup_files() {
+        assert_eq!(shell_arguments("/bin/zsh"), &["-l", "-i"]);
+        assert_eq!(shell_arguments("/opt/homebrew/bin/fish"), &["-l", "-i"]);
+        assert_eq!(shell_arguments("/usr/local/bin/pwsh"), &[] as &[&str]);
     }
 
     #[test]

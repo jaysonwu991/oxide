@@ -1420,9 +1420,13 @@ The dock paints a terminal-shaped startup frame while the PTY is being opened,
 then replaces it with the real shell surface, so the first frame is never an
 empty rectangle. The shell surface uses an inset near-black canvas, a tight
 monospace grid, native overlay scrollbars and a solid block cursor. The shell is
-the reader's real `$SHELL` in the thread's project or worktree, with
-`TERM=xterm-256color`, `COLORTERM=truecolor`, shell-native line editing,
-resizing and exit reporting.
+the reader's real `$SHELL` in the thread's project or worktree, started as an
+interactive login shell so their profile and prompt theme load the way they do
+in Terminal. Its PATH is also enriched for the shorter environment a GUI launch
+inherits, and it receives `TERM=xterm-256color`, `COLORTERM=truecolor`, and the
+`TERM_PROGRAM` facts prompt tools use. Selection copies with ⌘C / Ctrl+Shift+C
+and the clipboard pastes with ⌘V / Ctrl+V (Ctrl+Shift+V also works everywhere);
+bracketed paste is honored when the shell enables it.
 The cursor is painted as the shell's own blinking block, with a hollow block
 when that pane is not focused. The bundled **Oxide Terminal** family is
 JetBrains Mono NL Nerd Font Mono, so Powerline separators and common prompt

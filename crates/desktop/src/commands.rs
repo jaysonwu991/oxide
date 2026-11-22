@@ -201,6 +201,35 @@ pub fn read_clipboard() -> CmdResult<Option<ClipboardAttachment>> {
         .map(|(name, data_url)| ClipboardAttachment { name, data_url }))
 }
 
+/// The clipboard as terminal input: copied paths one per line, an image's
+/// scratch path, or plain text. This is the fallback for a webview that cannot
+/// read the pasteboard through `navigator.clipboard`.
+pub fn read_clipboard_text() -> CmdResult<Option<String>> {
+    Ok(paste_text(oxide_core::media::clipboard_paste()))
+}
+
+fn paste_text(paste: oxide_core::media::Paste) -> Option<String> {
+    match paste {
+        oxide_core::media::Paste::Text(text) => Some(text),
+        oxide_core::media::Paste::Paths(paths) => {
+            let paths: Vec<_> = paths
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            (!paths.is_empty()).then(|| paths.join("\n"))
+        }
+        oxide_core::media::Paste::Empty { .. } => None,
+    }
+}
+
+/// A desktop webview's native copy fallback. The page tries its clipboard API
+/// and its own copy command first; this reaches the system pasteboard through
+/// the same host that owns the terminal.
+pub fn write_clipboard(text: String) -> CmdResult<bool> {
+    oxide_core::clipboard::copy_system(&text).map_err(err)?;
+    Ok(true)
+}
+
 /// A refused attachment fails the send instead of vanishing from the message:
 /// a payload that is not base64, one past the limit the core enforces, or a
 /// payload that is neither an image, a PDF nor text (a video, a tarball).
@@ -2131,6 +2160,8 @@ pub async fn dispatch(
         ),
         "list_commands" => command_value(list_commands(arg(&args, "project")?).await),
         "read_clipboard" => command_value(read_clipboard()),
+        "read_clipboard_text" => command_value(read_clipboard_text()),
+        "write_clipboard" => command_value(write_clipboard(arg(&args, "text")?)),
         "at_suggestions" => command_value(
             at_suggestions(
                 arg(&args, "project")?,
@@ -2380,6 +2411,28 @@ fn write_prefs(patch: Value) -> CmdResult<Value> {
 mod tests {
     use super::*;
     use oxide_core::llm::{FunctionCall, ToolCall};
+
+    #[test]
+    fn clipboard_paste_text_keeps_copied_paths_and_plain_text() {
+        let paths = vec![
+            std::path::PathBuf::from("/tmp/first file.txt"),
+            std::path::PathBuf::from("/tmp/second.png"),
+        ];
+        assert_eq!(
+            paste_text(oxide_core::media::Paste::Paths(paths)),
+            Some("/tmp/first file.txt\n/tmp/second.png".to_string())
+        );
+        assert_eq!(
+            paste_text(oxide_core::media::Paste::Text("echo ready".into())),
+            Some("echo ready".into())
+        );
+        assert_eq!(
+            paste_text(oxide_core::media::Paste::Empty {
+                types: "public.utf8-plain-text".into()
+            }),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn plugin_actions_reject_unknown_operations_before_accessing_the_registry() {

@@ -3400,6 +3400,8 @@ body.terminal-maximized .bottom-panel.terminal-mode { flex: 1 1 auto; min-height
   font-feature-settings: "liga" 0, "calt" 0;
   outline: none;
   cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
   white-space: pre;
   tab-size: 8;
   scrollbar-color: color-mix(in srgb, var(--text) 20%, transparent) transparent;

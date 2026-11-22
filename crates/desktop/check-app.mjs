@@ -651,6 +651,7 @@ let providersAnswer = [];
 // What the harness' `read_clipboard` answers, for the paste a webview could not
 // read itself.
 let clipboardAnswer = null;
+let clipboardTextAnswer = null;
 // What the harness' `reasoning_levels` answers, which is the active model's own
 // levels read from the model cache. The full set stands in for a model whose
 // listing advertised nothing; a check below narrows it.
@@ -1056,6 +1057,11 @@ const invoke = async (command, args = {}) => {
       };
     case "read_clipboard":
       return clipboardAnswer;
+    case "read_clipboard_text":
+      return clipboardTextAnswer;
+    case "write_clipboard":
+      copiedTexts.push(String(args.text));
+      return true;
     case "reasoning_levels":
       return reasoningReplyGate || { ...reasoningAnswer, reasoningLevels: [...reasoningAnswer.reasoningLevels] };
     case "set_project_trust":
@@ -1276,6 +1282,7 @@ Object.defineProperty(globalThis, "navigator", {
   value: {
     clipboard: {
       writeText: async (text) => copiedTexts.push(String(text)),
+      readText: async () => clipboardTextAnswer ?? "",
     },
   },
 });
@@ -1340,6 +1347,7 @@ vm.runInThisContext(
     " clearTerminal, setTerminalMaximized, toggleTerminalMaximized, terminalPane, focusedTerminalPane," +
     " openTerminalPane, splitTerminal, closeTerminalPane, renderTerminalPanes, focusTerminalPane," +
     " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
+    " pasteTerminalText, pasteTerminalClipboard, terminalSelection," +
     " terminalStartingView, clearTerminalStarting, initTerminalResize," +
     " PANEL_BODIES, changeActions, shapeChange, readRepositoryIndex, renderMemories," +
     " maybePredict, showPrediction, clearPrediction, acceptPrediction, runSlashCommand," +
@@ -11139,6 +11147,46 @@ check(
 // keeping a buffer of its own.
 terminalWrites.length = 0;
 const sendKey = (key, extra = {}) => app.terminalKey({ key, preventDefault() {}, ...extra });
+app.focusedTerminalPane().screen.bracketedPaste = true;
+app.pasteTerminalText("echo one\r\necho two");
+app.focusedTerminalPane().screen.bracketedPaste = false;
+app.pasteTerminalText("echo three\necho four");
+check(
+  "kept a bracketed paste intact and sent plain line feeds as Enter",
+  terminalWrites.join("|") ===
+    "\x1b[200~echo one\necho two\x1b[201~|echo three\recho four",
+  JSON.stringify(terminalWrites),
+);
+terminalWrites.length = 0;
+clipboardTextAnswer = "echo pasted";
+check("claimed the terminal paste shortcut", sendKey("v", { metaKey: true }));
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "pasted the clipboard into the focused shell",
+  terminalWrites.join("|") === "echo pasted",
+  JSON.stringify(terminalWrites),
+);
+terminalWrites.length = 0;
+const originalTerminalSelection = globalThis.window.getSelection;
+globalThis.window.getSelection = () => ({
+  isCollapsed: false,
+  rangeCount: 1,
+  getRangeAt: () => ({
+    startContainer: app.focusedTerminalPane().surface,
+    endContainer: app.focusedTerminalPane().surface,
+  }),
+  toString: () => "selected shell output",
+});
+copiedTexts.length = 0;
+check("claimed the terminal copy shortcut", sendKey("c", { metaKey: true }));
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "copied the terminal's selected output",
+  copiedTexts.at(-1) === "selected shell output",
+  copiedTexts.join("|"),
+);
+globalThis.window.getSelection = originalTerminalSelection;
+terminalWrites.length = 0;
 check(
   "sent the keys a shell reads",
   sendKey("Enter") &&

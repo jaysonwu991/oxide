@@ -1979,6 +1979,7 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("terminal.restore", "Restore terminal", "还原终端"),
     ("terminal.failed", "Could not open a shell: {value0}", "无法打开 shell：{value0}"),
     ("terminal.writeFailed", "The shell is not answering: {value0}", "shell 未响应：{value0}"),
+    ("terminal.pasteFailed", "Could not paste from the clipboard.", "无法从剪贴板粘贴。"),
     ("terminal.exited", "The shell has exited. Open the panel again for a new one.", "shell 已退出。再次打开面板以启动新的 shell。"),
     ("terminal.show", "Open the terminal", "打开终端"),
     ("menu.panel", "Show or hide the panel", "显示或隐藏面板"),
