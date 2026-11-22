@@ -222,9 +222,11 @@ jobs:
         run: |
           expected="${{ matrix.arch }}"
           [ "$expected" = "x64" ] && expected=x86_64
+          app_dir=artifacts/mac
+          [ "${{ matrix.arch }}" = "arm64" ] && app_dir="$app_dir-arm64"
           for binary in \
-            artifacts/mac/Oxide.app/Contents/MacOS/Oxide \
-            artifacts/mac/Oxide.app/Contents/Resources/harness/oxide-desktop
+            "$app_dir/Oxide.app/Contents/MacOS/Oxide" \
+            "$app_dir/Oxide.app/Contents/Resources/harness/oxide-desktop"
           do
             actual="$(lipo -archs "$binary")"
             [ "$actual" = "$expected" ] || {
