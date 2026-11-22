@@ -7,8 +7,9 @@ name: Desktop (Tauri)
 # artifacts feed the public `desktop-latest` alias. Electron remains available
 # from versioned `desktop-v*` releases.
 #
-# Every architecture builds on its own host, so the binary carries the
-# architecture it is named after, including on Intel Macs.
+# Apple Silicon runners build both Mac architectures. The Intel artifact is a
+# native x86_64 Rust target rather than an Intel executable built on slower
+# Intel hosted hardware.
 
 on:
   workflow_dispatch:
@@ -34,7 +35,7 @@ jobs:
             artifact: macos-arm64
             arch: arm64
 
-          - platform: macos-15-intel
+          - platform: macos-latest
             name: macOS x64
             artifact: macos-x64
             arch: x64
@@ -57,11 +58,16 @@ jobs:
             arch: x64
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
+    env:
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ startsWith(matrix.platform, 'macos') && matrix.arch == 'x64' && '16' || '1' }}
+      CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(matrix.platform, 'macos') && matrix.arch == 'x64' && 'false' || 'thin' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && matrix.arch == 'x64' && 'x86_64-apple-darwin' || '' }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -105,8 +111,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-tauri
           workspaces: crates/desktop-tauri
+          shared-key: desktop-tauri-release-${{ matrix.arch }}
+          add-job-id-key: false
+          cache-workspace-crates: true
           cache-on-failure: true
 
       - name: Set version from tag
@@ -179,6 +187,14 @@ jobs:
         shell: bash
         run: bash ./package.sh ${{ matrix.arch }}
 
+      - name: Prepare the Intel smoke test
+        if: startsWith(matrix.platform, 'macos') && matrix.arch == 'x64'
+        shell: bash
+        run: |
+          if ! arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+
       # The binary answers the engine's own commands before it is shipped, so a
       # build that could not reach the configuration, the session store or the
       # approval store fails here rather than on a reader's machine.
@@ -187,10 +203,16 @@ jobs:
         shell: bash
         run: |
           binary=./target/release/oxide-desktop-tauri
-          if [ ! -f "$binary" ]; then
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            binary=./artifacts/Oxide.app/Contents/MacOS/oxide-desktop-tauri
+          elif [ ! -f "$binary" ]; then
             binary="$binary.exe"
           fi
-          "$binary" --check
+          if [ "${{ matrix.arch }}" = "x64" ] && [ "${{ runner.os }}" = "macOS" ]; then
+            arch -x86_64 "$binary" --check
+          else
+            "$binary" --check
+          fi
 
       # The installers `docs/desktop-tauri.md` lists under **Release assets**,
       # named the same way from release to release so the permanent link works.

@@ -14,7 +14,7 @@
     "build": "node ../../scripts/prepare-diagrams.mjs desktop && tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node ../../scripts/prepare-diagrams.mjs desktop && cargo build && tsc -p tsconfig.json && electron .",
-    "dist": "node ../../scripts/prepare-diagrams.mjs desktop && tsc -p tsconfig.json && cargo build --release && electron-builder --config electron-builder.yml"
+    "dist": "node ../../scripts/prepare-diagrams.mjs desktop && tsc -p tsconfig.json && node ../../scripts/build-desktop-harness.mjs && electron-builder --config electron-builder.yml"
   },
   "devDependencies": {
     "@types/node": "24.19.1",

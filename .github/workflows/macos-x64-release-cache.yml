@@ -1,0 +1,60 @@
+name: macOS x64 Release Cache
+
+# Release tags cannot restore caches saved by a different tag. Seed the
+# dependency caches in the default-branch scope whenever a lockfile changes so
+# the macOS x64 release jobs can restore them.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "crates/desktop/Cargo.lock"
+      - "crates/desktop-tauri/Cargo.lock"
+      - ".github/workflows/macos-x64-release-cache.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  CARGO_PROFILE_RELEASE_LTO: "false"
+
+jobs:
+  warm:
+    name: warm ${{ matrix.name }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Tauri x64
+            workspace: crates/desktop-tauri
+            cache-key: desktop-tauri-release-x64
+
+          - name: Electron x64
+            workspace: crates/desktop
+            cache-key: desktop-app-release-x64
+
+          - name: CLI x64
+            workspace: .
+            cache-key: cli-release-x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.workspace }}
+          shared-key: ${{ matrix.cache-key }}
+          add-job-id-key: false
+          cache-workspace-crates: true
+
+      - name: Build the x64 dependencies
+        working-directory: ${{ matrix.workspace }}
+        run: cargo build --release --locked --target x86_64-apple-darwin

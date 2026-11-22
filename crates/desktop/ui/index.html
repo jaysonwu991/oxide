@@ -459,6 +459,7 @@
       </div>
 
     <div id="panel-resizer" class="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize review panel" data-i18n-aria="ui.resizeReview" aria-valuemin="300" aria-valuemax="560" aria-valuenow="360" tabindex="0"></div>
+    <div id="terminal-resizer" class="terminal-resizer" role="separator" aria-orientation="horizontal" aria-label="Resize terminal" data-i18n-aria="terminal.resize" aria-valuemin="180" tabindex="0" hidden></div>
     <aside id="bottom-panel" class="bottom-panel" hidden aria-label="Panel" data-i18n-aria="panel.title">
       <div class="panel-bodies">
     <aside id="review-modal" class="changes-pane" aria-label="Changes" data-i18n-aria="ui.changes" hidden>
@@ -495,7 +496,10 @@
     </aside>
         <div id="panel-terminal" class="panel-terminal" hidden>
           <div class="terminal-bar">
-            <span class="terminal-dock-title" data-i18n="panel.terminal">Terminal</span>
+            <div class="terminal-identity">
+              <span class="terminal-dock-title" data-i18n="panel.terminal">Terminal</span>
+              <span id="terminal-context" class="terminal-context"></span>
+            </div>
             <div id="terminal-tools" class="terminal-tools" aria-label="Terminal actions" data-i18n-aria="terminal.title">
               <span class="terminal-shell"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/></svg><span id="terminal-shell" data-i18n="terminal.shell">shell</span></span>
               <button id="terminal-new" class="icon" type="button" title="New terminal" aria-label="New terminal" data-i18n-title="terminal.new" data-i18n-aria="terminal.new"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button>

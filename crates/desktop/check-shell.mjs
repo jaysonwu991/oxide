@@ -430,13 +430,17 @@ check(
     /trafficLightPosition: \{ x: 14, y: 16 \}/.test(shell) &&
     html.indexOf('<header class="topbar">') < html.indexOf('<aside class="sidebar">'),
 );
+const harnessBuild = text(`${root}scripts/build-desktop-harness.mjs`);
 check(
   "runs this package's own main process",
   packaged.main === "electron/dist/main.js" &&
     packaged.scripts.build === "node ../../scripts/prepare-diagrams.mjs desktop && tsc -p tsconfig.json" &&
-    /tsc -p tsconfig\.json && cargo build --release && electron-builder --config electron-builder\.yml/.test(
+    /tsc -p tsconfig\.json && node ..\/..\/scripts\/build-desktop-harness\.mjs && electron-builder --config electron-builder\.yml/.test(
       packaged.scripts.dist,
     ) &&
+    /x86_64-apple-darwin/.test(harnessBuild) &&
+    /execFileSync\("cargo", args/.test(harnessBuild) &&
+    /copyFileSync\(source, destination\)/.test(harnessBuild) &&
     exists("tsconfig.json") &&
     exists("electron-builder.yml") &&
     // Both workflows install with `pnpm install --frozen-lockfile`, which reads a
@@ -883,17 +887,38 @@ const builds = [...workflowJobs[1].matchAll(
 )];
 const nativeBuilds = [
   ["macos-latest", "macos-arm64", "arm64"],
-  ["macos-15-intel", "macos-x64", "x64"],
+  ["macos-latest", "macos-x64", "x64"],
   ["ubuntu-24.04", "linux-x64", "x64"],
   ["ubuntu-24.04-arm", "linux-arm64", "arm64"],
   ["windows-latest", "windows-x64", "x64"],
 ];
 check(
-  "packaged Electron and the harness for the same native architecture",
+  "packaged Electron and the harness for the same target architecture",
   builds.length === nativeBuilds.length &&
     nativeBuilds.every(([host, artifact, arch]) =>
       builds.some((row) => row[1] === host && row[3] === artifact && row[4] === arch),
-    ) && workflowJobs[1].includes("pnpm run dist --${{ matrix.arch }}"),
+    ) &&
+    workflowJobs[1].includes("OXIDE_DESKTOP_ARCH: ${{ matrix.arch }}") &&
+    workflowJobs[1].includes("targets: ${{ matrix.platform == 'macos-latest' && matrix.arch == 'x64' && 'x86_64-apple-darwin' || '' }}") &&
+    workflowJobs[1].includes("actual=\"$(lipo -archs \"$binary\")\"") &&
+    workflowJobs[1].includes("pnpm run dist --${{ matrix.arch }}"),
+);
+const releaseCacheWorkflow = text(`${root}.github/workflows/macos-x64-release-cache.yml`);
+const cliWorkflow = text(`${root}.github/workflows/cli.yml`);
+check(
+  "seeded the macOS x64 release caches from the default branch",
+  [
+    ["desktop-tauri-release-x64", "desktop-tauri-release-${{ matrix.arch }}"],
+    ["desktop-app-release-x64", "desktop-app-release-${{ matrix.arch }}"],
+    ["cli-release-x86_64-apple-darwin", "cli-release-${{ matrix.target }}"],
+  ].every(([key, template]) =>
+    releaseCacheWorkflow.includes(`cache-key: ${key}`) &&
+    (desktopWorkflow.includes(`shared-key: ${template}`) ||
+      text(`${root}.github/workflows/desktop-tauri.yml`).includes(`shared-key: ${template}`) ||
+      cliWorkflow.includes(`shared-key: ${template}`)),
+  ) &&
+    releaseCacheWorkflow.includes("branches: [main]") &&
+    releaseCacheWorkflow.includes("cargo build --release --locked --target x86_64-apple-darwin"),
 );
 const releaseJob = desktopWorkflow.slice(desktopWorkflow.indexOf("\n  release:"));
 check(

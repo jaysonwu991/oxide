@@ -11138,6 +11138,8 @@ state.terminal = {
   focused: null,
   layout: "single",
   ratio: 50,
+  opening: false,
+  openGeneration: 0,
   paintTimer: 0,
 };
 
@@ -11147,6 +11149,7 @@ function openPanel(tab) {
   for (const [name, body] of Object.entries(PANEL_BODIES)) el(body).hidden = name !== chosen;
   const terminalMode = chosen === "terminal";
   el("bottom-panel").classList.toggle("terminal-mode", terminalMode);
+  el("terminal-resizer").hidden = !terminalMode;
   if (!terminalMode) setTerminalMaximized(false);
   el("bottom-panel").hidden = false;
   paintDockToggles();
@@ -11161,6 +11164,7 @@ function openPanel(tab) {
 function hidePanel() {
   el("bottom-panel").hidden = true;
   el("bottom-panel").classList.remove("terminal-mode");
+  el("terminal-resizer").hidden = true;
   setTerminalMaximized(false);
   for (const body of Object.values(PANEL_BODIES)) el(body).hidden = true;
   void stopTerminal();
@@ -11396,6 +11400,57 @@ async function maybePredict() {
 
 function terminalStyle() {
   return { fg: "", bg: "", bold: false, dim: false, underline: false, inverse: false };
+}
+
+let terminalStartingNode = null;
+
+function clearTerminalStarting() {
+  terminalStartingNode?.remove();
+  terminalStartingNode = null;
+  el("panel-terminal")?.removeAttribute("aria-busy");
+}
+
+/// A terminal-shaped first frame while the host starts the shell. It keeps the
+/// dock from opening as an empty rectangle and leaves the real pane free to
+/// replace it as soon as the PTY answers.
+function terminalStartingView(project) {
+  clearTerminalStarting();
+  const section = document.createElement("section");
+  section.className = "terminal-pane terminal-pane-starting focused";
+  const surface = document.createElement("div");
+  surface.className = "terminal-surface";
+  surface.setAttribute("role", "status");
+  surface.setAttribute("aria-live", "polite");
+  const line = document.createElement("div");
+  line.className = "terminal-boot-line";
+  const prompt = document.createElement("span");
+  prompt.className = "terminal-boot-prompt";
+  prompt.innerHTML = ICONS.chevronRight;
+  const spinner = document.createElement("span");
+  spinner.className = "spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.textContent = t("terminal.starting", "Starting {value0}…", {
+    value0: t("terminal.shell", "shell"),
+  });
+  line.append(prompt, spinner, label);
+  const cwd = document.createElement("div");
+  cwd.className = "terminal-boot-path";
+  cwd.textContent = project || "";
+  cwd.title = project || "";
+  surface.append(line, cwd);
+  section.append(surface);
+
+  const container = el("terminal-panes");
+  container.dataset.layout = "single";
+  container.replaceChildren(section);
+  el("terminal-context").textContent = project || "";
+  el("terminal-context").title = project || "";
+  el("terminal-shell").textContent = t("terminal.startingShort", "starting…");
+  el("terminal-shell").title = t("terminal.startingShort", "starting…");
+  el("panel-terminal").setAttribute("aria-busy", "true");
+  terminalStartingNode = section;
+  return section;
 }
 
 function newTerminalScreen(cols, rows) {
@@ -11860,9 +11915,13 @@ function renderTerminalPanes() {
   container.style.setProperty("--terminal-ratio", `${state.terminal.ratio}%`);
   const active = focusedTerminalPane();
   if (active) {
+    el("terminal-context").textContent = active.cwd;
+    el("terminal-context").title = active.cwd;
     el("terminal-shell").textContent = active.shell;
-    el("terminal-shell").title = t("terminal.shell", "Shell");
+    el("terminal-shell").title = active.cwd;
   } else {
+    el("terminal-context").textContent = "";
+    el("terminal-context").removeAttribute("title");
     el("terminal-shell").textContent = t("terminal.shell", "shell");
     el("terminal-shell").title = t("terminal.shell", "Shell");
   }
@@ -11901,21 +11960,47 @@ async function startTerminal() {
     askForProject();
     return;
   }
+  if (state.terminal.opening) return;
+  state.terminal.opening = true;
+  const generation = ++state.terminal.openGeneration;
+  terminalStartingView(project);
   try {
-    await openTerminalPane(project);
+    const pane = await openTerminalPane(project);
+    if (
+      generation !== state.terminal.openGeneration ||
+      el("bottom-panel").hidden ||
+      state.panelTab !== "terminal"
+    ) {
+      state.terminal.panes = state.terminal.panes.filter((entry) => entry.id !== pane.id);
+      state.terminal.focused = state.terminal.panes.at(-1)?.id ?? null;
+      renderTerminalPanes();
+      await invoke("terminal_close", { id: pane.id }).catch(() => {});
+      return;
+    }
+    clearTerminalStarting();
     el("terminal-state").hidden = true;
     renderTerminalPanes();
     fitTerminal();
     paintTerminal();
   } catch (error) {
+    if (generation !== state.terminal.openGeneration) return;
+    clearTerminalStarting();
     el("terminal-state").hidden = false;
     el("terminal-state").textContent = t("terminal.failed", "Could not open a shell: {value0}", {
       value0: error,
     });
+  } finally {
+    if (generation === state.terminal.openGeneration) {
+      state.terminal.opening = false;
+      el("panel-terminal").removeAttribute("aria-busy");
+    }
   }
 }
 
 async function stopTerminal() {
+  state.terminal.openGeneration += 1;
+  clearTerminalStarting();
+  state.terminal.opening = false;
   const ids = state.terminal.panes.map((pane) => pane.id);
   state.terminal.panes = [];
   state.terminal.focused = null;
@@ -11989,6 +12074,8 @@ function setTerminalMaximized(on) {
     on && state.panelTab === "terminal" && !el("bottom-panel").hidden,
   );
   document.body.classList.toggle("terminal-maximized", next);
+  el("terminal-resizer").hidden =
+    next || state.panelTab !== "terminal" || el("bottom-panel").hidden;
   const button = el("terminal-maximize");
   const label = t(
     next ? "terminal.restore" : "terminal.maximize",
@@ -12573,6 +12660,71 @@ function initPanelResize() {
   });
 }
 
+/// The conversation/terminal boundary follows the pointer and the keyboard.
+/// Its height belongs to the window rather than either front-end, so Electron
+/// and Tauri restore the same split.
+function initTerminalResize() {
+  const handle = el("terminal-resizer");
+  const panel = el("bottom-panel");
+  if (!handle || !panel) return;
+  const storageKey = "oxide.terminalHeight";
+  const MIN = 180;
+  const STEP = 16;
+  const defaultHeight = () =>
+    Math.max(MIN, Math.min(440, Math.round(window.innerHeight * 0.46)));
+  const maxHeight = () => Math.max(MIN, Math.min(Math.round(window.innerHeight * 0.7), window.innerHeight - 150));
+  const clamp = (height) => Math.max(MIN, Math.min(maxHeight(), Math.round(height)));
+  let height = defaultHeight();
+  const apply = (value, persist = false) => {
+    height = clamp(Number.isFinite(value) ? value : defaultHeight());
+    document.body.style.setProperty("--terminal-height", `${height}px`);
+    handle.setAttribute("aria-valuemin", String(MIN));
+    handle.setAttribute("aria-valuemax", String(maxHeight()));
+    handle.setAttribute("aria-valuenow", String(height));
+    if (persist) localStorage.setItem(storageKey, String(height));
+    fitTerminal();
+  };
+  const saved = Number(localStorage.getItem(storageKey) || 0);
+  apply(saved >= MIN ? saved : defaultHeight());
+
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = height;
+    handle.setPointerCapture?.(event.pointerId);
+    document.body.classList.add("resizing");
+    const move = (next) => apply(startHeight - (next.clientY - startY));
+    const finish = (next) => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+      handle.releasePointerCapture?.(next.pointerId);
+      document.body.classList.remove("resizing");
+      apply(height, true);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
+  });
+
+  handle.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? STEP * 4 : STEP;
+    if (event.key === "ArrowUp") apply(height + step, true);
+    else if (event.key === "ArrowDown") apply(height - step, true);
+    else if (event.key === "Home") apply(MIN, true);
+    else if (event.key === "End") apply(maxHeight(), true);
+    else return;
+    event.preventDefault();
+  });
+
+  handle.addEventListener("dblclick", () => {
+    localStorage.removeItem(storageKey);
+    apply(defaultHeight());
+  });
+
+  window.addEventListener("resize", () => apply(height));
+}
+
 /// How long a scrollbar stays drawn after the last scroll of its box, in
 /// milliseconds: long enough to be read while the wheel is still spinning down,
 /// short enough that the bar is away by the time the reader has moved on.
@@ -12771,6 +12923,7 @@ function init() {
   );
   initSidebarResize();
   initPanelResize();
+  initTerminalResize();
   const unifiedReview = localStorage.getItem("oxide.reviewUnified") === "true";
   el("review-modal").classList.toggle("unified", unifiedReview);
   el("review-layout").setAttribute("aria-pressed", String(unifiedReview));

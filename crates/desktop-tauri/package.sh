@@ -36,6 +36,16 @@ case "${requested_arch:-$(uname -m)}" in
     ;;
 esac
 
+case "$(uname -s)" in
+  Darwin) platform=macos ;;
+  Linux) platform=linux ;;
+  MINGW* | MSYS* | CYGWIN*) platform=win ;;
+  *)
+    echo "error: unsupported platform $(uname -s)" >&2
+    exit 2
+    ;;
+esac
+
 host_arch="$(uname -m)"
 case "$host_arch" in
   arm64 | aarch64) host=arm64 ;;
@@ -43,8 +53,18 @@ case "$host_arch" in
   *) host="$host_arch" ;;
 esac
 if [ "$arch" != "$host" ]; then
-  echo "error: asked for $arch but this machine builds $host binaries" >&2
-  exit 2
+  if [ "$platform" = "macos" ] && [ "$host" = "arm64" ] && [ "$arch" = "x64" ]; then
+    rust_target=x86_64-apple-darwin
+    if ! rustup target list --installed | grep -Fxq "$rust_target"; then
+      echo "error: install the Intel target with 'rustup target add $rust_target'" >&2
+      exit 1
+    fi
+  else
+    echo "error: asked for $arch but this machine builds $host binaries" >&2
+    exit 2
+  fi
+else
+  rust_target=""
 fi
 
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
@@ -57,22 +77,16 @@ node "$here/../../scripts/prepare-diagrams.mjs" desktop
 
 if [ "${OXIDE_SKIP_BUILD:-0}" != "1" ]; then
   echo "building oxide-desktop-tauri $version"
-  cargo build --release
+  if [ -n "$rust_target" ]; then
+    cargo build --release --target "$rust_target"
+  else
+    cargo build --release
+  fi
 fi
 
 artifact_dir="$here/artifacts"
 rm -rf "$artifact_dir"
 mkdir -p "$artifact_dir"
-
-case "$(uname -s)" in
-  Darwin) platform=macos ;;
-  Linux) platform=linux ;;
-  MINGW* | MSYS* | CYGWIN*) platform=win ;;
-  *)
-    echo "error: unsupported platform $(uname -s)" >&2
-    exit 2
-    ;;
-esac
 
 app_name="Oxide"
 bundle_id="dev.oxide.desktop"
@@ -80,6 +94,9 @@ plugins="$here/../desktop/plugins"
 
 if [ "$platform" = "macos" ]; then
   binary="target/release/oxide-desktop-tauri"
+  if [ -n "$rust_target" ]; then
+    binary="target/$rust_target/release/oxide-desktop-tauri"
+  fi
   if [ ! -x "$binary" ]; then
     echo "error: $binary was not built" >&2
     exit 1

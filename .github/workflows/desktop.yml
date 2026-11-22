@@ -17,8 +17,8 @@ name: Desktop (Electron)
 # reads — and a build with no secrets configured still produces an installable
 # bundle.
 #
-# Every architecture builds on its own host, so the harness and Electron
-# installer carry the same architecture, including on Intel Macs.
+# Apple Silicon runners build both Mac architectures. The x64 job selects the
+# Intel Rust target and electron-builder downloads the matching Electron files.
 
 on:
   workflow_dispatch:
@@ -40,7 +40,7 @@ jobs:
             artifact: macos-arm64
             arch: arm64
 
-          - platform: macos-15-intel
+          - platform: macos-latest
             name: macOS x64
             artifact: macos-x64
             arch: x64
@@ -63,22 +63,30 @@ jobs:
             arch: x64
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
+    env:
+      OXIDE_DESKTOP_ARCH: ${{ matrix.arch }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ startsWith(matrix.platform, 'macos') && matrix.arch == 'x64' && '16' || '1' }}
+      CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(matrix.platform, 'macos') && matrix.arch == 'x64' && 'false' || 'thin' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Node
-        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          targets: ${{ matrix.platform == 'macos-latest' && matrix.arch == 'x64' && 'x86_64-apple-darwin' || '' }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 12.8.1
           run_install: false
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/desktop/pnpm-lock.yaml
 
       # Electron links the same system libraries a Chromium-based app needs, and
       # electron-builder's AppImage target uses the `fuse` it finds on the host.
@@ -99,8 +107,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-app
           workspaces: crates/desktop
+          shared-key: desktop-app-release-${{ matrix.arch }}
+          add-job-id-key: false
+          cache-workspace-crates: true
 
       - name: Cache Electron
         uses: actions/cache@v4
@@ -108,7 +118,7 @@ jobs:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/desktop/pnpm-lock.yaml') }}
+          key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('crates/desktop/pnpm-lock.yaml') }}
 
       - name: Install the app's packages
         working-directory: crates/desktop
@@ -204,6 +214,24 @@ jobs:
         working-directory: crates/desktop
         shell: bash
         run: pnpm run dist --${{ matrix.arch }}
+
+      - name: Check the macOS architecture
+        if: startsWith(matrix.platform, 'macos')
+        working-directory: crates/desktop
+        shell: bash
+        run: |
+          expected="${{ matrix.arch }}"
+          [ "$expected" = "x64" ] && expected=x86_64
+          for binary in \
+            artifacts/mac/Oxide.app/Contents/MacOS/Oxide \
+            artifacts/mac/Oxide.app/Contents/Resources/harness/oxide-desktop
+          do
+            actual="$(lipo -archs "$binary")"
+            [ "$actual" = "$expected" ] || {
+              echo "$binary is $actual, expected $expected" >&2
+              exit 1
+            }
+          done
 
       # The installers `docs/desktop.md` lists under **Release assets**, named
       # the way `oxide_core::updates::Component::Desktop::assets()` resolves
