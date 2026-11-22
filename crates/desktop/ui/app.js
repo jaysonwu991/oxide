@@ -9772,8 +9772,22 @@ const SHORTCUTS = [
     id: "terminal",
     key: "settings.actionTerminal",
     fallback: "Open the terminal",
-    chords: ["ctrl+`"],
+    chords: ["ctrl+`", "ctrl+~"],
     run: () => openTerminal(),
+  },
+  {
+    id: "split-terminal-right",
+    key: "settings.actionSplitTerminalRight",
+    fallback: "Split terminal right",
+    chords: ["mod+d"],
+    run: () => splitTerminal("row"),
+  },
+  {
+    id: "split-terminal-down",
+    key: "settings.actionSplitTerminalDown",
+    fallback: "Split terminal down",
+    chords: ["mod+shift+d"],
+    run: () => splitTerminal("column"),
   },
   {
     id: "toggle-sidebar",
@@ -9898,7 +9912,10 @@ function chordMatches(chord, event) {
   if (!parts.mod && !parts.ctrl && mod) return false;
   if (parts.ctrl && !event.ctrlKey) return false;
   if (parts.alt !== Boolean(event.altKey)) return false;
-  if (parts.shift !== Boolean(event.shiftKey)) return false;
+  // A shifted symbol already carries Shift in its character. Ctrl+~, for
+  // example, arrives as Ctrl+Shift+`, but Shortcuts names the key people type.
+  const impliedShift = parts.key === "~" && !parts.shift && event.shiftKey;
+  if (parts.shift !== Boolean(event.shiftKey) && !impliedShift) return false;
   if (String(event.key).toLowerCase() === parts.key) return true;
   // Option rewrites the character on a Mac (⌥U is a dead accent key), so an
   // Alt chord falls back to the physical key it names.
@@ -10348,7 +10365,9 @@ function commandActions() {
     { id: "open-folder", label: t("menu.openFolder", "Open a folder…"), hint: "mod+o", run: () => openProjects() },
     { id: "search", label: t("menu.searchChats", "Search chats…"), hint: "mod+shift+f", run: () => openSearch() },
     { id: "panel", label: t("menu.panel", "Show or hide the panel"), hint: "mod+j", run: () => togglePanel() },
-    { id: "terminal", label: t("menu.terminal", "Terminal"), hint: "ctrl+`", run: () => void openTerminal() },
+    { id: "terminal", label: t("menu.terminal", "Terminal"), hint: "ctrl+` / ctrl+~", run: () => void openTerminal() },
+    { id: "split-terminal-right", label: t("settings.actionSplitTerminalRight", "Split terminal right"), hint: "mod+d", run: () => void splitTerminal("row") },
+    { id: "split-terminal-down", label: t("settings.actionSplitTerminalDown", "Split terminal down"), hint: "mod+shift+d", run: () => void splitTerminal("column") },
     { id: "review", label: t("menu.review", "Review the changes"), hint: null, run: () => openRepositoryChanges() },
     { id: "pulls", label: t("menu.pulls", "Pull requests…"), hint: null, run: () => void openPulls() },
     { id: "find", label: t("menu.findInChat", "Find in this chat"), hint: "mod+f", run: () => openFind() },
@@ -11080,14 +11099,10 @@ state.pullError = "";
 state.pullOpen = null;
 state.pullProject = "";
 state.terminal = {
-  id: null,
-  cwd: "",
-  shell: "shell",
-  cols: 80,
-  rows: 20,
-  screen: null,
-  pending: "",
-  exited: false,
+  panes: [],
+  focused: null,
+  layout: "single",
+  ratio: 50,
   paintTimer: 0,
 };
 
@@ -11110,7 +11125,7 @@ function openPanel(tab) {
   paintDockToggles();
   if (chosen === "terminal") {
     fitTerminal();
-    el("terminal-surface").focus();
+    focusedTerminalPane()?.surface.focus();
   }
 }
 
@@ -11624,7 +11639,16 @@ function newTerminalScreen(cols, rows) {
     col: 0,
     style: terminalStyle(),
     pending: "",
+    cursorVisible: true,
   };
+}
+
+function terminalPane(id = state.terminal.focused) {
+  return state.terminal.panes.find((pane) => pane.id === id) || null;
+}
+
+function focusedTerminalPane() {
+  return terminalPane() || state.terminal.panes[0] || null;
 }
 
 function terminalCell(screen, col) {
@@ -11678,6 +11702,14 @@ function applyTerminalCsi(screen, params, final) {
     .map((value) => (value === "" ? 0 : Number(value)))
     .filter((value) => Number.isFinite(value));
   const first = numbers[0] ?? 0;
+  if (params.includes("?25") && final === "h") {
+    screen.cursorVisible = true;
+    return;
+  }
+  if (params.includes("?25") && final === "l") {
+    screen.cursorVisible = false;
+    return;
+  }
   if (final === "m") {
     for (let index = 0; index < numbers.length; index += 1) {
       const value = numbers[index];
@@ -11750,8 +11782,9 @@ function applyTerminalCsi(screen, params, final) {
 /// language a shell's own output uses — carriage return, line feed, backspace,
 /// tabs, colours, erasing and moving the cursor. A program that paints a
 /// full-screen interface is outside that, and is not what this panel is for.
-function terminalFeed(text) {
-  const screen = state.terminal.screen;
+function terminalFeed(text, id = state.terminal.focused) {
+  const pane = terminalPane(id);
+  const screen = pane?.screen;
   if (!screen || !text) return;
   const input = screen.pending + text;
   screen.pending = "";
@@ -11834,12 +11867,19 @@ function scheduleTerminalPaint() {
   }, 16);
 }
 
-function paintTerminal() {
-  const surface = el("terminal-surface");
-  const screen = state.terminal.screen;
+function terminalCursor(row, pane) {
+  const cursor = document.createElement("span");
+  cursor.className = "terminal-cursor";
+  const cell = row.cells[pane.screen.col];
+  cursor.textContent = cell && cell.ch !== " " ? cell.ch : "\u00a0";
+  return cursor;
+}
+
+function paintTerminalPane(pane) {
+  const { screen, surface } = pane;
   if (!surface || !screen) return;
   const rows = [];
-  for (const line of screen.lines) {
+  for (const [lineIndex, line] of screen.lines.entries()) {
     const row = document.createElement("div");
     row.className = "term-line";
     let run = null;
@@ -11861,7 +11901,16 @@ function paintTerminal() {
       run = null;
       text = "";
     };
-    for (const cell of line.cells) {
+    for (const [column, cell] of line.cells.entries()) {
+      if (
+        screen.cursorVisible &&
+        lineIndex === screen.row &&
+        column === screen.col
+      ) {
+        flush();
+        row.appendChild(terminalCursor(line, pane));
+        continue;
+      }
       const key = `${cell.style.fg}|${cell.style.bg}|${cell.style.bold}|${cell.style.dim}|${cell.style.underline}|${cell.style.inverse}`;
       if (!run || run.key !== key) {
         flush();
@@ -11870,30 +11919,210 @@ function paintTerminal() {
       text += cell.ch;
     }
     flush();
+    if (
+      screen.cursorVisible &&
+      lineIndex === screen.row &&
+      screen.col >= line.cells.length
+    ) {
+      row.appendChild(terminalCursor(line, pane));
+    }
     rows.push(row);
   }
   surface.replaceChildren(...rows);
-  if (state.panelTab === "terminal") surface.scrollTop = surface.scrollHeight;
+  surface.scrollTop = surface.scrollHeight;
+}
+
+function paintTerminal() {
+  for (const pane of state.terminal.panes) paintTerminalPane(pane);
 }
 
 /// The room the panel gives the shell, in characters. A surface that has not been
 /// laid out yet (the stub the checks run against) reports the default size.
 function fitTerminal() {
-  const surface = el("terminal-surface");
-  if (!surface) return;
-  const rect = surface.getBoundingClientRect?.() || { width: 0, height: 0 };
-  const cols = rect.width ? Math.max(20, Math.floor(rect.width / 7.3)) : 100;
-  const rows = rect.height ? Math.max(4, Math.floor(rect.height / 17.4)) : 24;
-  if (cols === state.terminal.cols && rows === state.terminal.rows) return;
-  state.terminal.cols = cols;
-  state.terminal.rows = rows;
-  if (state.terminal.screen) {
-    state.terminal.screen.cols = cols;
-    state.terminal.screen.rows = rows;
+  for (const pane of state.terminal.panes) {
+    const rect = pane.surface.getBoundingClientRect?.() || { width: 0, height: 0 };
+    const cols = rect.width ? Math.max(20, Math.floor(rect.width / 7.3)) : pane.cols;
+    const rows = rect.height ? Math.max(4, Math.floor(rect.height / 17.4)) : pane.rows;
+    if (cols === pane.cols && rows === pane.rows) continue;
+    pane.cols = cols;
+    pane.rows = rows;
+    pane.screen.cols = cols;
+    pane.screen.rows = rows;
+    void invoke("terminal_resize", { id: pane.id, cols, rows }).catch(() => {});
   }
-  if (state.terminal.id != null) {
-    void invoke("terminal_resize", { id: state.terminal.id, cols, rows }).catch(() => {});
+}
+
+let terminalDividerNode = null;
+
+function terminalControl(label, className, icon, run) {
+  const control = document.createElement("button");
+  control.type = "button";
+  control.className = `icon ${className}`;
+  control.title = label;
+  control.setAttribute("aria-label", label);
+  control.innerHTML = icon;
+  control.onclick = (event) => {
+    event.stopPropagation();
+    run();
+  };
+  return control;
+}
+
+function terminalPaneView(pane) {
+  const section = document.createElement("section");
+  section.className = "terminal-pane";
+  section.dataset.terminalPane = String(pane.id);
+  const head = document.createElement("header");
+  head.className = "terminal-pane-head";
+  const title = document.createElement("span");
+  title.className = "terminal-pane-title";
+  title.textContent = pane.shell;
+  const cwd = document.createElement("span");
+  cwd.className = "terminal-pane-cwd";
+  cwd.textContent = pane.cwd;
+  cwd.title = pane.cwd;
+  const controls = document.createElement("div");
+  controls.className = "terminal-pane-controls";
+  controls.setAttribute("role", "toolbar");
+  controls.setAttribute("aria-label", t("terminal.title", "Terminal"));
+  const right = terminalControl(
+    t("terminal.splitRight", "Split terminal right"),
+    "pane-split-right",
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>',
+    () => void splitTerminal("row", pane.id),
+  );
+  const down = terminalControl(
+    t("terminal.splitDown", "Split terminal down"),
+    "pane-split-down",
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/></svg>',
+    () => void splitTerminal("column", pane.id),
+  );
+  const close = terminalControl(
+    t("terminal.closePane", "Close terminal pane"),
+    "pane-close",
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+    () => void closeTerminalPane(pane.id),
+  );
+  controls.append(right, down, close);
+  const surface = document.createElement("div");
+  surface.className = "terminal-surface";
+  surface.tabIndex = 0;
+  surface.setAttribute("role", "log");
+  surface.setAttribute("aria-live", "polite");
+  surface.setAttribute("aria-label", t("terminal.title", "Terminal"));
+  surface.addEventListener("keydown", (event) => {
+    if (!terminalKey(event, pane.id)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  surface.addEventListener("click", () => focusTerminalPane(pane.id));
+  head.append(title, cwd, controls);
+  section.append(head, surface);
+  section.addEventListener("pointerdown", (event) => {
+    if (event.target.closest?.("button")) return;
+    focusTerminalPane(pane.id);
+  });
+  pane.section = section;
+  pane.surface = surface;
+  pane.titleEl = title;
+  pane.cwdEl = cwd;
+  pane.splitRight = right;
+  pane.splitDown = down;
+}
+
+function terminalDivider() {
+  if (terminalDividerNode) return terminalDividerNode;
+  const divider = document.createElement("div");
+  divider.id = "terminal-divider";
+  divider.className = "terminal-divider";
+  divider.setAttribute("role", "separator");
+  divider.setAttribute("aria-label", "Resize terminal panes");
+  divider.tabIndex = -1;
+  divider.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    const container = el("terminal-panes");
+    const rect = container.getBoundingClientRect?.() || { width: 1, height: 1 };
+    const horizontal = state.terminal.layout === "row";
+    divider.setPointerCapture?.(event.pointerId);
+    const move = (next) => {
+      const size = horizontal ? rect.width : rect.height;
+      const position = horizontal ? next.clientX - rect.left : next.clientY - rect.top;
+      state.terminal.ratio = Math.max(20, Math.min(80, (position / Math.max(1, size)) * 100));
+      container.style.setProperty("--terminal-ratio", `${state.terminal.ratio}%`);
+      fitTerminal();
+    };
+    const finish = (next) => {
+      divider.removeEventListener("pointermove", move);
+      divider.removeEventListener("pointerup", finish);
+      divider.removeEventListener("pointercancel", finish);
+      divider.releasePointerCapture?.(next.pointerId);
+      fitTerminal();
+    };
+    divider.addEventListener("pointermove", move);
+    divider.addEventListener("pointerup", finish);
+    divider.addEventListener("pointercancel", finish);
+  });
+  terminalDividerNode = divider;
+  return divider;
+}
+
+function renderTerminalPanes() {
+  const container = el("terminal-panes");
+  const focused = state.terminal.focused;
+  for (const pane of state.terminal.panes) {
+    pane.section.classList.toggle("focused", pane.id === focused);
+    pane.splitRight.disabled = state.terminal.panes.length >= 2;
+    pane.splitDown.disabled = state.terminal.panes.length >= 2;
   }
+  el("terminal-split-right").disabled = state.terminal.panes.length >= 2;
+  el("terminal-split-down").disabled = state.terminal.panes.length >= 2;
+  const children = state.terminal.panes.map((pane) => pane.section);
+  const split = state.terminal.panes.length === 2;
+  if (split) {
+    const divider = terminalDivider();
+    divider.setAttribute(
+      "aria-orientation",
+      state.terminal.layout === "row" ? "vertical" : "horizontal",
+    );
+    children.splice(1, 0, divider);
+  }
+  container.replaceChildren(...children);
+  container.dataset.layout = split ? state.terminal.layout : "single";
+  container.style.setProperty("--terminal-ratio", `${state.terminal.ratio}%`);
+  const active = focusedTerminalPane();
+  if (active) {
+    el("terminal-shell").textContent = active.shell;
+    el("terminal-shell").title = t("terminal.shell", "Shell");
+  } else {
+    el("terminal-shell").textContent = t("terminal.shell", "shell");
+    el("terminal-shell").title = t("terminal.shell", "Shell");
+  }
+}
+
+function focusTerminalPane(id, focus = false) {
+  if (!terminalPane(id)) return;
+  state.terminal.focused = id;
+  renderTerminalPanes();
+  const pane = focusedTerminalPane();
+  if (focus) pane?.surface.focus();
+  fitTerminal();
+}
+
+async function openTerminalPane(project, cols = 100, rows = 24) {
+  const answer = await invoke("terminal_open", { project, cols, rows });
+  const pane = {
+    id: answer?.id ?? null,
+    cwd: answer?.cwd || project,
+    shell: answer?.shell || t("terminal.shell", "shell"),
+    cols,
+    rows,
+    exited: false,
+    screen: newTerminalScreen(cols, rows),
+  };
+  terminalPaneView(pane);
+  state.terminal.panes.push(pane);
+  state.terminal.focused = pane.id;
+  return pane;
 }
 
 async function startTerminal() {
@@ -11903,24 +12132,13 @@ async function startTerminal() {
     askForProject();
     return;
   }
-  fitTerminal();
   try {
-    const answer = await invoke("terminal_open", {
-      project,
-      cols: state.terminal.cols,
-      rows: state.terminal.rows,
-    });
-    state.terminal.id = answer?.id ?? null;
-    state.terminal.cwd = answer?.cwd || project;
-    state.terminal.shell = answer?.shell || "shell";
-    state.terminal.exited = false;
-    state.terminal.screen = newTerminalScreen(state.terminal.cols, state.terminal.rows);
-    el("terminal-shell").textContent = state.terminal.shell;
-    el("terminal-shell").title = t("terminal.shell", "Shell");
+    await openTerminalPane(project);
     el("terminal-state").hidden = true;
+    renderTerminalPanes();
+    fitTerminal();
     paintTerminal();
   } catch (error) {
-    state.terminal.screen = null;
     el("terminal-state").hidden = false;
     el("terminal-state").textContent = t("terminal.failed", "Could not open a shell: {value0}", {
       value0: error,
@@ -11929,25 +12147,72 @@ async function startTerminal() {
 }
 
 async function stopTerminal() {
-  const id = state.terminal.id;
-  state.terminal.id = null;
-  state.terminal.screen = null;
-  if (id != null) await invoke("terminal_close", { id }).catch(() => {});
+  const ids = state.terminal.panes.map((pane) => pane.id);
+  state.terminal.panes = [];
+  state.terminal.focused = null;
+  state.terminal.layout = "single";
+  state.terminal.ratio = 50;
+  renderTerminalPanes();
+  await Promise.all(ids.map((id) => invoke("terminal_close", { id }).catch(() => {})));
 }
 
 async function restartTerminal() {
   await stopTerminal();
   await startTerminal();
-  el("terminal-surface").focus();
+  focusedTerminalPane()?.surface.focus();
+}
+
+async function splitTerminal(direction = "row", source = state.terminal.focused) {
+  let current = terminalPane(source);
+  if (!current) {
+    await openTerminal();
+    current = focusedTerminalPane();
+  }
+  if (!current || state.terminal.panes.length >= 2) return;
+  const project = current.cwd || state.worktree || state.project;
+  if (!project) return;
+  try {
+    await openTerminalPane(project, current.cols, current.rows);
+    state.terminal.layout = direction === "column" ? "column" : "row";
+    el("terminal-state").hidden = true;
+    renderTerminalPanes();
+    fitTerminal();
+    paintTerminal();
+    focusedTerminalPane()?.surface.focus();
+  } catch (error) {
+    el("terminal-state").hidden = false;
+    el("terminal-state").textContent = t("terminal.failed", "Could not open a shell: {value0}", {
+      value0: error,
+    });
+  }
+}
+
+async function closeTerminalPane(id) {
+  const pane = terminalPane(id);
+  if (!pane) return;
+  state.terminal.panes = state.terminal.panes.filter((entry) => entry.id !== id);
+  pane.section.remove();
+  await invoke("terminal_close", { id }).catch(() => {});
+  state.terminal.layout = "single";
+  state.terminal.ratio = 50;
+  state.terminal.focused = state.terminal.panes.at(-1)?.id ?? null;
+  renderTerminalPanes();
+  if (!state.terminal.panes.length) {
+    el("terminal-state").hidden = false;
+    el("terminal-state").textContent = t("terminal.exited", "The shell has exited. Open the panel again for a new one.");
+    return;
+  }
+  fitTerminal();
+  focusedTerminalPane()?.surface.focus();
 }
 
 function clearTerminal() {
-  if (state.terminal.screen) {
-    state.terminal.screen = newTerminalScreen(state.terminal.cols, state.terminal.rows);
-    paintTerminal();
-  }
-  terminalWrite("\x0c");
-  el("terminal-surface").focus();
+  const pane = focusedTerminalPane();
+  if (!pane) return;
+  pane.screen = newTerminalScreen(pane.cols, pane.rows);
+  paintTerminal();
+  terminalWrite("\x0c", pane.id);
+  pane.surface.focus();
 }
 
 function setTerminalMaximized(on) {
@@ -11972,13 +12237,13 @@ function toggleTerminalMaximized() {
 
 async function openTerminal() {
   openPanel("terminal");
-  if (state.terminal.id == null) await startTerminal();
-  el("terminal-surface").focus();
+  if (!state.terminal.panes.length) await startTerminal();
+  focusedTerminalPane()?.surface.focus();
 }
 
-function terminalWrite(data) {
-  if (state.terminal.id == null) return;
-  void invoke("terminal_write", { id: state.terminal.id, data }).catch((error) => {
+function terminalWrite(data, id = state.terminal.focused) {
+  if (id == null) return;
+  void invoke("terminal_write", { id, data }).catch((error) => {
     el("terminal-state").hidden = false;
     el("terminal-state").textContent = t("terminal.writeFailed", "The shell is not answering: {value0}", {
       value0: error,
@@ -12005,23 +12270,23 @@ const TERMINAL_KEYS = {
 /// What a key press means to the shell. The shell does its own line editing, so
 /// the window sends the keys and paints what comes back rather than keeping a
 /// buffer of its own.
-function terminalKey(event) {
-  if (state.terminal.id == null) return false;
+function terminalKey(event, id = state.terminal.focused) {
+  if (id == null) return false;
   if (event.metaKey) return false;
   if (event.ctrlKey && event.key.length === 1) {
     const code = event.key.toUpperCase().charCodeAt(0);
     if (code >= 64 && code <= 95) {
-      terminalWrite(String.fromCharCode(code - 64));
+      terminalWrite(String.fromCharCode(code - 64), id);
       return true;
     }
   }
   const mapped = TERMINAL_KEYS[event.key];
   if (mapped) {
-    terminalWrite(mapped);
+    terminalWrite(mapped, id);
     return true;
   }
   if (event.key.length === 1 && !event.altKey) {
-    terminalWrite(event.key);
+    terminalWrite(event.key, id);
     return true;
   }
   return false;
@@ -12183,13 +12448,15 @@ async function initEvents() {
   // command menu and the text size rather than keeping a second copy of them.
   await listen("terminal-output", (event) => {
     const payload = event.payload || {};
-    if (payload.terminal !== state.terminal.id) return;
-    terminalFeed(String(payload.data || ""));
+    const pane = terminalPane(payload.terminal);
+    if (!pane) return;
+    terminalFeed(String(payload.data || ""), pane.id);
   });
   await listen("terminal-exit", (event) => {
     const payload = event.payload || {};
-    if (payload.terminal !== state.terminal.id) return;
-    state.terminal.exited = true;
+    const pane = terminalPane(payload.terminal);
+    if (!pane) return;
+    pane.exited = true;
     el("terminal-state").hidden = false;
     el("terminal-state").textContent = t(
       "terminal.exited",
@@ -12947,20 +13214,14 @@ function init() {
   el("panel-tab-terminal").onclick = () => void openTerminal();
   el("panel-tab-pulls").onclick = () => void openPulls();
   el("terminal-new").onclick = () => void restartTerminal();
+  el("terminal-split-right").onclick = () => void splitTerminal("row");
+  el("terminal-split-down").onclick = () => void splitTerminal("column");
   el("terminal-clear").onclick = clearTerminal;
   el("terminal-maximize").onclick = toggleTerminalMaximized;
   for (const parts of Object.values(PANEL_TABS)) {
     el(parts.tab).addEventListener("keydown", panelTabKey);
   }
   el("panel-close").onclick = hidePanel;
-  // The shell gets the keys: the panel is a terminal, not a text box, so every
-  // press that means something to the shell is sent rather than drawn here.
-  el("terminal-surface").addEventListener("keydown", (event) => {
-    if (!terminalKey(event)) return;
-    event.preventDefault();
-    event.stopPropagation();
-  });
-  el("terminal-surface").addEventListener("click", () => el("terminal-surface").focus());
   window.addEventListener("resize", () => {
     if (!el("panel-terminal").hidden) fitTerminal();
   });
@@ -13104,11 +13365,7 @@ function init() {
     if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
   };
   el("details-changes").onclick = openRepositoryChanges;
-  el("details-terminal").onclick = () => void openTerminal();
-  el("details-pull-requests").onclick = () => void openPulls();
   el("details-existing-pull").onclick = () => void openPulls();
-  el("details-terminal-icon").innerHTML = ICONS.terminal;
-  el("details-pull-requests-icon").innerHTML = ICONS.pull;
   el("details-existing-pull-icon").innerHTML = ICONS.pull;
   el("details-add-source").onclick = openSources;
   el("details-view-sources").onclick = openSources;

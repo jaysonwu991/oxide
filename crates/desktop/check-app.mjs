@@ -394,6 +394,7 @@ const zoomCalls = [];
 // side of it is recorded here the way the page called it.
 const terminalOpened = [];
 const terminalWrites = [];
+let nextTerminalId = 7;
 const terminalResizes = [];
 const terminalClosed = [];
 const shaped = [];
@@ -1150,7 +1151,7 @@ const invoke = async (command, args = {}) => {
       return [...repositoryStates].map((entry) => ({ ...entry }));
     case "terminal_open":
       terminalOpened.push({ ...args });
-      return { id: 7, cwd: args.project, shell: "zsh" };
+      return { id: nextTerminalId++, cwd: args.project, shell: "zsh" };
     case "terminal_write":
       terminalWrites.push(args.data);
       return null;
@@ -1326,7 +1327,8 @@ vm.runInThisContext(
     " openActivity, closeActivity, renderActivity, paintActivityDot, activityGroups," +
     " openArchived, closeArchived, renderArchived, openFind, closeFind, stepFind, findHits," +
     " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal, restartTerminal," +
-    " clearTerminal, setTerminalMaximized, toggleTerminalMaximized," +
+    " clearTerminal, setTerminalMaximized, toggleTerminalMaximized, terminalPane, focusedTerminalPane," +
+    " openTerminalPane, splitTerminal, closeTerminalPane, renderTerminalPanes, focusTerminalPane," +
     " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
     " PANEL_TABS, changeActions, shapeChange, readRepositoryIndex," +
     " openPulls, readPulls, renderPulls, readPull, pullDetailNodes, renderMemories," +
@@ -2808,6 +2810,7 @@ check(
 // the click the reader is already making. So what a hovered or keyboard-held
 // rule may change is how the element looks — its paint, never its box.
 const cosmeticOnHover = [
+  "animation",
   "background",
   "background-color",
   "background-image",
@@ -3001,6 +3004,21 @@ check(
     shell,
   ) && /\(event\.metaKey \|\| event\.ctrlKey\) && event\.key >= "1"/.test(source),
   shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
+);
+const terminalShortcut = app.SHORTCUTS.find((entry) => entry.id === "terminal");
+const splitRightShortcut = app.SHORTCUTS.find((entry) => entry.id === "split-terminal-right");
+const splitDownShortcut = app.SHORTCUTS.find((entry) => entry.id === "split-terminal-down");
+check(
+  "offered Ctrl+~ and the terminal split chords in Shortcuts",
+  terminalShortcut?.chords.includes("ctrl+~") &&
+    splitRightShortcut?.chords.includes("mod+d") &&
+    splitDownShortcut?.chords.includes("mod+shift+d"),
+  `${terminalShortcut?.chords} / ${splitRightShortcut?.chords} / ${splitDownShortcut?.chords}`,
+);
+check(
+  "matched Ctrl+~ even though the shifted key carries Shift",
+  app.matchShortcut({ key: "~", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false })?.id === "terminal" &&
+    app.matchShortcut({ key: "d", ctrlKey: false, shiftKey: false, altKey: false, metaKey: true })?.id === "split-terminal-right",
 );
 // Codex's sidebar pairs the activity filter with search. Activity itself stays
 // in the command menu; the filter carries the attention mark and Projects use
@@ -10927,17 +10945,17 @@ check(
     elementFor("panel-tab-review").getAttribute("aria-selected") === "true",
   `${elementFor("bottom-panel").hidden} / ${elementFor("review-modal").hidden} / ${elementFor("panel-terminal").hidden}`,
 );
-elementFor("details-terminal").onclick();
+await app.openTerminal();
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(
-  "opened a shell from the project's Terminal row",
+  "opened the default shell in the Terminal tab",
   terminalOpened.length === 1 &&
     terminalOpened[0].project === "/tmp/oxide" &&
-    app.state.terminal.id === 7 &&
+    app.state.terminal.focused === 7 &&
     elementFor("panel-terminal").hidden === false &&
     elementFor("review-modal").hidden === true &&
-    document.activeElement === elementFor("terminal-surface"),
-  `${JSON.stringify(terminalOpened[0])} / ${app.state.terminal.id}`,
+    document.activeElement === app.focusedTerminalPane().surface,
+  `${JSON.stringify(terminalOpened[0])} / ${app.state.terminal.focused}`,
 );
 check(
   "docked Terminal below the conversation with VS Code's shell controls",
@@ -10946,6 +10964,32 @@ check(
     elementFor("terminal-shell").textContent === "zsh",
   `${elementFor("bottom-panel").className} / ${elementFor("terminal-shell").textContent}`,
 );
+check(
+  "drew the shell's cursor as its own terminal cell",
+  app.focusedTerminalPane().surface.children[0]?.querySelector(".terminal-cursor")?.textContent === "\u00a0",
+);
+await app.splitTerminal("row");
+check(
+  "split Terminal right with independent focused panes",
+  app.state.terminal.panes.length === 2 &&
+    app.state.terminal.layout === "row" &&
+    app.state.terminal.focused === 8 &&
+    elementFor("terminal-panes").dataset.layout === "row" &&
+    elementFor("terminal-panes").children.length === 3 &&
+    elementFor("terminal-panes").children[1].className === "terminal-divider",
+  `${app.state.terminal.panes.length} / ${elementFor("terminal-panes").dataset.layout}`,
+);
+await app.closeTerminalPane(8);
+check("closed the split pane and returned to one shell", app.state.terminal.panes.length === 1 &&
+  app.state.terminal.focused === 7 && elementFor("terminal-panes").dataset.layout === "single");
+await app.splitTerminal("column");
+check(
+  "split Terminal down when requested",
+  app.state.terminal.panes.length === 2 &&
+    app.state.terminal.layout === "column" &&
+    elementFor("terminal-panes").dataset.layout === "column",
+);
+await app.closeTerminalPane(9);
 app.openPanel("pulls");
 app.syncPanel();
 check(
@@ -10966,17 +11010,18 @@ check(
     elementFor("panel-tab-pulls").tabIndex === -1,
 );
 check(
-  "offered Terminal and Pull requests beside the project's Changes",
-  typeof elementFor("details-terminal").onclick === "function" &&
-    typeof elementFor("details-pull-requests").onclick === "function",
+  "kept Terminal and Pull requests out of the project summary",
+  !shell.includes('id="details-terminal"') &&
+    !shell.includes('id="details-pull-requests"'),
 );
 await app.openTerminal();
 terminalWrites.length = 0;
 app.clearTerminal();
 check(
   "cleared the surface and asked the shell for a fresh prompt",
-  elementFor("terminal-surface").children.length === 1 &&
-    elementFor("terminal-surface").children[0].children.length === 0 &&
+  app.focusedTerminalPane().surface.children.length === 1 &&
+    app.focusedTerminalPane().surface.children[0].children.length === 1 &&
+    app.focusedTerminalPane().surface.children[0].children[0].className === "terminal-cursor" &&
     terminalWrites.join("|") === "\x0c",
   terminalWrites.join("|"),
 );
@@ -10997,7 +11042,11 @@ check(
 // to the start of the line, and a line feed starts the next one.
 app.terminalFeed("\x1b[31mred\x1b[0m plain\r\nsecond");
 await new Promise((resolve) => setTimeout(resolve, 30));
-const termLines = elementFor("terminal-surface").children;
+const termLines = app.focusedTerminalPane().surface.children;
+const terminalLineText = (row) => row.children
+  .map((child) => child.textContent)
+  .map((text) => (text === "\u00a0" ? "" : text))
+  .join("");
 const firstLine = termLines[0]?.children ?? [];
 check(
   "drew the shell's colours as runs of a line",
@@ -11023,16 +11072,16 @@ app.terminalFeed("\rX");
 await new Promise((resolve) => setTimeout(resolve, 30));
 check(
   "wrote over the line a carriage return went back to",
-  elementFor("terminal-surface").children[1].children[0].textContent === "Xecond",
-  String(elementFor("terminal-surface").children[1].children[0].textContent),
+  terminalLineText(app.focusedTerminalPane().surface.children[1]) === "Xecond",
+  terminalLineText(app.focusedTerminalPane().surface.children[1]),
 );
 // A sequence that arrives in two chunks waits for the rest rather than painting
 // half of itself as text.
 app.terminalFeed("\x1b[3");
 app.terminalFeed("2mgreen");
 await new Promise((resolve) => setTimeout(resolve, 30));
-const lastLine = elementFor("terminal-surface").children.at(-1).children;
-const colored = lastLine.at(-1);
+const lastLine = app.focusedTerminalPane().surface.children.at(-1).children;
+const colored = lastLine.find((span) => span.textContent === "green");
 check(
   "waited for the rest of a split sequence",
   colored?.textContent === "green" && colored?.style.color === app.terminalColor("32"),
@@ -11069,7 +11118,8 @@ check(
     !elementFor("bottom-panel").classList.contains("terminal-mode") &&
     elementFor("terminal-tools").hidden === true &&
     !document.body.classList.contains("terminal-maximized") &&
-    app.state.terminal.id === null &&
+    app.state.terminal.panes.length === 0 &&
+    app.state.terminal.focused === null &&
     terminalClosed.includes(7),
   `${elementFor("bottom-panel").hidden} / ${terminalClosed.join(",")}`,
 );
@@ -11357,10 +11407,10 @@ pullsDetail = {
   ],
   files: [{ path: "crates/desktop/src/terminal.rs", additions: 100, deletions: 2 }],
 };
-elementFor("details-pull-requests").onclick();
+await app.openPulls();
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(
-  "listed the repository's open requests from the project's Pull requests row",
+  "listed the repository's open requests from the Pull requests tab",
   elementFor("bottom-panel").hidden === false &&
     elementFor("panel-pulls").hidden === false &&
     elementFor("pulls-list").children.length === 1 &&

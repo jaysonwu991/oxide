@@ -1402,18 +1402,22 @@ compact width (360px) and a separator resizes it from 300px to 560px with the
 pointer or Left/Right keys (Shift moves faster); Home/End select the limits and
 double-click restores 360px. Left/Right, Home and End also walk the tabs as one
 group. The width survives relaunch. Windows at 1100px or narrower stack the panel
-below the conversation. The project summary offers Terminal and the repository's
-pull requests beside Changes, while both desktop hosts also expose them from the
-native View menu.
+below the conversation. Terminal and Pull requests remain workspace tabs and are
+also exposed from the native View menu.
 
 **Terminal** follows VS Code's integrated-terminal layout instead of using the
 side rail: the dock spans the editor area below the conversation, keeps its tab
-row, and carries the shell name, new-terminal, clear and maximize controls.
-Maximizing gives the terminal the editor area and restores the conversation from
-the same control. The shell is the reader's real `$SHELL` in the thread's project
-or worktree, with `TERM=xterm-256color`, `COLORTERM=truecolor`, shell-native line
-editing, resizing and exit reporting. The VS Code extension keeps delegating to
-VS Code's own terminal, so its shell, profile and terminal settings remain the
+row, and carries the detected shell name, new-terminal, split-right,
+split-down, clear and maximize controls. `⌘D`/`Ctrl+D` and
+`⌘⇧D`/`Ctrl+Shift+D` split the focused pane right and down. Each pane has its
+own header, cwd, focus, split controls and close action; the divider resizes the
+two panes. Maximizing gives the terminal the editor area and restores the
+conversation from the same control. The shell is the reader's real `$SHELL` in
+the thread's project or worktree, with `TERM=xterm-256color`,
+`COLORTERM=truecolor`, shell-native line editing, resizing and exit reporting.
+The cursor is painted as the shell's own blinking block, with a hollow block
+when that pane is not focused. The VS Code extension keeps delegating to VS
+Code's own terminal, so its shell, profile and terminal settings remain the
 editor's rather than a second emulator.
 
 **Changes** defaults to old/new columns; **Unified diff** toggles a saved
@@ -1635,7 +1639,9 @@ front-end checks run against) says **No matches** rather than failing.
 | `⌘B` / `Ctrl+B` | Show or hide the sidebar |
 | `⌘+` / `⌘-` / `⌘0` | Larger, smaller, actual size |
 | `⌘J` | Show or hide the bottom panel |
-| `⌃\`` | Open the terminal |
+| `⌃\`` / `Ctrl+~` | Open the terminal |
+| `⌘D` / `Ctrl+D` | Split the focused terminal right |
+| `⌘⇧D` / `Ctrl+Shift+D` | Split the focused terminal down |
 | `⇧Esc` | Clear the unread marks |
 | `Escape` | Close any dialog; a question is dismissed, which the agent is told rather than left waiting |
 | Click outside a dialog | The same as closing it: the backdrop answers through the dialog's own Close, Cancel or Dismiss, so its teardown is the one either way. The two dialogs whose buttons are the decision — a tool's approval, a folder's trust question — are not dismissed this way, since a stray press must not be an answer |
