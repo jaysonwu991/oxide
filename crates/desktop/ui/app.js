@@ -5993,6 +5993,14 @@ function paintReview() {
   const { card } = reviewState;
   el("review-title").textContent = t("ui.changes", "Changes");
   el("review-total").innerHTML = statsHtml(card.added, card.removed);
+  const repository = card.project === runFolder() ? state.git : null;
+  const branch = repository?.repo ? repository.branch || repository.detached : "";
+  el("review-repository-row").hidden = !branch;
+  el("review-total").hidden = Boolean(branch);
+  el("review-branch").textContent = branch;
+  el("review-repository-stats").innerHTML = statsHtml(card.added, card.removed);
+  el("review-repository-root").textContent = repository?.root ? baseName(repository.root) : "";
+  el("review-repository-root").title = repository?.root || "";
   // Staging is the repository's to offer: a turn's own card is what the turn did,
   // and the files it names are already what the working tree holds.
   for (const id of ["review-stage-all", "review-unstage-all"]) {
@@ -6017,7 +6025,9 @@ function paintReview() {
       paintReview();
     };
     list.appendChild(row);
-    const actions = card.repository ? changeActions(file) : null;
+    const actions = card.repository && reviewState.openFiles.has(file.path)
+      ? changeActions(file)
+      : null;
     if (actions) list.appendChild(actions);
     if (reviewState.openFiles.has(file.path)) {
       const body = document.createElement("div");
@@ -6315,7 +6325,6 @@ function paintDetailsPulls(project) {
     }),
   );
   el("details-pulls-block").hidden = !pulls.length;
-  el("details-existing-pull").hidden = !project || pulls.length > 0;
 }
 
 async function refreshProjectDetails() {
@@ -9571,6 +9580,8 @@ const DEFAULT_PREFS = {
   send_key: "enter",
   follow_up: "queue",
   font_scale: 1,
+  terminal_font: "Oxide Terminal",
+  terminal_font_size: 12.5,
   sidebar_visible: true,
   predictions: false,
   notifications: "background",
@@ -9582,6 +9593,8 @@ const DEFAULT_PREFS = {
 
 const MIN_FONT_SCALE = 0.7;
 const MAX_FONT_SCALE = 1.6;
+const MIN_TERMINAL_FONT_SIZE = 8;
+const MAX_TERMINAL_FONT_SIZE = 28;
 
 state.prefs = { ...DEFAULT_PREFS };
 state.commandRows = [];
@@ -9598,6 +9611,12 @@ function clampFontScale(value) {
   return Math.min(MAX_FONT_SCALE, Math.max(MIN_FONT_SCALE, scale));
 }
 
+function clampTerminalFontSize(value) {
+  const size = Math.round(Number(value) * 2) / 2;
+  if (!Number.isFinite(size)) return 12.5;
+  return Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, size));
+}
+
 /// The store's answer, made safe to paint: a field this build cannot use is
 /// left at the value the window ships with rather than drawn as it arrived.
 function normalizePrefs(raw) {
@@ -9606,6 +9625,10 @@ function normalizePrefs(raw) {
   if (raw.send_key === "mod-enter" || raw.send_key === "enter") prefs.send_key = raw.send_key;
   if (raw.follow_up === "steer" || raw.follow_up === "queue") prefs.follow_up = raw.follow_up;
   prefs.font_scale = clampFontScale(raw.font_scale);
+  if (typeof raw.terminal_font === "string" && raw.terminal_font.trim()) {
+    prefs.terminal_font = raw.terminal_font.trim();
+  }
+  prefs.terminal_font_size = clampTerminalFontSize(raw.terminal_font_size);
   if (typeof raw.sidebar_visible === "boolean") prefs.sidebar_visible = raw.sidebar_visible;
   if (typeof raw.predictions === "boolean") prefs.predictions = raw.predictions;
   if (["off", "background", "always"].includes(raw.notifications)) prefs.notifications = raw.notifications;
@@ -9668,7 +9691,21 @@ function applyPrefs() {
   document.body.classList.toggle("sidebar-hidden", !state.prefs.sidebar_visible);
   el("sidebar-toggle").setAttribute("aria-expanded", String(state.prefs.sidebar_visible));
   void invoke("set_zoom", { scale: state.prefs.font_scale }).catch(() => {});
+  const terminalFont = state.prefs.terminal_font || "Oxide Terminal";
+  document.body.style.setProperty(
+    "--terminal-font",
+    `${terminalFont}, "Oxide Terminal", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`,
+  );
+  document.body.style.setProperty(
+    "--terminal-font-size",
+    `${clampTerminalFontSize(state.prefs.terminal_font_size)}px`,
+  );
+  void document.fonts
+    ?.load?.(`${clampTerminalFontSize(state.prefs.terminal_font_size)}px "${terminalFont}"`)
+    ?.then?.(() => fitTerminal())
+    ?.catch?.(() => {});
   paintSettingsControls();
+  fitTerminal();
 }
 
 function resizeText(step) {
@@ -9772,8 +9809,22 @@ const SHORTCUTS = [
     id: "terminal",
     key: "settings.actionTerminal",
     fallback: "Open the terminal",
-    chords: ["ctrl+`"],
+    chords: ["ctrl+`", "ctrl+~"],
     run: () => openTerminal(),
+  },
+  {
+    id: "split-terminal-right",
+    key: "settings.actionSplitTerminalRight",
+    fallback: "Split terminal right",
+    chords: ["mod+d"],
+    run: () => splitTerminal("row"),
+  },
+  {
+    id: "split-terminal-down",
+    key: "settings.actionSplitTerminalDown",
+    fallback: "Split terminal down",
+    chords: ["mod+shift+d"],
+    run: () => splitTerminal("column"),
   },
   {
     id: "toggle-sidebar",
@@ -9898,7 +9949,10 @@ function chordMatches(chord, event) {
   if (!parts.mod && !parts.ctrl && mod) return false;
   if (parts.ctrl && !event.ctrlKey) return false;
   if (parts.alt !== Boolean(event.altKey)) return false;
-  if (parts.shift !== Boolean(event.shiftKey)) return false;
+  // A shifted symbol already carries Shift in its character. Ctrl+~, for
+  // example, arrives as Ctrl+Shift+`, but Shortcuts names the key people type.
+  const impliedShift = parts.key === "~" && !parts.shift && event.shiftKey;
+  if (parts.shift !== Boolean(event.shiftKey) && !impliedShift) return false;
   if (String(event.key).toLowerCase() === parts.key) return true;
   // Option rewrites the character on a Mac (⌥U is a dead accent key), so an
   // Alt chord falls back to the physical key it names.
@@ -10168,6 +10222,10 @@ function paintSettingsControls() {
   if (el("settings-font-value")) {
     el("settings-font-value").textContent = `${Math.round(state.prefs.font_scale * 100)}%`;
   }
+  if (el("settings-terminal-font")) el("settings-terminal-font").value = state.prefs.terminal_font;
+  if (el("settings-terminal-size")) {
+    el("settings-terminal-size").value = String(clampTerminalFontSize(state.prefs.terminal_font_size));
+  }
   if (el("settings-sidebar")) el("settings-sidebar").checked = state.prefs.sidebar_visible;
   if (el("settings-predictions")) el("settings-predictions").checked = Boolean(state.prefs.predictions);
   for (const mode of ["off", "background", "always"]) {
@@ -10348,9 +10406,10 @@ function commandActions() {
     { id: "open-folder", label: t("menu.openFolder", "Open a folder…"), hint: "mod+o", run: () => openProjects() },
     { id: "search", label: t("menu.searchChats", "Search chats…"), hint: "mod+shift+f", run: () => openSearch() },
     { id: "panel", label: t("menu.panel", "Show or hide the panel"), hint: "mod+j", run: () => togglePanel() },
-    { id: "terminal", label: t("menu.terminal", "Terminal"), hint: "ctrl+`", run: () => void openTerminal() },
+    { id: "terminal", label: t("menu.terminal", "Terminal"), hint: "ctrl+` / ctrl+~", run: () => void openTerminal() },
+    { id: "split-terminal-right", label: t("settings.actionSplitTerminalRight", "Split terminal right"), hint: "mod+d", run: () => void splitTerminal("row") },
+    { id: "split-terminal-down", label: t("settings.actionSplitTerminalDown", "Split terminal down"), hint: "mod+shift+d", run: () => void splitTerminal("column") },
     { id: "review", label: t("menu.review", "Review the changes"), hint: null, run: () => openRepositoryChanges() },
-    { id: "pulls", label: t("menu.pulls", "Pull requests…"), hint: null, run: () => void openPulls() },
     { id: "find", label: t("menu.findInChat", "Find in this chat"), hint: "mod+f", run: () => openFind() },
     { id: "activity", label: t("menu.activity", "Activity…"), hint: null, run: () => openActivity() },
     { id: "archived", label: t("menu.archivedChats", "Archived chats…"), hint: null, run: () => openArchived() },
@@ -11066,51 +11125,34 @@ function paintFindCount() {
 
 // ---------- the workspace panel ----------
 
-/// The panel's three bodies, by tab. They are children of the dock, so a tab is
-/// a body made visible and the others put away.
-const PANEL_TABS = {
-  review: { tab: "panel-tab-review", body: "review-modal" },
-  terminal: { tab: "panel-tab-terminal", body: "panel-terminal" },
-  pulls: { tab: "panel-tab-pulls", body: "panel-pulls" },
+/// The workspace has one right-hand body, Changes, and an independent bottom
+/// Terminal dock. Only one is visible at a time.
+const PANEL_BODIES = {
+  review: "review-modal",
+  terminal: "panel-terminal",
 };
 
 state.panelTab = "review";
-state.pulls = [];
-state.pullError = "";
-state.pullOpen = null;
-state.pullProject = "";
 state.terminal = {
-  id: null,
-  cwd: "",
-  shell: "shell",
-  cols: 80,
-  rows: 20,
-  screen: null,
-  pending: "",
-  exited: false,
+  panes: [],
+  focused: null,
+  layout: "single",
+  ratio: 50,
   paintTimer: 0,
 };
 
 function openPanel(tab) {
-  const chosen = PANEL_TABS[tab] ? tab : "review";
+  const chosen = PANEL_BODIES[tab] ? tab : "review";
   state.panelTab = chosen;
-  for (const [name, parts] of Object.entries(PANEL_TABS)) {
-    const active = name === chosen;
-    const button = el(parts.tab);
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", String(active));
-    button.tabIndex = active ? 0 : -1;
-    el(parts.body).hidden = !active;
-  }
+  for (const [name, body] of Object.entries(PANEL_BODIES)) el(body).hidden = name !== chosen;
   const terminalMode = chosen === "terminal";
   el("bottom-panel").classList.toggle("terminal-mode", terminalMode);
-  el("terminal-tools").hidden = !terminalMode;
   if (!terminalMode) setTerminalMaximized(false);
   el("bottom-panel").hidden = false;
   paintDockToggles();
   if (chosen === "terminal") {
     fitTerminal();
-    el("terminal-surface").focus();
+    focusedTerminalPane()?.surface.focus();
   }
 }
 
@@ -11119,48 +11161,24 @@ function openPanel(tab) {
 function hidePanel() {
   el("bottom-panel").hidden = true;
   el("bottom-panel").classList.remove("terminal-mode");
-  el("terminal-tools").hidden = true;
   setTerminalMaximized(false);
-  for (const parts of Object.values(PANEL_TABS)) el(parts.body).hidden = true;
+  for (const body of Object.values(PANEL_BODIES)) el(body).hidden = true;
   void stopTerminal();
   paintDockToggles();
 }
 
 /// The panel is only there while one of its bodies is.
 function syncPanel() {
-  if (Object.values(PANEL_TABS).every((parts) => el(parts.body).hidden)) {
+  if (Object.values(PANEL_BODIES).every((body) => el(body).hidden)) {
     el("bottom-panel").hidden = true;
   }
 }
 
 function togglePanel(tab = state.panelTab) {
   if (el("bottom-panel").hidden && tab === "terminal") void openTerminal();
-  else if (el("bottom-panel").hidden && tab === "pulls") void openPulls();
   else if (el("bottom-panel").hidden) openPanel(tab);
   else if (state.panelTab === tab) hidePanel();
   else openPanel(tab);
-}
-
-/// Tabs move as one group: Left and Right walk the three bodies, Home and End
-/// go to the ends, and the selected body takes focus with the selected tab.
-function panelTabKey(event) {
-  const tabs = Object.keys(PANEL_TABS);
-  const current = Math.max(0, tabs.indexOf(state.panelTab));
-  let next = current;
-  if (event.key === "ArrowLeft") next = (current + tabs.length - 1) % tabs.length;
-  else if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
-  else if (event.key === "Home") next = 0;
-  else if (event.key === "End") next = tabs.length - 1;
-  else return;
-  event.preventDefault();
-  const tab = tabs[next];
-  if (tab === "terminal") {
-    void openTerminal();
-    return;
-  }
-  if (tab === "pulls") void openPulls();
-  else openPanel(tab);
-  el(PANEL_TABS[tab].tab).focus();
 }
 
 // ---------- a file the conversation produced ----------
@@ -11374,241 +11392,6 @@ async function maybePredict() {
   showPrediction(suggestion);
 }
 
-// ---------- the repository's pull requests ----------
-
-/// The list is read when the tab is opened rather than kept warm: the forge
-/// answers with what is true now, and a listing that is an hour old is a listing
-/// that lies about a request that merged since.
-async function openPulls(number = null) {
-  openPanel("pulls");
-  await readPulls();
-  if (number != null) await readPull(number);
-}
-
-let pullsRead = 0;
-
-async function readPulls() {
-  const project = runFolder();
-  const read = ++pullsRead;
-  const current = () => read === pullsRead && project === runFolder();
-  if (!project) {
-    state.pullProject = "";
-    state.pullOpen = null;
-    state.pullError = t("pulls.noProject", "Open a project to read its requests.");
-    renderPulls();
-    return;
-  }
-  if (state.pullProject !== project) {
-    state.pullProject = project;
-    state.pullOpen = null;
-    el("pull-detail").replaceChildren(
-      reviewNote(t("pulls.pickOne", "Pick a request to read what it changed, what its checks say and what has been said about it.")),
-    );
-  }
-  el("pulls-list").replaceChildren(reviewNote(t("pulls.readingList", "Reading pull requests…")));
-  try {
-    const pulls = (await invoke("pull_requests", { project })) || [];
-    if (!current()) return;
-    state.pulls = pulls;
-    state.pullError = "";
-  } catch (error) {
-    if (!current()) return;
-    state.pulls = [];
-    state.pullError = t("pulls.failed", "Could not read the repository's requests: {value0}", {
-      value0: error,
-    });
-  }
-  renderPulls();
-}
-
-function renderPulls() {
-  const list = el("pulls-list");
-  if (!list) return;
-  list.replaceChildren();
-  if (state.pullError) {
-    const failed = document.createElement("p");
-    failed.className = "dialog-sub";
-    failed.textContent = state.pullError;
-    list.appendChild(failed);
-    return;
-  }
-  if (!state.pulls.length) {
-    const empty = document.createElement("p");
-    empty.className = "dialog-sub";
-    empty.textContent = t("pulls.empty", "This repository has no open requests.");
-    list.appendChild(empty);
-    return;
-  }
-  for (const pull of state.pulls) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "pull-row" + (pull.number === state.pullOpen ? " active" : "");
-    row.setAttribute("role", "listitem");
-    row.dataset.pull = String(pull.number);
-    const head = document.createElement("span");
-    head.className = "pull-row-head";
-    const number = document.createElement("span");
-    number.className = "pull-number";
-    number.textContent = `#${pull.number}`;
-    const title = document.createElement("span");
-    title.className = "pull-row-title";
-    title.textContent = pull.title;
-    head.append(number, title);
-    row.appendChild(head);
-    const meta = document.createElement("span");
-    meta.className = "pull-row-meta";
-    meta.textContent = [
-      pull.state === "opened" ? "open" : pull.state,
-      pull.draft ? t("pulls.draft", "draft") : "",
-      pull.head,
-      pull.review ? pull.review.toLowerCase().replace("_", " ") : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    row.appendChild(meta);
-    row.onclick = () => void readPull(pull.number);
-    list.appendChild(row);
-  }
-}
-
-let pullRead = 0;
-
-async function readPull(number) {
-  const project = runFolder();
-  if (!project) return;
-  const read = ++pullRead;
-  const current = () => read === pullRead && project === runFolder();
-  state.pullOpen = number;
-  const detail = el("pull-detail");
-  detail.replaceChildren(reviewNote(t("pulls.reading", "Reading #{value0}…", { value0: number })));
-  renderPulls();
-  let pull = null;
-  try {
-    pull = await invoke("pull_request", { project, number });
-  } catch (error) {
-    if (!current()) return;
-    detail.replaceChildren(
-      reviewNote(t("pulls.failedOne", "Could not read #{value0}: {value1}", { value0: number, value1: error })),
-    );
-    return;
-  }
-  if (!current()) return;
-  detail.replaceChildren(...pullDetailNodes(pull));
-}
-
-/// What a reviewer reads on one request: what it says, what its checks said, what
-/// has been said about it, and the files it touches.
-function pullDetailNodes(pull) {
-  const nodes = [];
-  const title = document.createElement("h3");
-  title.className = "pull-title";
-  title.textContent = `#${pull.number} ${pull.title}`;
-  nodes.push(title);
-
-  const meta = document.createElement("div");
-  meta.className = "pull-meta";
-  meta.textContent = [
-    pull.state === "opened" ? "open" : pull.state,
-    pull.head && pull.base ? `${pull.head} → ${pull.base}` : "",
-    pull.author ? `@${pull.author}` : "",
-    pull.additions || pull.deletions ? `+${pull.additions} −${pull.deletions}` : "",
-    pull.changed_files ? t("pulls.fileCount", "{count} files", { count: pull.changed_files }) : "",
-    pull.mergeable && pull.mergeable !== "unknown" ? pull.mergeable : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  nodes.push(meta);
-
-  if (pull.url) {
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "panel-action";
-    open.id = "pull-open-browser";
-    open.textContent = t("pulls.openInBrowser", "Open on the forge");
-    open.onclick = () => void invoke("open_url", { url: pull.url }).catch(() => {});
-    nodes.push(open);
-  }
-
-  if (pull.body && pull.body.trim()) {
-    nodes.push(pullSection(t("pulls.description", "Description"), [textBlock(pull.body.trim())]));
-  }
-  if (pull.checks?.length) {
-    nodes.push(
-      pullSection(
-        t("pulls.checks", "Checks"),
-        pull.checks.map((check) => {
-          const row = document.createElement("div");
-          row.className = `pull-check state-${check.state}`;
-          const mark = document.createElement("span");
-          mark.className = "pull-check-mark";
-          mark.textContent = check.state === "pass" ? "✔" : check.state === "fail" ? "✖" : "·";
-          const name = document.createElement("span");
-          name.className = "pull-check-name";
-          name.textContent = check.name || t("pulls.unnamedCheck", "a check");
-          row.append(mark, name);
-          return row;
-        }),
-      ),
-    );
-  }
-  if (pull.comments?.length) {
-    nodes.push(
-      pullSection(
-        t("pulls.comments", "Comments"),
-        pull.comments.map((comment) => {
-          const row = document.createElement("div");
-          row.className = "pull-comment";
-          const who = document.createElement("div");
-          who.className = "pull-comment-head";
-          who.textContent = [comment.author ? `@${comment.author}` : "", comment.review || ""]
-            .filter(Boolean)
-            .join(" · ");
-          row.appendChild(who);
-          if (comment.body.trim()) row.appendChild(textBlock(comment.body.trim()));
-          return row;
-        }),
-      ),
-    );
-  }
-  if (pull.files?.length) {
-    nodes.push(
-      pullSection(
-        t("pulls.files", "Files"),
-        pull.files.map((file) => {
-          const row = document.createElement("div");
-          row.className = "pull-file";
-          const path = document.createElement("span");
-          path.className = "pull-file-path";
-          path.textContent = file.path;
-          const stats = document.createElement("span");
-          stats.className = "pull-file-stats";
-          stats.textContent = `+${file.additions} −${file.deletions}`;
-          row.append(path, stats);
-          return row;
-        }),
-      ),
-    );
-  }
-  return nodes;
-}
-
-function pullSection(title, body) {
-  const section = document.createElement("section");
-  section.className = "pull-section";
-  const heading = document.createElement("h4");
-  heading.textContent = title;
-  section.appendChild(heading);
-  section.append(...body);
-  return section;
-}
-
-function textBlock(text) {
-  const block = document.createElement("p");
-  block.className = "pull-text";
-  block.textContent = text;
-  return block;
-}
-
 // ---------- the terminal ----------
 
 function terminalStyle() {
@@ -11624,7 +11407,16 @@ function newTerminalScreen(cols, rows) {
     col: 0,
     style: terminalStyle(),
     pending: "",
+    cursorVisible: true,
   };
+}
+
+function terminalPane(id = state.terminal.focused) {
+  return state.terminal.panes.find((pane) => pane.id === id) || null;
+}
+
+function focusedTerminalPane() {
+  return terminalPane() || state.terminal.panes[0] || null;
 }
 
 function terminalCell(screen, col) {
@@ -11678,6 +11470,14 @@ function applyTerminalCsi(screen, params, final) {
     .map((value) => (value === "" ? 0 : Number(value)))
     .filter((value) => Number.isFinite(value));
   const first = numbers[0] ?? 0;
+  if (params.includes("?25") && final === "h") {
+    screen.cursorVisible = true;
+    return;
+  }
+  if (params.includes("?25") && final === "l") {
+    screen.cursorVisible = false;
+    return;
+  }
   if (final === "m") {
     for (let index = 0; index < numbers.length; index += 1) {
       const value = numbers[index];
@@ -11750,8 +11550,9 @@ function applyTerminalCsi(screen, params, final) {
 /// language a shell's own output uses — carriage return, line feed, backspace,
 /// tabs, colours, erasing and moving the cursor. A program that paints a
 /// full-screen interface is outside that, and is not what this panel is for.
-function terminalFeed(text) {
-  const screen = state.terminal.screen;
+function terminalFeed(text, id = state.terminal.focused) {
+  const pane = terminalPane(id);
+  const screen = pane?.screen;
   if (!screen || !text) return;
   const input = screen.pending + text;
   screen.pending = "";
@@ -11834,12 +11635,19 @@ function scheduleTerminalPaint() {
   }, 16);
 }
 
-function paintTerminal() {
-  const surface = el("terminal-surface");
-  const screen = state.terminal.screen;
+function terminalCursor(row, pane) {
+  const cursor = document.createElement("span");
+  cursor.className = "terminal-cursor";
+  const cell = row.cells[pane.screen.col];
+  cursor.textContent = cell && cell.ch !== " " ? cell.ch : "\u00a0";
+  return cursor;
+}
+
+function paintTerminalPane(pane) {
+  const { screen, surface } = pane;
   if (!surface || !screen) return;
   const rows = [];
-  for (const line of screen.lines) {
+  for (const [lineIndex, line] of screen.lines.entries()) {
     const row = document.createElement("div");
     row.className = "term-line";
     let run = null;
@@ -11861,7 +11669,16 @@ function paintTerminal() {
       run = null;
       text = "";
     };
-    for (const cell of line.cells) {
+    for (const [column, cell] of line.cells.entries()) {
+      if (
+        screen.cursorVisible &&
+        lineIndex === screen.row &&
+        column === screen.col
+      ) {
+        flush();
+        row.appendChild(terminalCursor(line, pane));
+        continue;
+      }
       const key = `${cell.style.fg}|${cell.style.bg}|${cell.style.bold}|${cell.style.dim}|${cell.style.underline}|${cell.style.inverse}`;
       if (!run || run.key !== key) {
         flush();
@@ -11870,30 +11687,211 @@ function paintTerminal() {
       text += cell.ch;
     }
     flush();
+    if (
+      screen.cursorVisible &&
+      lineIndex === screen.row &&
+      screen.col >= line.cells.length
+    ) {
+      row.appendChild(terminalCursor(line, pane));
+    }
     rows.push(row);
   }
   surface.replaceChildren(...rows);
-  if (state.panelTab === "terminal") surface.scrollTop = surface.scrollHeight;
+  surface.scrollTop = surface.scrollHeight;
+}
+
+function paintTerminal() {
+  for (const pane of state.terminal.panes) paintTerminalPane(pane);
 }
 
 /// The room the panel gives the shell, in characters. A surface that has not been
 /// laid out yet (the stub the checks run against) reports the default size.
 function fitTerminal() {
-  const surface = el("terminal-surface");
-  if (!surface) return;
-  const rect = surface.getBoundingClientRect?.() || { width: 0, height: 0 };
-  const cols = rect.width ? Math.max(20, Math.floor(rect.width / 7.3)) : 100;
-  const rows = rect.height ? Math.max(4, Math.floor(rect.height / 17.4)) : 24;
-  if (cols === state.terminal.cols && rows === state.terminal.rows) return;
-  state.terminal.cols = cols;
-  state.terminal.rows = rows;
-  if (state.terminal.screen) {
-    state.terminal.screen.cols = cols;
-    state.terminal.screen.rows = rows;
+  const fontSize = clampTerminalFontSize(state.prefs.terminal_font_size);
+  for (const pane of state.terminal.panes) {
+    const rect = pane.surface.getBoundingClientRect?.() || { width: 0, height: 0 };
+    const cols = rect.width ? Math.max(20, Math.floor(rect.width / (fontSize * 0.6))) : pane.cols;
+    const rows = rect.height ? Math.max(4, Math.floor(rect.height / (fontSize * 1.4))) : pane.rows;
+    if (cols === pane.cols && rows === pane.rows) continue;
+    pane.cols = cols;
+    pane.rows = rows;
+    pane.screen.cols = cols;
+    pane.screen.rows = rows;
+    void invoke("terminal_resize", { id: pane.id, cols, rows }).catch(() => {});
   }
-  if (state.terminal.id != null) {
-    void invoke("terminal_resize", { id: state.terminal.id, cols, rows }).catch(() => {});
+}
+
+let terminalDividerNode = null;
+
+function terminalControl(label, className, icon, run) {
+  const control = document.createElement("button");
+  control.type = "button";
+  control.className = `icon ${className}`;
+  control.title = label;
+  control.setAttribute("aria-label", label);
+  control.innerHTML = icon;
+  control.onclick = (event) => {
+    event.stopPropagation();
+    run();
+  };
+  return control;
+}
+
+function terminalPaneView(pane) {
+  const section = document.createElement("section");
+  section.className = "terminal-pane";
+  section.dataset.terminalPane = String(pane.id);
+  const head = document.createElement("header");
+  head.className = "terminal-pane-head";
+  const title = document.createElement("span");
+  title.className = "terminal-pane-title";
+  title.textContent = pane.shell;
+  const cwd = document.createElement("span");
+  cwd.className = "terminal-pane-cwd";
+  cwd.textContent = pane.cwd;
+  cwd.title = pane.cwd;
+  const controls = document.createElement("div");
+  controls.className = "terminal-pane-controls";
+  controls.setAttribute("role", "toolbar");
+  controls.setAttribute("aria-label", t("terminal.title", "Terminal"));
+  const right = terminalControl(
+    t("terminal.splitRight", "Split terminal right"),
+    "pane-split-right",
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>',
+    () => void splitTerminal("row", pane.id),
+  );
+  const down = terminalControl(
+    t("terminal.splitDown", "Split terminal down"),
+    "pane-split-down",
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/></svg>',
+    () => void splitTerminal("column", pane.id),
+  );
+  const close = terminalControl(
+    t("terminal.closePane", "Close terminal pane"),
+    "pane-close",
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+    () => void closeTerminalPane(pane.id),
+  );
+  controls.append(right, down, close);
+  const surface = document.createElement("div");
+  surface.className = "terminal-surface";
+  surface.tabIndex = 0;
+  surface.setAttribute("role", "log");
+  surface.setAttribute("aria-live", "polite");
+  surface.setAttribute("aria-label", t("terminal.title", "Terminal"));
+  surface.addEventListener("keydown", (event) => {
+    if (!terminalKey(event, pane.id)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  surface.addEventListener("click", () => focusTerminalPane(pane.id));
+  head.append(title, cwd, controls);
+  section.append(head, surface);
+  section.addEventListener("pointerdown", (event) => {
+    if (event.target.closest?.("button")) return;
+    focusTerminalPane(pane.id);
+  });
+  pane.section = section;
+  pane.surface = surface;
+  pane.titleEl = title;
+  pane.cwdEl = cwd;
+  pane.splitRight = right;
+  pane.splitDown = down;
+}
+
+function terminalDivider() {
+  if (terminalDividerNode) return terminalDividerNode;
+  const divider = document.createElement("div");
+  divider.id = "terminal-divider";
+  divider.className = "terminal-divider";
+  divider.setAttribute("role", "separator");
+  divider.setAttribute("aria-label", "Resize terminal panes");
+  divider.tabIndex = -1;
+  divider.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    const container = el("terminal-panes");
+    const rect = container.getBoundingClientRect?.() || { width: 1, height: 1 };
+    const horizontal = state.terminal.layout === "row";
+    divider.setPointerCapture?.(event.pointerId);
+    const move = (next) => {
+      const size = horizontal ? rect.width : rect.height;
+      const position = horizontal ? next.clientX - rect.left : next.clientY - rect.top;
+      state.terminal.ratio = Math.max(20, Math.min(80, (position / Math.max(1, size)) * 100));
+      container.style.setProperty("--terminal-ratio", `${state.terminal.ratio}%`);
+      fitTerminal();
+    };
+    const finish = (next) => {
+      divider.removeEventListener("pointermove", move);
+      divider.removeEventListener("pointerup", finish);
+      divider.removeEventListener("pointercancel", finish);
+      divider.releasePointerCapture?.(next.pointerId);
+      fitTerminal();
+    };
+    divider.addEventListener("pointermove", move);
+    divider.addEventListener("pointerup", finish);
+    divider.addEventListener("pointercancel", finish);
+  });
+  terminalDividerNode = divider;
+  return divider;
+}
+
+function renderTerminalPanes() {
+  const container = el("terminal-panes");
+  const focused = state.terminal.focused;
+  for (const pane of state.terminal.panes) {
+    pane.section.classList.toggle("focused", pane.id === focused);
+    pane.splitRight.disabled = state.terminal.panes.length >= 2;
+    pane.splitDown.disabled = state.terminal.panes.length >= 2;
   }
+  el("terminal-split-right").disabled = state.terminal.panes.length >= 2;
+  el("terminal-split-down").disabled = state.terminal.panes.length >= 2;
+  const children = state.terminal.panes.map((pane) => pane.section);
+  const split = state.terminal.panes.length === 2;
+  if (split) {
+    const divider = terminalDivider();
+    divider.setAttribute(
+      "aria-orientation",
+      state.terminal.layout === "row" ? "vertical" : "horizontal",
+    );
+    children.splice(1, 0, divider);
+  }
+  container.replaceChildren(...children);
+  container.dataset.layout = split ? state.terminal.layout : "single";
+  container.style.setProperty("--terminal-ratio", `${state.terminal.ratio}%`);
+  const active = focusedTerminalPane();
+  if (active) {
+    el("terminal-shell").textContent = active.shell;
+    el("terminal-shell").title = t("terminal.shell", "Shell");
+  } else {
+    el("terminal-shell").textContent = t("terminal.shell", "shell");
+    el("terminal-shell").title = t("terminal.shell", "Shell");
+  }
+}
+
+function focusTerminalPane(id, focus = false) {
+  if (!terminalPane(id)) return;
+  state.terminal.focused = id;
+  renderTerminalPanes();
+  const pane = focusedTerminalPane();
+  if (focus) pane?.surface.focus();
+  fitTerminal();
+}
+
+async function openTerminalPane(project, cols = 100, rows = 24) {
+  const answer = await invoke("terminal_open", { project, cols, rows });
+  const pane = {
+    id: answer?.id ?? null,
+    cwd: answer?.cwd || project,
+    shell: answer?.shell || t("terminal.shell", "shell"),
+    cols,
+    rows,
+    exited: false,
+    screen: newTerminalScreen(cols, rows),
+  };
+  terminalPaneView(pane);
+  state.terminal.panes.push(pane);
+  state.terminal.focused = pane.id;
+  return pane;
 }
 
 async function startTerminal() {
@@ -11903,24 +11901,13 @@ async function startTerminal() {
     askForProject();
     return;
   }
-  fitTerminal();
   try {
-    const answer = await invoke("terminal_open", {
-      project,
-      cols: state.terminal.cols,
-      rows: state.terminal.rows,
-    });
-    state.terminal.id = answer?.id ?? null;
-    state.terminal.cwd = answer?.cwd || project;
-    state.terminal.shell = answer?.shell || "shell";
-    state.terminal.exited = false;
-    state.terminal.screen = newTerminalScreen(state.terminal.cols, state.terminal.rows);
-    el("terminal-shell").textContent = state.terminal.shell;
-    el("terminal-shell").title = t("terminal.shell", "Shell");
+    await openTerminalPane(project);
     el("terminal-state").hidden = true;
+    renderTerminalPanes();
+    fitTerminal();
     paintTerminal();
   } catch (error) {
-    state.terminal.screen = null;
     el("terminal-state").hidden = false;
     el("terminal-state").textContent = t("terminal.failed", "Could not open a shell: {value0}", {
       value0: error,
@@ -11929,25 +11916,72 @@ async function startTerminal() {
 }
 
 async function stopTerminal() {
-  const id = state.terminal.id;
-  state.terminal.id = null;
-  state.terminal.screen = null;
-  if (id != null) await invoke("terminal_close", { id }).catch(() => {});
+  const ids = state.terminal.panes.map((pane) => pane.id);
+  state.terminal.panes = [];
+  state.terminal.focused = null;
+  state.terminal.layout = "single";
+  state.terminal.ratio = 50;
+  renderTerminalPanes();
+  await Promise.all(ids.map((id) => invoke("terminal_close", { id }).catch(() => {})));
 }
 
 async function restartTerminal() {
   await stopTerminal();
   await startTerminal();
-  el("terminal-surface").focus();
+  focusedTerminalPane()?.surface.focus();
+}
+
+async function splitTerminal(direction = "row", source = state.terminal.focused) {
+  let current = terminalPane(source);
+  if (!current) {
+    await openTerminal();
+    current = focusedTerminalPane();
+  }
+  if (!current || state.terminal.panes.length >= 2) return;
+  const project = current.cwd || state.worktree || state.project;
+  if (!project) return;
+  try {
+    await openTerminalPane(project, current.cols, current.rows);
+    state.terminal.layout = direction === "column" ? "column" : "row";
+    el("terminal-state").hidden = true;
+    renderTerminalPanes();
+    fitTerminal();
+    paintTerminal();
+    focusedTerminalPane()?.surface.focus();
+  } catch (error) {
+    el("terminal-state").hidden = false;
+    el("terminal-state").textContent = t("terminal.failed", "Could not open a shell: {value0}", {
+      value0: error,
+    });
+  }
+}
+
+async function closeTerminalPane(id) {
+  const pane = terminalPane(id);
+  if (!pane) return;
+  state.terminal.panes = state.terminal.panes.filter((entry) => entry.id !== id);
+  pane.section.remove();
+  await invoke("terminal_close", { id }).catch(() => {});
+  state.terminal.layout = "single";
+  state.terminal.ratio = 50;
+  state.terminal.focused = state.terminal.panes.at(-1)?.id ?? null;
+  renderTerminalPanes();
+  if (!state.terminal.panes.length) {
+    el("terminal-state").hidden = false;
+    el("terminal-state").textContent = t("terminal.exited", "The shell has exited. Open the panel again for a new one.");
+    return;
+  }
+  fitTerminal();
+  focusedTerminalPane()?.surface.focus();
 }
 
 function clearTerminal() {
-  if (state.terminal.screen) {
-    state.terminal.screen = newTerminalScreen(state.terminal.cols, state.terminal.rows);
-    paintTerminal();
-  }
-  terminalWrite("\x0c");
-  el("terminal-surface").focus();
+  const pane = focusedTerminalPane();
+  if (!pane) return;
+  pane.screen = newTerminalScreen(pane.cols, pane.rows);
+  paintTerminal();
+  terminalWrite("\x0c", pane.id);
+  pane.surface.focus();
 }
 
 function setTerminalMaximized(on) {
@@ -11972,13 +12006,13 @@ function toggleTerminalMaximized() {
 
 async function openTerminal() {
   openPanel("terminal");
-  if (state.terminal.id == null) await startTerminal();
-  el("terminal-surface").focus();
+  if (!state.terminal.panes.length) await startTerminal();
+  focusedTerminalPane()?.surface.focus();
 }
 
-function terminalWrite(data) {
-  if (state.terminal.id == null) return;
-  void invoke("terminal_write", { id: state.terminal.id, data }).catch((error) => {
+function terminalWrite(data, id = state.terminal.focused) {
+  if (id == null) return;
+  void invoke("terminal_write", { id, data }).catch((error) => {
     el("terminal-state").hidden = false;
     el("terminal-state").textContent = t("terminal.writeFailed", "The shell is not answering: {value0}", {
       value0: error,
@@ -12005,23 +12039,23 @@ const TERMINAL_KEYS = {
 /// What a key press means to the shell. The shell does its own line editing, so
 /// the window sends the keys and paints what comes back rather than keeping a
 /// buffer of its own.
-function terminalKey(event) {
-  if (state.terminal.id == null) return false;
+function terminalKey(event, id = state.terminal.focused) {
+  if (id == null) return false;
   if (event.metaKey) return false;
   if (event.ctrlKey && event.key.length === 1) {
     const code = event.key.toUpperCase().charCodeAt(0);
     if (code >= 64 && code <= 95) {
-      terminalWrite(String.fromCharCode(code - 64));
+      terminalWrite(String.fromCharCode(code - 64), id);
       return true;
     }
   }
   const mapped = TERMINAL_KEYS[event.key];
   if (mapped) {
-    terminalWrite(mapped);
+    terminalWrite(mapped, id);
     return true;
   }
   if (event.key.length === 1 && !event.altKey) {
-    terminalWrite(event.key);
+    terminalWrite(event.key, id);
     return true;
   }
   return false;
@@ -12170,7 +12204,6 @@ async function initEvents() {
   // listens for: the rows are listed again with the states that are known now.
   await listen("pulls-updated", async () => {
     await loadSessions();
-    if (!el("panel-pulls").hidden) await readPulls();
   });
   el("review-modal").onkeydown = reviewKey;
   await listen("approval-request", (event) => showApproval(event.payload || {}));
@@ -12183,13 +12216,15 @@ async function initEvents() {
   // command menu and the text size rather than keeping a second copy of them.
   await listen("terminal-output", (event) => {
     const payload = event.payload || {};
-    if (payload.terminal !== state.terminal.id) return;
-    terminalFeed(String(payload.data || ""));
+    const pane = terminalPane(payload.terminal);
+    if (!pane) return;
+    terminalFeed(String(payload.data || ""), pane.id);
   });
   await listen("terminal-exit", (event) => {
     const payload = event.payload || {};
-    if (payload.terminal !== state.terminal.id) return;
-    state.terminal.exited = true;
+    const pane = terminalPane(payload.terminal);
+    if (!pane) return;
+    pane.exited = true;
     el("terminal-state").hidden = false;
     el("terminal-state").textContent = t(
       "terminal.exited",
@@ -12198,7 +12233,6 @@ async function initEvents() {
   });
   await listen("toggle-panel", () => togglePanel());
   await listen("open-terminal", () => void openTerminal());
-  await listen("open-pulls", () => void openPulls());
   await listen("open-settings", () => openSettings());
   await listen("command-menu", () => openCommandMenu());
   await listen("toggle-sidebar", () => toggleSidebar());
@@ -12869,6 +12903,14 @@ function init() {
   el("settings-font-smaller").onclick = () => resizeText(-1);
   el("settings-font-reset").onclick = () => resizeText(0);
   el("settings-font-larger").onclick = () => resizeText(1);
+  el("settings-terminal-font").onchange = () => {
+    void savePrefs({ terminal_font: el("settings-terminal-font").value.trim() });
+  };
+  el("settings-terminal-size").onchange = () => {
+    void savePrefs({
+      terminal_font_size: clampTerminalFontSize(el("settings-terminal-size").value),
+    });
+  };
   el("settings-sidebar").onchange = (event) =>
     savePrefs({ sidebar_visible: Boolean(event.target?.checked) });
   el("settings-predictions").onchange = (event) => {
@@ -12941,26 +12983,14 @@ function init() {
     state.file.source = !state.file.source;
     paintFile();
   };
-  el("panel-tab-review").onclick = () => openPanel("review");
   el("review-stage-all").onclick = () => void shapeChange("stage-all");
   el("review-unstage-all").onclick = () => void shapeChange("unstage-all");
-  el("panel-tab-terminal").onclick = () => void openTerminal();
-  el("panel-tab-pulls").onclick = () => void openPulls();
   el("terminal-new").onclick = () => void restartTerminal();
+  el("terminal-split-right").onclick = () => void splitTerminal("row");
+  el("terminal-split-down").onclick = () => void splitTerminal("column");
   el("terminal-clear").onclick = clearTerminal;
   el("terminal-maximize").onclick = toggleTerminalMaximized;
-  for (const parts of Object.values(PANEL_TABS)) {
-    el(parts.tab).addEventListener("keydown", panelTabKey);
-  }
   el("panel-close").onclick = hidePanel;
-  // The shell gets the keys: the panel is a terminal, not a text box, so every
-  // press that means something to the shell is sent rather than drawn here.
-  el("terminal-surface").addEventListener("keydown", (event) => {
-    if (!terminalKey(event)) return;
-    event.preventDefault();
-    event.stopPropagation();
-  });
-  el("terminal-surface").addEventListener("click", () => el("terminal-surface").focus());
   window.addEventListener("resize", () => {
     if (!el("panel-terminal").hidden) fitTerminal();
   });
@@ -13104,18 +13134,13 @@ function init() {
     if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
   };
   el("details-changes").onclick = openRepositoryChanges;
-  el("details-terminal").onclick = () => void openTerminal();
-  el("details-pull-requests").onclick = () => void openPulls();
-  el("details-existing-pull").onclick = () => void openPulls();
-  el("details-terminal-icon").innerHTML = ICONS.terminal;
-  el("details-pull-requests-icon").innerHTML = ICONS.pull;
-  el("details-existing-pull-icon").innerHTML = ICONS.pull;
   el("details-add-source").onclick = openSources;
   el("details-view-sources").onclick = openSources;
   el("sources-close").onclick = () => { el("sources-modal").hidden = true; el("details-view-sources").focus(); };
   el("sources-manage").onclick = openMcps;
   el("sources-attach").onclick = () => { el("sources-modal").hidden = true; el("attach-input").click(); };
   el("details-changes-icon").innerHTML = ICONS.changes;
+  el("review-repository-icon").innerHTML = ICONS.branch;
   el("details-repository-icon").innerHTML = ICONS.folder;
   el("details-sources-icon").innerHTML = ICONS.globe;
   el("details-view-icon").innerHTML = ICONS.caret;

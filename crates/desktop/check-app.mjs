@@ -78,6 +78,7 @@ class StubElement {
     this.children = [];
     this.style = {
       setProperty(name, value) { this[name] = value; },
+      getPropertyValue(name) { return this[name] || ""; },
       removeProperty(name) { delete this[name]; },
     };
     this.dataset = {};
@@ -385,6 +386,8 @@ let storedPrefs = {
   send_key: "enter",
   follow_up: "queue",
   font_scale: 1,
+  terminal_font: "Oxide Terminal",
+  terminal_font_size: 12.5,
   sidebar_visible: true,
   shortcuts: {},
 };
@@ -394,6 +397,7 @@ const zoomCalls = [];
 // side of it is recorded here the way the page called it.
 const terminalOpened = [];
 const terminalWrites = [];
+let nextTerminalId = 7;
 const terminalResizes = [];
 const terminalClosed = [];
 const shaped = [];
@@ -722,7 +726,14 @@ const changeSides = new Map([
     },
   ],
   ["assets/logo.png", { binary: true, omitted: false, lines: [] }],
-  ["notes.md", { binary: false, omitted: true, lines: [] }],
+  ["notes.md", {
+    binary: false,
+    omitted: false,
+    lines: [
+      { kind: "remove", old: 1, new: null, text: "# old heading" },
+      { kind: "add", old: null, new: 1, text: "# new heading" },
+    ],
+  }],
   ["docs/guide.md", { binary: false, omitted: false, lines: [] }],
 ]);
 const changeSidesError = new Map([
@@ -1150,7 +1161,7 @@ const invoke = async (command, args = {}) => {
       return [...repositoryStates].map((entry) => ({ ...entry }));
     case "terminal_open":
       terminalOpened.push({ ...args });
-      return { id: 7, cwd: args.project, shell: "zsh" };
+      return { id: nextTerminalId++, cwd: args.project, shell: "zsh" };
     case "terminal_write":
       terminalWrites.push(args.data);
       return null;
@@ -1326,10 +1337,10 @@ vm.runInThisContext(
     " openActivity, closeActivity, renderActivity, paintActivityDot, activityGroups," +
     " openArchived, closeArchived, renderArchived, openFind, closeFind, stepFind, findHits," +
     " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal, restartTerminal," +
-    " clearTerminal, setTerminalMaximized, toggleTerminalMaximized," +
+    " clearTerminal, setTerminalMaximized, toggleTerminalMaximized, terminalPane, focusedTerminalPane," +
+    " openTerminalPane, splitTerminal, closeTerminalPane, renderTerminalPanes, focusTerminalPane," +
     " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
-    " PANEL_TABS, changeActions, shapeChange, readRepositoryIndex," +
-    " openPulls, readPulls, renderPulls, readPull, pullDetailNodes, renderMemories," +
+    " PANEL_BODIES, changeActions, shapeChange, readRepositoryIndex, renderMemories," +
     " maybePredict, showPrediction, clearPrediction, acceptPrediction, runSlashCommand," +
     " notifyFinished, notifyWaiting, notificationsAllowed, paintBadge, paintAwake," +
     " openFile, closeFile, paintFile, csvTable, toolDisplayIcon, isMcpTool," +
@@ -2808,6 +2819,7 @@ check(
 // the click the reader is already making. So what a hovered or keyboard-held
 // rule may change is how the element looks — its paint, never its box.
 const cosmeticOnHover = [
+  "animation",
   "background",
   "background-color",
   "background-image",
@@ -3001,6 +3013,21 @@ check(
     shell,
   ) && /\(event\.metaKey \|\| event\.ctrlKey\) && event\.key >= "1"/.test(source),
   shell.slice(shell.indexOf("⌘1…⌘9"), shell.indexOf("⌘1…⌘9") + 120),
+);
+const terminalShortcut = app.SHORTCUTS.find((entry) => entry.id === "terminal");
+const splitRightShortcut = app.SHORTCUTS.find((entry) => entry.id === "split-terminal-right");
+const splitDownShortcut = app.SHORTCUTS.find((entry) => entry.id === "split-terminal-down");
+check(
+  "offered Ctrl+~ and the terminal split chords in Shortcuts",
+  terminalShortcut?.chords.includes("ctrl+~") &&
+    splitRightShortcut?.chords.includes("mod+d") &&
+    splitDownShortcut?.chords.includes("mod+shift+d"),
+  `${terminalShortcut?.chords} / ${splitRightShortcut?.chords} / ${splitDownShortcut?.chords}`,
+);
+check(
+  "matched Ctrl+~ even though the shifted key carries Shift",
+  app.matchShortcut({ key: "~", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false })?.id === "terminal" &&
+    app.matchShortcut({ key: "d", ctrlKey: false, shiftKey: false, altKey: false, metaKey: true })?.id === "split-terminal-right",
 );
 // Codex's sidebar pairs the activity filter with search. Activity itself stays
 // in the command menu; the filter carries the attention mark and Projects use
@@ -5403,10 +5430,17 @@ check(
 reviewKey("ArrowDown");
 await reviewTick();
 check(
-  "said a change too large to align is one rather than painting it",
+  "painted the changed lines of a large review instead of refusing the file",
   reviewParts()[0].innerHTML.includes("notes.md") &&
-    reviewParts()[1].textContent.includes("too large"),
-  reviewParts()[1].textContent,
+    reviewRows()
+      .map((row) => row.children.map((cell) => cell.textContent).join(" "))
+      .join(" ")
+      .includes("# old heading") &&
+    reviewRows()
+      .map((row) => row.children.map((cell) => cell.textContent).join(" "))
+      .join(" ")
+      .includes("# new heading"),
+  reviewRows().map((row) => row.children.map((cell) => cell.textContent).join(" ")).join(" "),
 );
 check(
   "marked the row the review is showing",
@@ -5542,6 +5576,11 @@ check(
     elementFor("review-scope").value === "repository" &&
     calls.some(([name]) => name === "repository_changes") &&
     calls.some(([name]) => name === "repository_sides"),
+);
+check(
+  "kept staging controls to the expanded file instead of repeating them for every row",
+  elementFor("review-files").children.filter((row) => row.className === "change-actions").length === 1,
+  elementFor("review-files").children.map((row) => row.className).join(" / "),
 );
 repositoryChanges = { files: [file("src/agent.rs", "modified", 11, 5)], added: 11, removed: 5 };
 const openReviewEdit = app.startTool("bash", JSON.stringify({ command: "format" }));
@@ -10357,6 +10396,21 @@ check(
   `${JSON.stringify(scaleCall?.[1]?.patch)} / ${elementFor("settings-font-value").textContent}`,
 );
 elementFor("settings-font-reset").onclick();
+calls.length = 0;
+elementFor("settings-terminal-font").value = "Berkeley Mono";
+elementFor("settings-terminal-font").onchange();
+await new Promise((resolve) => setTimeout(resolve, 0));
+elementFor("settings-terminal-size").value = "15.5";
+elementFor("settings-terminal-size").onchange();
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "stored and applied the terminal font family and size",
+  storedPrefs.terminal_font === "Berkeley Mono" &&
+    storedPrefs.terminal_font_size === 15.5 &&
+    document.body.style.getPropertyValue("--terminal-font").includes("Berkeley Mono") &&
+    document.body.style.getPropertyValue("--terminal-font-size") === "15.5px",
+  `${storedPrefs.terminal_font} / ${storedPrefs.terminal_font_size} / ${document.body.style.getPropertyValue("--terminal-font-size")}`,
+);
 elementFor("settings-sidebar").onchange({ target: { checked: false } });
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(
@@ -10915,68 +10969,75 @@ check("clamped the side panel to its maximum", reviewDivider.getAttribute("aria-
 reviewDivider.fire("dblclick", {});
 check("reset the side panel width", reviewDivider.getAttribute("aria-valuenow") === "360");
 console.log("the panel and its terminal");
-// The panel is one dock with three bodies: a tab is a body made visible and the
-// others put away, and the panel is only there while one of them is.
+// Changes is the only right-hand body. Terminal is a separate bottom dock.
 app.openPanel("review");
 check(
-  "opened the panel on its Changes tab",
+  "opened the workspace on Changes",
   elementFor("bottom-panel").hidden === false &&
     elementFor("review-modal").hidden === false &&
-    elementFor("panel-terminal").hidden === true &&
-    elementFor("panel-tab-review").className.includes("active") &&
-    elementFor("panel-tab-review").getAttribute("aria-selected") === "true",
+    elementFor("panel-terminal").hidden === true,
   `${elementFor("bottom-panel").hidden} / ${elementFor("review-modal").hidden} / ${elementFor("panel-terminal").hidden}`,
 );
-elementFor("details-terminal").onclick();
+await app.openTerminal();
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(
-  "opened a shell from the project's Terminal row",
+  "opened the default shell in the bottom Terminal dock",
   terminalOpened.length === 1 &&
     terminalOpened[0].project === "/tmp/oxide" &&
-    app.state.terminal.id === 7 &&
+    app.state.terminal.focused === 7 &&
     elementFor("panel-terminal").hidden === false &&
     elementFor("review-modal").hidden === true &&
-    document.activeElement === elementFor("terminal-surface"),
-  `${JSON.stringify(terminalOpened[0])} / ${app.state.terminal.id}`,
+    document.activeElement === app.focusedTerminalPane().surface,
+  `${JSON.stringify(terminalOpened[0])} / ${app.state.terminal.focused}`,
 );
 check(
   "docked Terminal below the conversation with VS Code's shell controls",
   elementFor("bottom-panel").classList.contains("terminal-mode") &&
-    elementFor("terminal-tools").hidden === false &&
     elementFor("terminal-shell").textContent === "zsh",
   `${elementFor("bottom-panel").className} / ${elementFor("terminal-shell").textContent}`,
 );
-app.openPanel("pulls");
-app.syncPanel();
 check(
-  "kept the dock while Pull requests was its selected body",
-  elementFor("bottom-panel").hidden === false &&
-    elementFor("panel-pulls").hidden === false &&
-    elementFor("review-modal").hidden === true &&
-    elementFor("panel-terminal").hidden === true &&
-    !elementFor("bottom-panel").classList.contains("terminal-mode") &&
-    elementFor("terminal-tools").hidden === true,
+  "drew the shell's cursor as its own terminal cell",
+  app.focusedTerminalPane().surface.children[0]?.querySelector(".terminal-cursor")?.textContent === "\u00a0",
 );
-elementFor("panel-tab-pulls").fire("keydown", { key: "ArrowRight", preventDefault() {} });
+await app.splitTerminal("row");
 check(
-  "wrapped the panel tabs and moved focus with the selected tab",
-  app.state.panelTab === "review" &&
-    elementFor("panel-tab-review").getAttribute("aria-selected") === "true" &&
-    elementFor("panel-tab-review").tabIndex === 0 &&
-    elementFor("panel-tab-pulls").tabIndex === -1,
+  "split Terminal right with independent focused panes",
+  app.state.terminal.panes.length === 2 &&
+    app.state.terminal.layout === "row" &&
+    app.state.terminal.focused === 8 &&
+    elementFor("terminal-panes").dataset.layout === "row" &&
+    elementFor("terminal-panes").children.length === 3 &&
+    elementFor("terminal-panes").children[1].className === "terminal-divider",
+  `${app.state.terminal.panes.length} / ${elementFor("terminal-panes").dataset.layout}`,
 );
+await app.closeTerminalPane(8);
+check("closed the split pane and returned to one shell", app.state.terminal.panes.length === 1 &&
+  app.state.terminal.focused === 7 && elementFor("terminal-panes").dataset.layout === "single");
+await app.splitTerminal("column");
 check(
-  "offered Terminal and Pull requests beside the project's Changes",
-  typeof elementFor("details-terminal").onclick === "function" &&
-    typeof elementFor("details-pull-requests").onclick === "function",
+  "split Terminal down when requested",
+  app.state.terminal.panes.length === 2 &&
+    app.state.terminal.layout === "column" &&
+    elementFor("terminal-panes").dataset.layout === "column",
+);
+await app.closeTerminalPane(9);
+check(
+  "kept Terminal and Pull requests out of the project summary and workspace tabs",
+  !shell.includes('id="details-terminal"') &&
+    !shell.includes('id="details-pull-requests"') &&
+    !shell.includes('id="panel-tab-terminal"') &&
+    !shell.includes('id="panel-tab-pulls"') &&
+    !shell.includes('id="panel-pulls"'),
 );
 await app.openTerminal();
 terminalWrites.length = 0;
 app.clearTerminal();
 check(
   "cleared the surface and asked the shell for a fresh prompt",
-  elementFor("terminal-surface").children.length === 1 &&
-    elementFor("terminal-surface").children[0].children.length === 0 &&
+  app.focusedTerminalPane().surface.children.length === 1 &&
+    app.focusedTerminalPane().surface.children[0].children.length === 1 &&
+    app.focusedTerminalPane().surface.children[0].children[0].className === "terminal-cursor" &&
     terminalWrites.join("|") === "\x0c",
   terminalWrites.join("|"),
 );
@@ -10997,7 +11058,11 @@ check(
 // to the start of the line, and a line feed starts the next one.
 app.terminalFeed("\x1b[31mred\x1b[0m plain\r\nsecond");
 await new Promise((resolve) => setTimeout(resolve, 30));
-const termLines = elementFor("terminal-surface").children;
+const termLines = app.focusedTerminalPane().surface.children;
+const terminalLineText = (row) => row.children
+  .map((child) => child.textContent)
+  .map((text) => (text === "\u00a0" ? "" : text))
+  .join("");
 const firstLine = termLines[0]?.children ?? [];
 check(
   "drew the shell's colours as runs of a line",
@@ -11023,16 +11088,16 @@ app.terminalFeed("\rX");
 await new Promise((resolve) => setTimeout(resolve, 30));
 check(
   "wrote over the line a carriage return went back to",
-  elementFor("terminal-surface").children[1].children[0].textContent === "Xecond",
-  String(elementFor("terminal-surface").children[1].children[0].textContent),
+  terminalLineText(app.focusedTerminalPane().surface.children[1]) === "Xecond",
+  terminalLineText(app.focusedTerminalPane().surface.children[1]),
 );
 // A sequence that arrives in two chunks waits for the rest rather than painting
 // half of itself as text.
 app.terminalFeed("\x1b[3");
 app.terminalFeed("2mgreen");
 await new Promise((resolve) => setTimeout(resolve, 30));
-const lastLine = elementFor("terminal-surface").children.at(-1).children;
-const colored = lastLine.at(-1);
+const lastLine = app.focusedTerminalPane().surface.children.at(-1).children;
+const colored = lastLine.find((span) => span.textContent === "green");
 check(
   "waited for the rest of a split sequence",
   colored?.textContent === "green" && colored?.style.color === app.terminalColor("32"),
@@ -11065,11 +11130,10 @@ check(
   "put the shell away with the panel",
   elementFor("bottom-panel").hidden === true &&
     elementFor("review-modal").hidden === true &&
-    elementFor("panel-pulls").hidden === true &&
     !elementFor("bottom-panel").classList.contains("terminal-mode") &&
-    elementFor("terminal-tools").hidden === true &&
     !document.body.classList.contains("terminal-maximized") &&
-    app.state.terminal.id === null &&
+    app.state.terminal.panes.length === 0 &&
+    app.state.terminal.focused === null &&
     terminalClosed.includes(7),
   `${elementFor("bottom-panel").hidden} / ${terminalClosed.join(",")}`,
 );
@@ -11327,97 +11391,6 @@ check(
 );
 memoriesError = null;
 app.closeSettings();
-
-console.log("the repository's pull requests");
-pullsList = [
-  {
-    number: 12,
-    title: "Add a terminal",
-    state: "open",
-    draft: false,
-    url: "https://github.com/o/r/pull/12",
-    head: "feat/terminal",
-    base: "main",
-    review: "APPROVED",
-    author: "jayson",
-  },
-];
-pullsDetail = {
-  body: "What this does",
-  additions: 120,
-  deletions: 4,
-  changed_files: 1,
-  mergeable: "mergeable",
-  checks: [
-    { name: "desktop (macos-latest)", state: "pass", url: "" },
-    { name: "desktop (windows-latest)", state: "fail", url: "" },
-  ],
-  comments: [
-    { author: "reviewer", body: "Looks good", created_at: "2026-01-02T00:00:00Z", review: "changes_requested" },
-  ],
-  files: [{ path: "crates/desktop/src/terminal.rs", additions: 100, deletions: 2 }],
-};
-elementFor("details-pull-requests").onclick();
-await new Promise((resolve) => setTimeout(resolve, 0));
-check(
-  "listed the repository's open requests from the project's Pull requests row",
-  elementFor("bottom-panel").hidden === false &&
-    elementFor("panel-pulls").hidden === false &&
-    elementFor("pulls-list").children.length === 1 &&
-    elementFor("pulls-list").children[0].children[0].children[1].textContent === "Add a terminal",
-  `${elementFor("pulls-list").children.length}`,
-);
-await app.readPull(12);
-const detailChildren = elementFor("pull-detail").children;
-const sectionTitles = detailChildren
-  .filter((node) => node.className === "pull-section")
-  .map((node) => node.children[0].textContent);
-check(
-  "read one request into what a reviewer needs",
-  pullAsked.join(",") === "12" &&
-    detailChildren[0].textContent === "#12 Add a terminal" &&
-    detailChildren[1].textContent.includes("feat/terminal → main") &&
-    sectionTitles.join(",") === "Description,Checks,Comments,Files" &&
-    detailChildren.some((node) => node.id === "pull-open-browser"),
-  `${pullAsked.join(",")} / ${sectionTitles.join(",")}`,
-);
-const checksSection = detailChildren.find(
-  (node) => node.className === "pull-section" && node.children[0].textContent === "Checks",
-);
-check(
-  "drew each check in the state it is in",
-  checksSection.children[1].className === "pull-check state-pass" &&
-    checksSection.children[1].children[0].textContent === "✔" &&
-    checksSection.children[2].className === "pull-check state-fail" &&
-    checksSection.children[2].children[0].textContent === "✖",
-  `${checksSection.children[1].className} / ${checksSection.children[2].className}`,
-);
-const openButton = detailChildren.find((node) => node.id === "pull-open-browser");
-calls.length = 0;
-openButton.onclick();
-await new Promise((resolve) => setTimeout(resolve, 0));
-check(
-  "opened the request on the forge through the window's own command",
-  calls.some(([name, args]) => name === "open_url" && args.url === "https://github.com/o/r/pull/12"),
-  JSON.stringify(calls),
-);
-pullsList = [];
-app.state.pullOpen = null;
-await app.readPulls();
-check(
-  "said a repository has no open requests rather than an empty list",
-  elementFor("pulls-list").children[0].textContent === "This repository has no open requests.",
-  String(elementFor("pulls-list").children[0].textContent),
-);
-pullsError = "gh: not logged in";
-await app.readPulls();
-check(
-  "reported a forge that could not be read",
-  /not logged in/.test(String(elementFor("pulls-list").children[0].textContent)),
-  String(elementFor("pulls-list").children[0].textContent),
-);
-pullsError = null;
-pullsDetail = {};
 
 console.log("staging a change from the review");
 // The action a row offers is the one that applies: a staged change can be taken

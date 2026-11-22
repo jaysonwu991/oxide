@@ -14,7 +14,7 @@ use oxide_core::auth::{self, AuthStore};
 use oxide_core::catalog;
 use oxide_core::cli::{event_json, session_header};
 use oxide_core::config::{Config, Reasoning};
-use oxide_core::diff::{Diff, LineKind};
+use oxide_core::diff::LineKind;
 use oxide_core::llm::LlmClient;
 use oxide_core::llm::Message;
 use oxide_core::llm::{ContentPart, MessageContent};
@@ -1413,27 +1413,23 @@ fn side_text(side: Option<Vec<u8>>) -> Option<String> {
 /// each naming the number it holds on each side (the side it is missing from
 /// carries none), or why there is nothing to paint.
 fn review_sides(old: &str, new: &str) -> Value {
-    match oxide_core::diff::lines(old, new) {
-        Diff::Same => json!({ "binary": false, "omitted": false, "lines": [] }),
-        Diff::Omitted { .. } => json!({ "binary": false, "omitted": true, "lines": [] }),
-        Diff::Lines(lines) => json!({
-            "binary": false,
-            "omitted": false,
-            "lines": lines
-                .iter()
-                .map(|line| json!({
-                    "kind": match line.kind {
-                        LineKind::Context => "context",
-                        LineKind::Add => "add",
-                        LineKind::Remove => "remove",
-                    },
-                    "old": line.old,
-                    "new": line.new,
-                    "text": line.text,
-                }))
-                .collect::<Vec<_>>(),
-        }),
-    }
+    json!({
+        "binary": false,
+        "omitted": false,
+        "lines": oxide_core::diff::review_lines(old, new)
+            .iter()
+            .map(|line| json!({
+                "kind": match line.kind {
+                    LineKind::Context => "context",
+                    LineKind::Add => "add",
+                    LineKind::Remove => "remove",
+                },
+                "old": line.old,
+                "new": line.new,
+                "text": line.text,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// Interrupts startup, model streams and tool waits. A stuck task is aborted

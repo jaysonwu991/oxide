@@ -53,6 +53,76 @@ pub fn lines(old: &str, new: &str) -> Diff {
     Diff::Lines(align(&old_lines, &new_lines))
 }
 
+/// Lines for an interactive review. Normal files use the full alignment;
+/// oversized files keep context at the common ends and show the changed middle
+/// as removals followed by additions. This avoids the quadratic alignment while
+/// still letting the reader inspect every changed line.
+pub fn review_lines(old: &str, new: &str) -> Vec<Line> {
+    if old == new {
+        return Vec::new();
+    }
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    if old_lines.len() <= MAX_DIFF_LINES && new_lines.len() <= MAX_DIFF_LINES {
+        return align(&old_lines, &new_lines);
+    }
+    let prefix = old_lines
+        .iter()
+        .zip(&new_lines)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let suffix = old_lines[prefix..]
+        .iter()
+        .rev()
+        .zip(new_lines[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let context_start = prefix.saturating_sub(CONTEXT);
+    let mut out = Vec::new();
+    for (index, line) in old_lines
+        .iter()
+        .enumerate()
+        .take(prefix)
+        .skip(context_start)
+    {
+        out.push(Line {
+            kind: LineKind::Context,
+            old: Some(index + 1),
+            new: Some(index + 1),
+            text: (*line).to_string(),
+        });
+    }
+    let old_end = old_lines.len().saturating_sub(suffix);
+    let new_end = new_lines.len().saturating_sub(suffix);
+    for (index, line) in old_lines.iter().enumerate().take(old_end).skip(prefix) {
+        out.push(Line {
+            kind: LineKind::Remove,
+            old: Some(index + 1),
+            new: None,
+            text: (*line).to_string(),
+        });
+    }
+    for (index, line) in new_lines.iter().enumerate().take(new_end).skip(prefix) {
+        out.push(Line {
+            kind: LineKind::Add,
+            old: None,
+            new: Some(index + 1),
+            text: (*line).to_string(),
+        });
+    }
+    for offset in 0..suffix.min(CONTEXT) {
+        let old_index = old_end + offset;
+        let new_index = new_end + offset;
+        out.push(Line {
+            kind: LineKind::Context,
+            old: Some(old_index + 1),
+            new: Some(new_index + 1),
+            text: old_lines[old_index].to_string(),
+        });
+    }
+    out
+}
+
 /// Render a preview of the change from `old` to `new`, or `None` when the two
 /// are identical. Oversized inputs fall back to a one-line summary.
 pub fn preview(old: &str, new: &str) -> Option<String> {
@@ -301,6 +371,30 @@ mod tests {
         assert_eq!(lines[2].kind, LineKind::Add);
         assert_eq!((lines[2].old, lines[2].new), (None, Some(2)));
         assert_eq!(lines[2].text, "c");
+    }
+
+    #[test]
+    fn a_large_review_keeps_context_and_the_changed_middle() {
+        let old: String = (0..MAX_DIFF_LINES + 10)
+            .map(|n| format!("line {n}\n"))
+            .collect();
+        let new = old.replace("line 1001\n", "line changed\n");
+        let reviewed = review_lines(&old, &new);
+        assert!(matches!(lines(&old, &new), Diff::Omitted { .. }));
+        assert!(reviewed
+            .iter()
+            .any(|line| line.kind == LineKind::Remove && line.text == "line 1001"));
+        assert!(reviewed
+            .iter()
+            .any(|line| line.kind == LineKind::Add && line.text == "line changed"));
+        assert!(reviewed.len() < 20);
+        assert_eq!(
+            reviewed
+                .iter()
+                .filter(|line| line.kind == LineKind::Context)
+                .count(),
+            CONTEXT * 2
+        );
     }
 
     #[test]

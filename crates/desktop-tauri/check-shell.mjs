@@ -120,8 +120,8 @@ check(
   /pub fn install\(app: &AppHandle/.test(menu) &&
     /state\.text\("ui\.newTab"/.test(menu) &&
     /state\.accelerator\("settings"/.test(menu) &&
-    /state\.text\("menu\.pulls"/.test(menu) &&
-    /"open-pulls" =>/.test(menu),
+    !/state\.text\("menu\.pulls"/.test(menu) &&
+    !/"open-pulls" =>/.test(menu),
 );
 check(
   "relaunched only after the engine accepts the restart",

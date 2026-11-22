@@ -74,7 +74,7 @@ Codex's workflows must preserve those contracts.
 | Attachments | Implemented: image, PDF and text input, paste/drop and image previews, subject to the shared limits and provider support. |
 | Transcript and composer | Implemented: Markdown, diagrams, tool cards, reasoning, message navigation, find, shortcuts and draft history. Visual equivalence requires live reference captures and keyboard/scroll checks at supported sizes. |
 | Local code review | Implemented: turn/repository diffs, undo and per-file stage/unstage/revert. Hunk operations exist in `staging.rs`, but the UI exposes file actions only. |
-| Pull request review | Partial: `gh`/`glab` provide repository requests, description, checks, comments and diffs. No cross-repository personal review inbox, viewed-revision markers or cloud review service. |
+| Pull request links | Implemented for the requests a thread reports: the project summary and sidebar row open the forge in the system browser. The repository-level request browser is intentionally absent, matching Codex Desktop. |
 | Integrated terminal | Partial: real PTY and keyboard input, with a limited ANSI renderer. Full-screen terminal programs, complete terminal emulation and persistent hidden terminal sessions are not supported. |
 | File and artifact preview | Partial: images, text, Markdown, diagrams and CSV previews. No live document/spreadsheet/presentation authoring canvas or account artifact lifecycle. |
 | Browser automation | Configured MCP tools drive a local browser. Tool images render as clickable previews during runs and when reopening a chat. No built-in browser session, continuous screen mirror, or isolated background input. |
@@ -1347,12 +1347,14 @@ The window's own preferences live in one store beside the project registry —
 occupies — read once at launch and written whenever a control changes
 something. The file is the shared configuration's, not this window's private
 notebook: the fields are named for the whole front-end (`send_key`, `follow_up`,
-`font_scale`, `sidebar_visible`, `shortcuts`), and a key this build does not know
-is kept as it was written so a preference from a newer window survives a save
-from an older one. A known key holding a value the window cannot use is refused
-by name rather than quietly replaced; a value the window *can* read but not use —
-a scale outside `0.7`–`1.6`, a word from a newer build — falls back to the value
-the window shipped with, so a hand-edited file never stops the window opening.
+`font_scale`, `terminal_font`, `terminal_font_size`, `sidebar_visible`,
+`shortcuts`), and a key this build does not know is kept as it was written so a
+preference from a newer window survives a save from an older one. A known key
+holding a value the window cannot use is refused by name rather than quietly
+replaced; a value the window *can* read but not use — a scale outside `0.7`–`1.6`,
+a terminal size outside `8`–`28`, a word from a newer build — falls back to the
+value the window shipped with, so a hand-edited file never stops the window
+opening.
 
 **Settings** is a full page with its own sidebar, opened from the gear at the bottom of the navigation rail, the app
 menu's **Settings…** (`⌘,`) or the command menu. Its sections are named by id so
@@ -1394,38 +1396,45 @@ a message. A row needing a folder is left out when there is none.
 `⌘K` used to be the model picker. The picker is the model chip and `/model` now,
 which is where Codex keeps it too.
 
-## The workspace panel: Changes, terminal and pull requests
+## Changes and the terminal dock
 
-The **Changes** and **Pull requests** tabs open in a right-hand workspace rail
-beside the conversation, with `⌘J` to show or hide it. The rail starts at Codex's
-compact width (360px) and a separator resizes it from 300px to 560px with the
-pointer or Left/Right keys (Shift moves faster); Home/End select the limits and
-double-click restores 360px. Left/Right, Home and End also walk the tabs as one
-group. The width survives relaunch. Windows at 1100px or narrower stack the panel
-below the conversation. The project summary offers Terminal and the repository's
-pull requests beside Changes, while both desktop hosts also expose them from the
-native View menu.
+The right-hand workspace is only **Changes**, matching Codex Desktop. It opens
+beside the conversation with `⌘J`. The rail starts at Codex's compact width
+(360px) and a separator resizes it from 300px to 560px with the pointer or
+Left/Right keys (Shift moves faster); Home/End select the limits and
+double-click restores 360px. The width survives relaunch. Windows at 1100px or
+narrower stack the panel below the conversation.
 
 **Terminal** follows VS Code's integrated-terminal layout instead of using the
 side rail: the dock spans the editor area below the conversation, keeps its tab
-row, and carries the shell name, new-terminal, clear and maximize controls.
-Maximizing gives the terminal the editor area and restores the conversation from
-the same control. The shell is the reader's real `$SHELL` in the thread's project
-or worktree, with `TERM=xterm-256color`, `COLORTERM=truecolor`, shell-native line
-editing, resizing and exit reporting. The VS Code extension keeps delegating to
-VS Code's own terminal, so its shell, profile and terminal settings remain the
-editor's rather than a second emulator.
+row, and carries the detected shell name, new-terminal, split-right,
+split-down, clear and maximize controls. `⌘D`/`Ctrl+D` and
+`⌘⇧D`/`Ctrl+Shift+D` split the focused pane right and down. Each pane has its
+own header, cwd, focus, split controls and close action; the divider resizes the
+two panes. Maximizing gives the terminal the editor area and restores the
+conversation from the same control. The shell is the reader's real `$SHELL` in
+the thread's project or worktree, with `TERM=xterm-256color`,
+`COLORTERM=truecolor`, shell-native line editing, resizing and exit reporting.
+The cursor is painted as the shell's own blinking block, with a hollow block
+when that pane is not focused. The bundled **Oxide Terminal** family is
+JetBrains Mono NL Nerd Font Mono, so Powerline separators and common prompt
+glyphs render without a system install. Appearance also accepts another installed
+font family and a terminal point size; the bundled family remains the fallback.
+The VS Code extension keeps delegating to VS Code's own terminal, so its shell,
+profile and terminal settings remain the editor's rather than a second emulator.
 
 **Changes** defaults to old/new columns; **Unified diff** toggles a saved
-single-column view. Closing Changes puts the dock away unless another tab is
-showing. The pane still reads what it always did — a turn's card, or the
+single-column view. Closing Changes puts the dock away. The pane still reads what
+it always did — a turn's card, or the
 repository's uncommitted changes — and gained what it writes.
 
-**Review.** In the repository scope each file now carries the staging action its
-state allows, from `repository_status` (which files the index holds, which the
-working tree still holds, which git has never tracked): **Stage** a working-tree
-change, **Unstage** a staged one, **Revert** a tracked one, plus **Stage all**
-and **Unstage all** in the head. Every action goes through one command,
+**Review.** The branch and repository totals sit above a compact file listing.
+In the repository scope the expanded file carries the staging action its state
+allows, from `repository_status` (which files the index holds, which the working
+tree still holds, which git has never tracked): **Stage** a working-tree change,
+**Unstage** a staged one, **Revert** a tracked one, plus **Stage all** and
+**Unstage all** in the head. Collapsed files do not repeat those controls in the
+diff flow. Every action goes through one command,
 `shape_change`, whose `action` names what to do and whose `path` (and, for a
 hunk, `hunk`) names what to do it to. The pane repaints from git's answer rather
 than from what it asked for, so a refusal — a file that changed under the reader,
@@ -1444,6 +1453,11 @@ the repository, no `..` — and `--recount` lets git fix the counts from the lin
 Hunk-level staging is in the harness and covered by tests; the pane's buttons are
 per file for now.
 
+Large files no longer become an unreadable "too large to diff" row. Their long
+common prefix and suffix provide context, and the changed middle is returned as
+removals followed by additions, so every changed line remains reviewable without
+the quadratic alignment used for ordinary files.
+
 **Terminal.** Each conversation can open a shell in the folder it runs in — the
 project, or the worktree it was handed to — through `terminal_open`, which starts
 a real pseudoterminal (`crates/desktop/src/terminal.rs`, `portable-pty`) running
@@ -1461,29 +1475,12 @@ backspace and tabs, erasing a line or the screen, and moving the cursor. A
 program that paints a full-screen interface is outside that, and a terminal panel
 is not the place for one.
 
-## Reviewing a pull request
+## Pull request links
 
-The panel's third tab reads the repository's requests through its forge's own
-CLI — `gh` on GitHub, `glab` on a repository carrying `.gitlab-ci.yml` — and
-paints one: what it says, what its checks said, what has been said about it and
-the files it touches. `pull_requests` lists what the forge lists, `pull_request`
-reads the one the reader picked, and both come off the worker the window's other
-commands share, since a CLI that has to reach the network is not something a
-listing should wait on.
-
-`src/review.rs` owns the narrowing. The two forges spell the same request
-differently — `headRefName` against a nested `source_branch`, `url` against
-`web_url`, a check run's `conclusion` against a status context's `state` — so the
-shapes are read in one place and the window is handed one shape: a request, its
-checks reduced to `pass`/`fail`/`pending` (anything unfinished is pending, which
-is neither a pass nor a failure), the comments with the review verdicts among
-them, and the files with their line counts. A CLI that is missing, logged out or
-offline is one answer the pane shows in the forge's own words rather than a
-listing that reads empty.
-
-The pane is deliberately read-only for now: it does not comment, approve or
-merge. Those write to somebody else's pull request, and the confirmation a
-reader deserves before one is a design of its own.
+The right workspace is deliberately only **Changes**, as in Codex Desktop. The
+pull request a thread reports remains in the project summary and on the thread's
+sidebar row, and opens on the forge. The repository-level pull-request browser is
+not part of the desktop UI.
 
 ## The next message, offered as a draft
 
@@ -1635,7 +1632,9 @@ front-end checks run against) says **No matches** rather than failing.
 | `⌘B` / `Ctrl+B` | Show or hide the sidebar |
 | `⌘+` / `⌘-` / `⌘0` | Larger, smaller, actual size |
 | `⌘J` | Show or hide the bottom panel |
-| `⌃\`` | Open the terminal |
+| `⌃\`` / `Ctrl+~` | Open the terminal |
+| `⌘D` / `Ctrl+D` | Split the focused terminal right |
+| `⌘⇧D` / `Ctrl+Shift+D` | Split the focused terminal down |
 | `⇧Esc` | Clear the unread marks |
 | `Escape` | Close any dialog; a question is dismissed, which the agent is told rather than left waiting |
 | Click outside a dialog | The same as closing it: the backdrop answers through the dialog's own Close, Cancel or Dismiss, so its teardown is the one either way. The two dialogs whose buttons are the decision — a tool's approval, a folder's trust question — are not dismissed this way, since a stray press must not be an answer |
