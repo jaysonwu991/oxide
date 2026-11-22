@@ -580,6 +580,10 @@ function installMenu(): void {
             accelerator: nativeAccelerator("terminal", "Ctrl+`"),
             click: () => announceEvent("open-terminal"),
           },
+          {
+            label: t("menu.pulls", "Pull requests…"),
+            click: () => announceEvent("open-pulls"),
+          },
           { type: "separator" },
           {
             label: t("settings.actionToggleSidebar", "Show or Hide Sidebar"),

@@ -27,19 +27,22 @@ export interface ChangedFile extends ChangeLike {
   binary: boolean;
 }
 
-/// One row of the card as the webview paints it: what it is badged with, what it
-/// says, and the words its tooltip carries. Composed here rather than in the
+/// One row of the card as the webview paints it: the path and line totals it
+/// says, plus the words its tooltip carries. Composed here rather than in the
 /// webview, which only paints what it is handed.
 export interface ChangeRow extends ChangeLike {
   letter: string;
   detail: string;
+  added: number;
+  removed: number;
+  binary: boolean;
   title: string;
   index: number;
 }
 
 /// How many rows a card shows before the rest fold away behind one, as the
 /// desktop app's card does.
-export const CHANGES_VISIBLE = 5;
+export const CHANGES_VISIBLE = 3;
 
 /// The row under a listing longer than the card shows, or `null` when every file
 /// fits: how many rows are painted while the rest are folded away, and the words
@@ -75,7 +78,7 @@ export function changesMore(count: number): ChangesMore | null {
   if (hidden <= 0) return null;
   return {
     visible: CHANGES_VISIBLE,
-    closed: `+${hidden} more file${hidden === 1 ? "" : "s"}`,
+    closed: `Show ${hidden} more file${hidden === 1 ? "" : "s"}`,
     open: "Show less",
   };
 }
@@ -89,7 +92,7 @@ export function changeDetail(file: ChangedFile): string {
   return counts.join(" ") || "no line changes";
 }
 
-/// The letter the row is badged with, matching `git status` and the terminal.
+/// The letter that names the file's status in a tooltip, matching `git status`.
 export function changeLetter(status: ChangeStatus): string {
   return status === "added" ? "A" : status === "deleted" ? "D" : "M";
 }
@@ -116,6 +119,9 @@ export function changeRows(files: readonly ChangedFile[]): ChangeRow[] {
     status: file.status,
     letter: changeLetter(file.status),
     detail: changeDetail(file),
+    added: file.added,
+    removed: file.removed,
+    binary: file.binary,
     title: `Show ${file.path} in VS Code's diff editor`,
     index,
   }));

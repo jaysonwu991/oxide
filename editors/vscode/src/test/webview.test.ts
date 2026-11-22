@@ -3559,6 +3559,8 @@ describe("webview change cards", () => {
     kind: "changes",
     title: "Edited 2 files",
     totals: "+2 −9",
+    added: 2,
+    removed: 9,
     baseline: "abc123",
     after: "def456",
     project: "/w",
@@ -3571,6 +3573,9 @@ describe("webview change cards", () => {
         status: "modified",
         letter: "M",
         detail: "+2 −1",
+        added: 2,
+        removed: 1,
+        binary: false,
         title: "Show src/main.rs in VS Code's diff editor",
         index: 0,
       },
@@ -3579,13 +3584,16 @@ describe("webview change cards", () => {
         status: "deleted",
         letter: "D",
         detail: "−8",
+        added: 0,
+        removed: 8,
+        binary: false,
         title: "Show docs/old.md in VS Code's diff editor",
         index: 1,
       },
     ],
   };
 
-  it("lists the turn's files with the badge, path and detail the host sent", () => {
+  it("lists the turn's files with the path and detail the host sent", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
     const transcript = byId.get("transcript")!;
@@ -3593,19 +3601,32 @@ describe("webview change cards", () => {
 
     const box = find(transcript, "changes")!;
     assert.equal(find(box, "changes-title")!.textContent, "Edited 2 files");
-    assert.equal(find(box, "changes-total")!.textContent, "+2 −9");
+    assert.deepEqual(
+      find(box, "changes-total")!.children
+        .filter((child) => !child.classList.contains("stats-gap"))
+        .map((child) => child.textContent),
+      ["+2", "−9"],
+    );
     const rows = box.querySelectorAll(".change-row");
     assert.equal(rows.length, 2);
     assert.deepEqual(
-      rows.map((row) => row.children.map((child) => child.textContent)),
+      rows.map((row) => [
+        row.children[0].children.map((child) => child.textContent).join(""),
+        row.children[1].children
+          .filter((child) => !child.classList.contains("stats-gap"))
+          .map((child) => child.textContent)
+          .join(" "),
+      ]),
       [
-        ["M", "src/main.rs", "+2 −1"],
-        ["D", "docs/old.md", "−8"],
+        ["src/main.rs", "+2 −1"],
+        ["docs/old.md", "−8"],
       ],
     );
-    // The badge is coloured by the status, and each row says what it opens.
-    assert.equal(rows[1].children[0].className, "change-badge change-deleted");
-    assert.equal(rows[0].title, "Show src/main.rs in VS Code's diff editor");
+    // The directory is quieter than the filename, and each row says what it opens.
+    assert.equal(rows[0].children[0].children[0].className, "change-directory");
+    assert.equal(rows[0].children[0].children[1].className, "change-filename");
+    assert.equal(rows[1].children[1].children[0].className, "stats-del");
+    assert.equal(rows[0].title, "Show src/main.rs in VS Code's diff editor · modified");
   });
 
   it("opens VS Code's diff editor for the row that was clicked", () => {
@@ -3615,7 +3636,7 @@ describe("webview change cards", () => {
     send({ k: "push", item: card });
 
     const rows = find(transcript, "changes")!.querySelectorAll(".change-row");
-    // A click that lands on the badge still belongs to the row it sits in.
+    // A click that lands on the path still belongs to the row it sits in.
     transcript.fire("click", { target: rows[1].children[0] });
     assert.deepEqual(last(posted), { k: "openChangeDiff", id: 4, index: 1 });
     transcript.fire("click", { target: rows[0] });
@@ -3657,7 +3678,10 @@ describe("webview change cards", () => {
     const { byId, send } = loadRenderer();
     send(stateMessage());
     const transcript = byId.get("transcript")!;
-    send({ k: "push", item: { ...card, totals: "", rows: [{ ...card.rows[1], detail: "binary" }] } });
+    send({
+      k: "push",
+      item: { ...card, totals: "", added: 0, removed: 0, rows: [{ ...card.rows[1], detail: "binary", binary: true, added: 0, removed: 0 }] },
+    });
     assert.equal(find(transcript, "changes-total"), null);
     assert.equal(find(transcript, "change-detail")!.textContent, "binary");
   });
@@ -3670,6 +3694,10 @@ describe("webview change cards", () => {
 
     const undo = find(transcript, "changes-undo")!;
     assert.equal(undo.textContent, "Undo");
+    const actions = find(transcript, "changes-actions")!;
+    assert.equal(actions.children[0].className, "changes-undo");
+    assert.equal(actions.children[1].className, "changes-review");
+    assert.equal(actions.children[1].textContent, "View changes");
     assert.equal(undo.hidden, false, "the newest turn's card offers it");
     assert.equal(find(transcript, "changes-note")!.hidden, true);
     undo.fire("click");
@@ -3718,6 +3746,9 @@ describe("webview change cards", () => {
       status: "modified",
       letter: "M",
       detail: "+1 −1",
+      added: 1,
+      removed: 1,
+      binary: false,
       title: `Show src/file${index}.rs in VS Code's diff editor`,
       index,
     }));
@@ -3726,7 +3757,7 @@ describe("webview change cards", () => {
       item: {
         ...card,
         title: "Edited 7 files",
-        more: { visible: 5, closed: "+2 more files", open: "Show less" },
+        more: { visible: 3, closed: "Show 4 more files", open: "Show less" },
         rows,
       },
     });
@@ -3734,16 +3765,17 @@ describe("webview change cards", () => {
     const listing = find(transcript, "changes")!.querySelectorAll(".change-row");
     assert.deepEqual(
       listing.map((row) => row.hidden),
-      [false, false, false, false, false, true, true],
+      [false, false, false, true, true, true, true],
     );
     const more = find(transcript, "changes-more")!;
-    assert.equal(more.textContent, "+2 more files");
+    const label = find(more, "changes-more-label")!;
+    assert.equal(label.textContent, "Show 4 more files");
     more.fire("click");
     assert.deepEqual(listing.map((row) => row.hidden).every((hidden) => !hidden), true);
-    assert.equal(more.textContent, "Show less");
+    assert.equal(label.textContent, "Show less");
     more.fire("click");
     assert.equal(listing[6].hidden, true);
-    assert.equal(more.textContent, "+2 more files");
+    assert.equal(label.textContent, "Show 4 more files");
 
     // A card whose listing fits has no such row at all.
     const small = loadRenderer();
@@ -3765,6 +3797,9 @@ describe("webview native changes review", () => {
         status: "modified",
         letter: "M",
         detail: "+3 −1",
+        added: 3,
+        removed: 1,
+        binary: false,
         title: "Show src/main.rs in VS Code's diff editor",
         index: 0,
       },
@@ -3773,6 +3808,9 @@ describe("webview native changes review", () => {
         status: "deleted",
         letter: "D",
         detail: "−8",
+        added: 0,
+        removed: 8,
+        binary: false,
         title: "Show docs/old.md in VS Code's diff editor",
         index: 1,
       },
@@ -4088,7 +4126,17 @@ describe("webview tool card", () => {
     send({ k: "push", item: {
       id: 4, kind: "changes", title: "Edited 1 file", totals: "+7 −2", added: 7, removed: 2,
       baseline: "abc", after: "def", project: "/w/app", more: null, undoable: true, undone: false,
-      rows: [{ path: "README.md", status: "modified", letter: "M", detail: "+7 −2", title: "README.md", index: 0 }],
+      rows: [{
+        path: "README.md",
+        status: "modified",
+        letter: "M",
+        detail: "+7 −2",
+        added: 7,
+        removed: 2,
+        binary: false,
+        title: "README.md",
+        index: 0,
+      }],
     } });
     const pill = byId.get("live-changes")!;
     assert.equal(pill.hidden, false);

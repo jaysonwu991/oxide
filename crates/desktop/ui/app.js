@@ -5854,10 +5854,6 @@ function changesCard(card) {
   undo.type = "button";
   undo.className = "changes-undo";
   undo.textContent = t("ui.undo", "Undo");
-  const undoIcon = document.createElement("span");
-  undoIcon.setAttribute("aria-hidden", "true");
-  undoIcon.innerHTML = ICONS.undo;
-  undo.appendChild(undoIcon);
   undo.onclick = (event) => {
     event.stopPropagation();
     undoChanges(card);
@@ -5906,7 +5902,7 @@ function changesCard(card) {
 
 function paintChanges(card) {
   card.review.textContent = t("topbar.viewChanges", "View changes");
-  card.undo.innerHTML = escapeHtml(t("ui.undo", "Undo")) + ICONS.undo;
+  card.undo.innerHTML = ICONS.undo + escapeHtml(t("ui.undo", "Undo"));
   if (card.undone) card.note.textContent = t("ui.undone", "Undone");
   const count = card.files.length;
   card.title.textContent = t(count === 1 ? "changes.editedFile" : "changes.editedFiles", count === 1 ? "Edited {count} file" : "Edited {count} files", { count });
@@ -6276,14 +6272,15 @@ function paintDockToggles() {
   el("details-toggle").hidden = !hasChat();
   el("changes-toggle").hidden = !hasChat();
   paintLiveChanges();
-  el("changes-toggle").setAttribute("aria-expanded", String(!el("review-modal").hidden));
+  el("changes-toggle").setAttribute("aria-expanded", String(!el("bottom-panel").hidden));
   el("details-toggle").setAttribute("aria-expanded", String(!panel.hidden));
   if (wasHidden && !panel.hidden) return refreshProjectDetails();
 }
 
 function openProjectDetails() {
   state.detailsOpen = true;
-  return closeReview();
+  if (!el("bottom-panel").hidden) return hidePanel();
+  return paintDockToggles();
 }
 
 /// The requests the thread on screen reported, listed under the project card,
@@ -11067,10 +11064,10 @@ function paintFindCount() {
   }
 }
 
-// ---------- the bottom panel: Review and the terminal ----------
+// ---------- the workspace panel ----------
 
-/// The panel's two bodies, by tab. Both are children of the dock, so a tab is a
-/// body made visible and the other put away.
+/// The panel's three bodies, by tab. They are children of the dock, so a tab is
+/// a body made visible and the others put away.
 const PANEL_TABS = {
   review: { tab: "panel-tab-review", body: "review-modal" },
   terminal: { tab: "panel-tab-terminal", body: "panel-terminal" },
@@ -11081,9 +11078,11 @@ state.panelTab = "review";
 state.pulls = [];
 state.pullError = "";
 state.pullOpen = null;
+state.pullProject = "";
 state.terminal = {
   id: null,
   cwd: "",
+  shell: "shell",
   cols: 80,
   rows: 20,
   screen: null,
@@ -11097,10 +11096,16 @@ function openPanel(tab) {
   state.panelTab = chosen;
   for (const [name, parts] of Object.entries(PANEL_TABS)) {
     const active = name === chosen;
-    el(parts.tab).classList.toggle("active", active);
-    el(parts.tab).setAttribute("aria-selected", String(active));
+    const button = el(parts.tab);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
     el(parts.body).hidden = !active;
   }
+  const terminalMode = chosen === "terminal";
+  el("bottom-panel").classList.toggle("terminal-mode", terminalMode);
+  el("terminal-tools").hidden = !terminalMode;
+  if (!terminalMode) setTerminalMaximized(false);
   el("bottom-panel").hidden = false;
   paintDockToggles();
   if (chosen === "terminal") {
@@ -11113,25 +11118,49 @@ function openPanel(tab) {
 /// reader cannot see must not keep a process alive.
 function hidePanel() {
   el("bottom-panel").hidden = true;
-  el("review-modal").hidden = true;
-  el("panel-terminal").hidden = true;
+  el("bottom-panel").classList.remove("terminal-mode");
+  el("terminal-tools").hidden = true;
+  setTerminalMaximized(false);
+  for (const parts of Object.values(PANEL_TABS)) el(parts.body).hidden = true;
   void stopTerminal();
   paintDockToggles();
 }
 
-/// The panel is only there while one of its bodies is: closing the review with
-/// the keyboard or its own button puts the dock away too, unless the terminal is
-/// what is showing.
+/// The panel is only there while one of its bodies is.
 function syncPanel() {
-  if (el("review-modal").hidden && el("panel-terminal").hidden) {
+  if (Object.values(PANEL_TABS).every((parts) => el(parts.body).hidden)) {
     el("bottom-panel").hidden = true;
   }
 }
 
 function togglePanel(tab = state.panelTab) {
-  if (el("bottom-panel").hidden) openPanel(tab);
+  if (el("bottom-panel").hidden && tab === "terminal") void openTerminal();
+  else if (el("bottom-panel").hidden && tab === "pulls") void openPulls();
+  else if (el("bottom-panel").hidden) openPanel(tab);
   else if (state.panelTab === tab) hidePanel();
   else openPanel(tab);
+}
+
+/// Tabs move as one group: Left and Right walk the three bodies, Home and End
+/// go to the ends, and the selected body takes focus with the selected tab.
+function panelTabKey(event) {
+  const tabs = Object.keys(PANEL_TABS);
+  const current = Math.max(0, tabs.indexOf(state.panelTab));
+  let next = current;
+  if (event.key === "ArrowLeft") next = (current + tabs.length - 1) % tabs.length;
+  else if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = tabs.length - 1;
+  else return;
+  event.preventDefault();
+  const tab = tabs[next];
+  if (tab === "terminal") {
+    void openTerminal();
+    return;
+  }
+  if (tab === "pulls") void openPulls();
+  else openPanel(tab);
+  el(PANEL_TABS[tab].tab).focus();
 }
 
 // ---------- a file the conversation produced ----------
@@ -11352,21 +11381,38 @@ async function maybePredict() {
 /// that lies about a request that merged since.
 async function openPulls(number = null) {
   openPanel("pulls");
-  if (!state.pulls.length && !state.pullError) await readPulls();
+  await readPulls();
   if (number != null) await readPull(number);
 }
 
+let pullsRead = 0;
+
 async function readPulls() {
   const project = runFolder();
+  const read = ++pullsRead;
+  const current = () => read === pullsRead && project === runFolder();
   if (!project) {
+    state.pullProject = "";
+    state.pullOpen = null;
     state.pullError = t("pulls.noProject", "Open a project to read its requests.");
     renderPulls();
     return;
   }
+  if (state.pullProject !== project) {
+    state.pullProject = project;
+    state.pullOpen = null;
+    el("pull-detail").replaceChildren(
+      reviewNote(t("pulls.pickOne", "Pick a request to read what it changed, what its checks say and what has been said about it.")),
+    );
+  }
+  el("pulls-list").replaceChildren(reviewNote(t("pulls.readingList", "Reading pull requests…")));
   try {
-    state.pulls = (await invoke("pull_requests", { project })) || [];
+    const pulls = (await invoke("pull_requests", { project })) || [];
+    if (!current()) return;
+    state.pulls = pulls;
     state.pullError = "";
   } catch (error) {
+    if (!current()) return;
     state.pulls = [];
     state.pullError = t("pulls.failed", "Could not read the repository's requests: {value0}", {
       value0: error,
@@ -11425,9 +11471,13 @@ function renderPulls() {
   }
 }
 
+let pullRead = 0;
+
 async function readPull(number) {
   const project = runFolder();
   if (!project) return;
+  const read = ++pullRead;
+  const current = () => read === pullRead && project === runFolder();
   state.pullOpen = number;
   const detail = el("pull-detail");
   detail.replaceChildren(reviewNote(t("pulls.reading", "Reading #{value0}…", { value0: number })));
@@ -11436,11 +11486,13 @@ async function readPull(number) {
   try {
     pull = await invoke("pull_request", { project, number });
   } catch (error) {
+    if (!current()) return;
     detail.replaceChildren(
       reviewNote(t("pulls.failedOne", "Could not read #{value0}: {value1}", { value0: number, value1: error })),
     );
     return;
   }
+  if (!current()) return;
   detail.replaceChildren(...pullDetailNodes(pull));
 }
 
@@ -11722,7 +11774,11 @@ function terminalFeed(text) {
       ensureTerminalRow(screen, screen.row);
     } else if (ch === "\b") screen.col = Math.max(0, screen.col - 1);
     else if (ch === "\t") screen.col = Math.min(400, screen.col + (8 - (screen.col % 8)));
-    else if (ch === "\x07") {
+    else if (ch === "\f") {
+      screen.lines = [{ cells: [] }];
+      screen.row = 0;
+      screen.col = 0;
+    } else if (ch === "\x07") {
       // The bell has nothing to draw.
     } else if (ch >= " ") writeTerminalCell(screen, ch);
     index += 1;
@@ -11856,8 +11912,11 @@ async function startTerminal() {
     });
     state.terminal.id = answer?.id ?? null;
     state.terminal.cwd = answer?.cwd || project;
+    state.terminal.shell = answer?.shell || "shell";
     state.terminal.exited = false;
     state.terminal.screen = newTerminalScreen(state.terminal.cols, state.terminal.rows);
+    el("terminal-shell").textContent = state.terminal.shell;
+    el("terminal-shell").title = t("terminal.shell", "Shell");
     el("terminal-state").hidden = true;
     paintTerminal();
   } catch (error) {
@@ -11876,10 +11935,45 @@ async function stopTerminal() {
   if (id != null) await invoke("terminal_close", { id }).catch(() => {});
 }
 
+async function restartTerminal() {
+  await stopTerminal();
+  await startTerminal();
+  el("terminal-surface").focus();
+}
+
+function clearTerminal() {
+  if (state.terminal.screen) {
+    state.terminal.screen = newTerminalScreen(state.terminal.cols, state.terminal.rows);
+    paintTerminal();
+  }
+  terminalWrite("\x0c");
+  el("terminal-surface").focus();
+}
+
+function setTerminalMaximized(on) {
+  const next = Boolean(
+    on && state.panelTab === "terminal" && !el("bottom-panel").hidden,
+  );
+  document.body.classList.toggle("terminal-maximized", next);
+  const button = el("terminal-maximize");
+  const label = t(
+    next ? "terminal.restore" : "terminal.maximize",
+    next ? "Restore terminal" : "Maximize terminal",
+  );
+  button.setAttribute("aria-pressed", String(next));
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  fitTerminal();
+}
+
+function toggleTerminalMaximized() {
+  setTerminalMaximized(!document.body.classList.contains("terminal-maximized"));
+}
+
 async function openTerminal() {
   openPanel("terminal");
   if (state.terminal.id == null) await startTerminal();
-  else el("terminal-surface").focus();
+  el("terminal-surface").focus();
 }
 
 function terminalWrite(data) {
@@ -12076,6 +12170,7 @@ async function initEvents() {
   // listens for: the rows are listed again with the states that are known now.
   await listen("pulls-updated", async () => {
     await loadSessions();
+    if (!el("panel-pulls").hidden) await readPulls();
   });
   el("review-modal").onkeydown = reviewKey;
   await listen("approval-request", (event) => showApproval(event.payload || {}));
@@ -12103,6 +12198,7 @@ async function initEvents() {
   });
   await listen("toggle-panel", () => togglePanel());
   await listen("open-terminal", () => void openTerminal());
+  await listen("open-pulls", () => void openPulls());
   await listen("open-settings", () => openSettings());
   await listen("command-menu", () => openCommandMenu());
   await listen("toggle-sidebar", () => toggleSidebar());
@@ -12394,23 +12490,28 @@ function dockHasRoom() {
 
 function initPanelResize() {
   const handle = el("panel-resizer");
-  const storageKey = "oxide.reviewWidth";
-  let width = 55;
+  const storageKey = "oxide.workspaceWidth";
+  const DEFAULT = 360;
+  const MIN = 300;
+  const MAX = 560;
+  let width = DEFAULT;
   const apply = (value, persist = false) => {
-    width = Math.max(30, Math.min(70, Number.isFinite(value) ? value : 55));
-    document.body.style.setProperty("--review-width", `${width}%`);
+    width = Math.max(MIN, Math.min(MAX, Number.isFinite(value) ? value : DEFAULT));
+    document.body.style.setProperty("--workspace-width", `${width}px`);
+    handle.setAttribute("aria-valuemin", String(MIN));
+    handle.setAttribute("aria-valuemax", String(MAX));
     handle.setAttribute("aria-valuenow", String(Math.round(width)));
     if (persist) localStorage.setItem(storageKey, String(width));
     fitTerminal();
   };
-  apply(Number(localStorage.getItem(storageKey)) || 55);
+  const saved = Number(localStorage.getItem(storageKey) || 0);
+  apply(saved >= MIN ? saved : DEFAULT);
   handle.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     const start = width;
-    const available = document.querySelector(".center-column")?.getBoundingClientRect().width || window.innerWidth;
     handle.setPointerCapture(event.pointerId);
     document.body.classList.add("resizing");
-    const move = (next) => apply(start - 100 * (next.clientX - event.clientX) / available);
+    const move = (next) => apply(start - (next.clientX - event.clientX));
     const finish = (next) => {
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", finish);
@@ -12424,17 +12525,17 @@ function initPanelResize() {
     handle.addEventListener("pointercancel", finish);
   });
   handle.addEventListener("keydown", (event) => {
-    const step = event.shiftKey ? 10 : 2;
+    const step = event.shiftKey ? 40 : 16;
     if (event.key === "ArrowLeft") apply(width + step, true);
     else if (event.key === "ArrowRight") apply(width - step, true);
-    else if (event.key === "Home") apply(30, true);
-    else if (event.key === "End") apply(70, true);
+    else if (event.key === "Home") apply(MIN, true);
+    else if (event.key === "End") apply(MAX, true);
     else return;
     event.preventDefault();
   });
   handle.addEventListener("dblclick", () => {
     localStorage.removeItem(storageKey);
-    apply(55);
+    apply(DEFAULT);
   });
 }
 
@@ -12845,6 +12946,12 @@ function init() {
   el("review-unstage-all").onclick = () => void shapeChange("unstage-all");
   el("panel-tab-terminal").onclick = () => void openTerminal();
   el("panel-tab-pulls").onclick = () => void openPulls();
+  el("terminal-new").onclick = () => void restartTerminal();
+  el("terminal-clear").onclick = clearTerminal;
+  el("terminal-maximize").onclick = toggleTerminalMaximized;
+  for (const parts of Object.values(PANEL_TABS)) {
+    el(parts.tab).addEventListener("keydown", panelTabKey);
+  }
   el("panel-close").onclick = hidePanel;
   // The shell gets the keys: the panel is a terminal, not a text box, so every
   // press that means something to the shell is sent rather than drawn here.
@@ -12988,7 +13095,7 @@ function init() {
     else openRepositoryChanges();
   };
   el("details-toggle").onclick = () => {
-    if (!el("review-modal").hidden) return openProjectDetails();
+    if (!el("bottom-panel").hidden) return openProjectDetails();
     state.detailsOpen = !state.detailsOpen;
     paintDockToggles();
   };
@@ -12997,7 +13104,11 @@ function init() {
     if (project) showProjectActions(project, listedSessions().filter((session) => sessionProject(session) === project.path), el("details-more"), el("details-more"));
   };
   el("details-changes").onclick = openRepositoryChanges;
+  el("details-terminal").onclick = () => void openTerminal();
+  el("details-pull-requests").onclick = () => void openPulls();
   el("details-existing-pull").onclick = () => void openPulls();
+  el("details-terminal-icon").innerHTML = ICONS.terminal;
+  el("details-pull-requests-icon").innerHTML = ICONS.pull;
   el("details-existing-pull-icon").innerHTML = ICONS.pull;
   el("details-add-source").onclick = openSources;
   el("details-view-sources").onclick = openSources;

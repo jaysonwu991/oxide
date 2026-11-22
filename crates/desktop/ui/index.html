@@ -458,16 +458,22 @@
       </div>
       </div>
 
-    <div id="panel-resizer" class="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize review panel" data-i18n-aria="ui.resizeReview" aria-valuemin="30" aria-valuemax="70" aria-valuenow="55" tabindex="0"></div>
+    <div id="panel-resizer" class="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize review panel" data-i18n-aria="ui.resizeReview" aria-valuemin="300" aria-valuemax="560" aria-valuenow="360" tabindex="0"></div>
     <aside id="bottom-panel" class="bottom-panel" hidden aria-label="Panel" data-i18n-aria="panel.title">
       <div class="panel-tabs" role="tablist" aria-label="Panel tabs" data-i18n-aria="panel.tabs">
-        <button id="panel-tab-review" class="panel-tab" role="tab" aria-selected="true" aria-controls="review-modal" data-panel="review" data-i18n="panel.review">Review</button>
-        <button id="panel-tab-terminal" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-terminal" data-panel="terminal" data-i18n="panel.terminal">Terminal</button>
-        <button id="panel-tab-pulls" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-pulls" data-panel="pulls" data-i18n="panel.pulls">Pull requests</button>
+        <button id="panel-tab-review" class="panel-tab" role="tab" aria-selected="true" aria-controls="review-modal" data-panel="review" data-i18n="panel.review">Changes</button>
+        <button id="panel-tab-terminal" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-terminal" data-panel="terminal" data-i18n="panel.terminal" tabindex="-1">Terminal</button>
+        <button id="panel-tab-pulls" class="panel-tab" role="tab" aria-selected="false" aria-controls="panel-pulls" data-panel="pulls" data-i18n="panel.pulls" tabindex="-1">Pull requests</button>
+        <div id="terminal-tools" class="terminal-tools" hidden aria-label="Terminal actions" data-i18n-aria="terminal.title">
+          <span class="terminal-shell"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/></svg><span id="terminal-shell" data-i18n="terminal.shell">shell</span></span>
+          <button id="terminal-new" class="icon" type="button" title="New terminal" aria-label="New terminal" data-i18n-title="terminal.new" data-i18n-aria="terminal.new"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg></button>
+          <button id="terminal-clear" class="icon" type="button" title="Clear terminal" aria-label="Clear terminal" data-i18n-title="terminal.clear" data-i18n-aria="terminal.clear"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
+          <button id="terminal-maximize" class="icon" type="button" title="Maximize terminal" aria-label="Maximize terminal" aria-pressed="false" data-i18n-title="terminal.maximize" data-i18n-aria="terminal.maximize"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" stroke-width="1.8"/></svg></button>
+        </div>
         <button id="panel-close" class="icon panel-close" title="Hide the panel" aria-label="Hide the panel" data-i18n-title="panel.hide" data-i18n-aria="panel.hide"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
       </div>
       <div class="panel-bodies">
-    <aside id="review-modal" class="changes-pane" aria-label="Changes" data-i18n-aria="ui.changes" hidden>
+    <aside id="review-modal" class="changes-pane" role="tabpanel" aria-labelledby="panel-tab-review" aria-label="Changes" data-i18n-aria="ui.changes" hidden>
       <div class="review-dialog">
         <div class="dock-title"><h2 id="review-title" data-i18n="topbar.viewChanges">Changes</h2>
           <button
@@ -493,13 +499,13 @@
         </div>
       </div>
     </aside>
-        <div id="panel-pulls" class="panel-pulls" hidden>
+        <div id="panel-pulls" class="panel-pulls" role="tabpanel" aria-labelledby="panel-tab-pulls" hidden>
           <div id="pulls-list" class="pulls-list" role="list" aria-label="Pull requests" data-i18n-aria="panel.pulls"></div>
           <div id="pull-detail" class="pull-detail">
             <p class="dialog-sub" data-i18n="pulls.pickOne">Pick a request to read what it changed, what its checks say and what has been said about it.</p>
           </div>
         </div>
-        <div id="panel-terminal" class="panel-terminal" hidden>
+        <div id="panel-terminal" class="panel-terminal" role="tabpanel" aria-labelledby="panel-tab-terminal" hidden>
           <div id="terminal-surface" class="terminal-surface" tabindex="0" role="log" aria-live="polite" aria-label="Terminal" data-i18n-aria="terminal.title"></div>
           <div id="terminal-state" class="terminal-state" hidden></div>
         </div>
@@ -514,6 +520,8 @@
       <div class="details-card">
         <div class="details-head"><span id="details-project"></span><button id="details-more" class="icon" title="Project options" aria-label="Project options" aria-haspopup="menu" aria-expanded="false" data-i18n-title="topbar.projectDetails" data-i18n-aria="topbar.projectDetails"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="2.4"/></svg></button></div>
         <button id="details-changes" class="details-row"><span id="details-changes-icon" aria-hidden="true"></span><span data-i18n="topbar.viewChanges">View changes</span><span id="details-stats" class="change-stats"></span></button>
+        <button id="details-terminal" class="details-row"><span id="details-terminal-icon" aria-hidden="true"></span><span data-i18n="menu.terminal">Terminal</span><span class="details-shortcut">Ctrl+`</span></button>
+        <button id="details-pull-requests" class="details-row"><span id="details-pull-requests-icon" aria-hidden="true"></span><span data-i18n="details.pullRequests">Pull requests</span><span class="details-action" data-i18n="file.open">Open</span></button>
         <details class="details-repository">
           <summary><span id="details-repository-icon" aria-hidden="true"></span><span data-i18n="review.repository">Repository</span></summary>
         <div id="details-checkout" class="details-row"></div>

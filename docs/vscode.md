@@ -1122,7 +1122,7 @@ changed nothing sends no frame.
 
 `core/changes.ts` reads that frame and composes the card as data: the title and
 the turn's `+`/`−` totals, the folder the run was in, and a row per file with its
-`A`/`M`/`D` badge, path and detail (`+12 −3`, `−4`, `no line changes`, `binary`).
+path and detail (`+12 −3`, `−4`, `no line changes`, `binary`).
 `media/main.js` only paints the rows — a click posts back the card's id and the
 row's index, and the header's icon opens the turn as a whole — so the webview
 decides nothing about what a change is. The whole turn goes to `vscode.changes`,
@@ -1147,12 +1147,12 @@ takes — `[label, original, modified]`, where the label is the file's own URI �
 and its last two entries are the `[left, right]` pair `vscode.diff` is given off
 the same triple for a single row.
 
-A card's **Review** button and the completed turn's changed-files summary open
+A card's **View changes** button and the completed turn's changed-files summary open
 all files directly in VS Code's native Changes editor (`vscode.changes`). Clicking
 a file row opens and focuses that file's diff (`vscode.diff`) in its own tab.
 These actions do not open a webview modal or dialog.
 
-A listing longer than five files folds the rest away behind one row (`+N more
+A listing longer than three files folds the rest away behind one row (`Show N more
 files`, and `Show less` back), as the desktop app's card does. The count and both
 sets of words are composed by `core/changes.ts`; the webview only hides the rows
 past `visible`, so a fold cannot disagree with the listing it folds.

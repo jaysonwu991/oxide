@@ -1272,6 +1272,12 @@ pub async fn terminal_open(
     state: &DesktopState,
 ) -> CmdResult<Value> {
     let cwd = project_dir(&project)?;
+    let shell = crate::terminal::default_shell();
+    let shell_name = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&shell)
+        .to_string();
     let id = state
         .next_terminal
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1279,7 +1285,7 @@ pub async fn terminal_open(
     let cwd = terminal.cwd.clone();
     state.terminals.lock().await.insert(id, terminal);
     pump_terminal(id, reader, state.events.clone());
-    Ok(json!({ "id": id, "cwd": cwd }))
+    Ok(json!({ "id": id, "cwd": cwd, "shell": shell_name }))
 }
 
 /// Reads the shell's output on a thread of its own and announces it, so a
