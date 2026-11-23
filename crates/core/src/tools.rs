@@ -2872,6 +2872,14 @@ fn strip_grep_line_terminator(line: &str) -> &str {
     }
 }
 
+fn strip_grep_bom(line: &str, line_number: u64) -> &str {
+    if line_number == 1 {
+        line.strip_prefix('\u{feff}').unwrap_or(line)
+    } else {
+        line
+    }
+}
+
 fn truncate_grep_line(line: &str) -> (String, bool) {
     let mut units = 0;
     for (index, character) in line.char_indices() {
@@ -2966,7 +2974,7 @@ impl GrepCollector {
         file_path: &str,
     ) {
         self.last_file = Some(file_path.to_string());
-        let line_text = strip_grep_line_terminator(line_text);
+        let line_text = strip_grep_bom(strip_grep_line_terminator(line_text), line_number);
         let (line_text, truncated) = truncate_grep_line(line_text);
         self.lines_truncated |= truncated;
         let marker = if is_match { ':' } else { '-' };
@@ -4660,6 +4668,7 @@ fn grep_names_generated_directory(operands: &[String]) -> bool {
 /// A shell function that makes every `grep` in the command skip dependency and
 /// build-output trees, so a recursive sweep that cannot be converted to the
 /// `grep` tool still runs bounded instead of being refused.
+#[cfg(unix)]
 fn grep_sweep_shim() -> String {
     let excludes: String = GENERATED_DIRECTORIES
         .iter()
@@ -9033,6 +9042,13 @@ mod tests {
         );
         assert_eq!(rg_text(Some(&json!({ "bytes": "!!!" }))), "");
         assert_eq!(rg_text(Some(&json!({ "text": "plain" }))), "plain");
+    }
+
+    #[test]
+    fn grep_strips_a_utf16_bom_only_from_the_first_line() {
+        assert_eq!(strip_grep_bom("\u{feff}before", 1), "before");
+        assert_eq!(strip_grep_bom("\u{feff}before", 2), "\u{feff}before");
+        assert_eq!(strip_grep_bom("before", 1), "before");
     }
 
     #[tokio::test]
