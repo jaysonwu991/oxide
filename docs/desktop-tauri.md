@@ -16,8 +16,10 @@ gap first.
 The shared page owns native editing. Tauri's Edit-menu roles reach the focused
 webview editing host, so the Markdown composer maps copy, cut, undo and redo to
 its source model, while the terminal exposes itself as an editing host but
-routes paste to the PTY, copies only terminal selections and refuses native DOM
-edits.
+routes the native paste event to the PTY, copies only terminal selections and
+refuses native DOM edits. Terminal paste deliberately avoids
+`navigator.clipboard.readText()`, which WebKit presents as another Paste
+permission callout rather than a direct paste.
 
 ```mermaid
 graph TD

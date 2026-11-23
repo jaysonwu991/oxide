@@ -1411,10 +1411,11 @@ double-click restores 360px. The width survives relaunch. Windows at 1100px or
 narrower stack the panel below the conversation.
 
 **Terminal** follows macOS Terminal's compact bottom-window shape instead of
-using the side rail: the dock spans the editor area below the conversation, has
-one restrained header with the current cwd and shell, and carries new-terminal,
-split-right, split-down, clear and maximize controls. A single pane has no
-duplicate inner titlebar; splitting adds compact per-pane tab headers. The
+using the side rail: the dock spans the editor area below the conversation, and
+each shell item carries its own header with the current cwd, shell, new-terminal,
+split-right, split-down, clear, maximize and close controls. A single shell shows
+the same header as each half of a split, so there is no separate dock toolbar.
+Closing one half keeps the other; closing the last shell hides the dock. The
 conversation/terminal boundary resizes with the pointer or Up/Down keys, and
 `⌘D`/`Ctrl+D` and `⌘⇧D`/`Ctrl+Shift+D` split the focused pane right and down.
 The pane divider resizes the two panes, and the dock height survives relaunch.
@@ -1432,10 +1433,12 @@ inherits, and it receives `TERM=xterm-256color`, `COLORTERM=truecolor`, and the
 `TERM_PROGRAM` facts prompt tools use. Selection copies with ⌘C / Ctrl+Shift+C
 and the clipboard pastes with ⌘V / Ctrl+V (Ctrl+Shift+V also works everywhere);
 bracketed paste is honored when the shell enables it, and a non-text paste asks
-the host clipboard for the copied path or picture. The surface is an editing host
-so the native Edit menu routes those chords to its copy and paste events; its
-`beforeinput` and cut are refused, so the shell's output is never changed by the
-webview's editor. Copy is selection-only, and a selection crossing from the
+the host clipboard for the copied path or picture. The standard paste chord is
+left to the webview's native paste event, whose clipboard payload is available
+without a second WebKit permission prompt; Ctrl+Shift+V and Shift+Insert use the
+host reader directly. The surface is an editing host so those events reach it;
+its `beforeinput` and cut are refused, so the shell's output is never changed by
+the webview's editor. Copy is selection-only, and a selection crossing from the
 terminal into the transcript is left to the window's own copy.
 The cursor is painted as the shell's own blinking block, with a hollow block
 when that pane is not focused. The bundled **Oxide Terminal** family is

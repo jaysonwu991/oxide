@@ -3195,34 +3195,13 @@ body.settings-open .topbar { grid-column: 1 / -1; }
   background: var(--bg);
 }
 
-.terminal-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 39px;
-  padding: 5px 9px 5px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-  background: color-mix(in srgb, var(--panel) 78%, transparent);
-}
-.terminal-identity { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 9px; }
-.terminal-dock-title { flex: none; color: var(--text); font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em; }
-.terminal-context {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--faint);
-  font: 11.5px/1.3 var(--terminal-font);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.terminal-tools { display: flex; align-items: center; gap: 1px; margin-left: auto; min-width: 0; }
-.terminal-shell {
+.terminal-pane-shell {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
-  max-width: 220px;
-  margin-right: 4px;
+  max-width: 160px;
+  flex: none;
   padding: 3px 8px;
   border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
   border-radius: 7px;
@@ -3233,30 +3212,7 @@ body.settings-open .topbar { grid-column: 1 / -1; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.terminal-shell svg { display: block; flex: none; }
-#terminal-shell { overflow: hidden; text-overflow: ellipsis; }
-.terminal-tools .icon {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border-radius: 7px;
-  color: var(--faint);
-}
-.terminal-tools .icon:hover,
-.terminal-tools .icon[aria-pressed="true"] { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
-.terminal-bar .panel-close {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  margin-left: 3px;
-  padding: 0;
-  border-radius: 7px;
-  color: var(--faint);
-}
-.panel-close:hover { color: var(--text); background: var(--panel-2); }
+.terminal-pane-shell svg { display: block; flex: none; }
 .panel-bodies { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 
 /* The terminal takes macOS Terminal's compact bottom-window shape: the
@@ -3313,7 +3269,7 @@ body.terminal-maximized .bottom-panel.terminal-mode { flex: 1 1 auto; min-height
   min-width: 0;
   min-height: 0;
   display: grid;
-  margin: 0 8px 8px;
+  margin: 8px;
   border: 1px solid color-mix(in srgb, white 7%, transparent);
   border-radius: 10px;
   background: var(--terminal-bg);
@@ -3352,24 +3308,35 @@ body.terminal-maximized .bottom-panel.terminal-mode { flex: 1 1 auto; min-height
 .terminal-pane.focused { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent); }
 .terminal-pane-head {
   flex: none;
-  min-height: 30px;
+  min-height: 36px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 7px 0 10px;
+  padding: 0 6px 0 8px;
   border-bottom: 1px solid color-mix(in srgb, white 7%, transparent);
   background: var(--terminal-bg-elevated);
   color: var(--dim);
   font-size: 10.5px;
 }
-.terminal-panes[data-layout="single"] .terminal-pane-head { display: none; }
-.terminal-pane-title { flex: none; max-width: 35%; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-weight: 500; }
+.terminal-pane-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-weight: 500; }
 .terminal-pane-cwd { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
-.terminal-pane-controls { flex: none; display: flex; align-items: center; gap: 1px; margin-left: auto; opacity: 0.55; }
+.terminal-pane-controls { flex: none; display: flex; align-items: center; gap: 1px; margin-left: auto; opacity: 0.72; }
 .terminal-pane:hover .terminal-pane-controls,
 .terminal-pane:focus-within .terminal-pane-controls { opacity: 1; }
-.terminal-pane-controls .icon { padding: 3px; color: var(--faint); }
-.terminal-pane-controls .icon:hover { color: var(--text); background: var(--panel-3); }
+.terminal-pane-controls .icon {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--faint);
+}
+.terminal-pane-controls .icon:hover,
+.terminal-pane-controls .icon[aria-pressed="true"] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
 .terminal-pane-controls .icon:disabled { opacity: 0.3; }
 .terminal-pane-controls .pane-close:hover { color: var(--error); }
 .terminal-divider { position: relative; background: transparent; touch-action: none; }
@@ -3469,8 +3436,7 @@ body.terminal-maximized .bottom-panel.terminal-mode { flex: 1 1 auto; min-height
 .terminal-state { padding: 6px 12px 10px; color: var(--faint); font-size: 11.5px; }
 
 @media (max-width: 900px) {
-  .terminal-context { display: none; }
-  .terminal-shell { max-width: 96px; }
+  .terminal-pane-shell { max-width: 96px; }
 }
 
 /* ---------- shaping a change from the review ---------- */
