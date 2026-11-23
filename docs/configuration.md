@@ -33,8 +33,8 @@ environment.
 ### auto_approve
 
 `auto_approve` controls whether tool calls run without prompting; with it off,
-permission rules that resolve to `ask` are asked about by the TUI and by both
-desktop front-ends (as an approval card), and are denied in a non-interactive
+permission rules that resolve to `ask` are asked about by the TUI and the
+desktop app (as an approval card), and are denied in a non-interactive
 run. The TUI
 asks in the transcript and answers in the composer: `y` runs the tool once, `a`
 allows it for this project from now on, and `n` — optionally with a reason the
@@ -161,7 +161,7 @@ oxide mcp <COMMAND>
 oxide plugin <COMMAND>
 oxide session <COMMAND>
 oxide uninstall [--keep-config] [--keep-data] [--dry-run] [--force]
-oxide update [--check] [--component <cli|desktop-tauri|desktop|extension>] [--current <VERSION>] [--version <VERSION>] [--force] [--json]
+oxide update [--check] [--component <cli|desktop|extension>] [--current <VERSION>] [--version <VERSION>] [--force] [--json]
 ```
 
 These print what a front-end draws, through the same core the terminal uses, so

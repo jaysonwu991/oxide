@@ -2,7 +2,7 @@
 
 The full feature list. The [README](../README.md) keeps a short summary; this
 page is the detail behind it, and the task-by-task guides live in
-[cli.md](cli.md), [desktop-tauri.md](desktop-tauri.md), [desktop.md](desktop.md),
+[cli.md](cli.md), [desktop.md](desktop.md),
 and [vscode.md](vscode.md).
 
 ## Interfaces
@@ -10,15 +10,12 @@ and [vscode.md](vscode.md).
 - Interactive TUI (ratatui) plus non-interactive `-p/--print`, `--mode json`
   (JSONL event stream), and `--mode rpc` (JSONL over stdin/stdout) modes. In the
   TUI, `/connect` and `/logout` manage provider credentials.
-- **Oxide Desktop Tauri** (`crates/desktop-tauri`) is the recommended and primary
-  desktop app: a native Tauri window that links the desktop engine in-process,
-  manages multiple projects, and shares the CLI's configuration and session
-  store. It includes chat tabs, independent drafts and runs, streamed Markdown,
-  reviews, worktrees, terminals, MCP servers, plugins, and the platform webview's
-  accessibility (see [desktop-tauri.md](desktop-tauri.md)).
-- The Electron desktop app (`crates/desktop`) is independently supported. It
-  drives the same Rust engine over its JSON bridge and shares the same
-  configuration and session store (see [desktop.md](desktop.md)).
+- **Oxide Desktop** (`crates/desktop`) is the native Tauri app: it links the
+  desktop engine in-process, manages multiple projects, and shares the CLI's
+  configuration and session store. It includes chat tabs, independent drafts
+  and runs, streamed Markdown, reviews, worktrees, terminals, MCP servers,
+  plugins, and the platform webview's accessibility (see
+  [desktop.md](desktop.md)).
 - VS Code extension (`editors/vscode`) that drives the same `oxide` binary from
   a chat panel in the activity bar, with editor actions for the selection and
   the CLI's own sessions and configuration (see [vscode.md](vscode.md)).
@@ -28,11 +25,11 @@ and [vscode.md](vscode.md).
   a selection that crosses between the terminal and transcript remains the
   window's copy.
 - Interface language: British English (the default) or Simplified Chinese, chosen
-  once for the terminal, both desktop front-ends and the panel through the shared
+  once for the terminal, desktop app and panel through the shared
   `language` setting, `--language`, `OXIDE_LANG`, `oxide language` or
   `/language` (see [Language](configuration.md#language)).
 - Mermaid diagrams: a fenced `mermaid` block in a reply renders as a diagram in
-  both desktop front-ends and the VS Code panel, following the theme, with its
+  the desktop app and VS Code panel, following the theme, with its
   source one click away. The terminal keeps the fence as readable code. The repository's
   `atlassian` skill routes Confluence diagrams through native Mermaid or the
   deferred draw.io MCP server, where Mermaid can open as an editable draw.io
@@ -95,7 +92,7 @@ and [vscode.md](vscode.md).
   searches of one named file, so every front-end paints `Search` instead of a
   failed `Command`.
   The shared prompt treats a multi-item request as one change set, so the CLI,
-  VS Code extension and both desktop front-ends inspect all related code before
+  VS Code extension and desktop app inspect all related code before
   applying independent fixes and reserve broad build/test passes for after the
   last related edit.
 - Read-only runs via the tool allowlist, e.g.
@@ -121,7 +118,7 @@ repos/{owner}/{repo}/pulls/<n>/comments/<comment_id>/replies`) rather than as on
 general comment on the pull request; `gh pr comment` is for a new top-level
 comment. A summary about a pull or merge request names it with a link the user
 can click — `[#123](https://github.com/owner/repo/pull/123)`, the URL the forge
-CLI printed, not a bare `#123` — beside its state, since both desktop front-ends and the
+CLI printed, not a bare `#123` — beside its state, since the desktop app and the
 VS Code panel open a Markdown link in the browser and a terminal links the URL
 printed after the label. A commit is named that way too — `[<short sha>](<url>)`
 in a report, a reply to a review comment or any other summary — with the URL
@@ -169,7 +166,7 @@ so local-only files like `.claude/settings.local.json` stay out of the PR.
   decision.
 - Themes: built-in `dark` and `light` plus custom `.oxide/themes/<name>.json`,
   selected with `--use-theme` or `/theme`. The built-in palettes are shared with
-  both desktop front-ends, so the CLI and desktops render the same colors.
+  the desktop app, so the CLI and desktop render the same colors.
 
 ## Sessions and context
 

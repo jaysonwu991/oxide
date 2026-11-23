@@ -30,14 +30,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Draft the next Tauri desktop release
-        if: github.event_name == 'push'
-        uses: release-drafter/release-drafter@v7
-        with:
-          config-name: release-drafter.desktop-tauri.yml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Draft the next desktop release
         if: github.event_name == 'push'
         uses: release-drafter/release-drafter@v7
@@ -85,7 +77,6 @@ jobs:
             --jq '.[] | (.filename, .previous_filename) | select(. != null)')"
           only_cli=1
           only_desktop=1
-          only_desktop_tauri=1
           only_vscode=1
           counted=0
           while IFS= read -r file; do
@@ -93,7 +84,6 @@ jobs:
             counted=1
             case "$file" in crates/cli/*) ;; *) only_cli=0 ;; esac
             case "$file" in crates/desktop/*) ;; *) only_desktop=0 ;; esac
-            case "$file" in crates/desktop-tauri/*) ;; *) only_desktop_tauri=0 ;; esac
             case "$file" in editors/vscode/*) ;; *) only_vscode=0 ;; esac
           done <<< "$files"
 
@@ -101,7 +91,6 @@ jobs:
           if [ "$counted" = 1 ]; then
             if [ "$only_cli" = 1 ]; then label="cli"; fi
             if [ "$only_desktop" = 1 ]; then label="desktop"; fi
-            if [ "$only_desktop_tauri" = 1 ]; then label="desktop-tauri"; fi
             if [ "$only_vscode" = 1 ]; then label="vscode"; fi
           fi
 
@@ -111,9 +100,8 @@ jobs:
           remove() { if has "$1"; then gh pr edit "$PR" --repo "$REPO" --remove-label "$1"; fi; }
 
           case "$label" in
-            cli) remove desktop; remove desktop-tauri; remove vscode; add cli ;;
-            desktop) remove cli; remove desktop-tauri; remove vscode; add desktop ;;
-            desktop-tauri) remove cli; remove desktop; remove vscode; add desktop-tauri ;;
-            vscode) remove cli; remove desktop; remove desktop-tauri; add vscode ;;
-            *) remove cli; remove desktop; remove desktop-tauri; remove vscode ;;
+            cli) remove desktop; remove vscode; add cli ;;
+            desktop) remove cli; remove vscode; add desktop ;;
+            vscode) remove cli; remove desktop; add vscode ;;
+            *) remove cli; remove desktop; remove vscode ;;
           esac

@@ -1,21 +1,16 @@
-//! The channel between this harness and the window that shows it.
+//! The packet channel between the desktop page and the engine.
 //!
-//! The desktop app is the Electron process in `crates/desktop/electron`, and
-//! this process is the harness it starts: the window owns the screen, the menu,
-//! the folder chooser and the release it was installed from, and this owns the
-//! projects, the sessions and the turns. One JSON packet per line is the whole
-//! contract — requests in on stdin, answers and announcements out on
-//! stdout — so the window is a relay and every rule about a run stays on this
-//! side of it.
+//! The Tauri host owns the screen, the menu, the folder chooser and the release
+//! it was installed from; the engine owns the projects, sessions and turns. One
+//! JSON packet per line is the whole contract, so every rule about a run stays
+//! in the engine.
 //!
 //! A packet is a request (`{type, id, method, params}`), its answer (`{type,
 //! id, success, payload|error}}`), or an announcement (`{type, id, payload}`,
-//! whose `id` is the event's own name). The window forwards both directions
-//! unchanged, which is why the page needed no change to speak it.
+//! whose `id` is the event's own name). The host forwards both directions
+//! unchanged.
 //!
-//! Nothing else may be written to stdout: a line that is not a packet is a
-//! packet the window cannot read. Anything this process has to say to a person
-//! goes to stderr, which the window keeps as the app's own log.
+//! The host reads packets from this sink rather than the process stdout.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -35,7 +30,7 @@ impl Host {
         }
     }
 
-    /// The channel to the window that started this process.
+    /// A channel that writes packets to stdout.
     pub fn stdout() -> Self {
         Self::new(std::io::stdout())
     }

@@ -1,8 +1,8 @@
 # Installation and updates
 
-How to install the `oxide` CLI, Oxide Desktop Tauri, Oxide Desktop Electron,
-and the VS Code extension, and how to keep an installation current or
-remove it. For configuration after install, see
+How to install the `oxide` CLI, Oxide Desktop, and the VS Code extension, and
+how to keep an installation current or remove it. For configuration after
+install, see
 [configuration.md](configuration.md).
 
 ## Prebuilt binary
@@ -65,21 +65,18 @@ both names.
 ## From source
 
 Requires a stable Rust toolchain (edition 2021). The workspace splits the shared
-agent core (`crates/core`) and terminal CLI (`crates/cli`). Oxide Desktop Tauri
-(`crates/desktop-tauri`) and the Electron app (`crates/desktop`) are separate
-Cargo workspaces; the VS Code extension in `editors/vscode` is a separate pnpm
-package.
+agent core (`crates/core`) and terminal CLI (`crates/cli`). Oxide Desktop
+(`crates/desktop`) is a separate Cargo workspace; the VS Code extension in
+`editors/vscode` is a separate pnpm package.
 
 ```sh
 cargo install --path crates/cli
 ```
 
-## Oxide Desktop Tauri
+## Oxide Desktop
 
-The primary desktop app is the Tauri window in `crates/desktop-tauri`. Use
-it instead of Electron unless you specifically need the independent Electron
-distribution. Prebuilt packages are drafted under
-**Oxide Desktop Tauri v...** releases on the `desktop-tauri-v*` train, and the
+The desktop app is the Tauri window in `crates/desktop`. Prebuilt packages are
+drafted under **Oxide Desktop v...** releases on the `desktop-v*` train, and the
 newest of each platform is also on the `desktop-latest`
 [release](https://github.com/jaysonwu991/oxide/releases/tag/desktop-latest),
 whose files are replaced on every publish. Since `/releases/latest` names the
@@ -87,11 +84,9 @@ newest release of the repository as a whole — which may be a CLI or extension
 one — `desktop-latest` is what a permanent link is built on.
 
 The native app ships a disk image for macOS (Apple Silicon and Intel), and
-`tar.gz` packages for Windows x64 and Linux x64/arm64. [README.md](../README.md#installers)
-links each of them; [desktop-tauri.md](desktop-tauri.md) explains the packaging.
-The Electron window remains available from versioned `desktop-v*` releases and
-the separate `desktop-electron-latest` alias as its independently supported
-distribution.
+`tar.gz` packages for Windows x64 and Linux x64/arm64.
+[README.md](../README.md#installers) links each of them;
+[desktop.md](desktop.md) explains the packaging.
 
 On macOS, an app that was not notarized — a build made without both the
 Developer ID certificate and the App Store Connect key — opens as **damaged**
@@ -104,27 +99,17 @@ xattr -dr com.apple.quarantine /Applications/Oxide.app
 
 A notarized release needs none of this.
 
-To build the primary app from source:
-
-```sh
-cd crates/desktop-tauri && cargo run
-```
-
-To build the Electron app:
+To build the app from source:
 
 ```sh
 cd crates/desktop
-pnpm install                  # the window's packages (Electron, electron-builder)
-pnpm start                    # build the engine and the window, and open it
-pnpm run dist                 # an installer for this platform
+pnpm install
+node ../../scripts/prepare-diagrams.mjs desktop
+cargo run
 ```
 
-Both Node and Rust are needed: the window is TypeScript 7, and the engine it
-talks to is the Rust binary this package compiles. The package keeps its own
-tree, managed with pnpm, and is built from its own directory.
-
-See [desktop-tauri.md](desktop-tauri.md) for the native app and
-[desktop.md](desktop.md) for the Electron app.
+Use `./package.sh` to produce this platform's installer under `artifacts/`.
+See [desktop.md](desktop.md) for the native app.
 
 ## VS Code extension
 
@@ -163,8 +148,8 @@ oxide update --check --json     # the same report for a front-end
 
 `oxide update` resolves the newest release of its own train — the `Oxide-manifest`
 the installers read, falling back to GitHub's release list filtered to the tags
-that belong to the CLI — so a release for either desktop front-end or the VS
-Code extension is never installed as the CLI, and verifies the archive's SHA-256
+that belong to the CLI — so a desktop or VS Code extension release is never
+installed as the CLI, and verifies the archive's SHA-256
 checksum (warning when a release carries none). It replaces the running binary
 only after the unpacked one reports its version, so a truncated download or a
 wrong-platform archive is refused instead of taking the place of a working
@@ -199,14 +184,14 @@ overrides both for one launch). Only the TUI shows it — a `-p`/`--mode json`/
 changelog and the day it went out, which a dialog draws so the reader reads what
 changed without leaving it) and the `asset` (its `name`, `url` and the `digest`
 GitHub reports) — which is what a front-end reads instead of parsing the prose.
-`--component <cli|desktop-tauri|desktop|extension>` and `--current <VERSION>`
+`--component <cli|desktop|extension>` and `--current <VERSION>`
 decide which release train the report is about and what it is compared against:
-the CLI's own train (`v*`) by default, Oxide Desktop Tauri's (`desktop-tauri-v*`),
-Electron's (`desktop-v*`), or the VS Code extension's
-(`extension-v*`), with each component's artifact for this platform in `asset`.
-That is how each desktop front-end resolves its own release and how the
-extension resolves the `.vsix` it installs, through the same resolution this
-command uses (`oxide_core::updates`) rather than a second copy of the rules.
+the CLI's own train (`v*`) by default, Oxide Desktop's (`desktop-v*`), or the
+VS Code extension's (`extension-v*`), with each component's artifact for this
+platform in `asset`. That is how the desktop app resolves its own release and
+how the extension resolves the `.vsix` it installs, through the same resolution
+this command uses (`oxide_core::updates`) rather than a second copy of the
+rules.
 Only `--check` takes these two flags — an install of anything but the CLI
 belongs to the front-end that can put that release in place.
 

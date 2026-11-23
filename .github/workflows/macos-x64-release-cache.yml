@@ -11,7 +11,6 @@ on:
     paths:
       - "Cargo.lock"
       - "crates/desktop/Cargo.lock"
-      - "crates/desktop-tauri/Cargo.lock"
       - ".github/workflows/macos-x64-release-cache.yml"
 
 permissions:
@@ -30,13 +29,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Tauri x64
-            workspace: crates/desktop-tauri
-            cache-key: desktop-tauri-release-x64
-
-          - name: Electron x64
+          - name: Desktop x64
             workspace: crates/desktop
-            cache-key: desktop-app-release-x64
+            cache-key: desktop-release-x64
 
           - name: CLI x64
             workspace: .

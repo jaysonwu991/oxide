@@ -3,24 +3,30 @@ name = "oxide-desktop"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "Desktop app for Oxide: manage multiple projects and sessions"
+description = "Oxide Desktop: the native Tauri front-end"
 
-# This package is one half of the desktop app: the process the Electron window
-# in `crates/desktop/electron` starts, which owns the projects, the sessions and
-# the turns. It is excluded from the root workspace on purpose, so the app's
-# dependencies and its own lock file stay out of the core workspace's build
-# graph — the same shape the VS Code extension has, in the other direction.
+# The Tauri host and the shared desktop engine are one package. It is excluded
+# from the root workspace on purpose, so the app's GUI dependencies and its own
+# lock file stay out of the core workspace's build graph.
 [workspace]
 
 [dependencies]
 oxide-core = { path = "../core" }
 anyhow = "1"
 dirs = "5"
+keepawake = "0.6.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri = "=2.12.7"
+tauri-plugin-dialog = "=2.8.4"
+tauri-plugin-notification = "=2.8.1"
+tauri-plugin-opener = "=2.7.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "io-std", "sync", "net"] }
 portable-pty = "0.9"
+
+[build-dependencies]
+tauri-build = "=2.7.6"
 
 [[bin]]
 name = "oxide-desktop"

@@ -1650,20 +1650,12 @@ pub async fn set_theme(project: String, name: String) -> CmdResult<Value> {
 
 // ---------- updates ----------
 
-/// Checks the app's own release train (`desktop-v*`). The rules that resolve a
-/// release — which tag belongs to the app, which artifact this platform
-/// installs, whether it is newer — are `oxide_core::updates`, shared with the
-/// terminal's `oxide update` and the VS Code panel, and the app resolves its own
-/// rather than asking the installed CLI, whose answer would be a CLI release.
-pub async fn check_updates() -> CmdResult<Value> {
-    let check = update::check().await.map_err(err)?;
-    serde_json::to_value(check).map_err(err)
-}
-
-/// Checks the Tauri release train and reports whether this copy
-/// can replace itself in place.
-pub async fn check_tauri_updates(current: String) -> CmdResult<Value> {
-    let check = update::check_component(Component::DesktopTauri, &current)
+/// Checks Oxide Desktop's own release train (`desktop-v*`). The rules that
+/// resolve a release — which tag belongs to the app, which artifact this
+/// platform installs, whether it is newer — are `oxide_core::updates`, shared
+/// with the terminal's `oxide update` and the VS Code panel.
+pub async fn check_updates(current: String) -> CmdResult<Value> {
+    let check = update::check_component(Component::Desktop, &current)
         .await
         .map_err(err)?;
     serde_json::to_value(check).map_err(err)
@@ -1684,41 +1676,30 @@ pub async fn check_tauri_updates(current: String) -> CmdResult<Value> {
 /// asks for before this task has been polled still addresses this install — and
 /// every event carries it back, so the window can cancel an install it did not
 /// start by the same name.
-pub async fn install_update(state: &DesktopState, token: Option<String>) -> CmdResult<Value> {
-    install_component_update(state, Component::Desktop, update::current_version(), token).await
-}
-
-/// Installs the newest Tauri release from its own train. The Tauri binary
-/// supplies its version because this library is built once for both front-ends
-/// and reports the stable app's package version.
-pub async fn install_tauri_update(
+pub async fn install_update(
     state: &DesktopState,
     current: String,
     token: Option<String>,
 ) -> CmdResult<Value> {
-    install_component_update(state, Component::DesktopTauri, &current, token).await
-}
-
-async fn install_component_update(
-    state: &DesktopState,
-    component: Component,
-    current: &str,
-    token: Option<String>,
-) -> CmdResult<Value> {
     let token = token.unwrap_or_else(update::new_token);
     let named = token.clone();
-    let answer = update::install_component_reporting(component, current, &token, move |progress| {
-        state.announce_launch_update(
-            "update-progress",
-            json!({
-                "stage": progress.stage,
-                "version": progress.version,
-                "received": progress.received,
-                "total": progress.total,
-                "token": named,
-            }),
-        );
-    })
+    let answer = update::install_component_reporting(
+        Component::Desktop,
+        &current,
+        &token,
+        move |progress| {
+            state.announce_launch_update(
+                "update-progress",
+                json!({
+                    "stage": progress.stage,
+                    "version": progress.version,
+                    "received": progress.received,
+                    "total": progress.total,
+                    "token": named,
+                }),
+            );
+        },
+    )
     .await;
     match answer {
         Ok(answer) => {
@@ -1747,31 +1728,18 @@ async fn install_component_update(
 /// one download bar for both — but it is not remembered as the launch's own
 /// install: nothing is put in place here, so there is no restart for a window
 /// that starts later to be offered.
-pub async fn download_update(state: &DesktopState, token: Option<String>) -> CmdResult<Value> {
-    download_component_update(state, Component::Desktop, update::current_version(), token).await
-}
-
-/// Downloads the newest Tauri installer into the reader's Downloads folder,
-/// for copies whose release is an archive rather than a bundle this app can
-/// replace in place.
-pub async fn download_tauri_update(
+pub async fn download_update(
     state: &DesktopState,
     current: String,
     token: Option<String>,
 ) -> CmdResult<Value> {
-    download_component_update(state, Component::DesktopTauri, &current, token).await
-}
-
-async fn download_component_update(
-    state: &DesktopState,
-    component: Component,
-    current: &str,
-    token: Option<String>,
-) -> CmdResult<Value> {
     let token = token.unwrap_or_else(update::new_token);
     let named = token.clone();
-    let answer =
-        update::download_component_reporting(component, current, &token, move |progress| {
+    let answer = update::download_component_reporting(
+        Component::Desktop,
+        &current,
+        &token,
+        move |progress| {
             let _ = state.events.emit(
                 "update-progress",
                 json!({
@@ -1782,8 +1750,9 @@ async fn download_component_update(
                     "token": named,
                 }),
             );
-        })
-        .await;
+        },
+    )
+    .await;
     match answer {
         Ok(answer) => Ok(answer),
         Err(error) if update::was_cancelled(&error) => {
@@ -1807,7 +1776,8 @@ pub fn cancel_update(token: String) -> CmdResult<Value> {
 }
 
 /// The update a launch installs on its own, the way a desktop app that keeps
-/// itself current does.
+/// itself current does. The caller names the build it is running. A release this
+/// copy cannot replace in place is left to the dialog.
 ///
 /// The newest release of this app's own train is looked up in the background —
 /// through the answer the shared store remembered, so a launch costs at most one
@@ -1821,43 +1791,19 @@ pub fn cancel_update(token: String) -> CmdResult<Value> {
 /// A copy the app does not replace in place — a Windows setup, a distribution's
 /// package, a checkout's build — is left to the dialog's own check, since only
 /// the reader can decide to install one of those.
-pub async fn auto_update(state: Arc<DesktopState>) {
-    auto_update_component(
-        state,
-        Component::Desktop,
-        update::current_version().to_string(),
-    )
-    .await
-}
-
-/// The same launch install for one desktop release train, which is how the
-/// Tauri app keeps itself current the way the Electron app does. The caller names
-/// the build it is running, since this library reports the stable package's own
-/// version. A train whose release is not one this copy can replace in place is
-/// left to the dialog.
-pub async fn auto_update_component(
-    state: Arc<DesktopState>,
-    component: Component,
-    current: String,
-) {
+pub async fn auto_update(state: Arc<DesktopState>, current: String) {
     if !update_notice::enabled_in(None) {
         return;
     }
     // A launch is not the place to report a check that could not be made — the
     // window's own Check for Updates… is — so a lookup that fails is left to the
     // next launch and to that button.
-    let Ok(notice) = update_notice::latest_notice(component).await else {
+    let Ok(notice) = update_notice::latest_notice(Component::Desktop).await else {
         return;
     };
     let installation = update::installation();
     if !update::launch_installs(&notice, &current, &installation) {
         return;
-    }
-    if component != Component::Desktop {
-        match update::check_component(component, &current).await {
-            Ok(check) if check.installable => {}
-            _ => return,
-        }
     }
     // A release the app is about to put in place is one the reader is told
     // about: the dialog opens on what is running, and its first step is either
@@ -1872,8 +1818,11 @@ pub async fn auto_update_component(
     let token = update::new_token();
     let steps = state.clone();
     let named = token.clone();
-    let answer =
-        update::install_component_reporting(component, &current, &token, move |progress| {
+    let answer = update::install_component_reporting(
+        Component::Desktop,
+        &current,
+        &token,
+        move |progress| {
             steps.announce_launch_update(
                 "update-progress",
                 json!({
@@ -1884,8 +1833,9 @@ pub async fn auto_update_component(
                     "token": named,
                 }),
             );
-        })
-        .await;
+        },
+    )
+    .await;
     match answer {
         Ok(answer) => state.announce_launch_update("update-ready", answer),
         // A cancel is the reader's own doing, and the dialog it came from has
@@ -2312,24 +2262,17 @@ pub async fn dispatch(
             command_value(theme_colors(arg(&args, "project")?, arg(&args, "name")?).await)
         }
         "set_theme" => command_value(set_theme(arg(&args, "project")?, arg(&args, "name")?).await),
-        "check_updates" => command_value(check_updates().await),
-        "check_tauri_updates" => command_value(check_tauri_updates(arg(&args, "current")?).await),
-        "install_update" => {
-            command_value(install_update(&state, optional_arg(&args, "token")?).await)
-        }
-        "install_tauri_update" => command_value(
-            install_tauri_update(
+        "check_updates" => command_value(check_updates(arg(&args, "current")?).await),
+        "install_update" => command_value(
+            install_update(
                 &state,
                 arg(&args, "current")?,
                 optional_arg(&args, "token")?,
             )
             .await,
         ),
-        "download_update" => {
-            command_value(download_update(&state, optional_arg(&args, "token")?).await)
-        }
-        "download_tauri_update" => command_value(
-            download_tauri_update(
+        "download_update" => command_value(
+            download_update(
                 &state,
                 arg(&args, "current")?,
                 optional_arg(&args, "token")?,

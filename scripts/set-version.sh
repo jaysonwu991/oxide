@@ -4,19 +4,17 @@
 # The repository keeps a placeholder version (`0.0.0`); release CI calls this
 # with the pushed tag so the built CLI binary and desktop bundle report the tag
 # version. Patches the workspace version in the root `Cargo.toml` and the
-# component it belongs to: the Tauri package/config, the engine's `Cargo.toml`,
-# or the Electron window's `package.json`. Then it is up to the caller to
-# refresh the lockfiles.
+# component it belongs to: Oxide Desktop's Cargo manifest and Tauri config, or
+# the VS Code extension's manifest. Then it is up to the caller to refresh the
+# lockfiles.
 #
 # A tag may carry a component prefix so each component releases independently:
-# `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for the desktop app,
-# `desktop-tauri-v1.2.3` for the primary Tauri desktop app, and
-# `extension-v1.2.3` for the VS Code extension (which is versioned in its
-# own `editors/vscode/package.json`). A bare `1.2.3` is also accepted.
+# `v1.2.3` / `cli-v1.2.3` for the CLI, `desktop-v1.2.3` for Oxide Desktop, and
+# `extension-v1.2.3` for the VS Code extension (which is versioned in its own
+# `editors/vscode/package.json`). A bare `1.2.3` is also accepted.
 #
 # Usage: scripts/set-version.sh v1.2.3
 #        scripts/set-version.sh cli-v1.2.3
-#        scripts/set-version.sh desktop-tauri-v1.2.3
 #        scripts/set-version.sh desktop-v1.2.3
 #        scripts/set-version.sh extension-v1.2.3
 
@@ -32,11 +30,10 @@ version="${raw}"
 component=""
 case "$version" in
   cli-*) version="${version#cli-}" ;;
-  desktop-tauri-*)
-    component="tauri"
-    version="${version#desktop-tauri-}"
+  desktop-*)
+    component="desktop"
+    version="${version#desktop-}"
     ;;
-  desktop-*) version="${version#desktop-}" ;;
   extension-*)
     component="vscode"
     version="${version#extension-}"
@@ -106,12 +103,12 @@ if not patched_cargo:
 with open(cargo_path, "w", encoding="utf-8") as handle:
     handle.writelines(lines)
 
-# crates/desktop-tauri/Cargo.toml: the Tauri desktop app is its own workspace as
-# well, and reports the version in its own manifest.
-if component == "tauri":
-    tauri_manifest = f"{root}/crates/desktop-tauri/Cargo.toml"
-    tauri_config = f"{root}/crates/desktop-tauri/tauri.conf.json"
-    with open(tauri_manifest, encoding="utf-8") as handle:
+# crates/desktop: the native app is its own workspace and reports the version in
+# both its Cargo manifest and Tauri config.
+if component == "desktop":
+    desktop_manifest = f"{root}/crates/desktop/Cargo.toml"
+    desktop_config = f"{root}/crates/desktop/tauri.conf.json"
+    with open(desktop_manifest, encoding="utf-8") as handle:
         lines = handle.readlines()
     in_section = False
     patched = False
@@ -126,58 +123,16 @@ if component == "tauri":
             patched = True
             break
     if not patched:
-        sys.exit("error: could not find version in [package] of crates/desktop-tauri/Cargo.toml")
-    with open(tauri_manifest, "w", encoding="utf-8") as handle:
+        sys.exit("error: could not find version in [package] of crates/desktop/Cargo.toml")
+    with open(desktop_manifest, "w", encoding="utf-8") as handle:
         handle.writelines(lines)
-    with open(tauri_config, encoding="utf-8") as handle:
+    with open(desktop_config, encoding="utf-8") as handle:
         config = handle.read()
     config = re.sub(r'(?m)^(\s*"version"\s*:\s*)"[^"]+"', rf'\g<1>"{version}"', config, count=1)
-    with open(tauri_config, "w", encoding="utf-8") as handle:
+    with open(desktop_config, "w", encoding="utf-8") as handle:
         handle.write(config)
-    print(f"set Tauri desktop version to {version}")
+    print(f"set desktop version to {version}")
     sys.exit(0)
-
-# crates/desktop/Cargo.toml: the desktop package is excluded from the root
-# workspace, so it reports the version in its own manifest — the one the app
-# compares a release against at runtime.
-desktop_manifest = f"{root}/crates/desktop/Cargo.toml"
-with open(desktop_manifest, encoding="utf-8") as handle:
-    lines = handle.readlines()
-
-in_section = False
-patched_desktop = False
-for index, line in enumerate(lines):
-    stripped = line.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        in_section = stripped == "[package]"
-        continue
-    if in_section and re.match(r"^version\s*=", stripped):
-        indent = line[: len(line) - len(line.lstrip())]
-        lines[index] = f'{indent}version = "{version}"\n'
-        patched_desktop = True
-        break
-if not patched_desktop:
-    sys.exit("error: could not find version in [package] of crates/desktop/Cargo.toml")
-with open(desktop_manifest, "w", encoding="utf-8") as handle:
-    handle.writelines(lines)
-
-# crates/desktop/package.json: the Electron window's own version, which the
-# bundler writes into the app bundle and `app.getVersion()` reports — the number
-# a release is compared against. The engine's `Cargo.toml` above is the same
-# number for the harness, so the two halves of one app agree.
-package_path = f"{root}/crates/desktop/package.json"
-with open(package_path, encoding="utf-8") as handle:
-    package = handle.read()
-package, count = re.subn(
-    r'("version"\s*:\s*")[^"]*(")',
-    lambda match: f"{match.group(1)}{version}{match.group(2)}",
-    package,
-    count=1,
-)
-if count != 1:
-    sys.exit("error: could not find version in crates/desktop/package.json")
-with open(package_path, "w", encoding="utf-8") as handle:
-    handle.write(package)
 
 print(f"set version to {version}")
 PY

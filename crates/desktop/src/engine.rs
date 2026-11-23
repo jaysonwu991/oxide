@@ -1,11 +1,9 @@
 //! The desktop engine, in this process.
 //!
-//! The Electron app runs the engine as a child (`crates/desktop/src/main.rs`)
-//! and speaks one JSON packet per line to it. This front-end links the same
-//! engine instead — `oxide_desktop::commands::dispatch` is the command contract
-//! the page uses, and `oxide_desktop::bridge::Host` is the pipe it answers
-//! through — so the window below draws the same projects, sessions, turns,
-//! approvals and configuration the Electron window does.
+//! `oxide_desktop::commands::dispatch` is the command contract the page uses,
+//! and `oxide_desktop::bridge::Host` is the packet sink it answers through. The
+//! engine owns projects, sessions, turns, approvals and configuration while the
+//! Tauri host owns the window and operating-system services.
 //!
 //! A call is dispatched on the engine's own runtime and answered on a channel a
 //! Tauri task awaits, and every announcement the engine emits (a streaming turn,
@@ -69,9 +67,8 @@ impl Engine {
         ));
 
         sync_plugins();
-        runtime.spawn(oxide_desktop::commands::auto_update_component(
+        runtime.spawn(oxide_desktop::commands::auto_update(
             Arc::clone(&state),
-            oxide_core::updates::Component::DesktopTauri,
             env!("CARGO_PKG_VERSION").to_string(),
         ));
         runtime.spawn(oxide_desktop::commands::auto_catalog(Arc::clone(&state)));
@@ -94,7 +91,7 @@ impl Engine {
             .unwrap_or_else(|_| Err("the engine stopped answering".to_string()))
     }
 
-    /// Dispatches one command through the contract the Electron window speaks.
+    /// Dispatches one command through the page's contract.
     pub fn call(&self, command: &str, args: Value) -> oneshot::Receiver<Result<Value, String>> {
         let (reply, answer) = oneshot::channel();
         let state = Arc::clone(&self.state);
@@ -108,13 +105,11 @@ impl Engine {
     }
 }
 
-/// The plugins shipped beside this binary, installed into the shared config the
-/// way the Electron app installs them at launch.
+/// The plugins shipped beside this binary, installed into the shared config.
 ///
-/// The window that starts the engine may say where they are
-/// (`OXIDE_DESKTOP_PLUGINS`, which the Electron window sets); a bundle that has
-/// no window to ask is looked through itself — `plugins` beside the executable,
-/// then the resources directory of a macOS app bundle.
+/// The launcher may say where they are (`OXIDE_DESKTOP_PLUGINS`); otherwise they
+/// are looked for beside the executable, then in the resources directory of a
+/// macOS app bundle.
 fn sync_plugins() {
     let from_env = std::env::var_os("OXIDE_DESKTOP_PLUGINS").map(std::path::PathBuf::from);
     let beside = std::env::current_exe().ok().and_then(|exe| {
