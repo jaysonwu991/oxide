@@ -4,7 +4,7 @@ use crate::mcp::McpRegistry;
 use crate::media;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -13,8 +13,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::time::{timeout, Duration};
-
-mod grep_files;
 
 /// Pi's truncation budget (`core/tools/truncate.ts`): 2000 lines or 50 KB,
 /// whichever is hit first. A smaller cap is not a speed win — it turns one
@@ -39,6 +37,7 @@ const TRUNCATION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 /// string: an empty result reads as a failure and invites a pointless retry.
 pub const NO_MATCHES: &str = "No matches found";
 pub const NO_FILES_FOUND: &str = "No files found matching pattern";
+const BOUNDED_GREP_PREFIX: &str = "[executed with the bounded `grep` tool]\n";
 const PROGRESS_BATCH_BYTES: usize = 4_096;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 /// How long to wait for the output readers to drain after the shell exits. A
@@ -460,19 +459,17 @@ pub fn specs_for_scope(mcp: &McpRegistry, scope: PathScope<'_>) -> Vec<ToolSpec>
         ),
         spec(
             "grep",
-            if project_only { "Search file contents inside the current project using ripgrep. By default return matching filenames, newest modified first (Codex grep_files behavior). Use output_mode: content for matching path:line: text entries and context. Call this instead of calling `bash` with grep or rg. Default limit 100; filename mode caps at 2000 files and times out after 30 seconds." } else if registered_only { "Search file contents inside registered projects using ripgrep. By default return matching filenames, newest modified first (Codex grep_files behavior). Use output_mode: content for matching path:line: text entries and context. Call this instead of calling `bash` with grep or rg. Default limit 100; filename mode caps at 2000 files and times out after 30 seconds." } else { "Search file contents using ripgrep. By default return matching filenames, newest modified first (Codex grep_files behavior). Use output_mode: content for matching path:line: text entries and context. Call this instead of calling `bash` with grep or rg. Absolute paths are allowed. Default limit 100; filename mode caps at 2000 files and times out after 30 seconds." },
+            if project_only { "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or 50KB, whichever is hit first. Long lines are truncated to 500 chars. Call this instead of calling `bash` with grep or rg. The search path must stay inside the current project." } else if registered_only { "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or 50KB, whichever is hit first. Long lines are truncated to 500 chars. Call this instead of calling `bash` with grep or rg. The search path must stay inside a project registered in Oxide." } else { "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or 50KB, whichever is hit first. Long lines are truncated to 500 chars. Call this instead of calling `bash` with grep or rg. Absolute paths are allowed." },
             json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Regular expression; filename mode trims surrounding whitespace and reports invalid regex syntax" },
-                    "path": { "type": "string", "description": "File or directory to search (default: .)" },
-                    "output_mode": { "type": "string", "enum": ["files_with_matches", "content"], "description": "Default files_with_matches returns filenames, newest modified first. content returns matching lines." },
-                    "include": { "type": "string", "description": "Glob restricting searched files, e.g. *.rs (Codex parameter name)" },
-                    "glob": { "type": "string", "description": "Glob pattern to restrict which file names are searched (e.g. `*.rs`)" },
-                    "ignoreCase": { "type": "boolean", "description": "Case-insensitive search" },
+                    "pattern": { "type": "string", "description": "Search pattern (regex or literal string)" },
+                    "path": { "type": "string", "description": "Directory or file to search (default: current directory)" },
+                    "glob": { "type": "string", "description": "Filter files by glob pattern relative to path, e.g. 'src/**/*.ts'. Without '/', e.g. '*.ts', it matches file names at any depth" },
+                    "ignoreCase": { "type": "boolean", "description": "Case-insensitive search (default: false)" },
                     "literal": { "type": "boolean", "description": "Treat the pattern as a literal string instead of a regular expression (default: false)" },
-                    "context": { "type": "integer", "description": "Number of context lines around matches in output_mode: content" },
-                    "limit": { "type": "integer", "description": "Maximum results (default 100; files_with_matches maximum 2000, must be positive)" }
+                    "context": { "type": "number", "description": "Number of lines to show before and after each match (default: 0)" },
+                    "limit": { "type": "number", "description": "Maximum number of matches to return (default: 100)" }
                 },
                 "required": ["pattern"]
             }),
@@ -713,9 +710,6 @@ pub async fn execute_with_scope(
             },
             "bash" => bash_with_network_retry(cwd, &args, progress).await,
             "webfetch" => webfetch_guarded(&args, mcp).await.map(ToolOutput::text),
-            "grep" if args.get("output_mode").and_then(Value::as_str) != Some("content") => {
-                grep_files::search(cwd, &args).await.map(ToolOutput::text)
-            }
             "read" | "write" | "edit" | "ls" | "find" | "grep" => {
                 let cwd = cwd.to_path_buf();
                 let args = args.clone();
@@ -761,10 +755,7 @@ pub async fn execute_with_scope(
     match result {
         Ok(output) => ToolOutput {
             text: if name == "bash" && canonical == "grep" {
-                format!(
-                    "[executed with the bounded `grep` tool]\n{}",
-                    truncate(canonical, output.text)
-                )
+                format!("{BOUNDED_GREP_PREFIX}{}", truncate(canonical, output.text))
             } else if canonical == "bash" {
                 output.text
             } else {
@@ -2335,6 +2326,7 @@ fn ls(cwd: &Path, args: &Value) -> Result<String> {
 const DEFAULT_GREP_MATCHES: usize = 100;
 const DEFAULT_FIND_MATCHES: usize = 1_000;
 const DEFAULT_LS_ENTRIES: usize = 500;
+const GREP_MAX_LINE_LENGTH: usize = 500;
 
 fn find(cwd: &Path, args: &Value) -> Result<String> {
     let pattern = required_string(args, "find", "pattern", r#"{"pattern":"**/*.rs"}"#)?;
@@ -2518,45 +2510,31 @@ fn find_pattern_matches(pattern: &str, path: &str) -> bool {
 
 fn grep(cwd: &Path, args: &Value) -> Result<String> {
     let pattern = required_string(args, "grep", "pattern", r#"{"pattern":"ToolOutput"}"#)?;
-    if pattern.is_empty() {
-        anyhow::bail!("grep requires a non-empty `pattern` string");
-    }
     let base = args.get("path").and_then(Value::as_str).unwrap_or(".");
     // Pi names these `glob`/`ignoreCase`; the legacy names are still accepted.
     let include = args
         .get("glob")
         .and_then(Value::as_str)
-        .or_else(|| args.get("include").and_then(Value::as_str));
+        .or_else(|| args.get("include").and_then(Value::as_str))
+        .map(normalize_grep_glob);
     let ignore_case = bool_arg(args, "ignoreCase", "ignore_case");
     let literal = opt_bool_arg(args, "literal").unwrap_or(false);
-    // `regex`/`use_regex` are the previous spelling. A call that still sends
-    // `regex: false` keeps its old literal meaning; a call that sends neither
-    // gets Pi's default, a regular expression.
-    let mut use_regex = if literal {
+    // `regex`/`use_regex` are previous spellings. A call that still sends
+    // `regex: false` keeps its old literal meaning; otherwise Pi's default is a
+    // regular expression.
+    let use_regex = if literal {
         false
     } else {
         opt_bool_arg(args, "regex")
             .or_else(|| opt_bool_arg(args, "use_regex"))
             .unwrap_or(true)
     };
-    let mut note = String::new();
-    if use_regex {
-        if let Err(err) = regex::RegexBuilder::new(pattern)
-            .case_insensitive(ignore_case)
-            .build()
-        {
-            // A pattern that is not valid regex syntax is almost always a
-            // literal string copied from source (a line with parentheses or
-            // brackets). Search it literally and say so instead of failing the
-            // call and spending a whole turn on the retry.
-            use_regex = false;
-            note = format!(
-                "[note: `{pattern}` is not a valid regular expression ({err}); searched it as literal text instead]\n"
-            );
-        }
-    }
-    let context = int_arg(args, "context").unwrap_or(0);
-    let limit = int_arg(args, "limit")
+    let context = number_arg(args, "context")
+        .filter(|value| *value > 0.0)
+        .map(|value| value.min(MAX_SAFE_INTEGER).floor() as usize)
+        .unwrap_or(0);
+    let limit = number_arg(args, "limit")
+        .map(|value| (value.floor() as usize).max(1))
         .unwrap_or(DEFAULT_GREP_MATCHES)
         .max(1);
     let root = resolve(cwd, base);
@@ -2569,23 +2547,33 @@ fn grep(cwd: &Path, args: &Value) -> Result<String> {
         ))
     })?;
 
-    // `rg` applies the same search with far less I/O, so prefer it and fall
-    // back to the dependency-free walker when it is unavailable.
-    let output = if let Some(output) = rg_grep(
+    // Let ripgrep own regex parsing as well as the search: its syntax is Pi's
+    // contract. The built-in walker compiles the pattern only when rg is absent.
+    if let Some(output) = rg_grep(
         &root,
         pattern,
-        include,
+        include.as_deref(),
         ignore_case,
         context,
         limit,
         use_regex,
-    ) {
-        output
-    } else {
-        let matcher = GrepMatcher::new(pattern, use_regex, ignore_case)?;
-        rust_grep(&root, &matcher, include, context, limit)?
+    )? {
+        return Ok(output);
+    }
+    let matcher = GrepMatcher::new(pattern, use_regex, ignore_case)?;
+    rust_grep(&root, &matcher, include.as_deref(), context, limit)
+}
+
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+/// ripgrep never matches a leading `./`, so Pi strips repeated copies while
+/// preserving a leading `!` that negates the glob.
+fn normalize_grep_glob(glob: &str) -> String {
+    let (negated, body) = match glob.strip_prefix('!') {
+        Some(body) => ("!", body),
+        None => ("", glob),
     };
-    Ok(format!("{note}{output}"))
+    format!("{negated}{}", body.trim_start_matches("./"))
 }
 
 /// How a `grep` line is matched: a literal substring or a compiled regex.
@@ -2636,39 +2624,40 @@ impl GrepMatcher {
     }
 }
 
-/// Runs `grep` through `ripgrep` when it is on `PATH`, returning `None` so the
-/// caller can fall back to the built-in walker.
+/// Runs `grep` through `ripgrep` when it is on `PATH`. `Ok(None)` means rg is
+/// unavailable; failures reported by rg are returned rather than hidden behind
+/// a second search implementation.
 fn rg_grep(
     root: &Path,
     pattern: &str,
-    include: Option<&str>,
+    glob: Option<&str>,
     ignore_case: bool,
     context: usize,
     limit: usize,
     use_regex: bool,
-) -> Option<String> {
-    let rg = command_path("rg")?;
-    let (dir, target) = if root.is_dir() {
+) -> Result<Option<String>> {
+    let Some(rg) = command_path("rg") else {
+        return Ok(None);
+    };
+    let is_directory = root.is_dir();
+    let (dir, target) = if is_directory {
         (root.to_path_buf(), ".".to_string())
     } else {
         let parent = root.parent().unwrap_or(root).to_path_buf();
-        let name = root.file_name()?.to_string_lossy().to_string();
+        let name = root
+            .file_name()
+            .context("grep search path has no file name")?
+            .to_string_lossy()
+            .to_string();
         (parent, name)
     };
     let mut command = std::process::Command::new(rg);
     command.current_dir(&dir).args([
-        "--no-require-git",
-        "--hidden",
+        "--no-config",
         "--json",
-        "--no-messages",
-        "--glob",
-        "!.git",
-        "--glob",
-        "!node_modules",
-        "--glob",
-        "!target",
-        "--glob",
-        "!.venv",
+        "--line-number",
+        "--color=never",
+        "--hidden",
     ]);
     if !use_regex {
         command.arg("--fixed-strings");
@@ -2679,14 +2668,21 @@ fn rg_grep(
     if context > 0 {
         command.arg("--context").arg(context.to_string());
     }
-    if let Some(include) = include {
-        command.arg("--glob").arg(include);
+    if let Some(glob) = glob {
+        command.arg("--glob").arg(glob);
     }
     command.arg("--").arg(pattern).arg(&target);
-    command.stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = command.spawn().ok()?;
-    let stdout = child.stdout.take()?;
-    let mut hits: Vec<String> = Vec::new();
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().context("failed to launch ripgrep")?;
+    let stdout = child.stdout.take().context("capturing ripgrep stdout")?;
+    let mut stderr = child.stderr.take().context("capturing ripgrep stderr")?;
+    let stderr_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        use std::io::Read;
+        let _ = stderr.read_to_string(&mut text);
+        text
+    });
+    let mut collector = GrepCollector::new(context, limit);
     let mut kill_requested = false;
     let mut read_failed = false;
     for line in BufReader::new(stdout).lines() {
@@ -2705,36 +2701,78 @@ fn rg_grep(
             _ => continue,
         };
         let data = &event["data"];
-        let Some(path) = data.pointer("/path/text").and_then(Value::as_str) else {
+        let raw_path = rg_text(data.get("path"));
+        if raw_path.is_empty() {
             continue;
-        };
+        }
         let Some(line_number) = data.get("line_number").and_then(Value::as_u64) else {
             continue;
         };
-        let Some(text) = data.pointer("/lines/text").and_then(Value::as_str) else {
-            continue;
-        };
-        let path = path
-            .strip_prefix("./")
-            .or_else(|| path.strip_prefix(".\\"))
-            .unwrap_or(path);
-        let text = text.trim_end_matches(['\n', '\r']);
-        let marker = if kind == "match" { ':' } else { '-' };
-        hits.push(format!("{path}{marker}{line_number}{marker} {text}"));
-        if hits.len() > limit {
+        let text = rg_text(data.get("lines"));
+        let display_path = grep_display_path(root, is_directory, &raw_path);
+        if collector.observe(
+            &raw_path,
+            &display_path,
+            line_number,
+            &text,
+            kind == "match",
+        ) {
             kill_requested = child.kill().is_ok();
             break;
         }
     }
-    let status = child.wait().ok()?;
+    let status = child.wait().context("waiting for ripgrep")?;
+    let stderr = stderr_reader.join().unwrap_or_default();
     let killed_at_limit = child_killed_at_limit(&status, kill_requested);
     // rg exits 1 for an ordinary no-match result. Every other unsolicited
     // failure falls back rather than returning plausible-looking partial data.
-    let no_matches = status.code() == Some(1) && hits.is_empty();
+    let no_matches = status.code() == Some(1) && collector.match_count == 0;
     if read_failed || (!status.success() && !no_matches && !killed_at_limit) {
-        return None;
+        anyhow::bail!(if stderr.trim().is_empty() {
+            format!("ripgrep exited with {status}")
+        } else {
+            stderr.trim().to_string()
+        });
     }
-    Some(finish_hits(hits, limit))
+    Ok(Some(collector.finish()))
+}
+
+/// Decodes a ripgrep JSON text field. Non-UTF-8 content arrives base64-encoded
+/// in `bytes`; Node replaces invalid UTF-8, so the fallback does too.
+fn rg_text(data: Option<&Value>) -> String {
+    let Some(data) = data else {
+        return String::new();
+    };
+    if let Some(text) = data.get("text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+    data.get("bytes")
+        .and_then(Value::as_str)
+        .map(|encoded| {
+            String::from_utf8_lossy(&media::base64_decode(encoded).unwrap_or_default()).into_owned()
+        })
+        .unwrap_or_default()
+}
+
+fn grep_display_path(root: &Path, is_directory: bool, file_path: &str) -> String {
+    let file_path = Path::new(file_path);
+    if is_directory {
+        let absolute = if file_path.is_absolute() {
+            file_path.to_path_buf()
+        } else {
+            root.join(file_path)
+        };
+        if let Ok(relative) = absolute.strip_prefix(root) {
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            if !relative.is_empty() && !relative.starts_with("..") {
+                return relative;
+            }
+        }
+    }
+    file_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_path.to_string_lossy().replace('\\', "/"))
 }
 
 /// Confirms that a non-success status came from Oxide's limit stop rather than
@@ -2763,19 +2801,27 @@ fn child_killed_at_limit(status: &std::process::ExitStatus, requested: bool) -> 
 fn rust_grep(
     root: &Path,
     matcher: &GrepMatcher,
-    include: Option<&str>,
+    glob: Option<&str>,
     context: usize,
     limit: usize,
 ) -> Result<String> {
     // Walking is cheap compared to reading and scanning file contents, so
     // gather the candidates first and fan the reads across the available cores.
     let mut candidates: Vec<PathBuf> = Vec::new();
+    let filter_root = if root.is_file() {
+        root.parent().unwrap_or(root)
+    } else {
+        root
+    };
     let mut collect = |path: &Path| {
-        if let Some(include) = include {
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                if !glob_match(include, name) {
-                    return true;
-                }
+        if let Some(glob) = glob {
+            let relative = path
+                .strip_prefix(filter_root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !grep_glob_matches(glob, &relative) {
+                return true;
             }
         }
         candidates.push(path.to_path_buf());
@@ -2788,22 +2834,181 @@ fn rust_grep(
         walk(root, &mut collect);
         root
     };
-    let hits = scan_files(display_root, &candidates, matcher, context, limit);
-    Ok(finish_hits(hits, limit))
+    let mut collector = GrepCollector::new(context, limit);
+    for scan in scan_files(display_root, &candidates, matcher, context, limit) {
+        for event in scan.events {
+            if collector.observe(
+                &event.path,
+                &event.path,
+                event.line,
+                &event.text,
+                event.is_match,
+            ) {
+                return Ok(collector.finish());
+            }
+        }
+    }
+    Ok(collector.finish())
 }
 
-/// Truncates to `limit` hits and joins them, reporting truncation.
-fn finish_hits(mut hits: Vec<String>, limit: usize) -> String {
-    if hits.is_empty() {
-        return NO_MATCHES.to_string();
+fn grep_glob_matches(glob: &str, relative: &str) -> bool {
+    let (negated, pattern) = match glob.strip_prefix('!') {
+        Some(pattern) => (true, pattern),
+        None => (false, glob),
+    };
+    let matched = if pattern.contains('/') {
+        glob_match(pattern, relative)
+    } else {
+        glob_match(pattern, relative.rsplit('/').next().unwrap_or(relative))
+    };
+    matched != negated
+}
+
+fn strip_grep_line_terminator(line: &str) -> &str {
+    if let Some(line) = line.strip_suffix('\n') {
+        line.strip_suffix('\r').unwrap_or(line)
+    } else {
+        line.strip_suffix('\r').unwrap_or(line)
     }
-    let truncated = hits.len() > limit;
-    hits.truncate(limit);
-    let mut out = hits.join("\n");
-    if truncated {
-        out.push_str("\n... [truncated]");
+}
+
+fn truncate_grep_line(line: &str) -> (String, bool) {
+    let mut units = 0;
+    for (index, character) in line.char_indices() {
+        let next = units + character.len_utf16();
+        if next > GREP_MAX_LINE_LENGTH {
+            return (format!("{}... [truncated]", &line[..index]), true);
+        }
+        units = next;
     }
-    out
+    (line.to_string(), false)
+}
+
+struct GrepCollector {
+    lines: Vec<String>,
+    stored_bytes: usize,
+    output_bytes: usize,
+    match_count: usize,
+    match_limit_reached: bool,
+    limit_hit: bool,
+    trailing_context_end: u64,
+    last_file: Option<String>,
+    done: bool,
+    lines_truncated: bool,
+    context: usize,
+    limit: usize,
+}
+
+impl GrepCollector {
+    fn new(context: usize, limit: usize) -> Self {
+        Self {
+            lines: Vec::new(),
+            stored_bytes: 0,
+            output_bytes: 0,
+            match_count: 0,
+            match_limit_reached: false,
+            limit_hit: false,
+            trailing_context_end: 0,
+            last_file: None,
+            done: false,
+            lines_truncated: false,
+            context,
+            limit,
+        }
+    }
+
+    /// Applies Pi's global match limit while retaining the final match's
+    /// trailing context. Only another match proves that the result was cut.
+    fn observe(
+        &mut self,
+        file_path: &str,
+        display_path: &str,
+        line_number: u64,
+        line_text: &str,
+        is_match: bool,
+    ) -> bool {
+        if self.done {
+            return true;
+        }
+        if !self.limit_hit {
+            self.push(display_path, line_number, line_text, is_match, file_path);
+            if !is_match {
+                return false;
+            }
+            self.match_count += 1;
+            if self.match_count >= self.limit {
+                self.limit_hit = true;
+                self.trailing_context_end = line_number.saturating_add(self.context as u64);
+            }
+            return false;
+        }
+
+        let in_window = self.last_file.as_deref() == Some(file_path)
+            && line_number <= self.trailing_context_end;
+        if in_window {
+            self.push(display_path, line_number, line_text, false, file_path);
+        }
+        if is_match {
+            self.match_limit_reached = true;
+        }
+        if self.match_limit_reached && !(in_window && line_number < self.trailing_context_end) {
+            self.done = true;
+        }
+        self.done
+    }
+
+    fn push(
+        &mut self,
+        display_path: &str,
+        line_number: u64,
+        line_text: &str,
+        is_match: bool,
+        file_path: &str,
+    ) {
+        self.last_file = Some(file_path.to_string());
+        let line_text = strip_grep_line_terminator(line_text);
+        let (line_text, truncated) = truncate_grep_line(line_text);
+        self.lines_truncated |= truncated;
+        let marker = if is_match { ':' } else { '-' };
+        let line = format!("{display_path}{marker}{line_number}{marker} {line_text}");
+        let separator = usize::from(!self.lines.is_empty());
+        if self.stored_bytes + separator + line.len() <= MAX_OUTPUT_BYTES {
+            self.stored_bytes += separator + line.len();
+            self.lines.push(line.clone());
+        }
+        self.output_bytes += line.len() + 1;
+    }
+
+    fn finish(self) -> String {
+        if self.match_count == 0 {
+            return NO_MATCHES.to_string();
+        }
+        let byte_truncated = self.output_bytes.saturating_sub(1) > MAX_OUTPUT_BYTES;
+        let mut out = self.lines.join("\n");
+        let mut notices = Vec::new();
+        if self.match_limit_reached {
+            notices.push(format!(
+                "{} matches limit reached. Use limit={} for more, or refine pattern",
+                self.limit,
+                self.limit.saturating_mul(2)
+            ));
+        }
+        if byte_truncated {
+            notices.push(format!(
+                "{:.1}KB limit reached",
+                MAX_OUTPUT_BYTES as f64 / 1024.0
+            ));
+        }
+        if self.lines_truncated {
+            notices.push(format!(
+                "Some lines truncated to {GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines"
+            ));
+        }
+        if !notices.is_empty() {
+            out.push_str(&format!("\n\n[{}]", notices.join(". ")));
+        }
+        out
+    }
 }
 
 /// Caches a resolved binary per `(PATH, name)` pair. Tool-heavy turns call this
@@ -2861,13 +3066,25 @@ fn command_exists(name: &str) -> bool {
 /// Scans the candidate files for a matcher's hits across the available cores,
 /// stopping once one more than `limit` matches have been collected so the
 /// caller can report truncation.
+struct GrepEvent {
+    path: String,
+    line: u64,
+    text: String,
+    is_match: bool,
+}
+
+struct FileGrepScan {
+    events: Vec<GrepEvent>,
+    match_count: usize,
+}
+
 fn scan_files(
     root: &Path,
     candidates: &[PathBuf],
     matcher: &GrepMatcher,
     context: usize,
     limit: usize,
-) -> Vec<String> {
+) -> Vec<FileGrepScan> {
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -2879,11 +3096,11 @@ fn scan_files(
     let next = AtomicUsize::new(0);
     let found = AtomicUsize::new(0);
 
-    let mut results: Vec<(usize, Vec<String>)> = std::thread::scope(|scope| {
+    let mut results: Vec<(usize, FileGrepScan)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
             .map(|_| {
                 scope.spawn(|| {
-                    let mut local: Vec<(usize, Vec<String>)> = Vec::new();
+                    let mut local: Vec<(usize, FileGrepScan)> = Vec::new();
                     loop {
                         if found.load(Ordering::Relaxed) >= stop_at {
                             break;
@@ -2892,12 +3109,12 @@ fn scan_files(
                         let Some(path) = candidates.get(index) else {
                             break;
                         };
-                        let file_hits = scan_file(root, path, matcher, context, stop_at);
-                        if file_hits.is_empty() {
+                        let scan = scan_file(root, path, matcher, context, stop_at);
+                        if scan.match_count == 0 {
                             continue;
                         }
-                        found.fetch_add(file_hits.len(), Ordering::Relaxed);
-                        local.push((index, file_hits));
+                        found.fetch_add(scan.match_count, Ordering::Relaxed);
+                        local.push((index, scan));
                     }
                     local
                 })
@@ -2909,19 +3126,22 @@ fn scan_files(
             .collect()
     });
     results.sort_by_key(|(index, _)| *index);
-    results.into_iter().flat_map(|(_, hits)| hits).collect()
+    results.into_iter().map(|(_, scan)| scan).collect()
 }
 
-/// Reads a single file and returns its formatted matches, stopping at `max`.
+/// Reads a single file and returns at most `max` matches with their context.
 fn scan_file(
     root: &Path,
     path: &Path,
     matcher: &GrepMatcher,
     context: usize,
     max: usize,
-) -> Vec<String> {
+) -> FileGrepScan {
     let Some(content) = read_text_file(path) else {
-        return Vec::new();
+        return FileGrepScan {
+            events: Vec::new(),
+            match_count: 0,
+        };
     };
     let rel = path
         .strip_prefix(root)
@@ -2929,37 +3149,56 @@ fn scan_file(
         .to_string_lossy()
         .replace('\\', "/");
     let lines: Vec<&str> = content.lines().collect();
-    let mut hits = Vec::new();
+    let mut matches = Vec::new();
     for (index, line) in lines.iter().enumerate() {
-        if !matcher.is_match(line) {
-            continue;
+        if matcher.is_match(line) {
+            matches.push(index);
         }
-        if context > 0 {
-            let start = index.saturating_sub(context);
-            let end = (index + context + 1).min(lines.len());
-            for (ctx_index, ctx_line) in lines.iter().enumerate().take(end).skip(start) {
-                let marker = if ctx_index == index { ':' } else { '-' };
-                hits.push(format!(
-                    "{rel}{marker}{}{marker} {}",
-                    ctx_index + 1,
-                    ctx_line.trim_end()
-                ));
-            }
-        } else {
-            hits.push(format!("{rel}:{}: {}", index + 1, line.trim_end()));
-        }
-        if hits.len() >= max {
+        if matches.len() >= max {
             break;
         }
     }
-    hits
+    if matches.is_empty() {
+        return FileGrepScan {
+            events: Vec::new(),
+            match_count: 0,
+        };
+    }
+
+    let mut rows: BTreeMap<usize, bool> = BTreeMap::new();
+    for &index in &matches {
+        if context == 0 {
+            rows.insert(index, true);
+            continue;
+        }
+        let start = index.saturating_sub(context);
+        let end = index.saturating_add(context).saturating_add(1);
+        for row in start..end.min(lines.len()) {
+            rows.entry(row)
+                .and_modify(|is_match| *is_match |= row == index)
+                .or_insert(row == index);
+        }
+    }
+    let events = rows
+        .into_iter()
+        .map(|(index, is_match)| GrepEvent {
+            path: rel.clone(),
+            line: index as u64 + 1,
+            text: lines[index].to_string(),
+            is_match,
+        })
+        .collect();
+    FileGrepScan {
+        events,
+        match_count: matches.len(),
+    }
 }
 
 /// Sniffed bytes inspected before committing to a full file read.
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
-/// Reads a file as UTF-8 text, skipping binaries. Only a prefix is inspected
-/// first, so a large binary is abandoned without reading it all.
+/// Reads a file as text, skipping binaries. UTF-8 and BOM-marked UTF-16 are
+/// accepted, matching ripgrep's decoding when the built-in walker is used.
 fn read_text_file(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).ok()?;
@@ -2968,13 +3207,38 @@ fn read_text_file(path: &Path) -> Option<String> {
     if read == 0 {
         return Some(String::new());
     }
-    if prefix[..read].contains(&0) {
+    let utf16 = matches!(&prefix[..read], [0xff, 0xfe, ..] | [0xfe, 0xff, ..]);
+    if !utf16 && prefix[..read].contains(&0) {
         return None;
     }
     let mut bytes = Vec::with_capacity(read + 1024);
     bytes.extend_from_slice(&prefix[..read]);
     file.read_to_end(&mut bytes).ok()?;
-    String::from_utf8(bytes).ok()
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        decode_utf16_text(&bytes[2..], true)
+    } else if bytes.starts_with(&[0xfe, 0xff]) {
+        decode_utf16_text(&bytes[2..], false)
+    } else {
+        String::from_utf8(bytes).ok()
+    }
+}
+
+fn decode_utf16_text(bytes: &[u8], little_endian: bool) -> Option<String> {
+    if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    debug_assert!(remainder.is_empty());
+    let units = pairs.iter().map(|pair| {
+        if little_endian {
+            u16::from_le_bytes([pair[0], pair[1]])
+        } else {
+            u16::from_be_bytes([pair[0], pair[1]])
+        }
+    });
+    char::decode_utf16(units)
+        .collect::<std::result::Result<String, _>>()
+        .ok()
 }
 
 /// Reads an integer argument, accepting a JSON number, a numeric string (some
@@ -2982,6 +3246,14 @@ fn read_text_file(path: &Path) -> Option<String> {
 /// range like `[820, 850]`, where the first element is the offset).
 fn int_arg(args: &Value, key: &str) -> Option<usize> {
     int_value(args.get(key)?)
+}
+
+fn number_arg(args: &Value, key: &str) -> Option<f64> {
+    match args.get(key)? {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 fn int_value(value: &Value) -> Option<usize> {
@@ -3764,9 +4036,9 @@ impl ShellGrep {
         let (pattern, literal) = self.restated_pattern(&written)?;
         let mut call = serde_json::Map::new();
         call.insert("pattern".to_string(), json!(pattern));
-        // `grep -l` answers with file names, which is the tool's default mode.
-        if !self.files_only {
-            call.insert("output_mode".to_string(), json!("content"));
+        // Pi's grep returns matching lines; `grep -l` has no equivalent call.
+        if self.files_only {
+            return None;
         }
         if let Some(path) = operand {
             let path = literal_grep_word(path)?;
@@ -6256,7 +6528,12 @@ pub(crate) fn truncate(name: &str, output: String) -> String {
 }
 
 fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
-    let (max_bytes, max_lines) = output_limits(name);
+    let output_name = if name == "bash" && output.starts_with(BOUNDED_GREP_PREFIX) {
+        "grep"
+    } else {
+        name
+    };
+    let (max_bytes, max_lines) = output_limits(output_name);
     let lines: Vec<&str> = output.lines().collect();
     if output.len() <= max_bytes && lines.len() <= max_lines {
         return output;
@@ -6289,7 +6566,7 @@ fn truncate_into(name: &str, output: String, dir: Option<&Path>) -> String {
         }
     }
 
-    let keep = keep_end(name);
+    let keep = keep_end(output_name);
     let (preview, dropped_lines, dropped_bytes) = match keep {
         Keep::Middle => middle_preview(&lines, max_bytes, max_lines),
         Keep::Tail | Keep::Head => end_preview(&lines, max_bytes, max_lines, keep == Keep::Tail),
@@ -6653,7 +6930,11 @@ fn mcp_output(result: crate::mcp::McpToolResult) -> ToolOutput {
 fn output_limits(name: &str) -> (usize, usize) {
     match name {
         "bash" => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
-        "grep" | "find" | "ls" => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
+        // grep applies Pi's match and byte budgets before adding its notices;
+        // its context can exceed the ordinary line cap while remaining under
+        // the byte cap.
+        "grep" => (MAX_OUTPUT_BYTES + 1024, usize::MAX),
+        "find" | "ls" => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
         "webfetch" => (MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES),
         // A write or an edit answers with a confirmation and a diff the model
         // already knows; only the built-ins whose output it must reason from
@@ -7047,6 +7328,38 @@ mod tests {
                 "missing {name} in {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn grep_spec_matches_pis_tool_call_schema() {
+        let specs = specs(&McpRegistry::default());
+        let grep = specs
+            .iter()
+            .find(|spec| spec.function.name == "grep")
+            .expect("grep spec");
+        let schema = &grep.function.parameters;
+        let properties = schema["properties"].as_object().expect("properties");
+        let mut keys = properties.keys().map(String::as_str).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "context",
+                "glob",
+                "ignoreCase",
+                "limit",
+                "literal",
+                "path",
+                "pattern",
+            ]
+        );
+        assert_eq!(schema["required"], json!(["pattern"]));
+        assert_eq!(properties["path"]["type"], "string");
+        assert_eq!(properties["glob"]["type"], "string");
+        assert_eq!(properties["ignoreCase"]["type"], "boolean");
+        assert_eq!(properties["literal"]["type"], "boolean");
+        assert_eq!(properties["context"]["type"], "number");
+        assert_eq!(properties["limit"]["type"], "number");
     }
 
     #[test]
@@ -8341,6 +8654,7 @@ mod tests {
     async fn find_and_grep_respect_gitignore() {
         let dir = std::env::temp_dir().join(format!("oxide_gitignore_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::create_dir_all(dir.join("ignored")).unwrap();
         std::fs::write(dir.join(".gitignore"), "ignored/\n*.log\n").unwrap();
         std::fs::write(dir.join("ignored/hidden.rs"), "needle\n").unwrap();
@@ -8360,10 +8674,7 @@ mod tests {
         assert!(!out.text.contains("hidden.rs"), "{}", out.text);
 
         let out = execute(
-            &call(
-                "grep",
-                json!({ "pattern": "needle", "output_mode": "content" }),
-            ),
+            &call("grep", json!({ "pattern": "needle" })),
             &dir,
             &mcp,
             &progress,
@@ -8388,7 +8699,7 @@ mod tests {
         let out = execute(
             &call(
                 "grep",
-                json!({ "output_mode": "content", "pattern": "foo", "glob": "*.rs", "ignoreCase": true, "limit": 50 }),
+                json!({ "pattern": "foo", "glob": "*.rs", "ignoreCase": true, "limit": 50 }),
             ),
             &dir,
             &mcp,
@@ -8399,10 +8710,7 @@ mod tests {
         assert!(out.text.contains("let foo"), "{}", out.text);
 
         let out = execute(
-            &call(
-                "grep",
-                json!({ "output_mode": "content", "pattern": "Foo", "context": 1 }),
-            ),
+            &call("grep", json!({ "pattern": "Foo", "context": 1 })),
             &dir,
             &mcp,
             &progress,
@@ -8410,7 +8718,321 @@ mod tests {
         .await;
         assert!(out.text.contains("a.rs:1: let Foo"), "{}", out.text);
 
+        std::fs::write(dir.join("one-line.txt"), "only line\n").unwrap();
+        let out = execute(
+            &call(
+                "grep",
+                json!({ "pattern": "", "path": "one-line.txt", "limit": 1 }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(out.text, "one-line.txt:1: only line");
+
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_uses_pis_content_output_and_line_budget() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_pi_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file.txt"), "before\nneedle\nafter\n").unwrap();
+        std::fs::write(
+            dir.join("long.txt"),
+            format!("needle {}\n", "x".repeat(GREP_MAX_LINE_LENGTH + 50)),
+        )
+        .unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let context = execute(
+            &call(
+                "grep",
+                json!({ "pattern": "needle", "path": "file.txt", "context": 1 }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(
+            context.text,
+            "file.txt-1- before\nfile.txt:2: needle\nfile.txt-3- after"
+        );
+
+        let long = execute(
+            &call("grep", json!({ "pattern": "needle", "path": "long.txt" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(long.text.contains("... [truncated]"), "{}", long.text);
+        assert!(
+            long.text
+                .contains("Some lines truncated to 500 chars. Use read tool to see full lines"),
+            "{}",
+            long.text
+        );
+
+        let encoded = "\u{feff}before\nneedle 中文\nafter\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(encoded);
+        std::fs::write(dir.join("utf16.txt"), utf16).unwrap();
+        let context = execute(
+            &call(
+                "grep",
+                json!({ "pattern": "needle", "path": "utf16.txt", "context": 1 }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(
+            context.text,
+            "utf16.txt-1- before\nutf16.txt:2: needle 中文\nutf16.txt-3- after"
+        );
+
+        std::fs::write(dir.join("mixed-cr.txt"), "one\rtwo needle\r\nnext\r\n").unwrap();
+        let lone_cr = execute(
+            &call(
+                "grep",
+                json!({ "pattern": "needle", "path": "mixed-cr.txt" }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(lone_cr.text, "mixed-cr.txt:1: one\rtwo needle");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_context_is_not_cut_by_the_generic_two_thousand_line_cap() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_grep_context_rows_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lines = vec!["x".to_string(); 2500];
+        lines[1250] = "needle".to_string();
+        std::fs::write(dir.join("context.txt"), lines.join("\n")).unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let output = execute(
+            &call(
+                "grep",
+                json!({
+                    "pattern": "needle",
+                    "path": "context.txt",
+                    "context": 2500
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(output.text.lines().count(), 2500, "{}", output.text);
+        assert!(!output.text.contains("[truncated:"), "{}", output.text);
+
+        let bounded_shell = format!(
+            "{BOUNDED_GREP_PREFIX}{}",
+            (0..2500)
+                .map(|line| format!("context.txt-{line}- x"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(
+            truncate_into("bash", bounded_shell.clone(), None),
+            bounded_shell
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_limit_counts_matches_and_keeps_the_last_matches_trailing_context() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_grep_context_limit_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("rg-context.txt"),
+            [
+                "a",
+                "match one",
+                "b",
+                "match two",
+                "match three",
+                "c",
+                "match four",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let output = execute(
+            &call(
+                "grep",
+                json!({
+                    "pattern": "match",
+                    "path": "rg-context.txt",
+                    "context": 1,
+                    "limit": 2
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(
+            output.text.split("\n\n").next().unwrap(),
+            [
+                "rg-context.txt-1- a",
+                "rg-context.txt:2: match one",
+                "rg-context.txt-3- b",
+                "rg-context.txt:4: match two",
+                "rg-context.txt-5- match three",
+            ]
+            .join("\n")
+        );
+        assert!(
+            output
+                .text
+                .contains("[2 matches limit reached. Use limit=4 for more, or refine pattern]"),
+            "{}",
+            output.text
+        );
+
+        let exact = execute(
+            &call(
+                "grep",
+                json!({
+                    "pattern": "match",
+                    "path": "rg-context.txt",
+                    "context": 1,
+                    "limit": 4
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(!exact.text.contains("limit reached"), "{}", exact.text);
+        assert!(exact.text.contains("match four"), "{}", exact.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_anchors_globs_at_path_and_drops_a_leading_dot_slash() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_glob_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("migrations/main")).unwrap();
+        std::fs::create_dir_all(dir.join("nested/migrations/main")).unwrap();
+        std::fs::write(dir.join("migrations/main/a.js"), "hello\n").unwrap();
+        std::fs::write(dir.join("nested/migrations/main/b.js"), "hello\n").unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let anchored = execute(
+            &call(
+                "grep",
+                json!({
+                    "pattern": "hello",
+                    "path": dir,
+                    "glob": "./migrations/main/*.js"
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(anchored.text, "migrations/main/a.js:1: hello");
+
+        let negated = execute(
+            &call(
+                "grep",
+                json!({
+                    "pattern": "hello",
+                    "path": dir,
+                    "glob": "!./migrations/**"
+                }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert_eq!(negated.text, "nested/migrations/main/b.js:1: hello");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_counts_matches_past_the_byte_cap_and_reports_pis_notice() {
+        let dir = std::env::temp_dir().join(format!("oxide_grep_byte_cap_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = format!("match {}", "x".repeat(400));
+        std::fs::write(
+            dir.join("byte-cap.txt"),
+            std::iter::repeat_n(line, 200)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let mcp = McpRegistry::default();
+        let progress = Progress::default();
+
+        let output = execute(
+            &call(
+                "grep",
+                json!({ "pattern": "match", "path": "byte-cap.txt", "limit": 150 }),
+            ),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(
+            output.text.contains("150 matches limit reached"),
+            "{}",
+            output.text
+        );
+        assert!(
+            output.text.contains("50.0KB limit reached"),
+            "{}",
+            output.text
+        );
+        assert!(!output.text.contains("[truncated:"), "{}", output.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ripgrep_text_fields_decode_base64_bytes() {
+        assert_eq!(
+            rg_text(Some(&json!({ "bytes": "aGVsbG8g5Lit5paH" }))),
+            "hello 中文"
+        );
+        assert_eq!(rg_text(Some(&json!({ "bytes": "!!!" }))), "");
+        assert_eq!(rg_text(Some(&json!({ "text": "plain" }))), "plain");
     }
 
     #[tokio::test]
@@ -8426,16 +9048,13 @@ mod tests {
         let progress = Progress::default();
 
         let out = execute(
-            &call(
-                "grep",
-                json!({ "output_mode": "content", "pattern": "needle", "limit": 2 }),
-            ),
+            &call("grep", json!({ "pattern": "needle", "limit": 2 })),
             &dir,
             &mcp,
             &progress,
         )
         .await;
-        assert!(out.text.contains("... [truncated]"), "{}", out.text);
+        assert!(out.text.contains("matches limit reached"), "{}", out.text);
         assert!(!out.text.contains("bin.dat"), "{}", out.text);
         assert_eq!(out.text.matches("needle").count(), 2, "{}", out.text);
 
@@ -8459,10 +9078,7 @@ mod tests {
         // Pi's default is a regular expression, so a pattern a model writes
         // from knowledge of its tools matches without a second call.
         let matched = execute(
-            &call(
-                "grep",
-                json!({ "output_mode": "content", "pattern": pattern }),
-            ),
+            &call("grep", json!({ "pattern": pattern })),
             &dir,
             &mcp,
             &progress,
@@ -8479,35 +9095,27 @@ mod tests {
         // A caller that means the characters themselves asks for a literal
         // search; the old `regex: false` spelling keeps working.
         for args in [
-            json!({ "output_mode": "content", "pattern": pattern, "literal": true }),
-            json!({ "output_mode": "content", "pattern": pattern, "regex": false }),
-            json!({ "output_mode": "content", "pattern": pattern, "use_regex": false }),
+            json!({ "pattern": pattern, "literal": true }),
+            json!({ "pattern": pattern, "regex": false }),
+            json!({ "pattern": pattern, "use_regex": false }),
         ] {
             let literal = execute(&call("grep", args), &dir, &mcp, &progress).await;
             assert_eq!(literal.text, NO_MATCHES);
         }
 
         assert_eq!(
-            grep(
-                &dir,
-                &json!({ "output_mode": "content", "pattern": "missing" })
-            )
-            .unwrap(),
+            grep(&dir, &json!({ "pattern": "missing" })).unwrap(),
             NO_MATCHES
         );
 
         std::fs::write(dir.join("literal.txt"), pattern).unwrap();
-        let literal = grep(
-            &dir,
-            &json!({ "output_mode": "content", "pattern": pattern, "literal": true }),
-        )
-        .unwrap();
+        let literal = grep(&dir, &json!({ "pattern": pattern, "literal": true })).unwrap();
         assert!(literal.contains("literal.txt:1:"), "{literal}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
-    async fn grep_falls_back_to_literal_text_for_an_invalid_regex() {
+    async fn grep_rejects_an_invalid_regex_like_pi() {
         let dir = std::env::temp_dir().join(format!("oxide_grep_regex_{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
@@ -8521,10 +9129,7 @@ mod tests {
 
         // A pattern written as a regex matches by default.
         let regex = execute(
-            &call(
-                "grep",
-                json!({ "output_mode": "content", "pattern": "@Placeholder.*hotel" }),
-            ),
+            &call("grep", json!({ "pattern": "@Placeholder.*hotel" })),
             &dir,
             &mcp,
             &progress,
@@ -8536,7 +9141,7 @@ mod tests {
         let literal = execute(
             &call(
                 "grep",
-                json!({ "output_mode": "content", "pattern": "@Placeholder.*hotel", "literal": true }),
+                json!({ "pattern": "@Placeholder.*hotel", "literal": true }),
             ),
             &dir,
             &mcp,
@@ -8545,23 +9150,32 @@ mod tests {
         .await;
         assert!(!literal.text.contains("a.java"), "{}", literal.text);
 
-        // An unbalanced bracket is source text, not a regex. Searching it
-        // literally is what the caller meant, and one saved round trip.
+        // Literal mode is how a caller asks for regex-looking source text.
         std::fs::write(dir.join("b.txt"), "before ([ after\n").unwrap();
-        let bad = execute(
-            &call("grep", json!({ "output_mode": "content", "pattern": "([" })),
+        let literal = execute(
+            &call("grep", json!({ "pattern": "([", "literal": true })),
             &dir,
             &mcp,
             &progress,
         )
         .await;
-        assert!(!bad.is_error, "{}", bad.text);
+        assert!(!literal.is_error, "{}", literal.text);
+        assert!(literal.text.contains("b.txt:1:"), "{}", literal.text);
+
+        // Pi does not silently reinterpret an invalid expression.
+        let bad = execute(
+            &call("grep", json!({ "pattern": "([" })),
+            &dir,
+            &mcp,
+            &progress,
+        )
+        .await;
+        assert!(bad.is_error, "{}", bad.text);
         assert!(
-            bad.text.contains("not a valid regular expression"),
+            bad.text.contains("regex parse error") || bad.text.contains("unclosed character class"),
             "{}",
             bad.text
         );
-        assert!(bad.text.contains("b.txt:1:"), "{}", bad.text);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8622,7 +9236,7 @@ mod tests {
 
         let literal = GrepMatcher::new("needle", false, false).unwrap();
         let out = rust_grep(&dir, &literal, None, 0, 1).unwrap();
-        assert!(out.contains("... [truncated]"), "{out}");
+        assert!(out.contains("matches limit reached"), "{out}");
         assert_eq!(out.matches("needle").count(), 1, "{out}");
 
         let out = rust_grep(&dir, &literal, Some("*.txt"), 0, 10).unwrap();
@@ -8632,6 +9246,18 @@ mod tests {
         let regex = GrepMatcher::new("n[aeiou]+dle tw[o]", true, false).unwrap();
         let out = rust_grep(&dir, &regex, Some("*.txt"), 0, 10).unwrap();
         assert_eq!(out.matches("needle").count(), 1, "{out}");
+
+        std::fs::write(
+            dir.join("long.txt"),
+            format!("needle {}\n", "x".repeat(GREP_MAX_LINE_LENGTH + 1)),
+        )
+        .unwrap();
+        let out = rust_grep(&dir, &literal, Some("long.txt"), 0, 10).unwrap();
+        assert!(out.contains("... [truncated]"), "{out}");
+        assert!(
+            out.contains("Some lines truncated to 500 chars. Use read tool to see full lines"),
+            "{out}"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -10343,51 +10969,40 @@ mod tests {
         for (command, expected) in [
             (
                 "grep -rni needle .",
-                json!({"output_mode": "content", "pattern": "needle", "path": ".", "ignoreCase": true}),
+                json!({"pattern": "needle", "path": ".", "ignoreCase": true}),
             ),
             (
                 "grep -rn needle . | head -5",
-                json!({"output_mode": "content", "pattern": "needle", "path": ".", "limit": 5}),
+                json!({"pattern": "needle", "path": ".", "limit": 5}),
             ),
             (
                 "grep -rn needle . 2>/dev/null | head -n 20",
-                json!({"output_mode": "content", "pattern": "needle", "path": ".", "limit": 20}),
+                json!({"pattern": "needle", "path": ".", "limit": 20}),
             ),
-            (
-                "grep -rl needle . --include=*.rs",
-                json!({"pattern": "needle", "path": ".", "glob": "*.rs"}),
-            ),
-            (
-                "grep -ril needle . --include=*.ts --include=*.tsx",
-                json!({"pattern": "needle", "path": ".", "glob": "*.{ts,tsx}", "ignoreCase": true}),
-            ),
-            (
-                "grep -rn 'a.*b' .",
-                json!({"output_mode": "content", "pattern": "a.*b", "path": "."}),
-            ),
+            ("grep -rn 'a.*b' .", json!({"pattern": "a.*b", "path": "."})),
             (
                 r#"grep -rn "first\|second" ."#,
-                json!({"output_mode": "content", "pattern": "first|second", "path": "."}),
+                json!({"pattern": "first|second", "path": "."}),
             ),
             (
                 r#"grep -rn "pub struct TextRun" -A 20 /Users/example/.cargo/registry/src/text_system.rs"#,
-                json!({"output_mode": "content", "pattern": "pub struct TextRun", "path": "/Users/example/.cargo/registry/src/text_system.rs", "context": 20}),
+                json!({"pattern": "pub struct TextRun", "path": "/Users/example/.cargo/registry/src/text_system.rs", "context": 20}),
             ),
             (
                 r#"/usr/bin/grep -rn "pub struct TextRun" -A20 /Users/example/.cargo/registry/src/text_system.rs"#,
-                json!({"output_mode": "content", "pattern": "pub struct TextRun", "path": "/Users/example/.cargo/registry/src/text_system.rs", "context": 20}),
+                json!({"pattern": "pub struct TextRun", "path": "/Users/example/.cargo/registry/src/text_system.rs", "context": 20}),
             ),
             (
                 "grep -r -B3 needle src",
-                json!({"output_mode": "content", "pattern": "needle", "path": "src", "context": 3}),
+                json!({"pattern": "needle", "path": "src", "context": 3}),
             ),
             (
                 "grep -rn --context=4 needle src",
-                json!({"output_mode": "content", "pattern": "needle", "path": "src", "context": 4}),
+                json!({"pattern": "needle", "path": "src", "context": 4}),
             ),
             (
                 "grep -n needle README.md",
-                json!({"output_mode": "content", "pattern": "needle", "path": "README.md"}),
+                json!({"pattern": "needle", "path": "README.md"}),
             ),
         ] {
             let call = bounded_shell_grep(command, Path::new(".")).expect(command);
@@ -10565,7 +11180,7 @@ mod tests {
             .function
             .description
             .contains("instead of calling `bash`"));
-        assert!(grep.function.description.contains("using ripgrep"));
+        assert!(grep.function.description.contains("Respects .gitignore"));
     }
 
     #[test]
@@ -11164,35 +11779,31 @@ mod tests {
         for (command, expected) in [
             (
                 r#"grep -rn 'Definition  of Done' 'source files' --include='*.rs'"#,
-                json!({"output_mode": "content", "pattern": "Definition  of Done", "path": "source files", "glob": "*.rs"}),
+                json!({"pattern": "Definition  of Done", "path": "source files", "glob": "*.rs"}),
             ),
             (
                 r#"grep -rnF 'a.b' src"#,
-                json!({"output_mode": "content", "pattern": "a.b", "path": "src", "literal": true}),
+                json!({"pattern": "a.b", "path": "src", "literal": true}),
             ),
             (
                 r#"grep -rn "can't  stop" source\ files --include "*.rs""#,
-                json!({"output_mode": "content", "pattern": "can't  stop", "path": "source files", "glob": "*.rs"}),
+                json!({"pattern": "can't  stop", "path": "source files", "glob": "*.rs"}),
             ),
             (
                 r#"grep -rn '"quoted"' src"#,
-                json!({"output_mode": "content", "pattern": "\"quoted\"", "path": "src"}),
+                json!({"pattern": "\"quoted\"", "path": "src"}),
             ),
             (
                 "grep -rni needle src",
-                json!({"output_mode": "content", "pattern": "needle", "path": "src", "ignoreCase": true}),
-            ),
-            (
-                "grep -rln needle src",
-                json!({"pattern": "needle", "path": "src"}),
+                json!({"pattern": "needle", "path": "src", "ignoreCase": true}),
             ),
             (
                 "grep -rn needle src --include='*.rs' --include='*.toml'",
-                json!({"output_mode": "content", "pattern": "needle", "path": "src", "glob": "*.{rs,toml}"}),
+                json!({"pattern": "needle", "path": "src", "glob": "*.{rs,toml}"}),
             ),
             (
                 "grep -rIn needle src | head -3",
-                json!({"output_mode": "content", "pattern": "needle", "path": "src", "limit": 3}),
+                json!({"pattern": "needle", "path": "src", "limit": 3}),
             ),
         ] {
             let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
@@ -11214,6 +11825,7 @@ mod tests {
             "grep -rn -f patterns.txt -e second src",
             "grep -rnL needle src",
             "grep -rnv needle src",
+            "grep -rln needle src",
             "grep -rn needle src --exclude-dir=generated",
             "grep -rn needle src --include='*.rs' --include='src/*'",
             "grep -rn needle src --include",
@@ -11292,27 +11904,23 @@ mod tests {
         for (command, expected) in [
             (
                 r#"grep -rn "claude-opus-4-8\|claude-sonnet-4-6" . --include="*.rs""#,
-                json!({"output_mode": "content", "pattern": "claude-opus-4-8|claude-sonnet-4-6", "path": ".", "glob": "*.rs"}),
+                json!({"pattern": "claude-opus-4-8|claude-sonnet-4-6", "path": ".", "glob": "*.rs"}),
             ),
             (
                 "grep -rEn 'first|second' src",
-                json!({"output_mode": "content", "pattern": "first|second", "path": "src"}),
-            ),
-            (
-                r#"grep -rln 'fn \(read\|write\)' src"#,
-                json!({"pattern": "fn (read|write)", "path": "src"}),
+                json!({"pattern": "first|second", "path": "src"}),
             ),
             (
                 "grep -rnw needle src",
-                json!({"output_mode": "content", "pattern": r"\b(?:needle)\b", "path": "src"}),
+                json!({"pattern": r"\b(?:needle)\b", "path": "src"}),
             ),
             (
                 "grep -rnwF 'a.b' src",
-                json!({"output_mode": "content", "pattern": r"\b(?:a\.b)\b", "path": "src"}),
+                json!({"pattern": r"\b(?:a\.b)\b", "path": "src"}),
             ),
             (
                 "grep -rn 'read_to_string(' src",
-                json!({"output_mode": "content", "pattern": r"read_to_string\(", "path": "src"}),
+                json!({"pattern": r"read_to_string\(", "path": "src"}),
             ),
         ] {
             let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
@@ -11340,7 +11948,7 @@ mod tests {
 
     #[test]
     fn recursive_grep_refusal_splits_several_search_paths_into_one_call_each() {
-        let grep = recursive_shell_grep("grep -rln needle src tests", Path::new("."))
+        let grep = recursive_shell_grep("grep -rn needle src tests", Path::new("."))
             .expect("a recursive sweep");
         let refusal = recursive_shell_grep_refusal(&grep);
         assert!(refusal.contains("one path per call"), "{refusal}");

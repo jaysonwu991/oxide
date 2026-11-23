@@ -27,7 +27,7 @@ is not replayed, because it cannot say whether the server acted. A server's
 | `write` | `path`, `content` |
 | `edit` | `path`, `edits: [{ oldText, newText }]` |
 | `bash` | `command`, `timeout?` in milliseconds (default 120000) |
-| `grep` | `pattern` (regex), `path?`, `include?` (`glob?` alias), `limit?`, `output_mode?` (`files_with_matches` default or `content`), `ignoreCase?`, `literal?`, `context?` (content only) |
+| `grep` | `pattern` (regex or literal), `path?`, `glob?`, `ignoreCase?`, `literal?`, `context?`, `limit?` |
 | `find` | `pattern`, `path?`, `limit?` |
 | `ls` | `path?`, `limit?` |
 | `webfetch` | `url`, `format?` (`markdown` default, `text`, or raw `html`) |
@@ -112,38 +112,35 @@ deepest directory that does exist when the parent is missing too. `edit` adds
 the same hint to the read it failed, alongside its existing pointer to `write`
 for new files.
 
-By default `grep` follows the last public Codex `grep_files` contract:
-[`openai/codex` at `32c4993`](https://github.com/openai/codex/blob/32c4993c8a17cb0608d747f268e3d543745de962/codex-rs/core/src/tools/handlers/grep_files.rs).
-It invokes `rg --files-with-matches --sortr=modified --regexp <pattern>
---no-messages`, returning one filename per matching file, newest modified first.
-`path` can name a file or directory (default: the working directory), and `include`
-restricts files by glob; surrounding whitespace in `pattern` and `include` is
-trimmed. The default limit is 100 files, capped at 2000; zero and invalid limits
-are rejected. Searches time out after 30 seconds, and cancellation kills the child.
-Invalid regexes, missing paths, missing ripgrep, and unsuccessful searches report
-errors; exit 1 is an ordinary empty result (`No matches found`). Filename mode uses
-ripgrep's own hidden-file and ignore rules, including its requirement for a Git
-repository when applying `.gitignore`. It does not impose content mode's extra
-dependency-directory exclusions. Oxide keeps its ordinary success classification
-for empty results and accepts `glob`, `ignoreCase`, and `literal` as extensions.
-Codex removed its dedicated handler from main; this compatibility target is pinned.
+`grep` follows Pi Coding Agent's current tool contract. It searches one file or
+directory (`path`, default `.`) and returns matching lines as
+`path:line: text`; context rows use `path-line- text`. `glob` is anchored at the
+search path (including after a leading `./` is removed), `ignoreCase` changes
+case sensitivity, `literal: true` disables regular-expression syntax, and
+`context` adds the same number of lines before and after each match. Patterns
+are regular expressions by default, and invalid expressions are errors rather
+than being silently searched as text.
 
-Use `output_mode: "content"` for the existing `path:line: text` matches and context
-lines. This mode, like `find`, respects `.gitignore` even outside Git repositories
-and skips `.git`, `target`, `node_modules`, and `.venv`. It prefers ripgrep and
-falls back to a parallel built-in walker that skips binary files. Patterns are
-regexes by default (`literal: true` searches plain text); invalid regex syntax is
-searched literally with a note. Content mode's default limit is 100 output rows,
-with the shared 2000-line / 50 KB output budget. Shell searches redirected to
-`grep` explicitly select content mode to preserve their output. A standalone
-shell grep whose pattern, one path, file filters, case mode, output mode and
-context can be represented faithfully is rewritten to the typed `grep` call
+The default limit is 100 matches. Context rows do not consume that match budget,
+and the trailing context after the final allowed match is retained. Only a
+further match proves that the result was cut, so a search with exactly the limit
+does not emit a limit notice. Long lines are cut to 500 UTF-16 units. Output is
+capped at 50 KB like Pi's own tool, with `50.0KB limit reached` appended when
+complete rows no longer fit. Results honor ripgrep's `.gitignore` and
+hidden-file behavior; ripgrep runs with `--no-config` so a user's global
+ripgrep configuration cannot change the tool contract. Base64 path/text fields
+and BOM-marked UTF-16 files are decoded as they are in Pi. When ripgrep is
+absent, a parallel built-in walker provides the same matching and truncation
+semantics and skips binary files. A standalone
+shell grep whose pattern, one path, file filters, case mode and context can be
+represented faithfully is rewritten to the typed `grep` call
 before permissions, events and execution see it, so the transcript paints
 `Search` rather than a failed `Command`. Grep's `-A`, `-B`, `-C`,
 `--after-context`, `--before-context` and `--context` windows map to the tool's
 symmetric `context` argument; a search of one named file is converted too.
 Pipes, mutations, expansions and shell-dependent behavior are never discarded:
-those commands retain their real shell semantics. A recursive grep that cannot be
+those commands retain their real shell semantics. A `grep -l` remains a shell
+command because Pi's typed `grep` has no filename-only mode. A recursive grep that cannot be
 converted (a pipe or script) is not refused: on Unix it runs with `grep` redefined to
 skip `node_modules`, `target`, `.git`, `.venv`, `venv`, `dist`, `build` and `vendor`,
 and the output notes this. It is refused only when an operand names one of those

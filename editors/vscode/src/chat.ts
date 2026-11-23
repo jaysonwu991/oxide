@@ -174,6 +174,7 @@ import {
   type ContextChip,
   type QueuedMessage,
   type RunThread,
+  type SendKey,
   type SentChip,
   type ViewMessage,
   type WireEvent,
@@ -674,6 +675,7 @@ export class ChatController {
         queued: this.queue.length,
         queue: this.queuedMessages(),
         followUpBehavior: this.followUpBehavior(),
+        sendKey: this.sendKey(),
         context: this.chips(),
         attachments: this.attachmentChips(),
         title: this.threadTitle(),
@@ -900,9 +902,14 @@ export class ChatController {
   }
 
   private followUpBehavior(): "queue" | "steer" {
-    return this.setting<"queue" | "steer">("followUpBehavior", "queue") === "steer"
+    return this.setting<"queue" | "steer">("followUpBehavior", "steer") === "steer"
       ? "steer"
       : "queue";
+  }
+
+  private sendKey(): SendKey {
+    const value = this.setting<string>("sendKey", "enter");
+    return value === "mod-enter-multiline" || value === "mod-enter" ? value : "enter";
   }
 
   private queuedMessages(): QueuedMessage[] {
@@ -3603,7 +3610,7 @@ export class ChatController {
       case "shortcuts":
         this.showDialog({
           kind: "shortcuts", pin: "footer", title: this.t("dialog.help.title", "Keyboard shortcuts"),
-          subtitle: this.t("extension.composer", "Composer"), note: this.t("extension.shortcutsNote", "Enter: send · Shift+Enter: newline · Cmd/Ctrl+Shift+Enter: alternate Queue/Steer mode · Escape: close a dialog or stop"),
+          subtitle: this.t("extension.composer", "Composer"), note: this.t("extension.shortcutsNote", "Enter behavior: oxide.sendKey · Shift+Enter: newline · Cmd/Ctrl+Enter: alternate Queue/Steer mode · Cmd/Ctrl+Shift+Enter: the same alternate in modifier-send modes · Escape: close a dialog or stop"),
           rows: [], count: 0, search: false, query: "", refreshLabel: "", refreshAction: "",
         });
         return;
@@ -3867,7 +3874,12 @@ export class ChatController {
       this.followUpBehavior(),
       this.footer(),
     ) as Extract<ViewMessage, { k: "status" }>;
-    this.broadcast({ ...status, title: this.threadTitle(), run: this.runThread() });
+    this.broadcast({
+      ...status,
+      sendKey: this.sendKey(),
+      title: this.threadTitle(),
+      run: this.runThread(),
+    });
   }
 
   /// The running turn's own thread, when it is not the one on screen: the

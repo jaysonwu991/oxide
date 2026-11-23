@@ -363,6 +363,21 @@
           "default": [],
           "description": "%extension.setting.additionalArguments%"
         },
+        "oxide.sendKey": {
+          "type": "string",
+          "enum": [
+            "enter",
+            "mod-enter-multiline",
+            "mod-enter"
+          ],
+          "enumItemLabels": [
+            "Enter",
+            "Cmd/Ctrl+Enter for multiline prompts",
+            "Cmd/Ctrl+Enter always"
+          ],
+          "default": "enter",
+          "markdownDescription": "%extension.setting.sendKey%"
+        },
         "oxide.followUpBehavior": {
           "type": "string",
           "enum": [
@@ -377,7 +392,7 @@
             "Wait for the active response to finish, then send the follow-up as the next turn.",
             "Apply the follow-up to the active response."
           ],
-          "default": "queue",
+          "default": "steer",
           "description": "%extension.setting.followUpBehavior%"
         },
         "oxide.showThinking": {
@@ -411,7 +426,7 @@
     "test": "pnpm run compile && node --test \"out/test/*.test.js\"",
     "package": "vsce package --out oxide-vscode.vsix"
   },
-  "packageManager": "pnpm@12.8.1",
+  "packageManager": "pnpm@12.23.0",
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "1.90.0",

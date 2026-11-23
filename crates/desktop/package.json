@@ -4,7 +4,7 @@
   "private": true,
   "description": "Runtime assets for the Oxide Desktop page.",
   "license": "MIT",
-  "packageManager": "pnpm@12.8.1",
+  "packageManager": "pnpm@12.23.0",
   "devDependencies": {
     "mermaid": "12.2.0"
   }

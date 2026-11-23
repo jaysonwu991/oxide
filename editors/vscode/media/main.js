@@ -29,11 +29,17 @@ function updateTranscriptFollow(transcript) {
 // Reference decoration is syntax only; sending still resolves against real files.
 function referenceRanges(text) {
   const ranges = [];
-  for (let start = 0; start < text.length; start += 1) {
-    if (text[start] !== "@" || (start > 0 && !/\s/.test(text[start - 1]))) continue;
-    if (ranges.length && start < ranges[ranges.length - 1][1]) continue;
+  let cursor = 0;
+  for (let start = text.indexOf("@"); start >= 0; start = text.indexOf("@", cursor)) {
+    if ((start > 0 && !/\s/.test(text[start - 1])) || (ranges.length && start < ranges[ranges.length - 1][1])) {
+      cursor = start + 1;
+      continue;
+    }
     const line = text.slice(start + 1).split("\n", 1)[0].slice(0, 4096);
-    if (!line || /^\s/.test(line)) continue;
+    if (!line || /^\s/.test(line)) {
+      cursor = start + 1;
+      continue;
+    }
     let length = 0;
     if (line[0] === '"' || line[0] === "'") {
       const close = line.indexOf(line[0], 1);
@@ -53,7 +59,13 @@ function referenceRanges(text) {
         if (word.index === 0 && word[0].endsWith("/")) break;
       }
     }
-    if (length > 0) ranges.push([start, start + 1 + length]);
+    if (length > 0) {
+      const end = start + 1 + length;
+      ranges.push([start, end]);
+      cursor = end;
+    } else {
+      cursor = start + 1;
+    }
   }
   return ranges;
 }
@@ -835,7 +847,8 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   const thumbnails = new Map();
   const thumbnailNodes = new Map();
   let busy = false;
-  let followUpBehavior = "queue";
+  let followUpBehavior = "steer";
+  let sendKey = "enter";
   let queued = 0;
   let queuedMessages = [];
   /// The turn's own thread when it is not the one on screen (`state.run`):
@@ -1015,7 +1028,17 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     });
   }
 
+  const INLINE_SPECIAL = /[\\`*_\[\]~<\n]/;
+  const INLINE_URL = /https?:\/\//;
+  const INLINE_DOMAIN = /\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::\d{1,5})?(?:[/?#]\S*)?/i;
+
   function inline(text, references = false, hardBreaks = false) {
+    const original = String(text);
+    if (!INLINE_SPECIAL.test(original) &&
+        !INLINE_URL.test(original) &&
+        (!references || (!original.includes("@") && !INLINE_DOMAIN.test(original)))) {
+      return escapeHtml(decodeEntities(original));
+    }
     const stashed = [];
     const stash = (html) => {
       stashed.push(html);
@@ -1025,7 +1048,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     // URL is never folded into an HTML entity (`&lt;`, `&gt;`, `&amp;`) and an
     // entity is never read as part of the URL. Whatever is left is escaped once,
     // after the placeholders are in place.
-    let s = String(text);
+    let s = original;
     s = s.replace(/(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (_, _ticks, code) => stash(`<code>${escapeHtml(code.replace(/\n/g, " "))}</code>`));
     // A backslash makes the next character literal, so an escaped delimiter never
     // opens a span — `\*stars\*` reads as the stars a writer meant, and the
@@ -2989,7 +3012,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
           if (retain && focused && old.el.contains(focused)) restoreFocus = true;
           appendItem(item, false, retain ? old : null);
         }
-        setStatus(message.status, message.busy, message.queued, message.queue, message.followUpBehavior);
+        setStatus(
+          message.status,
+          message.busy,
+          message.queued,
+          message.queue,
+          message.followUpBehavior,
+          message.sendKey,
+        );
         setRun(message.run);
         setFooter(message.footer);
         setChips(message.context, message.attachments);
@@ -3076,7 +3106,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
         return;
       }
       case "status":
-        setStatus(message.status, message.busy, message.queued, message.queue, message.followUpBehavior);
+        setStatus(
+          message.status,
+          message.busy,
+          message.queued,
+          message.queue,
+          message.followUpBehavior,
+          message.sendKey,
+        );
         setRun(message.run);
         setFooter(message.footer);
         // The title changes when the first message is sent, before the next
@@ -3152,11 +3189,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     return Boolean(runThread);
   }
 
-  function setStatus(text, isBusy, queuedCount, queue, behavior) {
+  function setStatus(text, isBusy, queuedCount, queue, behavior, keyBehavior) {
     const wasBusy = busy;
     busy = Boolean(isBusy);
     paintRunningChrome();
-    followUpBehavior = behavior === "steer" ? "steer" : "queue";
+    if (behavior === "steer" || behavior === "queue") followUpBehavior = behavior;
+    if (keyBehavior === "enter" || keyBehavior === "mod-enter-multiline" || keyBehavior === "mod-enter") {
+      sendKey = keyBehavior;
+    }
     queued = queuedCount || 0;
     queuedMessages = Array.isArray(queue) ? queue : [];
     paintQueue();
@@ -3509,9 +3549,9 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     stopButton.hidden = !busy || (hasText && here);
     sendButton.title = busy
       ? followUpBehavior === "steer"
-        ? t("composer.steerHint", "Steer the active response (Enter)")
-        : t("composer.queueHint", "Queue as the next turn (Enter)")
-      : t("composer.sendHint", "Send (Enter)");
+        ? t("composer.steer", "Steer")
+        : t("composer.queue", "Queue")
+      : t("composer.send", "Send");
     sendButton.setAttribute("aria-label", busy
       ? followUpBehavior === "steer" ? t("composer.steer", "Steer") : t("composer.queue", "Queue")
       : t("composer.send", "Send"));
@@ -3944,8 +3984,8 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     // typed here is still here when it is opened. The host refuses the same send
     // in the same words, for anything that reaches it another way.
     if (busy && runAway()) return;
-    // Enter follows the saved behavior; Cmd/Ctrl+Shift+Enter inverts it for
-    // this message without changing the preference.
+    // Enter follows the saved behavior; Cmd/Ctrl+Enter inverts it for this
+    // message without changing the preference, as Codex Desktop does.
     const defaultQueue = followUpBehavior === "queue";
     const queue = opposite ? !defaultQueue : defaultQueue;
     const mode = busy && !queue ? "steer" : "queue";
@@ -4230,12 +4270,14 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
       }
       return;
     }
-    if (event.key === "Enter" && busy && event.shiftKey && (event.metaKey || event.ctrlKey)) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      submit(true);
+      submit(busy && (sendKey === "enter" || event.shiftKey));
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
+      const oneLine = !input.value.includes("\n");
+      if (sendKey === "mod-enter" || (sendKey === "mod-enter-multiline" && !oneLine)) return;
       event.preventDefault();
       submit(false);
       return;

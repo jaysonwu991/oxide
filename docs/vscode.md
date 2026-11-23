@@ -464,10 +464,10 @@ replaced, and the replacement resumes the thread with `--session <id>` (the
 `session` header supplies the id) or `--continue`. A process left idle between
 turns is closed after ten minutes.
 
-- **Queue / stop** — a message sent while a turn runs is queued and started
-  after it finishes, unless the saved choice is **Steer** (or
-  `Ctrl+Shift+Enter`/`⌘⇧Enter` was used for that message), which injects it
-  before the model's next step, and a queued message's own **Steer** button
+- **Queue / stop** — a message sent while a turn runs steers it by default, or
+  queues for the next turn when **Queue** was chosen (or `Ctrl+Enter`/`⌘Enter`
+  was used for that message); steering injects it before the model's next step,
+  and a queued message's own **Steer** button
   moves just that one; **Stop** sends `abort`, which ends the turn while the
   process stays open for the next message. Cancellation interrupts an in-flight
   model stream, retry backoff, approval/question wait, or asynchronous tool;
@@ -692,12 +692,12 @@ keeps the room the corner action and the phase need.
   not move as the box is typed into; an attachment is something to send too,
   while a context chip on its own is not.
 - **Queue / Steer** — how a message typed while a turn runs is delivered, and
-  the panel carries it the way the desktop app does: **Queue** (the default)
-  waits for the current response and becomes the next turn after it, **Steer**
-  injects the message before the model's next step. `Enter` and **Send** deliver
-  the saved way, `Ctrl+Shift+Enter` (`⌘⇧Enter` on macOS) sends the other way
-  once without changing it, and the corner button's tooltip always names what
-  `Enter` will do. The choice is toggled from a queued message's own menu (`Use
+  the panel carries it the way the desktop app does: **Steer** (the default)
+  injects the message before the model's next step, while **Queue** waits for
+  the current response and becomes the next turn after it. The configured send
+  key delivers the saved way, `Ctrl+Enter` (`⌘Enter` on macOS) sends the other
+  way once without changing it, and the corner button's tooltip names the action
+  it will take. The choice is toggled from a queued message's own menu (`Use
   Steer for new messages` / `Use Queue for new messages`), which saves the
   `oxide.followUpBehavior` setting. What is waiting is listed above the message
   box in the composer: a row per queued message, named by its first line, with a
@@ -905,9 +905,9 @@ the crate, so it mirrors the module's rules rather than its code.
   it stands for — the view never reads a token itself — and asks again, so a
   folder's own list is already up.
 
-The list is a flex child of the composer card, above the message and the
-attachment strip, so it stays attached to the box it completes and takes its room
-from the transcript; it scrolls its own rows past `30vh`.
+The list is a floating card anchored above the composer, matching the desktop
+palette rather than taking room from the transcript; it scrolls its own rows
+past `296px` or `40vh`, whichever is smaller.
 
 The same reference can be written from the editor instead of typed:
 `oxide.insertReference` (`Option+K` / `Alt+K`, the key Claude Code's extension
@@ -1356,6 +1356,10 @@ line above it into a heading. The transcript renderer still understands Setext
 headings. `[ ] ` shortens to a task list item and its checkbox toggles the
 source between `[ ]` and `[x]`.
 
+Plain prose skips the inline link/reference parser and is escaped in one pass.
+Only text that can actually carry Markdown syntax or a reference enters the
+full inline pipeline, keeping ordinary typing out of the hottest regex path.
+
 Shift+Enter at the end of a list closes the Markdown block with the blank line
 it needs, so the next word is ordinary text rather than a continuation of the
 last item. Inside an item it remains a line within that item, and inside a
@@ -1573,7 +1577,7 @@ shell puts the listing under the header, ahead of the transcript, with
 `flex: 0 0 auto` so it cannot be squeezed to a sliver of scrolling rows, turns
 the same element around above the footer for the listing the host pins to that
 edge, and carries icon-only buttons in its own header, and that the completion is
-inside the composer card above the attachment strip, and that the welcome page
+floating above the composer, and that the welcome page
 stays up while the page only carries a notice — which is what "New chat" leaves
 behind, since a line about the thread that was closed is not a message in a new
 one. The dialog composition itself — the rows, the status each server is in,

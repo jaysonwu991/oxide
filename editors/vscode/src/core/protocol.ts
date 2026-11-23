@@ -282,6 +282,8 @@ export interface QueuedMessage {
   attachmentCount: number;
 }
 
+export type SendKey = "enter" | "mod-enter-multiline" | "mod-enter";
+
 /// Everything the webview needs to repaint from scratch.
 export interface TranscriptState {
   items: Item[];
@@ -290,6 +292,7 @@ export interface TranscriptState {
   queued: number;
   queue: QueuedMessage[];
   followUpBehavior: "queue" | "steer";
+  sendKey: SendKey;
   usage: UsageTotals;
   context: ContextChip[];
   attachments: AttachmentChip[];
@@ -370,6 +373,7 @@ export type ViewMessage =
       queued: number;
       queue: QueuedMessage[];
       followUpBehavior: "queue" | "steer";
+      sendKey?: SendKey;
       footer: FooterState;
       /// The thread's summarized title. It changes the moment the first message
       /// is sent, before a `state` message repaints the view, so the header's
@@ -667,6 +671,7 @@ export class Transcript {
     queued: number;
     queue?: QueuedMessage[];
     followUpBehavior?: "queue" | "steer";
+    sendKey?: SendKey;
     context: ContextChip[];
     attachments: AttachmentChip[];
     title: string;
@@ -686,7 +691,8 @@ export class Transcript {
       ...extra,
       language: extra.language ?? null,
       queue: extra.queue ?? [],
-      followUpBehavior: extra.followUpBehavior ?? "queue",
+      followUpBehavior: extra.followUpBehavior ?? "steer",
+      sendKey: extra.sendKey ?? "enter",
     };
   }
 
@@ -801,7 +807,7 @@ export class Transcript {
     // idle and the outcome is in the transcript.
     const status = this.busy ? (this.status === "Idle" ? "Thinking…" : this.status) : "Idle";
     const queue = Array.isArray(queueOrCount) ? queueOrCount : [];
-    const followUpBehavior = typeof behaviorOrFooter === "string" ? behaviorOrFooter : "queue";
+    const followUpBehavior = typeof behaviorOrFooter === "string" ? behaviorOrFooter : "steer";
     const footer = typeof behaviorOrFooter === "string" ? (maybeFooter as FooterState) : behaviorOrFooter;
     return {
       k: "status",
