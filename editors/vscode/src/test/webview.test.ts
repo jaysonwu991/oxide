@@ -1103,9 +1103,9 @@ describe("webview composer", () => {
   it("swaps Send for Stop while a turn runs with nothing to say", () => {
     // The corner holds one action rather than two buttons beside each other: a
     // running turn with an empty box offers Stop, and the moment there is
-    // something to say the same corner becomes Send, which the host queues for
-    // after the turn. The desktop app swaps them the same way, so the button
-    // does not move as the box is typed into.
+    // something to say the same corner becomes Send, which follows the saved
+    // Steer/Queue choice. The desktop app swaps them the same way, so the
+    // button does not move as the box is typed into.
     let now = 1_000;
     const { byId, send } = loadRenderer({ now: () => now });
     send(stateMessage({ busy: true, status: "Thinking…", queued: 2 }));
@@ -1150,15 +1150,15 @@ describe("webview composer", () => {
     assert.equal(byId.get("send")!.getAttribute("aria-label"), "Send");
     assert.equal(byId.get("send")!.disabled, true);
 
-    // Typing turns the corner into Send, which queues the message for after
-    // the turn.
+    // Typing turns the corner into Send, which steers the running turn by
+    // default.
     send(stateMessage({ busy: true, status: "Thinking…", queued: 2 }));
     byId.get("input")!.value = "one more thing";
     byId.get("input")!.fire("input");
     assert.equal(byId.get("stop")!.hidden, true, "Stop gives the corner up");
     assert.equal(byId.get("send")!.hidden, false);
     assert.equal(byId.get("send")!.disabled, false);
-    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
+    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Steer");
     byId.get("input")!.value = "";
     byId.get("input")!.fire("input");
     assert.equal(byId.get("send")!.hidden, true, "and the empty box offers Stop again");
@@ -1543,20 +1543,50 @@ describe("webview composer", () => {
     assert.deepEqual(last(posted), { k: "send", text: "use the new API", mode: "steer" });
   });
 
-  it("sends the opposite behavior with Cmd/Ctrl+Shift+Enter", () => {
+  it("sends the opposite behavior with Cmd/Ctrl+Enter", () => {
     const { byId, posted, send } = loadRenderer();
     send(stateMessage({ busy: true, status: "Thinking…" }));
     const input = byId.get("input")!;
-    input.value = "steer this";
-    input.fire("input");
-    input.fire("keydown", { key: "Enter", shiftKey: true, metaKey: true, preventDefault: () => {} });
-    assert.deepEqual(last(posted), { k: "send", text: "steer this", mode: "steer" });
-
-    send(stateMessage({ busy: true, status: "Thinking…", followUpBehavior: "steer" }));
     input.value = "queue this";
     input.fire("input");
-    input.fire("keydown", { key: "Enter", shiftKey: true, ctrlKey: true, preventDefault: () => {} });
+    input.fire("keydown", { key: "Enter", metaKey: true, preventDefault: () => {} });
     assert.deepEqual(last(posted), { k: "send", text: "queue this", mode: "queue" });
+
+    send(stateMessage({ busy: true, status: "Thinking…", followUpBehavior: "queue" }));
+    input.value = "steer this";
+    input.fire("input");
+    input.fire("keydown", { key: "Enter", ctrlKey: true, preventDefault: () => {} });
+    assert.deepEqual(last(posted), { k: "send", text: "steer this", mode: "steer" });
+  });
+
+  it("follows Codex's three send-key modes", () => {
+    const { byId, posted, send } = loadRenderer();
+    send(stateMessage({ sendKey: "mod-enter-multiline" }));
+    const input = byId.get("input")!;
+    input.value = "one line";
+    input.fire("input");
+    let prevented = false;
+    input.fire("keydown", { key: "Enter", preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal((last(posted) as { text?: string }).text, "one line");
+
+    input.value = "two\nlines";
+    input.fire("input");
+    prevented = false;
+    input.fire("keydown", { key: "Enter", preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, false);
+
+    input.fire("keydown", { key: "Enter", metaKey: true, preventDefault: () => {} });
+    assert.equal((last(posted) as { text?: string }).text, "two\nlines");
+
+    send(stateMessage({ busy: true, sendKey: "mod-enter" }));
+    input.value = "modifier only";
+    input.fire("input");
+    prevented = false;
+    input.fire("keydown", { key: "Enter", preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, false);
+    input.fire("keydown", { key: "Enter", ctrlKey: true, preventDefault: () => {} });
+    assert.equal((last(posted) as { mode?: string }).mode, "steer");
   });
 
   it("shows Codex-style queued messages and exposes their operations", () => {
@@ -1824,17 +1854,24 @@ describe("webview composer", () => {
     assert.equal(byId.get("at")!.hidden, true);
   });
 
-  it("attaches the list to the box it completes, above the chips", () => {
-    // The rows belong to the message box, so the shell puts them inside the
-    // composer card rather than floating them over the panel.
+  it("floats the list off the composer like the desktop palette", () => {
+    // The rows belong to the message box, so the shell keeps them in that
+    // subtree; the floating card is anchored to the composer rather than
+    // taking room from the transcript.
     const composer = shell.slice(shell.indexOf('<div id="composer">'));
     const at = composer.indexOf('id="at"');
     const chips = composer.indexOf('id="chips"');
     assert.ok(at > 0, "the list is in the composer");
     assert.match(composer.slice(at, chips), /class="at-list"[^>]*hidden/);
-    assert.ok(chips > at, "the list sits above the attachment strip");
+    assert.ok(chips > at, "the list remains anchored in the composer subtree");
     assert.match(composer.slice(at, chips), /role="listbox"/);
     assert.match(style, /\.at-list\[hidden\]/);
+    assert.match(
+      style,
+      /\.at-list \{[^}]*position: absolute;[^}]*bottom: calc\(100% \+ 8px\);[^}]*max-height: min\(296px, 40vh\);/s,
+    );
+    assert.match(style, /\.at-row \{\s*display: flex;[^}]*gap: 8px;[^}]*padding: 6px 10px;/s);
+    assert.match(style, /\.at-row \.at-path \{[^}]*font-size: 12\.5px;/s);
   });
 
   it("completes paths inside a skill's arguments and keeps walking folders", () => {
@@ -2313,10 +2350,10 @@ describe("webview run strip", () => {
     assert.equal(byId.get("stop")!.hidden, false, "Stop is still reachable");
 
     // Back in the run's own thread — the strip is gone with it — the corner is
-    // the configured queue/steer action again.
+    // the configured Steer/Queue action again.
     send(stateMessage({ busy: true, status: "Thinking…" }));
     assert.equal(byId.get("send")!.hidden, false);
-    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Queue");
+    assert.equal(byId.get("send")!.getAttribute("aria-label"), "Steer");
     assert.equal(byId.get("stop")!.hidden, true);
   });
 });
@@ -4619,11 +4656,11 @@ describe("webview welcome page", () => {
     row.fire("click", { target: row.children[0] });
     assert.equal(byId.get("input")!.value, language.strings["home.suggestion1"]);
     const button = byId.get("send")!;
-    assert.equal(button.title, "发送 (Enter)");
+    assert.equal(button.title, "发送");
     assert.equal(button.getAttribute("aria-label"), "发送");
     for (const [behavior, label, hint] of [
-      ["queue", "排队", "排队等待下一回合 (Enter)"],
-      ["steer", "引导", "引导当前回复 (Enter)"],
+      ["queue", "排队", "排队"],
+      ["steer", "引导", "引导"],
     ]) {
       send(stateMessage({ folder: "/work/oxide", language, busy: true, followUpBehavior: behavior }));
       assert.equal(button.title, hint);

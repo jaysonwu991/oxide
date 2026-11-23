@@ -16,7 +16,7 @@ body {
 body {
   display: flex;
   flex-direction: column;
-  font-family: var(--vscode-font-family);
+  font-family: var(--vscode-font-family, sans-serif);
   font-size: var(--vscode-font-size, 13px);
   /* Output read in a narrow side bar keeps the panel's own text as a floor, so a
      small `editor.fontSize` cannot shrink the tool output, the diffs and the code
@@ -388,9 +388,10 @@ pre,
 
 :is(.assistant .body, .user .body, .markdown-input) p,
 :is(.assistant .body, .user .body, .markdown-input) li {
-  line-height: 1.65;
   overflow-wrap: anywhere;
 }
+:is(.assistant .body, .user .body, .markdown-input) p { line-height: 1.66; }
+:is(.assistant .body, .user .body, .markdown-input) li { line-height: 1.62; }
 
 /* The gaps a reply's own blocks leave: the browser default is a full line, and
    a Markdown answer reads better with its paragraphs closer than that. */
@@ -404,7 +405,7 @@ pre,
 :is(.assistant .body, .user .body, .markdown-input) h4,
 :is(.assistant .body, .user .body, .markdown-input) h5,
 :is(.assistant .body, .user .body, .markdown-input) h6 {
-  margin: 12px 0 6px;
+  margin: 14px 0 6px;
   line-height: 1.3;
 }
 :is(.assistant .body, .user .body, .markdown-input) h1 { font-size: 2em; }
@@ -416,8 +417,8 @@ pre,
 
 :is(.assistant .body, .user .body, .markdown-input) ul,
 :is(.assistant .body, .user .body, .markdown-input) ol {
-  padding-left: 20px;
-  margin: 6px 0;
+  padding-left: 22px;
+  margin: 8px 0;
 }
 
 :is(.composer, #composer) .markdown-input > p:has(+ :is(ul, ol)),
@@ -434,8 +435,8 @@ pre,
 }
 
 :is(.assistant .body, .user .body, .markdown-input) blockquote {
-  margin: 6px 0;
-  padding: 0 0 0 8px;
+  margin: 7px 0;
+  padding: 0 0 0 11px;
   border-left: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.5));
   color: var(--vscode-descriptionForeground);
 }
@@ -443,15 +444,19 @@ pre,
 :is(.assistant .body, .user .body, .markdown-input) hr {
   border: none;
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  margin: 10px 0;
+  margin: 12px 0;
 }
 
 :is(.assistant .body, .user .body, .markdown-input) a {
   color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
 :is(.assistant .body, .user .body, .markdown-input) a:hover {
   color: var(--vscode-textLink-activeForeground);
+  opacity: 0.8;
 }
 
 :is(.assistant .body, .user .body, .markdown-input) code {
@@ -465,10 +470,12 @@ pre,
 
 :is(.assistant .body, .user .body, .markdown-input) pre {
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.17));
-  border-radius: 4px;
-  padding: 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  border-radius: 11px;
+  padding: 13px 15px;
   overflow-x: auto;
-  margin: 8px 0;
+  margin: 10px 0;
+  line-height: 1.55;
 }
 
 :is(.assistant .body, .user .body, .markdown-input) pre code {
@@ -483,16 +490,20 @@ pre,
 
 :is(.assistant .body, .user .body, .markdown-input) table {
   border-collapse: collapse;
-  margin: 8px 0;
-  display: block;
-  overflow-x: auto;
+  margin: 9px 0;
+  width: 100%;
+  font-size: 12.5px;
 }
 
 :is(.assistant .body, .user .body, .markdown-input) th,
 :is(.assistant .body, .user .body, .markdown-input) td {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  padding: 3px 7px;
+  padding: 6px 9px;
   text-align: left;
+}
+
+:is(.assistant .body, .user .body, .markdown-input) th {
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, rgba(128, 128, 128, 0.08)));
 }
 
 :is(.assistant .body, .user .body, .markdown-input) [data-align="center"] {
@@ -1431,38 +1442,44 @@ footer {
   color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
 }
 
-/* The `@path` completion and the `/` palette: one list inside the composer
-   card, above the message it completes, so it stays attached to the box being
-   typed into and takes its room from the transcript. It scrolls its own rows
-   once it outgrows them, since a bare `@` in a large project offers a lot of
-   them. */
+/* The `@path` completion and the `/` palette: one floating card above the
+   composer, matching the desktop app's palette. It scrolls its own rows once
+   they outgrow the card, since a bare `@` in a large project offers a lot. */
 .at-list {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
   display: flex;
   flex-direction: column;
-  max-height: 30vh;
+  max-height: min(296px, 40vh);
   overflow-y: auto;
-  margin: 0 0 8px;
-  padding: 4px 0 8px;
+  margin: 0;
+  padding: 5px 14px 5px 5px;
   gap: 4px;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 12px;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
 }
 
 .at-row {
   display: flex;
   flex: 0 0 auto;
   align-items: baseline;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
   border: none;
   background: none;
   color: var(--vscode-foreground);
   text-align: left;
   min-height: 32px;
-  padding: 6px 8px;
+  padding: 6px 10px;
   line-height: var(--ui-line-height);
-  border-radius: 6px;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.9em;
+  border-radius: 8px;
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: inherit;
 }
 
 .at-row.selected {
@@ -1471,18 +1488,27 @@ footer {
 }
 
 .at-row .at-glyph {
-  flex: 0 0 auto;
+  flex: none;
+  width: 9px;
   color: var(--vscode-descriptionForeground);
+  font-size: 11px;
 }
 
 .at-row.selected .at-glyph {
-  color: inherit;
+  color: var(--vscode-textLink-foreground);
 }
 
 .at-row .at-path {
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+  color: var(--vscode-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.at-row.selected .at-path {
+  color: var(--vscode-textLink-foreground);
 }
 
 /* One row of the `/` palette: the name it inserts, its argument hint, its
@@ -2469,12 +2495,6 @@ button.dialog-row:focus-visible {
   border: 0;
   border-radius: 14px;
   background: var(--vscode-input-background, rgba(128, 128, 128, 0.14));
-}
-
-:is(.assistant .body, .user .body, .markdown-input) pre {
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
-  border-radius: 10px;
-  padding: 12px 14px;
 }
 
 .changes,

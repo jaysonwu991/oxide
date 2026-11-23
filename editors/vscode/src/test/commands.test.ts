@@ -1206,7 +1206,9 @@ describe("command contributions", () => {
     // `status`, and the view paints the strip from it.
     assert.ok(
       chat.includes("run: this.runThread(),") &&
-        chat.includes("broadcast({ ...status, title: this.threadTitle(), run: this.runThread() });"),
+        chat.includes("sendKey: this.sendKey(),") &&
+        chat.includes("title: this.threadTitle(),") &&
+        chat.includes("run: this.runThread(),"),
       "the run's own thread rides on the state and the status",
     );
     const thread = chat.slice(

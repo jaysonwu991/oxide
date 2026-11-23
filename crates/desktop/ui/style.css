@@ -498,10 +498,10 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 .msg.assistant.final_answer > .label { gap: 7px; margin: 2px 0 10px; color: var(--text); font-size: 12px; font-weight: 500; }
 .msg.assistant.final_answer .label-mark { color: var(--dim); }
 .msg.assistant.final_answer .label-mark svg { width: 14px; height: 14px; }
-:is(.msg .body, .markdown-input) { word-break: break-word; }
+:is(.msg .body, .markdown-input) { overflow-wrap: anywhere; }
 .msg.user .body { white-space: normal; }
-.msg .body > :first-child { margin-top: 0; }
-.msg .body > :last-child { margin-bottom: 0; }
+:is(.msg .body, .markdown-input) > :first-child { margin-top: 0; }
+:is(.msg .body, .markdown-input) > :last-child { margin-bottom: 0; }
 :is(.msg .body, .markdown-input) :is(h1, h2, h3, h4, h5, h6) { margin: 14px 0 6px; line-height: 1.3; }
 :is(.msg .body, .markdown-input) h1 { font-size: 2em; }
 :is(.msg .body, .markdown-input) h2 { font-size: 1.5em; }

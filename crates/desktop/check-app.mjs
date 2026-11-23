@@ -386,7 +386,7 @@ const calls = [];
 // and the scale the page asked the window to draw at.
 let storedPrefs = {
   send_key: "enter",
-  follow_up: "queue",
+  follow_up: "steer",
   font_scale: 1,
   terminal_font: "Oxide Terminal",
   terminal_font_size: 12.5,
@@ -6428,8 +6428,8 @@ check(
     !buttonFor("stop").includes('class="spinner"'),
   `${buttonFor("send")} / ${buttonFor("stop")}`,
 );
-// Stop and Send swap as the box gains text. New context waits by default; the
-// user can deliberately switch it to steering the active response.
+// Stop and Send swap as the box gains text. New context steers the running turn
+// by default, matching Codex Desktop; Queue is the alternate behavior.
 app.state.attachments = [];
 app.setIdle();
 elementFor("prompt").value = "";
@@ -6534,18 +6534,17 @@ check(
 elementFor("prompt").value = "keep going";
 app.updateSendState();
 check(
-  "offered the saved Queue behavior from the corner once there was new context",
+  "offered Steer from the corner once there was new context",
   elementFor("send").hidden === false &&
     elementFor("send").disabled === false &&
     elementFor("stop").hidden === true &&
-    elementFor("send").title === "Queue as the next turn (Enter)",
-  elementFor("send").title,
+    elementFor("send").title === "Steer",
+  `${app.state.followUpBehavior} / ${elementFor("send").title}`,
 );
-app.setFollowUpBehavior("steer");
+app.setFollowUpBehavior("queue");
 check(
-  "used the saved Steer behavior for ordinary Enter",
-  app.state.followUpBehavior === "steer" &&
-    elementFor("send").title === "Steer the active response (Enter)",
+  "used Queue for ordinary Enter when that behavior was chosen",
+  app.state.followUpBehavior === "queue" && elementFor("send").title === "Queue",
   `${app.state.followUpBehavior} / ${elementFor("send").title}`,
 );
 elementFor("prompt").value = "";
@@ -6561,7 +6560,7 @@ check(
   elementFor("send").hidden === false &&
     elementFor("stop").hidden === true &&
     !document.body.classList.contains("running") &&
-    elementFor("send").title === "Send (Enter)",
+    elementFor("send").title === "Send",
   `${elementFor("send").title} / stop ${elementFor("stop").hidden}`,
 );
 check(
@@ -6600,6 +6599,8 @@ const cornerLabel = () => elementFor("send").getAttribute("aria-label");
 app.setBusy();
 elementFor("prompt").value = "keep going";
 app.updateSendState();
+app.setFollowUpBehavior("steer");
+app.updateSendState();
 const steeredLabel = cornerLabel();
 app.setFollowUpBehavior("queue");
 const queuedLabel = cornerLabel();
@@ -6622,7 +6623,7 @@ elementFor("send").onclick({ detail: 1 });
 await nextTick();
 check("reset the expanded composer after queueing", el("prompt").value === "" && el("prompt").style.height === "auto");
 check(
-  "queued new context for the next response by default",
+  "queued new context under the saved Queue preference",
   projectCalls("steer_run").length === 0 &&
     app.state.pendingSends[0]?.prompt === "run this after your current answer" &&
     elementFor("queue-list").hidden === false,
@@ -6705,7 +6706,7 @@ app.updateSendState();
 await app.send(true);
 await nextTick();
 check(
-  "queued with Cmd/Ctrl+Shift+Enter when Steer was saved",
+  "queued with the alternate action when Steer was saved",
   projectCalls("steer_run").length === 0 && app.state.pendingSends[0]?.prompt === "steer this one",
   JSON.stringify({ pending: app.state.pendingSends, calls }),
 );
@@ -6719,10 +6720,31 @@ await app.send(true);
 await nextTick();
 runningMessage = projectCalls("steer_run").at(-1);
 check(
-  "steered with Cmd/Ctrl+Shift+Enter when Queue was saved",
+  "steered with the alternate action when Queue was saved",
   runningMessage?.[1]?.followUp === false,
   JSON.stringify(runningMessage),
 );
+app.state.pendingSends = [];
+app.setBusy();
+app.setFollowUpBehavior("steer");
+calls.length = 0;
+elementFor("prompt").value = "queue from the keyboard";
+app.updateSendState();
+elementFor("prompt").fire("keydown", {
+  key: "Enter",
+  metaKey: true,
+  preventDefault() {},
+});
+await nextTick();
+check(
+  "queued with Cmd/Ctrl+Enter from Codex's default send mode",
+  projectCalls("steer_run").length === 0 &&
+    app.state.pendingSends.at(-1)?.prompt === "queue from the keyboard",
+  JSON.stringify({ pending: app.state.pendingSends, calls }),
+);
+app.state.pendingSends = [];
+app.paintQueue();
+elementFor("prompt").value = "";
 
 // A response can finish between drawing Send and the app receiving the
 // message. Codex keeps that prompt and starts it as the next turn; it must not
@@ -7435,7 +7457,7 @@ check(
   "offered Send in a thread the other turn was not running in",
   elementFor("send").hidden === false &&
     elementFor("stop").hidden === true &&
-    elementFor("send").title === "Send (Enter)",
+    elementFor("send").title === "Send",
   `send ${elementFor("send").hidden} / stop ${elementFor("stop").hidden} / ${elementFor("send").title}`,
 );
 calls.length = 0;
@@ -9807,7 +9829,17 @@ const constCode = (code, name) => stripIndent((code.match(new RegExp(`^ *const $
 const markdownPieces = ["markdownToText", "readMarkdown", "anchor", "autolink", "inlineDestination", "inlineLinks", "decodeEntities", "inline",
   "splitRow", "isTableSeparator", "tableAligns", "tableHtml", "startsTable", "isFenceEnd", "listItem", "stripIndent", "renderList",
   "renderMarkdown"];
-const markdownConstants = ["BLOCK_START", "RULE", "LIST_ITEM", "ENTITIES", "CARET", "TAIL_NEWLINE"];
+const markdownConstants = [
+  "BLOCK_START",
+  "RULE",
+  "LIST_ITEM",
+  "ENTITIES",
+  "INLINE_SPECIAL",
+  "INLINE_URL",
+  "INLINE_DOMAIN",
+  "CARET",
+  "TAIL_NEWLINE",
+];
 check(
   "kept the Markdown the composer paints and reads back identical in Desktop and Extension",
   markdownPieces.every((name) => functionCode(source, name) && functionCode(source, name) === functionCode(extensionIcons, name)) &&
@@ -9820,6 +9852,32 @@ const referenceCode = (code) => {
   return code.slice(start, code.indexOf("\n}\n", start) + 3);
 };
 check("kept file reference decoration identical in Desktop and Extension", referenceCode(source) === referenceCode(extensionIcons));
+
+// The composer's send/follow-up contract comes from Codex Desktop: Steer is
+// the default, and the same three send-key modes are offered in both UIs.
+const desktopPrefs = readFileSync(new URL("src/prefs.rs", import.meta.url), "utf8");
+const extensionPackage = JSON.parse(
+  readFileSync(new URL("../../editors/vscode/package.json", import.meta.url), "utf8"),
+);
+const desktopSendKeys = [
+  ...desktopPrefs
+    .match(/pub const SEND_KEYS: \[&str; \d+\] = \[([^\]]+)\];/)?.[1]
+    .matchAll(/"([^"]+)"/g) || [],
+].map((match) => match[1]);
+const extensionSendKeys = extensionPackage.contributes.configuration.properties["oxide.sendKey"].enum;
+check(
+  "kept Codex's three send-key modes identical in Desktop and Extension",
+  desktopSendKeys.join(",") === extensionSendKeys.join(",") &&
+    desktopSendKeys.join(",") === "enter,mod-enter-multiline,mod-enter",
+  `${desktopSendKeys.join(",")} / ${extensionSendKeys.join(",")}`,
+);
+check(
+  "defaulted new composers to Codex's Steer follow-up",
+  /fn default_follow_up\(\) -> String \{\s*"steer"/.test(desktopPrefs) &&
+    extensionPackage.contributes.configuration.properties["oxide.followUpBehavior"].default === "steer" &&
+    extensionIcons.includes("let followUpBehavior = \"steer\";"),
+  `${extensionPackage.contributes.configuration.properties["oxide.followUpBehavior"].default} / ${/fn default_follow_up\(\) -> String \{\s*"steer"/.test(desktopPrefs)}`,
+);
 
 // The composer draws what it is typed and reads the drawing back on the next
 // keystroke, so every construct it can draw has to come back as the text that
@@ -10441,9 +10499,10 @@ check(
   app.state.followUpBehavior === "steer" && storedPrefs.follow_up === "steer",
   `${app.state.followUpBehavior} / ${storedPrefs.follow_up}`,
 );
-// The send key is the window's, so the box sends on the key the reader chose and
-// leaves Enter to be a newline.
-app.state.prefs.send_key = "mod-enter";
+// The send key is the window's, so the box follows Codex's three modes: Enter
+// always, Enter for one line, or the modifier chord always.
+app.setIdle();
+app.state.prefs.send_key = "mod-enter-multiline";
 const prompt = elementFor("prompt");
 prompt.value = "first line";
 calls.length = 0;
@@ -10452,6 +10511,29 @@ check(
   "kept Shift+Enter as a newline rather than a send",
   prompt.value === "first line\n" && !calls.some(([name]) => name === "send_prompt"),
 );
+prompt.value = "one line";
+calls.length = 0;
+prompt.fire("keydown", { key: "Enter", preventDefault() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "sent a one-line prompt on Enter in multiline mode",
+  calls.some(([name]) => name === "send_prompt" || name === "steer_run"),
+);
+prompt.value = "first\nsecond";
+calls.length = 0;
+prompt.fire("keydown", { key: "Enter", preventDefault() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "left Enter to a multiline prompt in multiline mode",
+  !calls.some(([name]) => name === "send_prompt"),
+);
+prompt.fire("keydown", { key: "Enter", ctrlKey: true, preventDefault() {} });
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(
+  "sent a multiline prompt on its modifier chord",
+  calls.some(([name]) => name === "send_prompt" || name === "steer_run"),
+);
+app.state.prefs.send_key = "mod-enter";
 prompt.value = "a message";
 calls.length = 0;
 prompt.fire("keydown", { key: "Enter", shiftKey: false, preventDefault() {} });
@@ -10461,7 +10543,8 @@ prompt.fire("keydown", { key: "Enter", metaKey: true, preventDefault() {} });
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(
   "sent on the key the sheet chose",
-  sentOnEnter === false && calls.some(([name]) => name === "send_prompt"),
+  sentOnEnter === false &&
+    calls.some(([name]) => name === "send_prompt" || name === "steer_run"),
   `${sentOnEnter} / ${calls.map(([name]) => name).join(",")}`,
 );
 app.state.prefs.send_key = "enter";
@@ -10583,7 +10666,7 @@ check(
   JSON.stringify(app.state.prefs),
 );
 prefsError = null;
-storedPrefs = { send_key: "enter", follow_up: "queue", font_scale: 1, sidebar_visible: true, shortcuts: {} };
+storedPrefs = { send_key: "enter", follow_up: "steer", font_scale: 1, sidebar_visible: true, shortcuts: {} };
 await app.loadPrefs();
 
 console.log("the sidebar's search, activity and the archive");

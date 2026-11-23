@@ -325,9 +325,9 @@ function setCheck(node, on) {
 /// the window can ask, so this only decides how the first moments behave.
 function savedFollowUpBehavior() {
   try {
-    return window.localStorage?.getItem("oxide.followUpBehavior") === "steer" ? "steer" : "queue";
+    return window.localStorage?.getItem("oxide.followUpBehavior") === "queue" ? "queue" : "steer";
   } catch {
-    return "queue";
+    return "steer";
   }
 }
 
@@ -370,8 +370,8 @@ const state = {
   manualChatOrder: storedManualChatOrder,
   sidebarView: sidebarPref("sidebarView", "project"),
   chatFilter: "all",
-  // New context sent during a run waits by default. Steering is a deliberate
-  // choice because it changes the work already in progress.
+  // New context steers the running turn by default, the way Codex Desktop does;
+  // queueing the same message for the next turn is the alternate action.
   followUpBehavior: savedFollowUpBehavior(),
   // The title this window gave the one thread it holds that the store has not
   // listed, with that thread's id. A run names the thread it is in from the
@@ -1692,7 +1692,17 @@ function decodeEntities(text) {
   });
 }
 
+const INLINE_SPECIAL = /[\\`*_\[\]~<\n]/;
+const INLINE_URL = /https?:\/\//;
+const INLINE_DOMAIN = /\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::\d{1,5})?(?:[/?#]\S*)?/i;
+
 function inline(text, references = false, hardBreaks = false) {
+  const original = String(text);
+  if (!INLINE_SPECIAL.test(original) &&
+      !INLINE_URL.test(original) &&
+      (!references || (!original.includes("@") && !INLINE_DOMAIN.test(original)))) {
+    return escapeHtml(decodeEntities(original));
+  }
   const stashed = [];
   const stash = (html) => {
     stashed.push(html);
@@ -1702,7 +1712,7 @@ function inline(text, references = false, hardBreaks = false) {
   // URL is never folded into an HTML entity (`&lt;`, `&gt;`, `&amp;`) and an
   // entity is never read as part of the URL. Whatever is left is escaped once,
   // after the placeholders are in place.
-  let s = String(text);
+  let s = original;
   s = s.replace(/(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (_, _ticks, code) => stash(`<code>${escapeHtml(code.replace(/\n/g, " "))}</code>`));
   // A backslash makes the next character literal, so an escaped delimiter never
   // opens a span — `\*stars\*` reads as the stars a writer meant, and the
@@ -3591,7 +3601,8 @@ function resetTurn() {
 }
 
 /// The composer's action while idle is Send. During a run it follows the saved
-/// Queue/Steer preference; Cmd/Ctrl+Shift+Enter inverts it once.
+/// Queue/Steer preference; Cmd/Ctrl+Enter inverts it once in the default send
+/// mode, while modifier-send modes use Cmd/Ctrl+Shift+Enter for the same action.
 const lastInputs = new Map();
 const inputHistoryKey = () => JSON.stringify([state.project, state.session]);
 
@@ -3614,11 +3625,17 @@ function updateTranscriptFollow(transcript) {
 // Reference decoration is syntax only; sending still resolves against real files.
 function referenceRanges(text) {
   const ranges = [];
-  for (let start = 0; start < text.length; start += 1) {
-    if (text[start] !== "@" || (start > 0 && !/\s/.test(text[start - 1]))) continue;
-    if (ranges.length && start < ranges[ranges.length - 1][1]) continue;
+  let cursor = 0;
+  for (let start = text.indexOf("@"); start >= 0; start = text.indexOf("@", cursor)) {
+    if ((start > 0 && !/\s/.test(text[start - 1])) || (ranges.length && start < ranges[ranges.length - 1][1])) {
+      cursor = start + 1;
+      continue;
+    }
     const line = text.slice(start + 1).split("\n", 1)[0].slice(0, 4096);
-    if (!line || /^\s/.test(line)) continue;
+    if (!line || /^\s/.test(line)) {
+      cursor = start + 1;
+      continue;
+    }
     let length = 0;
     if (line[0] === '"' || line[0] === "'") {
       const close = line.indexOf(line[0], 1);
@@ -3638,7 +3655,13 @@ function referenceRanges(text) {
         if (word.index === 0 && word[0].endsWith("/")) break;
       }
     }
-    if (length > 0) ranges.push([start, start + 1 + length]);
+    if (length > 0) {
+      const end = start + 1 + length;
+      ranges.push([start, end]);
+      cursor = end;
+    } else {
+      cursor = start + 1;
+    }
   }
   return ranges;
 }
@@ -4289,9 +4312,9 @@ function updateSendState() {
   el("stop").hidden = !state.busy || hasText;
   el("send").title = busyHere
     ? state.followUpBehavior === "steer"
-      ? t("composer.steerHint", "Steer the active response (Enter)")
-      : t("composer.queueHint", "Queue as the next turn (Enter)")
-    : t("composer.sendHint", "Send (Enter)");
+      ? t("composer.steer", "Steer")
+      : t("composer.queue", "Queue")
+    : t("composer.send", "Send");
   // The accessible name follows the action the button now performs, the way the
   // panel's own corner does: a screen reader hears Queue or Steer, not the
   // label the button was built with.
@@ -9641,7 +9664,7 @@ function paletteKey(event) {
 /// store's own, so a patch travels to `write_prefs` untouched.
 const DEFAULT_PREFS = {
   send_key: "enter",
-  follow_up: "queue",
+  follow_up: "steer",
   font_scale: 1,
   terminal_font: "Oxide Terminal",
   terminal_font_size: 12.5,
@@ -9685,7 +9708,9 @@ function clampTerminalFontSize(value) {
 function normalizePrefs(raw) {
   const prefs = { ...DEFAULT_PREFS, shortcuts: {} };
   if (!raw || typeof raw !== "object") return prefs;
-  if (raw.send_key === "mod-enter" || raw.send_key === "enter") prefs.send_key = raw.send_key;
+  if (raw.send_key === "mod-enter" || raw.send_key === "mod-enter-multiline" || raw.send_key === "enter") {
+    prefs.send_key = raw.send_key;
+  }
   if (raw.follow_up === "steer" || raw.follow_up === "queue") prefs.follow_up = raw.follow_up;
   prefs.font_scale = clampFontScale(raw.font_scale);
   if (typeof raw.terminal_font === "string" && raw.terminal_font.trim()) {
@@ -10279,6 +10304,10 @@ function paintSettingsControls() {
     node.setAttribute("aria-checked", String(on));
   };
   mark(el("settings-send-enter"), state.prefs.send_key === "enter");
+  mark(
+    el("settings-send-mod-enter-multiline"),
+    state.prefs.send_key === "mod-enter-multiline",
+  );
   mark(el("settings-send-mod-enter"), state.prefs.send_key === "mod-enter");
   mark(el("settings-follow-queue"), state.prefs.follow_up === "queue");
   mark(el("settings-follow-steer"), state.prefs.follow_up === "steer");
@@ -13277,6 +13306,8 @@ function init() {
     el(id).onclick = () => void openCustomize(view);
   }
   el("settings-send-enter").onclick = () => savePrefs({ send_key: "enter" });
+  el("settings-send-mod-enter-multiline").onclick = () =>
+    savePrefs({ send_key: "mod-enter-multiline" });
   el("settings-send-mod-enter").onclick = () => savePrefs({ send_key: "mod-enter" });
   el("settings-follow-queue").onclick = () => savePrefs({ follow_up: "queue" });
   el("settings-follow-steer").onclick = () => savePrefs({ follow_up: "steer" });
@@ -13750,13 +13781,20 @@ function init() {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       clearPrediction();
-      send(Boolean(event.shiftKey) && state.busy);
+      send(
+        state.busy &&
+          (state.prefs.send_key === "enter" || Boolean(event.shiftKey)),
+      );
       return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
-      // Which key sends is the window's own preference: with ⌘Enter sending,
-      // Enter is the newline Shift+Enter is in the other mode.
-      if (state.prefs.send_key === "mod-enter") return;
+      // Codex's three send-key modes: Enter always, Enter for one line, or the
+      // modifier chord always. Shift+Enter remains a newline in every mode.
+      const oneLine = !el("prompt").value.includes("\n");
+      if (
+        state.prefs.send_key === "mod-enter" ||
+        (state.prefs.send_key === "mod-enter-multiline" && !oneLine)
+      ) return;
       event.preventDefault();
       clearPrediction();
       send(false);

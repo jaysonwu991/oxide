@@ -451,7 +451,7 @@
                 data-i18n-title="composer.stopHint"
                 data-i18n-aria="composer.stopHint"
               ><span class="stop-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg></span></button>
-              <button id="send" class="send composer-action" disabled title="Send (Enter)" aria-label="Send" data-i18n-title="composer.sendHint" data-i18n-aria="composer.send"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20V5M5.5 11.5 12 5l6.5 6.5" stroke-width="1.8"/></svg></button>
+              <button id="send" class="send composer-action" disabled title="Send" aria-label="Send" data-i18n-title="composer.send" data-i18n-aria="composer.send"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20V5M5.5 11.5 12 5l6.5 6.5" stroke-width="1.8"/></svg></button>
             </div>
           </div>
         </div>
@@ -712,7 +712,8 @@
         <table class="shortcuts">
           <tr><td>Enter</td><td data-i18n="help.enter">Send with the default follow-up behavior</td></tr>
           <tr><td>Shift+Enter</td><td data-i18n="help.newline">Newline</td></tr>
-          <tr><td>⌘⇧Enter / Ctrl+Shift+Enter</td><td data-i18n="help.opposite">Use the opposite follow-up behavior once</td></tr>
+          <tr><td>⌘Enter / Ctrl+Enter</td><td data-i18n="help.opposite">Use the opposite follow-up behavior once</td></tr>
+          <tr><td>⌘⇧Enter / Ctrl+Shift+Enter</td><td data-i18n="help.opposite">The same opposite action in modifier-send modes</td></tr>
           <tr><td>⌘V / Ctrl+V</td><td data-i18n="help.paste">Attach a clipboard image</td></tr>
           <tr><td>⌘K / Ctrl+K</td><td data-i18n="help.commandMenu">Open the command menu</td></tr>
           <tr><td>⌘, / Ctrl+,</td><td data-i18n="help.settings">Open settings</td></tr>
@@ -971,6 +972,14 @@
                       data-send-key="enter"
                       data-i18n="settings.enterSends"
                     >Enter sends</button>
+                    <button
+                      id="settings-send-mod-enter-multiline"
+                      class="settings-segment"
+                      role="radio"
+                      aria-checked="false"
+                      data-send-key="mod-enter-multiline"
+                      data-i18n="settings.modEnterMultilineSends"
+                    >⌘Enter for multiline prompts</button>
                     <button
                       id="settings-send-mod-enter"
                       class="settings-segment"

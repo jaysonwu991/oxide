@@ -115,6 +115,111 @@ function exerciseEditor() {
         size: codeStyle.fontSize,
       }),
     );
+    editor.value = [
+      "# Heading",
+      "",
+      "A [link](https://example.com) beside @src/main.rs.",
+      "",
+      "## Second",
+      "",
+      "- item",
+      "",
+      "> quote",
+      "",
+      "---",
+      "",
+      "```js",
+      "const x = 1;",
+      "```",
+      "",
+      "| a | b |",
+      "| --- | --- |",
+      "| 1 | 2 |",
+    ].join("\n");
+    const styleOf = (selector) => getComputedStyle(editor.querySelector(selector));
+    const headingStyle = styleOf("h1");
+    const subheadingStyle = styleOf("h2");
+    const paragraphStyle = styleOf("p");
+    const linkStyle = styleOf("p a");
+    const referenceStyle = styleOf(".file-reference");
+    const listStyle = styleOf("ul");
+    const quoteStyle = styleOf("blockquote");
+    const ruleStyle = styleOf("hr");
+    const fenceStyle = styleOf("pre");
+    const tableStyle = styleOf("table");
+    const cellStyle = styleOf("th");
+    check(
+      "renders Markdown with Codex Desktop's block rhythm",
+      parseFloat(headingStyle.marginTop) === 0 &&
+        parseFloat(subheadingStyle.marginTop) === 14 &&
+        parseFloat(headingStyle.marginBottom) === 6 &&
+        Math.abs(parseFloat(paragraphStyle.lineHeight) / parseFloat(paragraphStyle.fontSize) - 1.66) < 0.01 &&
+        parseFloat(listStyle.marginTop) === 8 &&
+        parseFloat(listStyle.paddingLeft) === 22 &&
+        parseFloat(quoteStyle.marginTop) === 7 &&
+        parseFloat(quoteStyle.paddingLeft) === 11 &&
+        parseFloat(ruleStyle.marginTop) === 12,
+      JSON.stringify({
+        heading: [headingStyle.marginTop, subheadingStyle.marginTop, headingStyle.marginBottom],
+        paragraph: [paragraphStyle.lineHeight, paragraphStyle.fontSize],
+        list: [listStyle.marginTop, listStyle.paddingLeft],
+        quote: [quoteStyle.marginTop, quoteStyle.paddingLeft],
+        rule: ruleStyle.marginTop,
+      }),
+    );
+    check(
+      "renders links and file references as the same pills and prose",
+      linkStyle.textDecorationLine.includes("underline") &&
+        parseFloat(referenceStyle.paddingTop) === 1 &&
+        parseFloat(referenceStyle.paddingLeft) === 3 &&
+        parseFloat(referenceStyle.borderTopLeftRadius) === 4 &&
+        Number(referenceStyle.fontWeight) === 600,
+      JSON.stringify({
+        link: linkStyle.textDecorationLine,
+        reference: [
+          referenceStyle.padding,
+          referenceStyle.borderTopLeftRadius,
+          referenceStyle.fontWeight,
+        ],
+      }),
+    );
+    check(
+      "renders code fences and tables at the same scale",
+      parseFloat(fenceStyle.paddingTop) === 13 &&
+        parseFloat(fenceStyle.paddingLeft) === 15 &&
+        parseFloat(fenceStyle.borderTopLeftRadius) === 11 &&
+        parseFloat(fenceStyle.marginTop) === 10 &&
+        Math.abs(parseFloat(fenceStyle.lineHeight) / parseFloat(fenceStyle.fontSize) - 1.55) < 0.01 &&
+        tableStyle.display === "table" &&
+        parseFloat(tableStyle.fontSize) === 12.5 &&
+        parseFloat(cellStyle.paddingTop) === 6 &&
+        parseFloat(cellStyle.paddingLeft) === 9,
+      JSON.stringify({
+        fence: [
+          fenceStyle.padding,
+          fenceStyle.borderTopLeftRadius,
+          fenceStyle.marginTop,
+          fenceStyle.lineHeight,
+          fenceStyle.fontSize,
+        ],
+        table: [tableStyle.display, tableStyle.fontSize],
+        cell: [cellStyle.paddingTop, cellStyle.paddingLeft],
+      }),
+    );
+    const timedRender = (text) => {
+      const start = performance.now();
+      for (let index = 0; index < 120; index += 1) renderMarkdown(text, true);
+      return performance.now() - start;
+    };
+    const plainRenderMs = timedRender(Array(80).fill("review the composer rendering path").join(" "));
+    const richRenderMs = timedRender(Array(80).fill("review **the** [composer](https://example.com) and @src/main.rs").join(" "));
+    check(
+      `keeps plain composer typing off the Markdown syntax hot path (${plainRenderMs.toFixed(1)}ms vs ${richRenderMs.toFixed(1)}ms)`,
+      plainRenderMs * 2 < richRenderMs,
+      JSON.stringify({ plainRenderMs, richRenderMs }),
+    );
+    editor.value = "Test `Markdown`";
+    end();
     type("!");
     check("typing after code", editor.value === "Test `Markdown`!");
     const codeCaret = (offset) => {

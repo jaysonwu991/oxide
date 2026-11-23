@@ -4849,7 +4849,7 @@ mod tests {
     async fn repeated_file_reads_reuse_only_current_content_and_allow_fresh_reads() {
         let dir = std::env::temp_dir().join(format!("oxide_read_reuse_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("file.txt"), "original").unwrap();
+        std::fs::write(dir.join("file.txt"), "original\n".repeat(2_000)).unwrap();
         let runtime = test_runtime().await;
         let config = Config::default();
         let reuse = Arc::new(Mutex::new(crate::efficiency::ReadReuse::default()));
@@ -4879,11 +4879,16 @@ mod tests {
                 .await
             }
         };
-        assert!(read(call.clone()).await.text.contains("original"));
-        assert!(read(call.clone())
-            .await
-            .text
-            .contains("reuse read result `first-read`"));
+        let first = read(call.clone()).await.text;
+        assert!(first.contains("original"));
+        let reused = read(call.clone()).await.text;
+        assert!(reused.contains("reuse read result `first-read`"));
+        assert!(
+            reused.len() * 20 < first.len(),
+            "{} -> {}",
+            first.len(),
+            reused.len()
+        );
         // A mutating call in between does not throw the memory away: the
         // digest decides, so an unchanged file is still answered by reference
         // rather than resent in full.
@@ -4891,10 +4896,9 @@ mod tests {
         mutate.id = "write-other".into();
         mutate.function.arguments = r#"{"path":"other.txt","content":"x"}"#.into();
         read(mutate).await;
-        assert!(read(call.clone())
-            .await
-            .text
-            .contains("reuse read result `first-read`"));
+        let reused = read(call.clone()).await.text;
+        assert!(reused.contains("reuse read result `first-read`"));
+        assert!(reused.len() * 20 < first.len());
         std::fs::write(dir.join("file.txt"), "modified").unwrap();
         assert!(read(call.clone()).await.text.contains("modified"));
         call.function.arguments = r#"{"path":"file.txt","fresh":true}"#.into();
@@ -5334,6 +5338,95 @@ mod tests {
             })
             .collect();
         assert_eq!(media_counts, vec![1, 0, 1, 0, 1]);
+    }
+
+    #[test]
+    fn token_efficiency_reclaims_stale_and_duplicate_context() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide_token_savings_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let request = Message::user_parts(
+            "Keep this request and its attachment.",
+            vec![image_part("USER")],
+        );
+        let mut messages = vec![request.clone()];
+        for index in 0..12 {
+            messages.push(Message::tool(
+                format!("text-{index}"),
+                format!("evidence {index}: {}", "x".repeat(20_000)),
+            ));
+        }
+        for (index, payload) in ["A", "A", "A", "B", "C", "D", "E"].into_iter().enumerate() {
+            messages.push(Message::tool_parts(
+                format!("image-{index}"),
+                "captured",
+                vec![image_part(&payload.repeat(5_000))],
+            ));
+        }
+
+        let before_tokens = crate::compact::estimate_tokens(&messages);
+        let before_bytes = serde_json::to_vec(&messages).unwrap().len();
+        deduplicate_tool_media(&mut messages);
+
+        let mut image_history = crate::efficiency::ToolHistory {
+            keep_recent_images: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::efficiency::prune_tool_images(&mut messages, usize::MAX, &image_history, |_| {
+                Some("/tmp/older-tool-image.png".into())
+            },),
+            4
+        );
+
+        image_history.prune_above_tokens = 1;
+        image_history.prune_above_window_percent = 0;
+        image_history.keep_recent = 4;
+        image_history.max_result_bytes = 512;
+        let mut saved = 0usize;
+        assert!(
+            crate::efficiency::prune_tool_history(
+                &mut messages,
+                usize::MAX,
+                &image_history,
+                0,
+                |text| {
+                    let path = dir.join(format!("evidence-{saved}.txt"));
+                    saved += 1;
+                    std::fs::write(&path, text).unwrap();
+                    Some(path)
+                },
+            ) > 0
+        );
+
+        let after_tokens = crate::compact::estimate_tokens(&messages);
+        let after_bytes = serde_json::to_vec(&messages).unwrap().len();
+        assert_eq!(messages[0].content, request.content);
+        assert!(
+            after_tokens * 3 < before_tokens,
+            "{before_tokens} -> {after_tokens}"
+        );
+        assert!(
+            after_bytes * 3 < before_bytes,
+            "{before_bytes} -> {after_bytes}"
+        );
+        assert!(messages
+            .iter()
+            .any(|message| message.display().is_some_and(|text| {
+                text.contains("[tool output compacted;") && text.contains("full:")
+            })));
+        assert!(messages.iter().any(|message| message
+            .display()
+            .is_some_and(|text| { text.contains("[older tool image saved:") })));
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -7765,7 +7858,6 @@ for line in sys.stdin:
         assert_eq!(
             serde_json::from_str::<Value>(&call.function.arguments).unwrap(),
             json!({
-                "output_mode": "content",
                 "pattern": "pub struct TextRun",
                 "path": "/Users/jayson/.cargo/registry/src/index.crates.io/gpui-0.2.2/src/text_system.rs",
                 "context": 20

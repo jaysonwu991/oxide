@@ -93,7 +93,7 @@ door, if you would rather use the picker there.
 2. If the workspace has its own `.oxide/` resources, decide on project trust
    with **Oxide: Set Project Trust…** (untrusted runs simply skip them).
 3. Type a message. Tool calls appear as coloured panels with a diff preview for
-   file changes; `Enter` sends and `Shift+Enter` adds a newline. While a response
+   file changes; the configured send key sends and `Shift+Enter` adds a newline. While a response
    runs, **Queue** is the safe default and sends the prompt as the next turn
    after the current response; **Steer** deliberately redirects the active
    response before its next model step. Paste an image, drop files on
@@ -168,10 +168,11 @@ door, if you would rather use the picker there.
 | `oxide.tools` | *(empty)* | `--tools` allowlist, e.g. `read,grep,find,ls` for a read-only run. |
 | `oxide.excludeTools` | *(empty)* | `--exclude-tools` denylist. |
 | `oxide.additionalArguments` | `[]` | Extra argv appended to every invocation. |
+| `oxide.sendKey` | `enter` | Which chord sends: `enter` sends on Enter, `mod-enter-multiline` uses Cmd/Ctrl+Enter once the prompt spans lines, and `mod-enter` always uses Cmd/Ctrl+Enter. |
 | `oxide.showThinking` | `true` | Compatibility control for reasoning blocks streamed by an older CLI. Current runs keep provider reasoning out of the transcript. |
 | `oxide.autoContext` | `true` | Track the file you are editing as a chip in the composer, sent with the next message as context. The chip follows the file and the lines selected in it, and both are read when the message goes, so unsaved edits are included and a selection sends just the lines it names; its ✕ or **Clear** takes it out for as long as that file is the one being edited, and another file brings it back. |
 | `oxide.askApprovals` | `true` | `--ask-approvals`: ask in the transcript before running a tool a permission rule gates. **Always allow** is remembered per project in the shared `approvals.json`. Off passes `--no-ask-approvals`. Either flag is passed explicitly, so this setting decides for panel runs (the shared `settings.json` key still decides for the terminal). |
-| `oxide.followUpBehavior` | `queue` | How a message typed while a turn runs is delivered: `queue` waits for the current response and becomes the next turn, `steer` injects it before the model's next step. `Enter` and **Send** follow it, `Ctrl+Shift+Enter` (`⌘⇧Enter`) sends the other way once, and a queued message's own menu toggles it. |
+| `oxide.followUpBehavior` | `steer` | How a message typed while a turn runs is delivered: `steer` injects it before the model's next step, `queue` waits for the current response and becomes the next turn. The configured send key follows it, `Ctrl+Enter` (`⌘Enter`) sends the other way once, and a queued message's own menu toggles it. |
 | `oxide.notifyOnFinish` | `true` | Notify when a run finishes while the panel is hidden, naming the thread by its title. |
 
 ## Notes and limits

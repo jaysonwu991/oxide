@@ -582,7 +582,7 @@ describe("Transcript", () => {
       busy: false,
       queued: 0,
       queue: [],
-      followUpBehavior: "queue",
+      followUpBehavior: "steer",
       footer,
     });
   });
@@ -596,7 +596,7 @@ describe("Transcript", () => {
       busy: true,
       queued: 2,
       queue: [],
-      followUpBehavior: "queue",
+      followUpBehavior: "steer",
       footer,
     });
     transcript.apply({ type: "tool_call", toolName: "bash", arguments: "{}" });
@@ -1047,6 +1047,8 @@ describe("Transcript", () => {
     assert.equal(state.items.length, 1);
     assert.equal(state.sessionId, "s");
     assert.equal(state.queued, 1);
+    assert.equal(state.followUpBehavior, "steer");
+    assert.equal(state.sendKey, "enter");
     assert.equal(state.showThinking, false);
     assert.equal(state.title, "Fix the build");
     assert.equal(state.folder, "/work/oxide");

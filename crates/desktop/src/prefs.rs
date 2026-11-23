@@ -22,9 +22,10 @@ pub const MAX_FONT_SCALE: f64 = 1.6;
 pub const MIN_TERMINAL_FONT_SIZE: f64 = 8.0;
 pub const MAX_TERMINAL_FONT_SIZE: f64 = 28.0;
 
-/// What a press of the send key does: `enter` sends and Shift+Enter is a
-/// newline, or `mod-enter` sends and Enter is a newline.
-pub const SEND_KEYS: [&str; 2] = ["enter", "mod-enter"];
+/// What a press of the send key does: `enter` sends on Enter,
+/// `mod-enter-multiline` sends on Enter for one line and on the modifier chord
+/// for a multiline prompt, and `mod-enter` sends only on the modifier chord.
+pub const SEND_KEYS: [&str; 3] = ["enter", "mod-enter-multiline", "mod-enter"];
 
 /// What a message sent while a turn is running does: wait for the next run, or
 /// steer the one in flight.
@@ -80,7 +81,7 @@ fn default_send_key() -> String {
 }
 
 fn default_follow_up() -> String {
-    "queue".to_string()
+    "steer".to_string()
 }
 
 fn default_font_scale() -> f64 {
@@ -342,7 +343,7 @@ mod tests {
         let prefs = Prefs::load_from(&path).unwrap();
         assert_eq!(prefs, Prefs::default());
         assert_eq!(prefs.send_key, "enter");
-        assert_eq!(prefs.follow_up, "queue");
+        assert_eq!(prefs.follow_up, "steer");
         assert_eq!(prefs.font_scale, 1.0);
         assert_eq!(prefs.terminal_font, "Oxide Terminal");
         assert_eq!(prefs.terminal_font_size, 12.5);
@@ -357,7 +358,7 @@ mod tests {
         prefs
             .apply(
                 json!({
-                    "send_key": "mod-enter",
+                    "send_key": "mod-enter-multiline",
                     "follow_up": "steer",
                     "font_scale": 1.25,
                     "terminal_font": "Berkeley Mono",
@@ -371,6 +372,7 @@ mod tests {
             .unwrap();
         prefs.save_to(&path).unwrap();
         assert_eq!(Prefs::load_from(&path).unwrap(), prefs);
+        assert_eq!(prefs.send_key, "mod-enter-multiline");
         assert_eq!(prefs.shortcuts["command-menu"], "mod+shift+k");
         assert_eq!(prefs.terminal_font, "Berkeley Mono");
         assert_eq!(prefs.terminal_font_size, 14.0);
