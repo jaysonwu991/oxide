@@ -20,7 +20,7 @@ SetCompressor /SOLID lzma
 
 !define MUI_ICON "${STAGE}\oxide.ico"
 !define MUI_UNICON "${STAGE}\oxide.ico"
-!define MUI_FINISHPAGE_RUN "$INSTDIR\oxide-desktop-tauri.exe"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\oxide-desktop.exe"
 
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -30,14 +30,14 @@ SetCompressor /SOLID lzma
 
 Section "Install"
   SetOutPath "$INSTDIR"
-  File "${STAGE}\oxide-desktop-tauri.exe"
+  File "${STAGE}\oxide-desktop.exe"
   File "${STAGE}\oxide.ico"
   File "${STAGE}\README.txt"
   File /nonfatal /r "${STAGE}\plugins"
   WriteUninstaller "$INSTDIR\Uninstall Oxide.exe"
 
-  CreateShortCut "$SMPROGRAMS\Oxide.lnk" "$INSTDIR\oxide-desktop-tauri.exe" "" "$INSTDIR\oxide.ico"
-  CreateShortCut "$DESKTOP\Oxide.lnk" "$INSTDIR\oxide-desktop-tauri.exe" "" "$INSTDIR\oxide.ico"
+  CreateShortCut "$SMPROGRAMS\Oxide.lnk" "$INSTDIR\oxide-desktop.exe" "" "$INSTDIR\oxide.ico"
+  CreateShortCut "$DESKTOP\Oxide.lnk" "$INSTDIR\oxide-desktop.exe" "" "$INSTDIR\oxide.ico"
 
   WriteRegStr HKCU "Software\dev.oxide.desktop" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\dev.oxide.desktop" "DisplayName" "Oxide"

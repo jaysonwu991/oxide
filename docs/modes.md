@@ -34,8 +34,7 @@ running turn without ending the process (the next prompt
 continues the same session). A tool a permission rule gates
 runs unless the client passed `--ask-approvals`, which instead holds it and emits
 an `approval_request` event for the client to answer; `always` is remembered per
-project in the shared `approvals.json`, so the terminal and both desktop
-front-ends stop
+project in the shared `approvals.json`, so the terminal and desktop app stop
 asking for that tool too. `--ask-questions` is the same bargain for the `ask`
 tool — see [Questions a skill asks the user](cli.md#questions-a-skill-asks-the-user).
 

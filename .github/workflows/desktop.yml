@@ -1,24 +1,13 @@
-name: Desktop (Electron)
+name: Desktop
 
-# Builds the Electron desktop app for macOS x64 and arm64, Linux x64 and
-# arm64, and Windows. Tauri is the primary desktop and owns `desktop-latest`;
-# this workflow remains for versioned `desktop-v*` Electron releases. Only the
-# release job — the one that writes a release — is granted
-# `contents: write`; a build holds a read-only token.
+# Builds Oxide Desktop, the native Tauri front-end in `crates/desktop`, for
+# macOS x64 and arm64, Linux x64 and arm64, and Windows, and hands the installers
+# it produced to the release job. The `desktop-v*` train names the release; its
+# stable-name artifacts feed the public `desktop-latest` alias.
 #
-# The app is two programs: Electron, which electron-builder packages, and the
-# `oxide-desktop` harness, which is compiled from `src/` and carried into the
-# bundle as a resource. `pnpm run dist` runs both halves — TypeScript, then
-# `cargo build --release`, then electron-builder — so the binary the bundler
-# signs is the one it just built. Signing and
-# notarization happen when the corresponding secrets are configured — the
-# certificate is imported into a temporary keychain and named to electron-builder
-# as `CSC_LINK`, and the App Store Connect credentials are passed in the names it
-# reads — and a build with no secrets configured still produces an installable
-# bundle.
-#
-# Apple Silicon runners build both Mac architectures. The x64 job selects the
-# Intel Rust target and electron-builder downloads the matching Electron files.
+# Apple Silicon runners build both Mac architectures. The Intel artifact is a
+# native x86_64 Rust target rather than an Intel executable built on slower
+# Intel hosted hardware.
 
 on:
   workflow_dispatch:
@@ -28,6 +17,10 @@ on:
 
 permissions:
   contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   build:
@@ -51,7 +44,7 @@ jobs:
             arch: x64
 
           # The arm64 Linux artifact is built on an arm64 runner rather than
-          # cross-compiled, so the harness and the AppImage are both native.
+          # cross-compiled, so the binary in it is native.
           - platform: ubuntu-24.04-arm
             name: Linux arm64
             artifact: linux-arm64
@@ -64,7 +57,6 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
     env:
-      OXIDE_DESKTOP_ARCH: ${{ matrix.arch }}
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ startsWith(matrix.platform, 'macos') && matrix.arch == 'x64' && '16' || '1' }}
       CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(matrix.platform, 'macos') && matrix.arch == 'x64' && 'false' || 'thin' }}
     steps:
@@ -75,67 +67,62 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && matrix.arch == 'x64' && 'x86_64-apple-darwin' || '' }}
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 12.8.1
           run_install: false
-
-      - name: Install Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: crates/desktop/pnpm-lock.yaml
 
-      # Electron links the same system libraries a Chromium-based app needs, and
-      # electron-builder's AppImage target uses the `fuse` it finds on the host.
+      # Tauri renders through WebKitGTK on Linux.
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgtk-3-0 \
-            libnss3 \
-            libasound2t64 \
-            libgbm1 \
-            libxss1 \
-            libxtst6
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libdbus-1-dev \
+            libssl-dev \
+            patchelf
 
-      # The app's package is its own workspace, so its bundles land in its own
-      # `target/`, which is what this caches.
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install the page's diagram packages
+        working-directory: crates/desktop
+        run: pnpm install --frozen-lockfile
+
+      # The front-end's package is its own workspace, so its build lands in its
+      # own `target/`, which is what this caches.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/desktop
-          shared-key: desktop-app-release-${{ matrix.arch }}
+          shared-key: desktop-release-${{ matrix.arch }}
           add-job-id-key: false
           cache-workspace-crates: true
-
-      - name: Cache Electron
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/electron
-            ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('crates/desktop/pnpm-lock.yaml') }}
-
-      - name: Install the app's packages
-        working-directory: crates/desktop
-        run: pnpm install --frozen-lockfile
+          cache-on-failure: true
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/desktop-v')
         shell: bash
-        run: ./scripts/set-version.sh "${GITHUB_REF_NAME}"
+        run: bash ./scripts/set-version.sh "${GITHUB_REF_NAME}"
 
-      # The Developer ID identity has to be in a keychain for `codesign` to use
-      # it: the certificate arrives as a base64 `.p12` and is imported into a
-      # temporary keychain of this run's own, which is then put first in the
-      # search list. electron-builder is handed the keychain's own copy of the
-      # certificate as `CSC_LINK`, and its password, which is how it signs the
-      # app and the harness inside it. A build with no certificate is left to
-      # produce an unsigned bundle rather than a half-signed one.
+      # The certificate is a base64 `.p12`, imported into a keychain of this
+      # run's own and put first in the search list. `package.sh` finds the
+      # identity there and signs the bundle with it; a build with no certificate
+      # produces an unsigned bundle rather than a half-signed one.
       - name: Import the Developer ID certificate
         if: startsWith(matrix.platform, 'macos')
         shell: bash
@@ -165,32 +152,18 @@ jobs:
             -k "${password}" \
             "${keychain}"
           security list-keychains -d user -s "${keychain}" "$(security default-keychain | tr -d ' "')"
-          {
-            printf 'CSC_LINK=%s\n' "${RUNNER_TEMP}/certificate.p12"
-            printf 'CSC_KEY_PASSWORD=%s\n' "${APPLE_CERTIFICATE_PASSWORD}"
-          } >> "${GITHUB_ENV}"
 
       # An App Store Connect key is a downloaded file, so it travels as a base64
-      # secret and is materialized where notarization reads it. This step runs
-      # only where the certificate was imported above too: electron-builder
-      # notarizes by itself as soon as these variables are set, and the app has
-      # to be signed before a notary reads it — half the configuration would
-      # otherwise turn a build that could have been left unsigned into a
-      # failure.
+      # secret and is materialized where `xcrun notarytool` reads it.
       - name: Write App Store Connect API key
-        if: startsWith(matrix.platform, 'macos') && env.CSC_LINK != ''
+        if: startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          # All of the key or none of it: the file, the key's own id and the
-          # issuer belong together, and a file written without either of the
-          # other two would be a notarization that fails this build rather than
-          # one that leaves it unsigned.
           if [ -z "${APPLE_API_KEY_P8:-}" ] || [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_ISSUER:-}" ]; then
             echo "no App Store Connect key is configured; this build is left unnotarized"
             exit 0
@@ -201,56 +174,51 @@ jobs:
             printf 'APPLE_API_KEY_ID=%s\n' "${APPLE_API_KEY}"
             printf 'APPLE_API_ISSUER=%s\n' "${APPLE_API_ISSUER}"
           } >> "${GITHUB_ENV}"
-          if [ -n "${APPLE_TEAM_ID:-}" ]; then
-            printf 'APPLE_TEAM_ID=%s\n' "${APPLE_TEAM_ID}" >> "${GITHUB_ENV}"
-          fi
 
-      # One command produces this platform's installer: it compiles the harness
-      # (the engine, from `src/`) and hands Electron and that binary to the
-      # platform's packager. A build that produces no installer
-      # fails the upload step below rather than shipping a release missing its
-      # assets.
+      # One command produces this platform's artifact: it compiles the binary
+      # and lays the bundle out — the app, its icon and its plugins on macOS; a
+      # directory with the binary, icon and desktop entry elsewhere.
       - name: Build
         working-directory: crates/desktop
         shell: bash
-        run: pnpm run dist --${{ matrix.arch }}
+        run: bash ./package.sh ${{ matrix.arch }}
 
-      - name: Check the macOS architecture
-        if: startsWith(matrix.platform, 'macos')
+      - name: Prepare the Intel smoke test
+        if: startsWith(matrix.platform, 'macos') && matrix.arch == 'x64'
+        shell: bash
+        run: |
+          if ! arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      # The binary answers the engine's own commands before it is shipped, so a
+      # build that could not reach the configuration, the session store or the
+      # approval store fails here rather than on a reader's machine.
+      - name: Check the engine contract
         working-directory: crates/desktop
         shell: bash
         run: |
-          expected="${{ matrix.arch }}"
-          [ "$expected" = "x64" ] && expected=x86_64
-          app_dir=artifacts/mac
-          [ "${{ matrix.arch }}" = "arm64" ] && app_dir="$app_dir-arm64"
-          for binary in \
-            "$app_dir/Oxide.app/Contents/MacOS/Oxide" \
-            "$app_dir/Oxide.app/Contents/Resources/harness/oxide-desktop"
-          do
-            actual="$(lipo -archs "$binary")"
-            [ "$actual" = "$expected" ] || {
-              echo "$binary is $actual, expected $expected" >&2
-              exit 1
-            }
-          done
+          binary=./target/release/oxide-desktop
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            binary=./artifacts/Oxide.app/Contents/MacOS/oxide-desktop
+          elif [ ! -f "$binary" ]; then
+            binary="$binary.exe"
+          fi
+          if [ "${{ matrix.arch }}" = "x64" ] && [ "${{ runner.os }}" = "macOS" ]; then
+            arch -x86_64 "$binary" --check
+          else
+            "$binary" --check
+          fi
 
-      # The installers `docs/desktop.md` lists under **Release assets**, named
-      # the way `oxide_core::updates::Component::Desktop::assets()` resolves
-      # them: one artifact per platform, with the platform and architecture in
-      # its name and no version, so the newest installers keep the same names
-      # from release to release and `README.md` can link to them permanently.
-      # electron-builder also writes its own `latest*.yml` metadata and a
-      # blockmap beside the installer; this app's updater resolves the release
-      # through GitHub itself, so metadata describing a feed it does not read is
-      # left out.
+      # The installers `docs/desktop.md` lists under **Release assets**, named the
+      # same way from release to release so the permanent links keep working.
       - uses: actions/upload-artifact@v4
         with:
           name: oxide-desktop-${{ matrix.artifact }}
           path: |
             crates/desktop/artifacts/*.dmg
-            crates/desktop/artifacts/*.AppImage
             crates/desktop/artifacts/*-Setup.tar.gz
+            crates/desktop/artifacts/*.AppImage
             crates/desktop/artifacts/*-Setup.exe
           if-no-files-found: error
 
@@ -268,8 +236,8 @@ jobs:
           pattern: oxide-desktop-*
           merge-multiple: true
       # Keep the notes release-drafter already drafted for this tag; only create
-      # a release when none exists yet (for example a tag pushed by hand).
-      # Upload everything before publishing, including when reusing a draft.
+      # a release when none exists yet. Upload everything before publishing,
+      # including when reusing a draft.
       - name: Upload installers and publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -278,28 +246,34 @@ jobs:
           set -euo pipefail
           if ! gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft \
-              --title "Oxide Desktop Electron ${GITHUB_REF_NAME#desktop-}" --generate-notes
+              --title "Oxide Desktop ${GITHUB_REF_NAME#desktop-}" --generate-notes
           fi
           find release-assets -type f -print0 \
             | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
           gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
 
-      # `/releases/latest` is the newest release of the repository, and three
-      # components publish into it, so a permanent installer link cannot be
-      # `desktop-latest` belongs to the primary Tauri release. Electron keeps a
-      # stable permanent address of its own for users who deliberately need the
-      # separately installable front-end.
-      - name: Refresh the desktop-electron-latest alias
+      # The permanent installer address is replaced on every publish.
+      - name: Refresh the desktop aliases
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          alias_tag=desktop-electron-latest
-          if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
-              --title "Oxide Desktop Electron installers" \
-              --notes "The newest Electron desktop app installers. Tauri is the primary desktop application; use \`desktop-latest\` for its installers."
-          fi
-          find release-assets -type f -print0 \
-            | xargs -0 gh release upload "$alias_tag" --repo "${GITHUB_REPOSITORY}" --clobber
+          for alias_tag in desktop-latest; do
+            if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
+                --title "Oxide Desktop installers" \
+                --notes "The newest desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-v*\` release is the one that names a version."
+            else
+              gh release edit "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
+                --title "Oxide Desktop installers"
+            fi
+            gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" \
+              --json assets --jq '.assets[].name' \
+              | while IFS= read -r asset; do
+                  gh release delete-asset "$alias_tag" "$asset" \
+                    --repo "${GITHUB_REPOSITORY}" --yes
+                done
+            find release-assets -type f -print0 \
+              | xargs -0 gh release upload "$alias_tag" --repo "${GITHUB_REPOSITORY}" --clobber
+          done

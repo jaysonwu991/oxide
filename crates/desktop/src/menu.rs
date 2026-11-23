@@ -1,9 +1,8 @@
-//! The macOS menu Electron builds, expressed with Tauri's native menu API.
+//! The macOS menu, built with Tauri's native menu API.
 //!
 //! Menu actions that belong to the page are announced on the same
 //! `oxide:to-page` event as engine packets. Menu labels and accelerators follow
-//! the language and shortcut maps the page sends, so both desktop windows keep
-//! one keyboard contract.
+//! the language and shortcut maps the page sends.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;

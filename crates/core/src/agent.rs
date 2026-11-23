@@ -9282,10 +9282,9 @@ for line in sys.stdin:
 
     #[test]
     fn repeated_crate_scoped_verifiers_keep_their_directory_and_output_plumbing() {
-        let base =
-            verification_key("cd crates/desktop-tauri && cargo test 2>&1 | tail -20").unwrap();
+        let base = verification_key("cd crates/desktop && cargo test 2>&1 | tail -20").unwrap();
         assert_eq!(
-            verification_key("cd crates/desktop-tauri && cargo test | grep 'test result'").unwrap(),
+            verification_key("cd crates/desktop && cargo test | grep 'test result'").unwrap(),
             base
         );
         assert_ne!(
@@ -9293,11 +9292,11 @@ for line in sys.stdin:
             base
         );
         assert_ne!(
-            verification_key("cd crates/desktop-tauri && cargo clippy --all-targets").unwrap(),
+            verification_key("cd crates/desktop && cargo clippy --all-targets").unwrap(),
             base
         );
         assert_ne!(
-            verification_key("cd crates/desktop-tauri && cargo fmt && cargo test").unwrap(),
+            verification_key("cd crates/desktop && cargo fmt && cargo test").unwrap(),
             base
         );
     }

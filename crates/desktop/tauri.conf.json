@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "identifier": "dev.oxide.desktop",
   "build": {
-    "frontendDist": "../desktop/ui"
+    "frontendDist": "ui"
   },
   "app": {
     "withGlobalTauri": true,
@@ -34,11 +34,11 @@
   "bundle": {
     "active": false,
     "icon": [
-      "../desktop/icons/32x32.png",
-      "../desktop/icons/128x128.png",
-      "../desktop/icons/128x128@2x.png",
-      "../desktop/icons/icon.icns",
-      "../desktop/icons/icon.ico"
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
     ]
   }
 }

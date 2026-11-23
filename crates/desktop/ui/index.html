@@ -7,7 +7,7 @@
          ships with rather than injecting one, so the document is where it
          lives, and `crates/desktop/check-shell.mjs` holds it: the page's own
          script and sheet, the pictures it paints and nothing remote, and no
-         connection at all — the host it talks to is this window's preload. -->
+         connection at all — the host it talks to is the Tauri process. -->
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'"

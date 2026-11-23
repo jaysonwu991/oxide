@@ -29,27 +29,17 @@ const SUPPORTED_PLATFORMS: &str = "macos-arm64, macos-x64, linux-x64, linux-arm6
 pub enum Component {
     Cli,
     Desktop,
-    #[serde(rename = "desktop-tauri", alias = "desktop-gpui")]
-    DesktopTauri,
     Extension,
 }
 
 impl Component {
-    pub const ALL: [Component; 4] = [
-        Component::Cli,
-        Component::Desktop,
-        Component::DesktopTauri,
-        Component::Extension,
-    ];
+    pub const ALL: [Component; 3] = [Component::Cli, Component::Desktop, Component::Extension];
 
     /// The `--component` spelling, plus the names a front-end may call itself.
     pub fn parse(text: &str) -> Option<Self> {
         match text.trim().to_ascii_lowercase().as_str() {
             "cli" | "command-line" => Some(Self::Cli),
             "desktop" | "app" => Some(Self::Desktop),
-            "desktop-tauri" | "desktop-beta" | "tauri" | "desktop-gpui" | "gpui" => {
-                Some(Self::DesktopTauri)
-            }
             "extension" | "vscode" | "vs-code" | "editor" => Some(Self::Extension),
             _ => None,
         }
@@ -59,7 +49,6 @@ impl Component {
         match self {
             Self::Cli => "cli",
             Self::Desktop => "desktop",
-            Self::DesktopTauri => "desktop-tauri",
             Self::Extension => "extension",
         }
     }
@@ -68,8 +57,7 @@ impl Component {
     pub fn label(self) -> &'static str {
         match self {
             Self::Cli => "the oxide CLI",
-            Self::Desktop => "the Oxide desktop app",
-            Self::DesktopTauri => "Oxide Desktop Tauri",
+            Self::Desktop => "Oxide Desktop",
             Self::Extension => "the Oxide extension for VS Code",
         }
     }
@@ -86,10 +74,6 @@ impl Component {
         let version = match self {
             Self::Cli => tag.strip_prefix("cli-").unwrap_or(tag),
             Self::Desktop => match tag.strip_prefix("desktop-") {
-                Some(rest) if !rest.starts_with("tauri-") => rest,
-                _ => return false,
-            },
-            Self::DesktopTauri => match tag.strip_prefix("desktop-tauri-") {
                 Some(rest) => rest,
                 None => return false,
             },
@@ -110,7 +94,6 @@ impl Component {
         match self {
             Self::Cli => format!("v{version}"),
             Self::Desktop => format!("desktop-v{version}"),
-            Self::DesktopTauri => format!("desktop-tauri-v{version}"),
             Self::Extension => format!("extension-v{version}"),
         }
     }
@@ -119,16 +102,10 @@ impl Component {
     /// (`desktop-v1.2.3`), the bare tag (`v1.2.3`) or a version on its own.
     pub fn normalize_tag(self, requested: &str) -> Result<String> {
         let trimmed = requested.trim();
-        let without_component = [
-            "cli-",
-            "desktop-tauri-",
-            "desktop-gpui-",
-            "desktop-",
-            "extension-",
-        ]
-        .iter()
-        .find_map(|prefix| trimmed.strip_prefix(prefix))
-        .unwrap_or(trimmed);
+        let without_component = ["cli-", "desktop-", "extension-"]
+            .iter()
+            .find_map(|prefix| trimmed.strip_prefix(prefix))
+            .unwrap_or(trimmed);
         let version = without_component.trim_start_matches('v').trim();
         if !is_semver(version) {
             bail!(
@@ -145,18 +122,15 @@ impl Component {
     /// The CLI's archive is `Oxide-<platform>.<ext>` — the name `cli.yml`
     /// writes and the installers read out of the manifest — and the app and the
     /// panel publish `Oxide-macos-<arch>.dmg`,
-    /// `Oxide-linux-<arch>-Setup.{AppImage,tar.gz}`, `Oxide-win-<arch>-Setup.exe`
-    /// and `oxide-vscode.vsix`, the names `electron-builder.yml` and the
-    /// extension's `vsce package` write. None of them carries a version, so the
+    /// `Oxide-linux-<arch>-Setup.tar.gz`, `Oxide-win-<arch>-Setup.tar.gz` and
+    /// `oxide-vscode.vsix`, the names the desktop packager and the extension's
+    /// `vsce package` write. None of them carries a version, so the
     /// newest file of each kind keeps one name from release to release, which is
     /// what the permanent `desktop-latest`/`extension-latest` links `README.md`
     /// publishes are built on. A release published before the names lost their
     /// version carries the versioned ones, which follow the current names here
-    /// so a pinned install of such a release still resolves. electron-builder spells
-    /// x64 as `x86_64` for an AppImage, so that name carries the spelling the
-    /// build really writes rather than the one this code would prefer. On Linux
-    /// the AppImage the app replaces itself with comes before the archive a user
-    /// unpacks by hand. Both macOS architectures use a disk image.
+    /// so a pinned install of such a release still resolves. Both macOS
+    /// architectures use a disk image; Linux and Windows publish an archive.
     pub fn assets(self, tag: &str, platform: &str) -> Vec<String> {
         let mut names = self.named(platform);
         names.extend(self.versioned(&release_version(tag), platform));
@@ -175,20 +149,6 @@ impl Component {
                 vec![format!("Oxide-{platform}.{extension}")]
             }
             Self::Desktop => match platform {
-                "macos-arm64" => vec!["Oxide-macos-arm64.dmg".to_string()],
-                "macos-x64" => vec!["Oxide-macos-x64.dmg".to_string()],
-                "linux-x64" => vec![
-                    "Oxide-linux-x86_64-Setup.AppImage".to_string(),
-                    "Oxide-linux-x64-Setup.tar.gz".to_string(),
-                ],
-                "linux-arm64" => vec![
-                    "Oxide-linux-arm64-Setup.AppImage".to_string(),
-                    "Oxide-linux-arm64-Setup.tar.gz".to_string(),
-                ],
-                "win-x64" => vec!["Oxide-win-x64-Setup.exe".to_string()],
-                _ => Vec::new(),
-            },
-            Self::DesktopTauri => match platform {
                 "macos-arm64" => vec![
                     "Oxide-macos-arm64.dmg".to_string(),
                     "Oxide-Beta-macos-arm64.dmg".to_string(),
@@ -227,20 +187,6 @@ impl Component {
                 vec![format!("Oxide-{version}-{platform}.{extension}")]
             }
             Self::Desktop => match platform {
-                "macos-arm64" => vec![format!("Oxide-{version}-macos-arm64.dmg")],
-                "macos-x64" => vec![format!("Oxide-{version}-macos-x64.dmg")],
-                "linux-x64" => vec![
-                    format!("Oxide-{version}-linux-x86_64-Setup.AppImage"),
-                    format!("Oxide-{version}-linux-x64-Setup.tar.gz"),
-                ],
-                "linux-arm64" => vec![
-                    format!("Oxide-{version}-linux-arm64-Setup.AppImage"),
-                    format!("Oxide-{version}-linux-arm64-Setup.tar.gz"),
-                ],
-                "win-x64" => vec![format!("Oxide-{version}-win-x64-Setup.exe")],
-                _ => Vec::new(),
-            },
-            Self::DesktopTauri => match platform {
                 "macos-arm64" => vec![
                     format!("Oxide-{version}-macos-arm64.dmg"),
                     format!("Oxide-Beta-{version}-macos-arm64.dmg"),
@@ -657,21 +603,15 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
-/// The version a tag names: `v1.2.3`, `cli-v1.2.3`, `desktop-v1.2.3`,
-/// `desktop-tauri-v1.2.3` and `extension-v1.2.3` all read as `1.2.3`. A version
-/// that carries no tag prefix (a running binary's `--version`) reads as itself.
+/// The version a tag names: `v1.2.3`, `cli-v1.2.3`, `desktop-v1.2.3` and
+/// `extension-v1.2.3` all read as `1.2.3`. A version that carries no tag prefix
+/// (a running binary's `--version`) reads as itself.
 pub fn release_version(tag: &str) -> String {
     let tag = tag.trim();
-    let without_component = [
-        "cli-",
-        "desktop-tauri-",
-        "desktop-gpui-",
-        "desktop-",
-        "extension-",
-    ]
-    .iter()
-    .find_map(|prefix| tag.strip_prefix(prefix))
-    .unwrap_or(tag);
+    let without_component = ["cli-", "desktop-", "extension-"]
+        .iter()
+        .find_map(|prefix| tag.strip_prefix(prefix))
+        .unwrap_or(tag);
     without_component.trim_start_matches('v').to_string()
 }
 
@@ -1014,14 +954,12 @@ mod tests {
         assert!(Component::Cli.owns_tag("v0.34.0"));
         assert!(Component::Cli.owns_tag("cli-v0.34.0"));
         assert!(Component::Desktop.owns_tag("desktop-v0.34.0"));
-        assert!(Component::DesktopTauri.owns_tag("desktop-tauri-v0.34.0"));
         assert!(Component::Extension.owns_tag("extension-v0.34.0"));
         // A release of another component is not this one's, and neither is a
         // tag that names no version.
         assert!(!Component::Cli.owns_tag("desktop-v0.34.0"));
         assert!(!Component::Cli.owns_tag("extension-v0.34.0"));
         assert!(!Component::Desktop.owns_tag("v0.34.0"));
-        assert!(!Component::Desktop.owns_tag("desktop-tauri-v0.34.0"));
         assert!(!Component::Extension.owns_tag("desktop-v0.34.0"));
         assert!(!Component::Desktop.owns_tag("desktop-nightly"));
         assert!(!Component::Cli.owns_tag("vnext"));
@@ -1054,18 +992,11 @@ mod tests {
             "desktop-v0.34.0"
         );
         assert_eq!(
-            Component::DesktopTauri
-                .normalize_tag("desktop-tauri-v0.34.0")
-                .unwrap(),
-            "desktop-tauri-v0.34.0"
-        );
-        assert_eq!(
             Component::Extension
                 .normalize_tag("extension-v0.34.0")
                 .unwrap(),
             "extension-v0.34.0"
         );
-        assert_eq!(release_version("desktop-tauri-v0.34.0"), "0.34.0");
         assert_eq!(release_version("desktop-v0.34.0"), "0.34.0");
         assert_eq!(release_version("extension-v0.34.0"), "0.34.0");
         assert_eq!(release_version("0.34.0"), "0.34.0");
@@ -1075,15 +1006,6 @@ mod tests {
     fn components_are_named_the_way_a_front_end_names_itself() {
         assert_eq!(Component::parse("cli"), Some(Component::Cli));
         assert_eq!(Component::parse("desktop"), Some(Component::Desktop));
-        assert_eq!(
-            Component::parse("desktop-tauri"),
-            Some(Component::DesktopTauri)
-        );
-        assert_eq!(Component::parse("tauri"), Some(Component::DesktopTauri));
-        assert_eq!(
-            Component::parse("desktop-gpui"),
-            Some(Component::DesktopTauri)
-        );
         assert_eq!(Component::parse(" Desktop "), Some(Component::Desktop));
         assert_eq!(Component::parse("extension"), Some(Component::Extension));
         assert_eq!(Component::parse("vscode"), Some(Component::Extension));
@@ -1092,7 +1014,6 @@ mod tests {
         // needs no platform for.
         assert!(Component::Cli.platform_specific());
         assert!(Component::Desktop.platform_specific());
-        assert!(Component::DesktopTauri.platform_specific());
         assert!(!Component::Extension.platform_specific());
     }
 
@@ -1158,42 +1079,28 @@ mod tests {
             desktop.page_url("jaysonwu991/oxide"),
             "https://github.com/jaysonwu991/oxide/releases/tag/desktop-v0.34.0"
         );
-        let tauri = Release::new(
-            Component::DesktopTauri,
-            "desktop-tauri-v0.34.0",
-            None,
-            "macos-arm64",
-        );
-        assert_eq!(tauri.version, "0.34.0");
-        assert_eq!(tauri.asset, "Oxide-macos-arm64.dmg");
-        assert_eq!(
-            tauri.url("jaysonwu991/oxide"),
-            "https://github.com/jaysonwu991/oxide/releases/download/desktop-tauri-v0.34.0/Oxide-macos-arm64.dmg"
-        );
-        assert!(Component::DesktopTauri
-            .assets("desktop-tauri-v0.34.0", "macos-arm64")
+        assert!(Component::Desktop
+            .assets("desktop-v0.34.0", "macos-arm64")
             .contains(&"Oxide-Beta-macos-arm64.dmg".to_string()));
         for (platform, asset) in [
             ("macos-x64", "Oxide-macos-x64.dmg"),
-            ("linux-x64", "Oxide-linux-x86_64-Setup.AppImage"),
-            ("linux-arm64", "Oxide-linux-arm64-Setup.AppImage"),
-            ("win-x64", "Oxide-win-x64-Setup.exe"),
+            ("linux-x64", "Oxide-linux-x64-Setup.tar.gz"),
+            ("linux-arm64", "Oxide-linux-arm64-Setup.tar.gz"),
+            ("win-x64", "Oxide-win-x64-Setup.tar.gz"),
         ] {
             assert_eq!(
                 Release::new(Component::Desktop, "desktop-v0.34.0", None, platform).asset,
                 asset
             );
         }
-        // The downloads a user would pick by hand are named too, so a front-end
-        // can offer one when it cannot install in place: the AppImage this
-        // platform installs from, then the archive to unpack.
+        // The version-less and versioned archive names are both resolved.
         assert_eq!(
             Component::Desktop.assets("desktop-v0.34.0", "linux-x64"),
             [
-                "Oxide-linux-x86_64-Setup.AppImage",
                 "Oxide-linux-x64-Setup.tar.gz",
-                "Oxide-0.34.0-linux-x86_64-Setup.AppImage",
+                "Oxide-Beta-linux-x64-Setup.tar.gz",
                 "Oxide-0.34.0-linux-x64-Setup.tar.gz",
+                "Oxide-Beta-0.34.0-linux-x64-Setup.tar.gz",
             ]
         );
         assert!(Component::Desktop
@@ -1215,7 +1122,6 @@ mod tests {
         let releases = serde_json::json!([
             { "tag_name": "extension-v0.26.0" },
             { "tag_name": "desktop-v0.26.0" },
-            { "tag_name": "desktop-tauri-v0.5.1" },
             { "tag_name": "v0.25.0" },
             { "tag_name": "v0.26.0" },
         ]);
@@ -1224,10 +1130,6 @@ mod tests {
         assert_eq!(
             newest_tag(&releases, Component::Desktop).unwrap(),
             "desktop-v0.26.0"
-        );
-        assert_eq!(
-            newest_tag(&releases, Component::DesktopTauri).unwrap(),
-            "desktop-tauri-v0.5.1"
         );
         assert_eq!(
             newest_tag(&releases, Component::Extension).unwrap(),

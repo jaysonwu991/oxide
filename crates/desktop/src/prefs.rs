@@ -15,7 +15,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// How large the window draws itself. Electron's zoom factor, so this is the
+/// How large the window draws itself. The webview's zoom factor, so this is the
 /// scale rather than a point size: 1.0 is the window as it was drawn.
 pub const MIN_FONT_SCALE: f64 = 0.7;
 pub const MAX_FONT_SCALE: f64 = 1.6;

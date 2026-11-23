@@ -137,10 +137,10 @@ fn data_root() -> Option<PathBuf> {
     dirs::data_local_dir()
 }
 
-/// The record an installation of this app carries. Electron's Windows setup
-/// writes the uninstaller beside the program it installed, named after the
-/// product, which is what tells a copy it made from a folder of files that
-/// happens to hold the program.
+/// The record an installation of this app carries. The Windows setup writes the
+/// uninstaller beside the program it installed, named after the product, which
+/// is what tells a copy it made from a folder of files that happens to hold the
+/// program.
 const INSTALL_MARKERS: [&str; 2] = ["Uninstall Oxide.exe", "uninstall.exe"];
 
 /// The installation an executable belongs to. `os` is the platform's name,
@@ -219,9 +219,7 @@ fn install_root_of(executable: &Path, data_root: Option<&Path>) -> Option<PathBu
 
 /// The `.app` bundle an executable belongs to: the closest ancestor that is one.
 ///
-/// How far the program sits from the bundle says nothing — Electron runs the
-/// app from `Oxide.app/Contents/MacOS/<program>`, and this app's engine from
-/// `Oxide.app/Contents/Resources/harness/oxide-desktop` — so what makes a
+/// How far the program sits from the bundle says nothing, so what makes a
 /// directory the bundle is its `Contents/` holding an `Info.plist`, which is
 /// also what tells a released app from the binary beside it in a `target/debug`
 /// build.
@@ -931,7 +929,7 @@ mod tests {
 
     fn bundle_fixture(root: &Path) -> PathBuf {
         let bundle = root.join("Oxide.app");
-        let binary = bundle.join("Contents/MacOS/Oxide");
+        let binary = bundle.join("Contents/MacOS/oxide-desktop");
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         fs::write(&binary, b"binary").unwrap();
         fs::write(bundle.join("Contents/Info.plist"), b"plist").unwrap();
@@ -972,7 +970,7 @@ mod tests {
     fn a_running_bundle_is_replaced_from_the_release_image() {
         let root = temp_dir("bundle");
         let bundle = bundle_fixture(&root);
-        let binary = bundle.join("Contents/MacOS/Oxide");
+        let binary = bundle.join("Contents/MacOS/oxide-desktop");
         let installation = installation_of(&binary, "macos", None, None);
         assert_eq!(installation.label, "app bundle");
         assert_eq!(installation.path.as_deref(), Some(bundle.as_path()));
@@ -1008,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn a_beta_bundle_is_offered_its_own_release_and_can_replace_itself() {
+    fn a_beta_bundle_is_offered_its_release_and_can_replace_itself() {
         let root = temp_dir("beta-bundle");
         let bundle = bundle_fixture(&root);
         let binary = bundle.join("Contents/MacOS/Oxide Beta");
@@ -1016,7 +1014,7 @@ mod tests {
         fs::write(&binary, b"binary").unwrap();
         let installation = installation_of(&binary, "macos", None, None);
         let release = Release {
-            tag: "desktop-tauri-v0.35.0".to_string(),
+            tag: "desktop-v0.35.0".to_string(),
             version: "0.35.0".to_string(),
             asset: "Oxide-Beta-macos-arm64.dmg".to_string(),
             digest: Some(format!("sha256:{}", "0".repeat(64))),
@@ -1025,7 +1023,7 @@ mod tests {
         };
 
         let check = check_component_for(
-            Component::DesktopTauri,
+            Component::Desktop,
             &release,
             &installation,
             "acme/oxide",
@@ -1033,29 +1031,24 @@ mod tests {
         );
 
         assert!(check.update_available && check.installable);
-        assert_eq!(check.component, Component::DesktopTauri);
-        assert_eq!(check.tag, "desktop-tauri-v0.35.0");
+        assert_eq!(check.component, Component::Desktop);
+        assert_eq!(check.tag, "desktop-v0.35.0");
         assert_eq!(
             check.release_url,
-            "https://github.com/acme/oxide/releases/tag/desktop-tauri-v0.35.0"
+            "https://github.com/acme/oxide/releases/tag/desktop-v0.35.0"
         );
         assert_eq!(check.advice, None);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn the_engines_own_path_finds_the_bundle_it_is_packaged_in() {
-        // The engine is a program inside the app, not the app's own executable:
-        // a copy that read the bundle as a fixed number of directories up would
-        // call every packaged macOS build a checkout and never offer it an
-        // update.
-        let root = temp_dir("harness");
+    fn the_apps_own_path_finds_the_bundle_it_is_packaged_in() {
+        let root = temp_dir("bundle-path");
         let bundle = bundle_fixture(&root);
-        let engine = bundle.join("Contents/Resources/harness/oxide-desktop");
-        fs::create_dir_all(engine.parent().unwrap()).unwrap();
-        fs::write(&engine, b"engine").unwrap();
+        let executable = bundle.join("Contents/MacOS/oxide-desktop");
+        fs::write(&executable, b"binary").unwrap();
 
-        let installation = installation_of(&engine, "macos", None, None);
+        let installation = installation_of(&executable, "macos", None, None);
         assert_eq!(installation.label, "app bundle");
         assert_eq!(installation.path.as_deref(), Some(bundle.as_path()));
         assert!(installation.replaces_itself());
@@ -1277,12 +1270,12 @@ mod tests {
         let bundle = bundle_fixture(&root);
         let fresh = sibling(&bundle, "new");
         fs::create_dir_all(fresh.join("Contents/MacOS")).unwrap();
-        fs::write(fresh.join("Contents/MacOS/Oxide"), b"new binary").unwrap();
+        fs::write(fresh.join("Contents/MacOS/oxide-desktop"), b"new binary").unwrap();
 
         swap_in(&fresh, &bundle).unwrap();
 
         assert_eq!(
-            fs::read(bundle.join("Contents/MacOS/Oxide")).unwrap(),
+            fs::read(bundle.join("Contents/MacOS/oxide-desktop")).unwrap(),
             b"new binary"
         );
         assert!(
@@ -1306,7 +1299,7 @@ mod tests {
             "{error}"
         );
         assert_eq!(
-            fs::read(bundle.join("Contents/MacOS/Oxide")).unwrap(),
+            fs::read(bundle.join("Contents/MacOS/oxide-desktop")).unwrap(),
             b"binary"
         );
         assert!(
@@ -1486,8 +1479,12 @@ mod tests {
     fn a_launch_installs_only_into_a_copy_it_owns() {
         let root = temp_dir("launch");
         let bundle = bundle_fixture(&root);
-        let bundle_install =
-            installation_of(&bundle.join("Contents/MacOS/Oxide"), "macos", None, None);
+        let bundle_install = installation_of(
+            &bundle.join("Contents/MacOS/oxide-desktop"),
+            "macos",
+            None,
+            None,
+        );
         let notice = Notice::from_release(&release("Oxide-macos-arm64.dmg"), "acme/oxide", 1_000);
 
         // A bundle the user installed, with a newer release to hand: done

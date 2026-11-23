@@ -1238,8 +1238,8 @@ const invokes = [];
 /// assertable.
 let reorderError = null;
 globalThis.window = {
-  // The page speaks the preload bridge's own envelope rather than a generated
-  // one, so the stub is that bridge: a request the page hands to the host is
+  // The page speaks the host bridge's own envelope rather than a generated one,
+  // so the stub is that bridge: a request the page hands to the host is
   // recorded — the checks below reach the fixture by the name in the page's own
   // call — answered the way `oxide_invoke` answers it, and the answer handed
   // back the way the host hands one over. The user bridge is the one the page
@@ -9161,7 +9161,7 @@ await app.renderProjectsTree();
 
 // Codex keeps the parent menu in place while a row opens its choices beside
 // it. The two organizations and the manual order are the same controls in
-// Electron and Tauri because both render this page.
+// Tests the desktop page through its host bridge.
 console.log("the Projects header menus");
 const menuBefore = {
   projects: app.state.projects,

@@ -1,25 +1,23 @@
 #!/usr/bin/env bash
 # Packages Oxide for Desktop for the machine that runs it.
 #
-# The Electron app hands both of its halves to electron-builder. This front-end
-# is one native binary, so this script is what turns it into the thing people
-# install: a `.app` in a `.dmg` on macOS, and a `.tar.gz` bundle — binary, icon
-# and desktop entry — on Linux, an NSIS `Setup.exe` on Windows, plus an `.AppImage` on Linux. The names it writes are the ones
-# `.github/workflows/desktop-tauri.yml` uploads and the ones the shared updater
-# resolves. Electron remains available from its own versioned
-# releases.
+# The app is one native binary, so this script turns it into the thing people
+# install: a `.app` in a `.dmg` on macOS, an NSIS `Setup.exe` and `.tar.gz`
+# bundle on Windows, and a `.tar.gz` bundle plus `.AppImage` on Linux. The names
+# it writes are the ones `.github/workflows/desktop.yml` uploads and the shared
+# updater resolves.
 #
 # Signing and notarization happen when the corresponding secrets are configured,
-# exactly as they do for the Electron app: an imported Developer ID identity is
-# used to sign the bundle (hardened runtime, timestamped) and the Apple API key,
-# when present, notarizes it and staples the ticket.
+# through an imported Developer ID identity (hardened runtime, timestamped) and
+# the Apple API key, when present, which notarizes the image and staples the
+# ticket.
 #
 # Usage: package.sh [arm64|x64]
 #
-#   cd crates/desktop-tauri && ./package.sh
+#   cd crates/desktop && ./package.sh
 #   ./package.sh x64
 #
-# The artifacts land in `crates/desktop-tauri/artifacts/`.
+# The artifacts land in `crates/desktop/artifacts/`.
 
 set -euo pipefail
 
@@ -76,7 +74,7 @@ fi
 node "$here/../../scripts/prepare-diagrams.mjs" desktop
 
 if [ "${OXIDE_SKIP_BUILD:-0}" != "1" ]; then
-  echo "building oxide-desktop-tauri $version"
+  echo "building oxide-desktop $version"
   if [ -n "$rust_target" ]; then
     cargo build --release --target "$rust_target"
   else
@@ -90,12 +88,12 @@ mkdir -p "$artifact_dir"
 
 app_name="Oxide"
 bundle_id="dev.oxide.desktop"
-plugins="$here/../desktop/plugins"
+plugins="$here/plugins"
 
 if [ "$platform" = "macos" ]; then
-  binary="target/release/oxide-desktop-tauri"
+  binary="target/release/oxide-desktop"
   if [ -n "$rust_target" ]; then
-    binary="target/$rust_target/release/oxide-desktop-tauri"
+    binary="target/$rust_target/release/oxide-desktop"
   fi
   if [ ! -x "$binary" ]; then
     echo "error: $binary was not built" >&2
@@ -104,8 +102,8 @@ if [ "$platform" = "macos" ]; then
 
   app="$artifact_dir/$app_name.app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  cp "$binary" "$app/Contents/MacOS/oxide-desktop-tauri"
-  cp "$here/../desktop/icons/icon.icns" "$app/Contents/Resources/icon.icns"
+  cp "$binary" "$app/Contents/MacOS/oxide-desktop"
+  cp "$here/icons/icon.icns" "$app/Contents/Resources/icon.icns"
   if [ -d "$plugins" ]; then
     cp -R "$plugins" "$app/Contents/Resources/plugins"
   fi
@@ -120,7 +118,7 @@ if [ "$platform" = "macos" ]; then
   <key>CFBundleDisplayName</key>
   <string>$app_name</string>
   <key>CFBundleExecutable</key>
-  <string>oxide-desktop-tauri</string>
+  <string>oxide-desktop</string>
   <key>CFBundleIconFile</key>
   <string>icon.icns</string>
   <key>CFBundleIdentifier</key>
@@ -187,8 +185,6 @@ PLIST
   # .DS_Store, so the image is staged read-write and only compressed after the
   # layout has been written. The trap keeps a failed Finder step from leaving a
   # mounted volume behind on a release runner.
-  # This is electron-builder's default DMG background, retained for visual
-  # continuity with the Electron app.
   background="$here/assets/dmg-background.tiff"
   if [ ! -f "$background" ]; then
     echo "error: $background is missing" >&2
@@ -251,7 +247,7 @@ on run argv
 end run
 APPLESCRIPT
 
-  cp "$here/../desktop/icons/icon.icns" "$mount_dir/.VolumeIcon.icns"
+  cp "$here/icons/icon.icns" "$mount_dir/.VolumeIcon.icns"
   if command -v SetFile >/dev/null 2>&1; then
     SetFile -a C "$mount_dir"
   fi
@@ -276,9 +272,9 @@ fi
 stage="$artifact_dir/stage"
 mkdir -p "$stage"
 if [ "$platform" = "win" ]; then
-  binary="target/release/oxide-desktop-tauri.exe"
+  binary="target/release/oxide-desktop.exe"
 else
-  binary="target/release/oxide-desktop-tauri"
+  binary="target/release/oxide-desktop"
   package="$artifact_dir/Oxide-linux-$arch-Setup.tar.gz"
 fi
 if [ ! -f "$binary" ]; then
@@ -286,16 +282,16 @@ if [ ! -f "$binary" ]; then
   exit 1
 fi
 if [ "$platform" = "win" ]; then
-  cp "$binary" "$stage/oxide-desktop-tauri.exe"
-  cp "$here/../desktop/icons/icon.ico" "$stage/oxide.ico"
+  cp "$binary" "$stage/oxide-desktop.exe"
+  cp "$here/icons/icon.ico" "$stage/oxide.ico"
 else
-  cp "$binary" "$stage/oxide-desktop-tauri"
-  cp "$here/../desktop/icons/icon.png" "$stage/oxide.png"
+  cp "$binary" "$stage/oxide-desktop"
+  cp "$here/icons/icon.png" "$stage/oxide.png"
   cat > "$stage/oxide.desktop" <<DESKTOP
 [Desktop Entry]
 Name=Oxide
 Comment=An AI coding agent
-Exec=oxide-desktop-tauri
+Exec=oxide-desktop
 Icon=oxide
 Terminal=false
 Type=Application
@@ -311,9 +307,9 @@ Oxide for Desktop $version
 This is the native Tauri desktop app. It reads the same configuration, sessions
 and approvals as the terminal and editor integrations.
 
-Unpack this folder somewhere it can stay and run oxide-desktop-tauri.
+Unpack this folder somewhere it can stay and run oxide-desktop.
 The folder's plugins/ directory is installed into the shared plugin store at
-launch, exactly as Electron's bundled plugins are.
+launch.
 README
 
 if [ "$platform" = "win" ]; then
@@ -346,16 +342,16 @@ if [ "$platform" = "linux" ]; then
   appdir="$artifact_dir/Oxide.AppDir"
   rm -rf "$appdir"
   mkdir -p "$appdir/usr/bin"
-  cp "$binary" "$appdir/usr/bin/oxide-desktop-tauri"
+  cp "$binary" "$appdir/usr/bin/oxide-desktop"
   if [ -d "$plugins" ]; then
     cp -R "$plugins" "$appdir/usr/bin/plugins"
   fi
-  cp "$here/../desktop/icons/icon.png" "$appdir/oxide.png"
+  cp "$here/icons/icon.png" "$appdir/oxide.png"
   cp "$stage/oxide.desktop" "$appdir/oxide.desktop"
   cat > "$appdir/AppRun" <<'APPRUN'
 #!/bin/sh
 here="$(dirname "$(readlink -f "$0")")"
-exec "$here/usr/bin/oxide-desktop-tauri" "$@"
+exec "$here/usr/bin/oxide-desktop" "$@"
 APPRUN
   chmod +x "$appdir/AppRun"
 

@@ -8,12 +8,10 @@
 //! preferences, `search` finds a phrase across the stored threads, and `update`
 //! checks the app's own release train and installs it. `terminal` is the pseudoterminal a
 //! conversation can open. These build without any GUI dependency so they
-//! are unit tested like the rest of the workspace; the window in `electron/` is
-//! what turns them into packets, and the engine in `src/main.rs` is what hands it
-//! each one. `commands` is the packet contract itself, `approval` and `ask` are
-//! the two brokers a turn waits on, and `bridge` is the pipe it all leaves
-//! through — all of them library modules so the Tauri front-end in
-//! `crates/desktop-tauri` runs the same engine in its own process.
+//! are unit tested like the rest of the workspace. `commands` is the packet
+//! contract, `approval` and `ask` are the two brokers a turn waits on, `bridge`
+//! carries packets back to the Tauri host, and `src/main.rs` wires them into the
+//! native window.
 
 pub mod approval;
 pub mod ask;

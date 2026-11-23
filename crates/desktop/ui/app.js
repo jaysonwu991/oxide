@@ -1,4 +1,4 @@
-// Oxide desktop front-end. The same page is hosted by Electron and Tauri. It has
+// Oxide desktop front-end. The page is hosted by the Tauri window. It has
 // no Node of its own: the project/session/config stores it reads are the CLI's,
 // reached through the app's commands rather than the filesystem.
 //
@@ -7,15 +7,12 @@
 // Everything a run has to say while one is in flight arrives as a packet of its
 // own, and a handler is given the event's own `payload`.
 //
-// Both directions use the names this page has always read. Electron's preload
-// installs the bridge before the page runs; Tauri exposes its global API when
+// Both directions use the bridge names this page has always read. A native host
+// can install the bridge before the page runs; Tauri exposes its global API when
 // requested in `tauri.conf.json`. A packet goes out on the user bridge, and the
-// window answers through
-// `window.__electrobun.receiveMessageFromHost`, which the preload leaves
-// filling a queue until a page takes it over — this page does, since it speaks
-// the wire itself. A window whose preload installs no user bridge still has the
-// event one, which carries the packet as the `host-message` event it was written
-// as; the page reads the same packet off either.
+// window answers through `window.__electrobun.receiveMessageFromHost`. The page
+// also accepts the event bridge, which carries the packet as the `host-message`
+// event it was written as.
 const nativeTauri = window.__TAURI__;
 if (!window.__electrobun) window.__electrobun = {};
 window.__electrobunPendingHostMessages = window.__electrobunPendingHostMessages || [];
@@ -100,8 +97,8 @@ window.__electrobun.receiveMessageFromHost = receiveMessageFromHost;
 window.__electrobun.receiveMessageFromBun = receiveMessageFromHost;
 
 // A message the host sends before this page has taken the channel over is kept
-// by the preload rather than dropped, and `init()` below is the point every
-// listener this file registers is in place.
+// in the compatibility queue rather than dropped, and `init()` below is the
+// point every listener this file registers is in place.
 function drainPendingHostMessages() {
   const queued = window.__electrobunPendingHostMessages;
   if (!Array.isArray(queued) || !queued.length) return;
@@ -173,7 +170,7 @@ function glyphBody(body) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 }
 
-/// The shared glyph bodies. Electron, Tauri and the VS Code panel use these
+/// The shared glyph bodies. Oxide Desktop and the VS Code panel use these
 /// drawings rather than a character from the machine's fonts.
 const GLYPHS = {
   back: '<path d="M15 6l-6 6 6 6M9 12h12"/>',
@@ -12892,8 +12889,7 @@ function initPanelResize() {
 }
 
 /// The conversation/terminal boundary follows the pointer and the keyboard.
-/// Its height belongs to the window rather than either front-end, so Electron
-/// and Tauri restore the same split.
+/// Its height belongs to the window, which restores the split.
 function initTerminalResize() {
   const handle = el("terminal-resizer");
   const panel = el("bottom-panel");
