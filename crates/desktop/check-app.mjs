@@ -654,6 +654,7 @@ let providersAnswer = [];
 // read itself.
 let clipboardAnswer = null;
 let clipboardTextAnswer = null;
+let nativeClipboardReads = 0;
 // What the harness' `reasoning_levels` answers, which is the active model's own
 // levels read from the model cache. The full set stands in for a model whose
 // listing advertised nothing; a check below narrows it.
@@ -1284,7 +1285,10 @@ Object.defineProperty(globalThis, "navigator", {
   value: {
     clipboard: {
       writeText: async (text) => copiedTexts.push(String(text)),
-      readText: async () => clipboardTextAnswer ?? "",
+      readText: async () => {
+        nativeClipboardReads += 1;
+        return clipboardTextAnswer ?? "";
+      },
     },
   },
 });
@@ -2637,7 +2641,6 @@ const shellGlyphs = {
   model: "chevron-down",
   stop: "square",
   send: "arrow-up",
-  "panel-close": "close",
   "review-close": "close",
   "review-refresh": "activity",
   "details-more": "more",
@@ -10991,12 +10994,13 @@ check(
 );
 const startingTerminal = app.terminalStartingView("/tmp/oxide");
 check(
-  "painted a terminal-shaped frame while the shell starts",
+  "painted a terminal-shaped shell item while the shell starts",
   startingTerminal.className.includes("terminal-pane-starting") &&
+    startingTerminal.querySelector(".terminal-pane-head") !== null &&
+    startingTerminal.querySelector(".terminal-pane-title").textContent === "starting…" &&
     startingTerminal.querySelector(".terminal-boot-line").children[1].className === "spinner" &&
     startingTerminal.querySelector(".terminal-boot-path").textContent === "/tmp/oxide" &&
     elementFor("terminal-panes").children[0] === startingTerminal &&
-    elementFor("terminal-context").textContent === "/tmp/oxide" &&
     elementFor("panel-terminal").getAttribute("aria-busy") === "true",
   `${startingTerminal.className} / ${elementFor("panel-terminal").getAttribute("aria-busy")}`,
 );
@@ -11014,12 +11018,13 @@ check(
   `${JSON.stringify(terminalOpened[0])} / ${app.state.terminal.focused}`,
 );
 check(
-  "docked Terminal below the conversation with a compact shell header",
+  "docked Terminal below the conversation with its shell item",
   elementFor("bottom-panel").classList.contains("terminal-mode") &&
     elementFor("terminal-resizer").hidden === false &&
-    elementFor("terminal-shell").textContent === "zsh" &&
-    elementFor("terminal-context").textContent === "/tmp/oxide",
-  `${elementFor("bottom-panel").className} / ${elementFor("terminal-context").textContent}`,
+    app.focusedTerminalPane().section.children[0].className === "terminal-pane-head" &&
+    app.focusedTerminalPane().section.querySelector(".terminal-pane-title").textContent === "zsh" &&
+    app.focusedTerminalPane().section.querySelector(".terminal-pane-cwd").textContent === "/tmp/oxide",
+  `${elementFor("bottom-panel").className} / ${app.focusedTerminalPane()?.section.outline()}`,
 );
 const terminalResizer = elementFor("terminal-resizer");
 const startingHeight = Number(terminalResizer.getAttribute("aria-valuenow"));
@@ -11031,12 +11036,18 @@ check(
   `${startingHeight} / ${terminalResizer.getAttribute("aria-valuenow")}`,
 );
 check(
-  "rendered Terminal as one inset pane with a compact tab bar",
+  "moved every terminal action into the shell item",
   sheet.includes(".terminal-panes {") &&
     sheet.includes("--terminal-bg:") &&
-    sheet.includes('.terminal-panes[data-layout="single"] .terminal-pane-head { display: none; }') &&
-    sheet.includes(".terminal-bar {") &&
-    sheet.includes(".terminal-resizer {"),
+    sheet.includes(".terminal-pane-head {") &&
+    !sheet.includes(".terminal-bar {") &&
+    !shell.includes('class="terminal-bar"') &&
+    app.focusedTerminalPane().newTerminal.getAttribute("aria-label") === "New terminal" &&
+    app.focusedTerminalPane().splitRight.getAttribute("aria-label") === "Split terminal right" &&
+    app.focusedTerminalPane().splitDown.getAttribute("aria-label") === "Split terminal down" &&
+    app.focusedTerminalPane().clear.getAttribute("aria-label") === "Clear terminal" &&
+    app.focusedTerminalPane().maximize.getAttribute("aria-label") === "Maximize terminal" &&
+    app.focusedTerminalPane().close.getAttribute("aria-label") === "Hide the panel",
 );
 check(
   "drew the shell's cursor as its own terminal cell",
@@ -11052,6 +11063,15 @@ check(
     elementFor("terminal-panes").children.length === 3 &&
     elementFor("terminal-panes").children[1].className === "terminal-divider",
   `${app.state.terminal.panes.length} / ${elementFor("terminal-panes").dataset.layout}`,
+);
+check(
+  "gave both shell items their own controls",
+  app.state.terminal.panes.every((pane) =>
+    pane.section.querySelector(".terminal-pane-controls").children.length === 6 &&
+      pane.splitRight.disabled &&
+      pane.splitDown.disabled &&
+      pane.close.getAttribute("aria-label") === "Close terminal pane"
+  ),
 );
 await app.closeTerminalPane(8);
 check("closed the split pane and returned to one shell", app.state.terminal.panes.length === 1 &&
@@ -11087,14 +11107,14 @@ app.toggleTerminalMaximized();
 check(
   "gave Terminal a native maximize and restore control",
   document.body.classList.contains("terminal-maximized") &&
-    elementFor("terminal-maximize").getAttribute("aria-pressed") === "true" &&
-    elementFor("terminal-maximize").getAttribute("aria-label") === "Restore terminal",
+    app.focusedTerminalPane().maximize.getAttribute("aria-pressed") === "true" &&
+    app.focusedTerminalPane().maximize.getAttribute("aria-label") === "Restore terminal",
 );
 app.toggleTerminalMaximized();
 check(
   "restored the conversation above Terminal",
   !document.body.classList.contains("terminal-maximized") &&
-    elementFor("terminal-maximize").getAttribute("aria-pressed") === "false",
+    app.focusedTerminalPane().maximize.getAttribute("aria-pressed") === "false",
 );
 // What the shell writes is drawn: colours are runs, a carriage return goes back
 // to the start of the line, and a line feed starts the next one.
@@ -11219,6 +11239,7 @@ terminalSurface.dispatchEvent({
 check("kept the editing host from changing terminal output", nativeInputPrevented);
 terminalWrites.length = 0;
 clipboardTextAnswer = "/tmp/native-paste.png";
+nativeClipboardReads = 0;
 terminalSurface.dispatchEvent({
   type: "paste",
   clipboardData: { getData: () => "" },
@@ -11226,9 +11247,9 @@ terminalSurface.dispatchEvent({
 });
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(
-  "read a native non-text paste through the host clipboard",
-  terminalWrites.join("|") === "/tmp/native-paste.png",
-  JSON.stringify(terminalWrites),
+  "read a native non-text paste through the host without asking WebKit",
+  terminalWrites.join("|") === "/tmp/native-paste.png" && nativeClipboardReads === 0,
+  `${JSON.stringify(terminalWrites)} / ${nativeClipboardReads} webview reads`,
 );
 terminalWrites.length = 0;
 app.focusedTerminalPane().screen.bracketedPaste = true;
@@ -11243,10 +11264,17 @@ check(
 );
 terminalWrites.length = 0;
 clipboardTextAnswer = "echo pasted";
-check("claimed the terminal paste shortcut", sendKey("v", { metaKey: true }));
+check("left the native terminal paste chord to the editing host", sendKey("v", { metaKey: true }) === false);
+await new Promise((resolve) => setTimeout(resolve, 0));
+check("did not paste twice from the terminal key handler", terminalWrites.length === 0);
+terminalWrites.length = 0;
+check(
+  "kept the terminal's explicit paste fallback",
+  sendKey("v", { ctrlKey: true, shiftKey: true }),
+);
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(
-  "pasted the clipboard into the focused shell",
+  "pasted the clipboard through the explicit fallback",
   terminalWrites.join("|") === "echo pasted",
   JSON.stringify(terminalWrites),
 );

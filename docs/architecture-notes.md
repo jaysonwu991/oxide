@@ -281,7 +281,9 @@ keeps its source as the authority: native copy and cut write the selected source
 and native `historyUndo`/`historyRedo` commands advance the same per-thread
 history as the keyboard path. The terminal is a `contenteditable` editing host
 only so native Edit-menu commands reach it; `beforeinput` and cut are refused,
-paste goes to the PTY with bracketed-paste handling, and copy is limited to a
-selection wholly inside that terminal. A selection crossing into the transcript
-is left to the window's own copy. Plain `input` and `textarea` controls continue
-to use the webview's native editing behavior.
+the platform paste chord stays with the webview's native paste event, non-text
+fallbacks read the host pasteboard directly, and paste goes to the PTY with
+bracketed-paste handling. Copy is limited to a selection wholly inside that
+terminal; a selection crossing into the transcript is left to the window's own
+copy. Plain `input` and `textarea` controls continue to use the webview's native
+editing behavior.

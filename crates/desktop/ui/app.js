@@ -869,16 +869,20 @@ async function copyText(text) {
   return false;
 }
 
-/// Reads the pasteboard's text through the webview first and the desktop host
-/// second. The host path uses the same clipboard reader as the CLI editor, so a
-/// copied image becomes a path and a copied file keeps its path.
+/// Reads the pasteboard through the desktop host first. WebKit treats a
+/// programmatic `navigator.clipboard.readText()` as a separate permission
+/// request and paints its floating Paste affordance over the focused surface;
+/// the host path needs no such prompt and also turns a copied image into a path.
 async function readClipboardText() {
+  try {
+    return String((await invoke("read_clipboard_text")) ?? "");
+  } catch {}
   try {
     if (globalThis.navigator?.clipboard?.readText) {
       return String(await globalThis.navigator.clipboard.readText());
     }
   } catch {}
-  return (await invoke("read_clipboard_text")) ?? "";
+  return "";
 }
 
 function showToast(text, level = "info", action = null) {
@@ -11479,6 +11483,14 @@ function terminalStartingView(project) {
   clearTerminalStarting();
   const section = document.createElement("section");
   section.className = "terminal-pane terminal-pane-starting focused";
+  const head = terminalPaneHeader(
+    {
+      id: null,
+      cwd: project || "",
+      shell: t("terminal.startingShort", "starting…"),
+    },
+    { starting: true },
+  );
   const surface = document.createElement("div");
   surface.className = "terminal-surface";
   surface.setAttribute("role", "status");
@@ -11501,15 +11513,11 @@ function terminalStartingView(project) {
   cwd.textContent = project || "";
   cwd.title = project || "";
   surface.append(line, cwd);
-  section.append(surface);
+  section.append(head, surface);
 
   const container = el("terminal-panes");
   container.dataset.layout = "single";
   container.replaceChildren(section);
-  el("terminal-context").textContent = project || "";
-  el("terminal-context").title = project || "";
-  el("terminal-shell").textContent = t("terminal.startingShort", "starting…");
-  el("terminal-shell").title = t("terminal.startingShort", "starting…");
   el("panel-terminal").setAttribute("aria-busy", "true");
   terminalStartingNode = section;
   return section;
@@ -11863,15 +11871,34 @@ function terminalControl(label, className, icon, run) {
   return control;
 }
 
-function terminalPaneView(pane) {
-  const section = document.createElement("section");
-  section.className = "terminal-pane";
-  section.dataset.terminalPane = String(pane.id);
+const TERMINAL_ICONS = {
+  shell:
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17"/></svg>',
+  new:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-width="1.8"/></svg>',
+  splitRight:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>',
+  splitDown:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/></svg>',
+  clear:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
+  maximize:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" stroke-width="1.8"/></svg>',
+  close:
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+};
+
+function terminalPaneHeader(pane, { starting = false } = {}) {
   const head = document.createElement("header");
   head.className = "terminal-pane-head";
+  const shell = document.createElement("span");
+  shell.className = "terminal-pane-shell";
+  const glyph = document.createElement("span");
+  glyph.innerHTML = TERMINAL_ICONS.shell;
   const title = document.createElement("span");
   title.className = "terminal-pane-title";
   title.textContent = pane.shell;
+  shell.append(glyph, title);
   const cwd = document.createElement("span");
   cwd.className = "terminal-pane-cwd";
   cwd.textContent = pane.cwd;
@@ -11880,25 +11907,69 @@ function terminalPaneView(pane) {
   controls.className = "terminal-pane-controls";
   controls.setAttribute("role", "toolbar");
   controls.setAttribute("aria-label", t("terminal.title", "Terminal"));
+  const newTerminal = terminalControl(
+    t("terminal.new", "New terminal"),
+    "pane-new",
+    TERMINAL_ICONS.new,
+    () => void restartTerminal(),
+  );
   const right = terminalControl(
     t("terminal.splitRight", "Split terminal right"),
     "pane-split-right",
-    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>',
+    TERMINAL_ICONS.splitRight,
     () => void splitTerminal("row", pane.id),
   );
   const down = terminalControl(
     t("terminal.splitDown", "Split terminal down"),
     "pane-split-down",
-    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/></svg>',
+    TERMINAL_ICONS.splitDown,
     () => void splitTerminal("column", pane.id),
   );
-  const close = terminalControl(
-    t("terminal.closePane", "Close terminal pane"),
-    "pane-close",
-    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
-    () => void closeTerminalPane(pane.id),
+  const clear = terminalControl(
+    t("terminal.clear", "Clear terminal"),
+    "pane-clear",
+    TERMINAL_ICONS.clear,
+    () => clearTerminal(pane.id),
   );
-  controls.append(right, down, close);
+  const maximize = terminalControl(
+    t("terminal.maximize", "Maximize terminal"),
+    "pane-maximize",
+    TERMINAL_ICONS.maximize,
+    toggleTerminalMaximized,
+  );
+  maximize.setAttribute("aria-pressed", "false");
+  const close = terminalControl(
+    state.terminal.panes.length > 1
+      ? t("terminal.closePane", "Close terminal pane")
+      : t("panel.hide", "Hide the panel"),
+    "pane-close",
+    TERMINAL_ICONS.close,
+    () => {
+      if (state.terminal.panes.length > 1) void closeTerminalPane(pane.id);
+      else hidePanel();
+    },
+  );
+  if (starting) {
+    for (const control of [newTerminal, right, down, clear]) control.disabled = true;
+  }
+  controls.append(newTerminal, right, down, clear, maximize, close);
+  head.append(shell, cwd, controls);
+  return head;
+}
+
+function terminalPaneView(pane) {
+  const section = document.createElement("section");
+  section.className = "terminal-pane";
+  section.dataset.terminalPane = String(pane.id);
+  const head = terminalPaneHeader(pane);
+  const shell = {
+    newTerminal: head.querySelector(".pane-new"),
+    splitRight: head.querySelector(".pane-split-right"),
+    splitDown: head.querySelector(".pane-split-down"),
+    clear: head.querySelector(".pane-clear"),
+    maximize: head.querySelector(".pane-maximize"),
+    close: head.querySelector(".pane-close"),
+  };
   const surface = document.createElement("div");
   surface.className = "terminal-surface";
   surface.tabIndex = 0;
@@ -11939,7 +12010,6 @@ function terminalPaneView(pane) {
   });
   surface.addEventListener("cut", (event) => event.preventDefault());
   surface.addEventListener("click", () => focusTerminalPane(pane.id));
-  head.append(title, cwd, controls);
   section.append(head, surface);
   section.addEventListener("pointerdown", (event) => {
     if (event.target.closest?.("button")) return;
@@ -11947,10 +12017,7 @@ function terminalPaneView(pane) {
   });
   pane.section = section;
   pane.surface = surface;
-  pane.titleEl = title;
-  pane.cwdEl = cwd;
-  pane.splitRight = right;
-  pane.splitDown = down;
+  Object.assign(pane, shell);
 }
 
 function terminalDivider() {
@@ -11992,15 +12059,18 @@ function terminalDivider() {
 function renderTerminalPanes() {
   const container = el("terminal-panes");
   const focused = state.terminal.focused;
+  const split = state.terminal.panes.length > 1;
   for (const pane of state.terminal.panes) {
     pane.section.classList.toggle("focused", pane.id === focused);
-    pane.splitRight.disabled = state.terminal.panes.length >= 2;
-    pane.splitDown.disabled = state.terminal.panes.length >= 2;
+    pane.splitRight.disabled = split;
+    pane.splitDown.disabled = split;
+    const closeLabel = split
+      ? t("terminal.closePane", "Close terminal pane")
+      : t("panel.hide", "Hide the panel");
+    pane.close.title = closeLabel;
+    pane.close.setAttribute("aria-label", closeLabel);
   }
-  el("terminal-split-right").disabled = state.terminal.panes.length >= 2;
-  el("terminal-split-down").disabled = state.terminal.panes.length >= 2;
   const children = state.terminal.panes.map((pane) => pane.section);
-  const split = state.terminal.panes.length === 2;
   if (split) {
     const divider = terminalDivider();
     divider.setAttribute(
@@ -12012,18 +12082,7 @@ function renderTerminalPanes() {
   container.replaceChildren(...children);
   container.dataset.layout = split ? state.terminal.layout : "single";
   container.style.setProperty("--terminal-ratio", `${state.terminal.ratio}%`);
-  const active = focusedTerminalPane();
-  if (active) {
-    el("terminal-context").textContent = active.cwd;
-    el("terminal-context").title = active.cwd;
-    el("terminal-shell").textContent = active.shell;
-    el("terminal-shell").title = active.cwd;
-  } else {
-    el("terminal-context").textContent = "";
-    el("terminal-context").removeAttribute("title");
-    el("terminal-shell").textContent = t("terminal.shell", "shell");
-    el("terminal-shell").title = t("terminal.shell", "Shell");
-  }
+  paintTerminalMaximized(document.body.classList.contains("terminal-maximized"));
 }
 
 function focusTerminalPane(id, focus = false) {
@@ -12159,13 +12218,30 @@ async function closeTerminalPane(id) {
   focusedTerminalPane()?.surface.focus();
 }
 
-function clearTerminal() {
-  const pane = focusedTerminalPane();
+function clearTerminal(id = state.terminal.focused) {
+  const pane = terminalPane(id);
   if (!pane) return;
   pane.screen = newTerminalScreen(pane.cols, pane.rows);
   paintTerminal();
   terminalWrite("\x0c", pane.id);
   pane.surface.focus();
+}
+
+function paintTerminalMaximized(next) {
+  const label = t(
+    next ? "terminal.restore" : "terminal.maximize",
+    next ? "Restore terminal" : "Maximize terminal",
+  );
+  const buttons = [
+    ...state.terminal.panes.map((pane) => pane.maximize),
+    ...(terminalStartingNode?.querySelectorAll?.(".pane-maximize") || []),
+  ];
+  for (const button of buttons) {
+    if (!button) continue;
+    button.setAttribute("aria-pressed", String(next));
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
 }
 
 function setTerminalMaximized(on) {
@@ -12175,14 +12251,7 @@ function setTerminalMaximized(on) {
   document.body.classList.toggle("terminal-maximized", next);
   el("terminal-resizer").hidden =
     next || state.panelTab !== "terminal" || el("bottom-panel").hidden;
-  const button = el("terminal-maximize");
-  const label = t(
-    next ? "terminal.restore" : "terminal.maximize",
-    next ? "Restore terminal" : "Maximize terminal",
-  );
-  button.setAttribute("aria-pressed", String(next));
-  button.title = label;
-  button.setAttribute("aria-label", label);
+  paintTerminalMaximized(next);
   fitTerminal();
 }
 
@@ -12281,6 +12350,12 @@ function terminalKey(event, id = state.terminal.focused) {
     return copyTerminalSelection(terminalPane(id));
   }
   if (pasteChord && key === "v") {
+    // Let the platform's own paste chord reach WebKit's native paste event. Its
+    // clipboard payload is already available there; manually reading it here
+    // is what raises WebKit's extra Paste permission callout.
+    const nativePasteChord = !event.altKey && !event.shiftKey &&
+      Boolean(event.metaKey) !== Boolean(event.ctrlKey);
+    if (nativePasteChord) return false;
     void pasteTerminalClipboard(id);
     return true;
   }
@@ -13294,12 +13369,6 @@ function init() {
   };
   el("review-stage-all").onclick = () => void shapeChange("stage-all");
   el("review-unstage-all").onclick = () => void shapeChange("unstage-all");
-  el("terminal-new").onclick = () => void restartTerminal();
-  el("terminal-split-right").onclick = () => void splitTerminal("row");
-  el("terminal-split-down").onclick = () => void splitTerminal("column");
-  el("terminal-clear").onclick = clearTerminal;
-  el("terminal-maximize").onclick = toggleTerminalMaximized;
-  el("panel-close").onclick = hidePanel;
   window.addEventListener("resize", () => {
     if (!el("panel-terminal").hidden) fitTerminal();
   });
