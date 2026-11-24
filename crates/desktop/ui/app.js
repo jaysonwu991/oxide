@@ -13040,25 +13040,49 @@ function isTextEditor(node) {
   );
 }
 
-/// The innermost control a press belongs to. Buttons and links are controls by
-/// their element kind; a native radio or checkbox resolves through its label to
-/// the input it operates, and the page's rows become controls when it gives them
-/// an `onclick` handler.
+const ACTIVATION_INPUT_TYPES = new Set([
+  "checkbox",
+  "radio",
+  "button",
+  "submit",
+  "reset",
+  "file",
+  "color",
+  "range",
+]);
+
+function nativeActivationControl(node) {
+  if (!node) return false;
+  if (["BUTTON", "A", "SUMMARY", "SELECT"].includes(node.tagName)) return true;
+  return (
+    node.tagName === "INPUT" &&
+    ACTIVATION_INPUT_TYPES.has(String(node.type || "text").toLowerCase())
+  );
+}
+
+/// The innermost control a press belongs to. Native buttons, links, disclosures,
+/// selects and action inputs are controls by their element kind; a choice or
+/// button input resolves through its label to the input it operates, and the
+/// page's rows become controls when it gives them an `onclick` handler.
 function pressedControl(target) {
   for (let node = target; node && node !== document.body; node = node.parentNode) {
-    if (node.tagName === "INPUT" && ["checkbox", "radio"].includes(node.type)) {
-      return node;
-    }
     if (
       node.tagName === "LABEL" &&
-      node.control?.tagName === "INPUT" &&
-      ["checkbox", "radio"].includes(node.control.type)
+      nativeActivationControl(node.control) &&
+      !isTextEditor(node.control)
     ) {
       return node.control;
     }
-    if (node.tagName === "BUTTON" || node.tagName === "A" || node.onclick) return node;
+    if (nativeActivationControl(node) || node.onclick) return node;
   }
   return null;
+}
+
+/// A disclosure or select owns the focus press that opens it. The editor is
+/// ended before that native default runs, while the browser keeps the press for
+/// the control itself.
+function takesPressFocus(control) {
+  return control?.tagName === "SUMMARY" || control?.tagName === "SELECT";
 }
 
 /// Whether a control belongs to the list that completes the box being typed in —
@@ -13575,6 +13599,11 @@ function init() {
       if (!editor) return;
       const control = pressedControl(event.target);
       if (!control) return;
+      if (takesPressFocus(control)) {
+        editor.blur();
+        justBlurredEditor = null;
+        return;
+      }
       event.preventDefault();
       // The press landed on a control rather than in the box the caret is in, so
       // the box gives the caret up with it: keeping it as first responder would
@@ -13583,6 +13612,7 @@ function init() {
       // caret itself — a picker focusing its own filter — does so after this
       // press, so its own `focus` is the one that stands.
       if (!completesEditor(control)) editor.blur();
+      justBlurredEditor = null;
       editorControlPress = { control, clicked: false };
     },
     true,
