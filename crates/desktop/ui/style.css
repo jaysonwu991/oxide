@@ -527,7 +527,7 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 :is(.msg .body, .markdown-input) blockquote { margin: 7px 0; padding-left: 11px; border-left: 2px solid var(--border); color: var(--dim); }
 :is(.msg .body, .markdown-input) a { color: var(--accent); text-decoration: underline; cursor: pointer; }
 :is(.msg .body, .markdown-input) a:hover { opacity: 0.8; }
-.msg .body a[href^="https://github.com/"][href*="/pull/"]::before {
+:is(.msg .body, .markdown-input) a[href^="https://github.com/"][href*="/pull/"]::before {
   content: "";
   display: inline-block;
   width: 1em;
@@ -1954,6 +1954,10 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
   margin-left: auto;
 }
 .projects-actions button { margin-left: 0; }
+.projects-actions { opacity: 0; transition: opacity 0.12s; }
+.projects-header:hover .projects-actions,
+.projects-header:focus-within .projects-actions,
+.projects-actions:has([aria-expanded="true"]) { opacity: 1; }
 
 /* The scrollbar already owns its lane; keep the rows close to that edge. */
 .projects-tree { flex: 1; overflow-y: auto; padding: 4px 4px 14px 4px; display: flex; flex-direction: column; gap: 2px; }
@@ -2000,7 +2004,7 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 54px 5px var(--sidebar-title-indent);
+  padding: 5px 8px 5px var(--sidebar-title-indent);
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
@@ -2015,7 +2019,7 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
    mark takes the slot a pull request mark would, at the row's end. */
 .session-item .session-run {
   position: absolute;
-  right: 50px;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   width: 20px;
@@ -2032,8 +2036,9 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
    pushing the pin and archive actions out of the row. */
 .session-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* The row reserves its action strip at rest. An inert fade supplies the
-   controls' surface without moving the title or letting it sit above a button. */
+/* At rest a title runs to the row's end, or to its request mark. The actions
+   are drawn over the title's tail when the row is pointed at, on an inert fade
+   that keeps them legible without moving the title. */
 .project-item::after,
 .session-item::after {
   content: "";
@@ -2155,10 +2160,32 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .row-pin.active { color: var(--accent); }
 .row-more svg, .row-pin svg, .row-archive svg, .row-add svg { width: 14px; height: 14px; }
 
-/* The request stands beside the two row actions rather than replacing them. */
+/* Codex shows a row's actions only while that row is pointed at or holds
+   keyboard focus. The whole row is the hover target, so a press on a control
+   always lands on one already drawn, and Tab still reaches each button, whose
+   focus reveals the strip. A control whose menu is open stays drawn. */
+.row-add,
+.row-more,
+.row-pin,
+.row-archive { opacity: 0; transition: background 0.12s, color 0.12s, opacity 0.12s; }
+.project-item:hover .row-add,
+.project-item:hover .row-more,
+.project-item:focus-within .row-add,
+.project-item:focus-within .row-more,
+.session-item:hover .row-pin,
+.session-item:hover .row-archive,
+.session-item:focus-within .row-pin,
+.session-item:focus-within .row-archive,
+.row-more[aria-expanded="true"] { opacity: 1; }
+.session-item.has-pull .row-pin,
+.session-item.running .row-pin { right: 50px; }
+.session-item.has-pull .row-archive,
+.session-item.running .row-archive { right: 28px; }
+
+/* The request stands at the row's end; the two row actions appear beside it. */
 .session-pull {
   position: absolute;
-  right: 50px;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -3784,12 +3811,12 @@ textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 75%
 .recent-session-item,
 .activity-row { min-height: 32px; border-radius: 8px; font-size: 13.5px; }
 .project-item {
-  padding: 7px 54px 7px calc(var(--sidebar-title-indent) - 22px);
+  padding: 7px 8px 7px calc(var(--sidebar-title-indent) - 22px);
 }
 .project-item .name { font-size: 13.5px; font-weight: 500; }
-.session-item { padding: 6px 54px 6px var(--sidebar-title-indent); }
+.session-item { padding: 6px 8px 6px var(--sidebar-title-indent); }
 .session-item.has-pull,
-.session-item.running { padding-right: 76px; }
+.session-item.running { padding-right: 32px; }
 .session-item.active,
 .activity-row.active { background: var(--panel-3); }
 .sidebar-show-more { padding: 6px 8px 7px var(--sidebar-title-indent); font-size: 12.5px; }

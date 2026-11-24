@@ -52,6 +52,10 @@ const CUMULATIVE_INPUT_REMINDER: &str = "The user has added one or more messages
 /// text, so a long run reads as work in progress rather than silence.
 const PROGRESS_UPDATE_REMINDER: &str = "You have run several tool steps without telling the user anything. Alongside your next tool calls, or in your answer, write one or two sentences for the user: what you have found so far and what you are doing next. Do not narrate each call or restate the request.";
 
+/// Rides on the request after a turn's first tool step showed the user no text,
+/// so a run opens with the model's plan before a stretch of tool cards.
+const FIRST_UPDATE_REMINDER: &str = "Your first tool step ran before you wrote anything for the user. If you continue with tools, start this response with one to three sentences for the user: how you read the request, the approach you chose and what you are checking first. Do not restate the request or narrate each call.";
+
 /// Tool steps without visible text after which the model is asked for an
 /// update.
 const SILENT_TOOL_STEPS: usize = 5;
@@ -891,6 +895,8 @@ async fn run_loop(
     // repeats as a phantom message on every step after it.
     let mut mid_run_input_reminder = false;
     let mut silent_tool_steps = 0usize;
+    let mut spoke_this_turn = false;
+    let mut first_update_requested = false;
     // A provider may return the metadata tool without the requested answer.
     // Offer it at most once per run so an invalid title or an unwritable log
     // cannot turn that fallback into an unbounded request loop.
@@ -1162,6 +1168,10 @@ async fn run_loop(
         }
         if rechecked_with_tools {
             request.push(Message::system(RECHECK_AFTER_TOOLS_REMINDER));
+        }
+        if depth == 0 && !spoke_this_turn && !first_update_requested && silent_tool_steps == 1 {
+            first_update_requested = true;
+            request.push(Message::system(FIRST_UPDATE_REMINDER));
         }
         if depth == 0 && silent_tool_steps >= SILENT_TOOL_STEPS {
             silent_tool_steps = 0;
@@ -1623,6 +1633,7 @@ async fn run_loop(
             rechecked_with_tools = recheck_open;
         }
         held_is_tail = false;
+        spoke_this_turn |= has_answer;
         silent_tool_steps = if has_answer { 0 } else { silent_tool_steps + 1 };
         let _ = tx.send(AgentEvent::MessagePhase(phase));
         if let Some(text) = assistant.display().filter(|text| !text.trim().is_empty()) {
@@ -7060,6 +7071,46 @@ mod tests {
             .map(|(index, _)| index)
             .collect();
         assert_eq!(nudged, vec![SILENT_TOOL_STEPS]);
+    }
+
+    /// A turn that opens with a silent tool step is asked once, on the next
+    /// request, to tell the user its plan before more tools run.
+    #[tokio::test]
+    async fn a_silent_first_tool_step_asks_for_the_plan() {
+        let bodies = vec![
+            bash_call_body("echo one"),
+            bash_call_body("echo two"),
+            bash_call_body("echo three"),
+            answer_body("done"),
+        ];
+        let (addr, server) = sse_server(bodies).await;
+        let config = Config {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".into(),
+            ..Config::default()
+        };
+        let runtime = test_runtime().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        run(
+            config,
+            std::env::temp_dir(),
+            vec![Message::user("hi")],
+            tx,
+            runtime,
+        )
+        .await;
+
+        let bodies = server.await.unwrap();
+        let asked: Vec<usize> = bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, body)| body.contains("ran before you wrote anything"))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(asked, vec![1]);
     }
 
     /// A queued follow-up is not polled at the top of the loop: it enters at
