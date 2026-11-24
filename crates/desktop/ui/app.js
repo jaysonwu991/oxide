@@ -13644,7 +13644,7 @@ function init() {
       // even when the editing session ended in an earlier task than this press.
       const composerControl = !isTextEditor(control) &&
         !control.isContentEditable &&
-        isInside(control, el("composer"));
+        (isInside(control, el("composer")) || control.tagName === "A");
       if (!editor && !composerControl) return;
       if (takesPressFocus(control)) {
         editor?.blur();

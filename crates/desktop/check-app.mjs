@@ -3607,6 +3607,22 @@ check(
 );
 composerOwnButton.remove();
 
+// A link in the transcript answers its first press too, with the editor focused or not.
+const transcriptLink = new StubElement("a", "transcript-link");
+transcriptLink.setAttribute("href", "https://example.com/pr");
+let transcriptLinkClicks = 0;
+transcriptLink.onclick = () => transcriptLinkClicks++;
+document.activeElement = null;
+const linkPress = press({ target: transcriptLink });
+document.fire("mousedown", linkPress);
+document.fire("mouseup", press({ target: transcriptLink }));
+await nextTick();
+check(
+  "answered a transcript link's first press once",
+  linkPress.refused === true && transcriptLinkClicks === 1,
+  `${linkPress.refused} / ${transcriptLinkClicks}`,
+);
+
 // A press into another text field is the browser's to place the caret with.
 const otherField = new StubElement("input", "other-field");
 document.activeElement = elementFor("prompt");
