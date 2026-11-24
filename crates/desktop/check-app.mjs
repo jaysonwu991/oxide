@@ -326,6 +326,9 @@ const press = (over = {}) => ({
   // A control inside another one stops the click there, as the browser would
   // have delivered it to the inner one alone.
   stopPropagation() {},
+  stopImmediatePropagation() {
+    this.stopped = true;
+  },
   // A check that cares whether the page refused a default action reads this
   // back: a row of the `@` list refuses the press so the caret stays put.
   preventDefault() {
@@ -2876,6 +2879,7 @@ const invisibleRules = [
   ...sheetRules
     .filter(([, body]) => /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body))
     .filter(([selectors, body]) => !inertSidebarActionSurface(selectors, body))
+    .filter(([selectors]) => !sidebarActionRule(selectors))
     .map(([selectors]) => `${selectors} { opacity: 0 }`),
   ...sheetRules
     .filter(([, body]) => /pointer-events/.test(body))
@@ -2888,13 +2892,42 @@ check(
   invisibleRules.join(" | ") ||
     (/\[hidden\]/.test(sheet) ? "the [hidden] guard lost its !important" : "the [hidden] guard is gone"),
 );
+// Sidebar row actions follow Codex: drawn only while their own row is pointed
+// at or holds focus. They fade rather than leave the layout, so Tab still
+// reaches them, and the row is the hover target, so no press lands on a
+// control that is not drawn.
 const hiddenSidebarControls = sheetRules
-  .filter(([selectors, body]) => sidebarActionRule(selectors) && (hiddenAtRest(body) || /pointer-events/.test(body)))
+  .filter(([selectors, body]) => sidebarActionRule(selectors) && /pointer-events|display:\s*none|visibility:\s*hidden/.test(body))
   .map(([selectors, body]) => `${selectors} { ${body.trim()} }`);
+const revealRule = sheetRules.find(([selectors, body]) =>
+  /opacity:\s*1/.test(body) &&
+  [
+    ".project-item:hover .row-add",
+    ".project-item:hover .row-more",
+    ".project-item:focus-within .row-add",
+    ".project-item:focus-within .row-more",
+    ".session-item:hover .row-pin",
+    ".session-item:hover .row-archive",
+    ".session-item:focus-within .row-pin",
+    ".session-item:focus-within .row-archive",
+  ].every((selector) => selectors.split(",").some((each) => each.trim() === selector)));
+const restRule = sheetRules.find(([selectors, body]) =>
+  /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body) &&
+  [".row-add", ".row-more", ".row-pin", ".row-archive"]
+    .every((selector) => selectors.split(",").some((each) => each.trim() === selector)));
 check(
-  "left every project and thread control clickable at rest",
-  hiddenSidebarControls.length === 0,
-  hiddenSidebarControls.join(" | "),
+  "revealed project and thread actions on their row's hover or focus, never removing them from Tab order",
+  hiddenSidebarControls.length === 0 && Boolean(revealRule) && Boolean(restRule),
+  hiddenSidebarControls.join(" | ") || `reveal ${Boolean(revealRule)} / rest ${Boolean(restRule)}`,
+);
+// The reveal is paint only: the row's hover changes nothing but opacity, so
+// the control is already under the pointer, live, when the press begins and the
+// first click acts rather than revealing.
+check(
+  "made the row's reveal paint only, so one click acts",
+  Boolean(revealRule) && revealRule[1].split(";").map((part) => part.split(":")[0].trim()).filter(Boolean)
+    .every((property) => property === "opacity"),
+  revealRule?.[1] || "(no reveal rule)",
 );
 // What a row carries stands in the room reserved for it. The title does not
 // move between states, and the row's inert fade only supplies contrast beneath
@@ -2970,11 +3003,11 @@ const roomBesideControl = (row, control) =>
   rightPadding(row) -
   (lastPixels(rowBodies(control), "right") + lastPixels(rowBodies(control), "width"));
 check(
-  "reserved the row action strip at rest without moving the title between states",
-  rightPadding(".project-item") === 54 &&
-    rightPadding(".session-item") === 54 &&
-    rightPadding(".session-item.has-pull") === 76 &&
-    rightPadding(".session-item.running") === 76 &&
+  "let titles run to the row's end at rest and drew the actions over them on hover without moving the title",
+  rightPadding(".project-item") === 8 &&
+    rightPadding(".session-item") === 8 &&
+    rightPadding(".session-item.has-pull") === 32 &&
+    rightPadding(".session-item.running") === 32 &&
     /\.project-item::after,[\s\S]*?\.session-item::after \{[^}]*width: 54px;[^}]*pointer-events: none;/.test(sheet) &&
     /\.session-item\.has-pull::after,[\s\S]*?\.session-item\.running::after \{ width: 76px; \}/.test(sheet) &&
     /\.project-item:hover::after,[\s\S]*?\.session-item:focus-within::after \{ opacity: 1; \}/.test(sheet) &&
@@ -2984,26 +3017,28 @@ check(
 check(
   "aligned project names with the session titles beneath them",
   /--sidebar-title-indent:\s*28px;/.test(sheet) &&
-    /\.project-item \{\s*padding:\s*7px 54px 7px calc\(var\(--sidebar-title-indent\) - 22px\);/.test(
+    /\.project-item \{\s*padding:\s*7px 8px 7px calc\(var\(--sidebar-title-indent\) - 22px\);/.test(
       sheet,
     ) &&
-    /\.session-item \{ padding: 6px 54px 6px var\(--sidebar-title-indent\); \}/.test(sheet),
+    /\.session-item \{ padding: 6px 8px 6px var\(--sidebar-title-indent\); \}/.test(sheet),
   rowRule(".project-item"),
 );
 check(
-  "kept the pull request and both row actions visible side by side",
+  "kept the pull request at the row's end with both row actions beside it",
   /min-width: 0/.test(rowRule(".session-item .name")) &&
     /position: absolute/.test(rowRule(".session-pull")) &&
-    lastPixels(rowBodies(".session-pull"), "right") === 50 &&
+    lastPixels(rowBodies(".session-pull"), "right") === 6 &&
     lastPixels(rowBodies(".row-pin"), "right") === 28 &&
     lastPixels(rowBodies(".row-archive"), "right") === 6 &&
-    [".session-pull", ".row-pin", ".row-archive"]
-      .every((control) => roomBesideControl(".session-item.has-pull", control) >= 6) &&
+    lastPixels(rowBodies(".session-item.has-pull .row-pin"), "right") === 50 &&
+    lastPixels(rowBodies(".session-item.has-pull .row-archive"), "right") === 28 &&
+    roomBesideControl(".session-item.has-pull", ".session-pull") >= 6 &&
     /outline: 2px/.test(rowBodies(".session-item .session-pull:focus-visible")),
 );
 check(
   "kept the running mark clear of the row actions",
-  lastPixels(rowBodies(".session-item .session-run"), "right") === 50 &&
+  lastPixels(rowBodies(".session-item .session-run"), "right") === 6 &&
+    lastPixels(rowBodies(".session-item.running .row-pin"), "right") === 50 &&
     roomBesideControl(".session-item.running", ".session-item .session-run") >= 6,
 );
 check(
@@ -3076,8 +3111,10 @@ check(
   newProjectButton,
 );
 check(
-  "drew the Projects actions before they are pointed at",
-  !hiddenAtRest(rowBodies(".projects-actions")) &&
+  "revealed the Projects actions when the header is pointed at or focused",
+  /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(rowBodies(".projects-actions")) &&
+    /opacity:\s*1/.test(rowBodies(".projects-header:hover .projects-actions")) &&
+    /opacity:\s*1/.test(rowBodies(".projects-header:focus-within .projects-actions")) &&
     !/pointer-events/.test(rowBodies(".projects-actions")),
 );
 check(
@@ -3527,6 +3564,48 @@ check(
   composerButtonClicks === 3,
   String(composerButtonClicks),
 );
+
+// A composer control answers its first press even when the editing session
+// ended in an earlier task than that press: its focus default is kept off the
+// press, and the click WebKit withholds is supplied once.
+const composerHost = elementFor("composer");
+const composerOwnButton = new StubElement("button", "composer-own-button");
+let composerOwnClicks = 0;
+composerOwnButton.onclick = () => composerOwnClicks++;
+composerHost.appendChild(composerOwnButton);
+document.activeElement = null;
+const composerOwnPress = press({ target: composerOwnButton });
+document.fire("mousedown", composerOwnPress);
+document.fire("mouseup", press({ target: composerOwnButton }));
+await nextTick();
+check(
+  "answered a composer control's first press with no editor focused",
+  composerOwnPress.refused === true && composerOwnClicks === 1,
+  `${composerOwnPress.refused} / ${composerOwnClicks}`,
+);
+// The native click arriving after the supplied one is the same press, late: a
+// menu toggled by it would otherwise open and shut on one press.
+const lateClick = press({ target: composerOwnButton });
+document.fire("click", lateClick);
+if (!lateClick.stopped) composerOwnButton.onclick(lateClick);
+check(
+  "swallowed a native click that followed the supplied one",
+  composerOwnClicks === 1 && lateClick.stopped === true,
+  `${composerOwnClicks} / ${lateClick.stopped}`,
+);
+// The next press is a press of its own and is answered.
+document.fire("mousedown", press({ target: composerOwnButton }));
+document.fire("mouseup", press({ target: composerOwnButton }));
+const nextClick = press({ target: composerOwnButton });
+document.fire("click", nextClick);
+if (!nextClick.stopped) composerOwnButton.onclick(nextClick);
+await nextTick();
+check(
+  "answered the next composer press exactly once",
+  composerOwnClicks === 2,
+  String(composerOwnClicks),
+);
+composerOwnButton.remove();
 
 // A press into another text field is the browser's to place the caret with.
 const otherField = new StubElement("input", "other-field");
@@ -5220,6 +5299,23 @@ check(
   editFailure.pre.textContent === fullFailure && !editFailure.pre.hidden && editFailure.hint.hidden &&
     /\.tool\.error pre \{ max-height: 460px; overflow: auto; \}/.test(sheet),
   editFailure.pre.textContent,
+);
+const shellFailure = app.startTool("bash", JSON.stringify({ command: "gh api x && gh pr view 1 --comments --json body" }));
+const shellOutput = `${Array.from({ length: 12 }, (_, i) => `out-${i}`).join("\n")}\n[stderr]\nspecify only one of --comments or --json\n\nUsage: gh pr view\n[exit: 1]`;
+app.finishTool(shellFailure, shellOutput, { isError: true });
+check(
+  "folded a failed command to its diagnostic and exit line, the rest one click away",
+  shellFailure.pre.textContent === "specify only one of --comments or --json\nUsage: gh pr view\n[exit: 1]" &&
+    !shellFailure.hint.hidden &&
+    String(shellFailure.block.className).includes("foldable") &&
+    String(shellFailure.block.className).includes("error"),
+  `${shellFailure.pre.textContent} / ${shellFailure.block.className}`,
+);
+shellFailure.head.onclick();
+check(
+  "expanded a failed command to its full output",
+  shellFailure.pre.textContent === shellOutput,
+  shellFailure.pre.textContent,
 );
 const runningCard = app.startTool("bash", JSON.stringify({ command: "sleep 1" }));
 check(
@@ -7445,7 +7541,7 @@ check(
 check(
   "styled the running-thread mark in both listings",
   /\.session-item \.session-run \{[^}]*position:\s*absolute/.test(sheet) &&
-    /\.session-item \.session-run \{[^}]*right:\s*50px/.test(sheet) &&
+    /\.session-item \.session-run \{[^}]*right:\s*6px/.test(sheet) &&
     /\.session-row \.session-run \{[^}]*align-self:\s*flex-start/.test(sheet) &&
     (sheet.match(/\.session-run \.spinner \{\s*border-color:\s*var\(--accent\)/g) || [])
       .length === 2,

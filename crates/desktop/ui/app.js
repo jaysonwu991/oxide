@@ -5302,6 +5302,20 @@ function previewShell(text, limit) {
 }
 
 
+/// A failed command folds like any other: its card leads with what the shell
+/// said went wrong — the first diagnostics — and the exit line, and the rest of
+/// the output is one click away.
+function previewShellFailure(text, limit) {
+  const all = String(text || "").trimEnd().split("\n");
+  const stderr = all.indexOf("[stderr]");
+  const exit = /^\[exit: /.test(all.at(-1) || "") ? all.at(-1) : null;
+  const diagnostics = (stderr < 0 ? [] : all.slice(stderr + 1, exit ? -1 : undefined))
+    .filter((line) => line.trim());
+  if (!diagnostics.length) return previewShell(text, limit);
+  const shown = [...diagnostics.slice(0, exit ? limit - 1 : limit), ...(exit ? [exit] : [])];
+  return { text: shown.join("\n"), more: Math.max(0, all.length - shown.length), earlier: false };
+}
+
 function previewText(text, lines = 3) {
   const all = String(text || "").replace(/\s+$/, "");
   if (!all) return { text: "", more: 0 };
@@ -5703,7 +5717,7 @@ function paintTool(tool) {
     return;
   }
   if (tool.diffEl) tool.diffEl.hidden = !tool.expanded;
-  if (tool.isError) {
+  if (tool.isError && tool.name !== "bash") {
     tool.pre.hidden = false;
     tool.pre.textContent = tool.full;
     tool.hint.hidden = true;
@@ -5732,7 +5746,9 @@ function paintTool(tool) {
     return;
   }
   tool.pre.hidden = false;
-  const { text, more, earlier } = tool.name === "bash" ? previewShell(tool.full, 3) : previewText(tool.full, 3);
+  const { text, more, earlier } = tool.name !== "bash"
+    ? previewText(tool.full, 3)
+    : tool.isError ? previewShellFailure(tool.full, 3) : previewShell(tool.full, 3);
   tool.pre.textContent = text;
   tool.hint.hidden = more === 0;
   tool.hint.textContent = tool.name === "bash"
@@ -5761,7 +5777,7 @@ function markToolToggle(tool, expandable) {
 }
 
 function toggleTool(tool) {
-  if (!tool.done || tool.quiet || tool.isError) return;
+  if (!tool.done || tool.quiet || (tool.isError && tool.name !== "bash")) return;
   tool.expanded = !tool.expanded;
   paintTool(tool);
 }
@@ -12291,8 +12307,26 @@ async function openTerminal() {
   focusedTerminalPane()?.surface.focus();
 }
 
+/// A command the reader ran in the panel may have switched branch without the
+/// window losing focus, so the composer's branch is read again once the shell's
+/// output settles after a submitted line. Output long after the last submitted
+/// line is a running program's own, which cannot have been a switch.
+const TERMINAL_GIT_WINDOW_MS = 30000;
+let terminalCommandAt = 0;
+let terminalGitTimer = null;
+function scheduleTerminalGit() {
+  if (Date.now() - terminalCommandAt > TERMINAL_GIT_WINDOW_MS) return;
+  clearTimeout(terminalGitTimer);
+  terminalGitTimer = setTimeout(() => {
+    terminalGitTimer = null;
+    loadGit();
+  }, 350);
+  if (terminalGitTimer && typeof terminalGitTimer.unref === "function") terminalGitTimer.unref();
+}
+
 function terminalWrite(data, id = state.terminal.focused) {
   if (id == null) return;
+  if (/[\r\n]/.test(data)) terminalCommandAt = Date.now();
   void invoke("terminal_write", { id, data }).catch((error) => {
     el("terminal-state").hidden = false;
     el("terminal-state").textContent = t("terminal.writeFailed", "The shell is not answering: {value0}", {
@@ -12563,6 +12597,7 @@ async function initEvents() {
     const pane = terminalPane(payload.terminal);
     if (!pane) return;
     terminalFeed(String(payload.data || ""), pane.id);
+    scheduleTerminalGit();
   });
   await listen("terminal-exit", (event) => {
     const payload = event.payload || {};
@@ -13113,6 +13148,8 @@ function rememberBlurredEditor(event) {
 /// one is supplied on the next task only when the webview omitted it, which is
 /// what some macOS WebKit versions do when the press ends an editing session.
 let editorControlPress = null;
+/// The control a withheld click was supplied to, until the next press.
+let suppliedClick = null;
 function finishEditorControlPress(event) {
   // Only the primary button arms the press, so only its release finishes it: a
   // secondary release while the primary is still held must not run the
@@ -13131,7 +13168,10 @@ function finishEditorControlPress(event) {
   setTimeout(() => {
     if (editorControlPress !== press) return;
     editorControlPress = null;
-    if (!press.clicked && !press.control.disabled) press.control.click();
+    if (!press.clicked && !press.control.disabled) {
+      press.control.click();
+      suppliedClick = press.control;
+    }
   }, 0);
 }
 
@@ -13592,15 +13632,22 @@ function init() {
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
+      suppliedClick = null;
       const editor = isTextEditor(document.activeElement)
         ? document.activeElement
         : justBlurredEditor;
       justBlurredEditor = null;
-      if (!editor) return;
       const control = pressedControl(event.target);
       if (!control) return;
+      // The composer's own controls never need the focus a press would give
+      // them: keeping it off the press is what lets WebKit's first click land
+      // even when the editing session ended in an earlier task than this press.
+      const composerControl = !isTextEditor(control) &&
+        !control.isContentEditable &&
+        isInside(control, el("composer"));
+      if (!editor && !composerControl) return;
       if (takesPressFocus(control)) {
-        editor.blur();
+        editor?.blur();
         justBlurredEditor = null;
         return;
       }
@@ -13611,7 +13658,7 @@ function init() {
       // that complete that box are the exception, and a control that takes the
       // caret itself — a picker focusing its own filter — does so after this
       // press, so its own `focus` is the one that stands.
-      if (!completesEditor(control)) editor.blur();
+      if (editor && !completesEditor(control)) editor.blur();
       justBlurredEditor = null;
       editorControlPress = { control, clicked: false };
     },
@@ -13620,6 +13667,14 @@ function init() {
   document.addEventListener(
     "click",
     (event) => {
+      // A native click WebKit delivers after the one supplied for it is the same
+      // press arriving late; answering it too would toggle a menu shut again.
+      if (suppliedClick && event.isTrusted !== false && pressedControl(event.target) === suppliedClick) {
+        suppliedClick = null;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       if (editorControlPress && pressedControl(event.target) === editorControlPress.control) {
         editorControlPress.clicked = true;
       }
