@@ -2796,9 +2796,9 @@ check(
     sharedCharacters.filter((character) => extensionIcons.includes(`"${character}"`)).length
   }/${sharedCharacters.length}`,
 );
-// Codex's project and thread actions stay out of the sidebar until their row is
-// hovered or holds keyboard focus. Other controls must still exist at rest, so
-// an accidental hover-only rule elsewhere remains a failed check.
+// A clickable control is visible and accepts the pointer before the reader
+// moves over it. Revealing a control on hover makes the first press feel like
+// it only revealed the thing whose click was meant to answer it.
 const sheetRules = [...sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors, body]) => [
   selectors.trim(),
   body,
@@ -2820,11 +2820,10 @@ const restingBody = (selectors) =>
     .join(";");
 const hiddenUntilPointedAt = sheetRules
   .filter(([selectors]) => /:hover|:focus/.test(selectors))
-  .filter(([selectors]) => !sidebarActionRule(selectors))
   .filter(([selectors]) => hiddenAtRest(restingBody(selectors)))
   .map(([selectors]) => selectors);
 check(
-  "left only sidebar row actions waiting for hover or keyboard focus",
+  "left nothing waiting for hover or keyboard focus before it can be pressed",
   hiddenUntilPointedAt.length === 0,
   hiddenUntilPointedAt.join(" | "),
 );
@@ -2859,11 +2858,7 @@ const movedOnHover = sheetRules
       .split(";")
       .map((declaration) => declaration.split(":")[0].trim())
       .filter((property) => property && !property.startsWith("/*"))
-      .filter(
-        (property) =>
-          !cosmeticOnHover.includes(property) &&
-          !(property === "pointer-events" && sidebarActionRule(selectors)),
-      )
+      .filter((property) => !cosmeticOnHover.includes(property))
       .map((property) => `${selectors} { ${property} }`),
   );
 check(
@@ -2880,17 +2875,11 @@ check(
 const invisibleRules = [
   ...sheetRules
     .filter(([, body]) => /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body))
-    .filter(
-      ([selectors, body]) =>
-        !sidebarActionRule(selectors) && !inertSidebarActionSurface(selectors, body),
-    )
+    .filter(([selectors, body]) => !inertSidebarActionSurface(selectors, body))
     .map(([selectors]) => `${selectors} { opacity: 0 }`),
   ...sheetRules
     .filter(([, body]) => /pointer-events/.test(body))
-    .filter(
-      ([selectors, body]) =>
-        !sidebarActionRule(selectors) && !inertSidebarActionSurface(selectors, body),
-    )
+    .filter(([selectors, body]) => !inertSidebarActionSurface(selectors, body))
     .map(([selectors]) => `${selectors} { pointer-events }`),
 ];
 check(
@@ -2899,20 +2888,28 @@ check(
   invisibleRules.join(" | ") ||
     (/\[hidden\]/.test(sheet) ? "the [hidden] guard lost its !important" : "the [hidden] guard is gone"),
 );
-// What a row carries is present in the DOM but quiet at rest, then becomes
-// interactive on row hover or keyboard focus. The title itself does not move;
-// the row paints an inert fade beneath the controls when they appear.
+const hiddenSidebarControls = sheetRules
+  .filter(([selectors, body]) => sidebarActionRule(selectors) && (hiddenAtRest(body) || /pointer-events/.test(body)))
+  .map(([selectors, body]) => `${selectors} { ${body.trim()} }`);
+check(
+  "left every project and thread control clickable at rest",
+  hiddenSidebarControls.length === 0,
+  hiddenSidebarControls.join(" | "),
+);
+// What a row carries stands in the room reserved for it. The title does not
+// move between states, and the row's inert fade only supplies contrast beneath
+// controls that are already there.
 const rowRule = (selector) => {
   const start = sheet.indexOf(`${selector} {`);
   return start < 0 ? "" : sheet.slice(start, sheet.indexOf("}", start));
 };
 const drawnOnTheRow = [".row-add", ".row-more", ".row-pin", ".row-archive"];
 check(
-  "revealed project and thread actions only for a hovered or keyboard-held row",
-  /\.row-add \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/.test(sheet) &&
-    /\.row-more,[\s\S]*?\.row-archive \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/.test(sheet) &&
-    /\.project-item:hover \.row-more,[\s\S]*?\.session-item:focus-within \.row-archive \{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/.test(sheet),
-  drawnOnTheRow.join(" | "),
+  drawnOnTheRow.every((selector) => {
+    const rule = rowRule(selector);
+    return rule.includes("color:") && !hiddenAtRest(rule) && !/pointer-events/.test(rule);
+  }),
+  drawnOnTheRow.map((selector) => rowRule(selector).replace(/\s+/g, " ")).join(" | "),
 );
 // The row the arrangement is dragged by says so: the whole row takes the grab
 // cursor, the row in the air is dimmed, and the row under the pointer wears the
@@ -2942,9 +2939,9 @@ check(
     /\.session-item \.shortcut/.test(sheet)
   } / ${rowRule(".session-item .name").replace(/\s+/g, " ")}`,
 );
-// Codex lets a row's title use the action strip while the controls are idle.
-// When they appear, an inert surface covers the title below them and the
-// controls sit above it, so the title neither moves nor steals their clicks.
+// A row reserves the action strip permanently. An inert surface supplies the
+// controls' contrast, while the title ends before it so it cannot steal their
+// clicks.
 const rowBodies = (selector) =>
   sheetRules
     .filter(([selectors]) =>
@@ -2969,45 +2966,48 @@ const rightPadding = (row) => {
   if (!values.length) return NaN;
   return values.length === 1 ? values[0] : values[1];
 };
+const roomBesideControl = (row, control) =>
+  rightPadding(row) -
+  (lastPixels(rowBodies(control), "right") + lastPixels(rowBodies(control), "width"));
 check(
-  "let sidebar titles use the idle action strip without moving under its controls",
-  rightPadding(".project-item") === 8 &&
-    rightPadding(".session-item") === 6 &&
+  "reserved the row action strip at rest without moving the title between states",
+  rightPadding(".project-item") === 54 &&
+    rightPadding(".session-item") === 54 &&
+    rightPadding(".session-item.has-pull") === 76 &&
+    rightPadding(".session-item.running") === 76 &&
     /\.project-item::after,[\s\S]*?\.session-item::after \{[^}]*width: 54px;[^}]*pointer-events: none;/.test(sheet) &&
+    /\.session-item\.has-pull::after,[\s\S]*?\.session-item\.running::after \{ width: 76px; \}/.test(sheet) &&
     /\.project-item:hover::after,[\s\S]*?\.session-item:focus-within::after \{ opacity: 1; \}/.test(sheet) &&
     /\.row-more,[\s\S]*?\.row-archive \{[^}]*z-index: 1;/.test(sheet),
-  `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px`,
+  `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px / ${rightPadding(".session-item.has-pull")}px`,
 );
 check(
   "aligned project names with the session titles beneath them",
   /--sidebar-title-indent:\s*28px;/.test(sheet) &&
-    /\.project-item \{\s*padding:\s*7px 8px 7px calc\(var\(--sidebar-title-indent\) - 22px\);/.test(
+    /\.project-item \{\s*padding:\s*7px 54px 7px calc\(var\(--sidebar-title-indent\) - 22px\);/.test(
       sheet,
     ) &&
-    /\.session-item \{ padding: 6px 6px 6px var\(--sidebar-title-indent\); \}/.test(sheet),
+    /\.session-item \{ padding: 6px 54px 6px var\(--sidebar-title-indent\); \}/.test(sheet),
   rowRule(".project-item"),
 );
 check(
-  "replaced the resting pull badge with hover actions in the same strip",
+  "kept the pull request and both row actions visible side by side",
   /min-width: 0/.test(rowRule(".session-item .name")) &&
-    /flex: none/.test(rowRule(".session-pull")) &&
-    rightPadding(".session-item") === 6 &&
-    !rowBodies(".session-item.has-pull") &&
+    /position: absolute/.test(rowRule(".session-pull")) &&
+    lastPixels(rowBodies(".session-pull"), "right") === 50 &&
     lastPixels(rowBodies(".row-pin"), "right") === 28 &&
     lastPixels(rowBodies(".row-archive"), "right") === 6 &&
-    [".session-item:hover .session-pull", ".session-item:focus-within .session-pull"]
-      .every((selector) => /opacity: 0; pointer-events: none/.test(rowBodies(selector))) &&
+    [".session-pull", ".row-pin", ".row-archive"]
+      .every((control) => roomBesideControl(".session-item.has-pull", control) >= 6) &&
     /outline: 2px/.test(rowBodies(".session-item .session-pull:focus-visible")),
 );
 check(
-  "kept the focused pull link visible and clickable in place of the row actions",
-  /opacity: 1; pointer-events: auto/.test(rowBodies(".session-item:has(.session-pull:focus-visible) .session-pull")) &&
-    [".row-pin", ".row-archive"].every((action) =>
-      /opacity: 0; pointer-events: none/.test(rowBodies(`.session-item:has(.session-pull:focus-visible) ${action}`))) &&
-    /opacity: 0/.test(rowBodies(".session-item:has(.session-pull:focus-visible)::after")),
+  "kept the running mark clear of the row actions",
+  lastPixels(rowBodies(".session-item .session-run"), "right") === 50 &&
+    roomBesideControl(".session-item.running", ".session-item .session-run") >= 6,
 );
 check(
-  "covered sidebar titles with opaque request and hover-action backgrounds",
+  "covered sidebar titles with opaque request and row-action backgrounds",
   [".session-item .session-pull", ".session-item .row-pin", ".session-item .row-archive"]
     .every((selector) => /background: var\(--session-control-bg\)/.test(rowBodies(selector))) &&
     /--session-control-bg: var\(--sidebar\)/.test(rowBodies(".session-item")) &&
@@ -3044,8 +3044,8 @@ check(
     app.matchShortcut({ key: "d", ctrlKey: false, shiftKey: false, altKey: false, metaKey: true })?.id === "split-terminal-right",
 );
 // Codex's sidebar pairs the activity filter with search. Activity itself stays
-// in the command menu; the filter carries the attention mark and Projects use
-// the section's reveal-on-hover actions.
+// in the command menu; the filter carries the attention mark and the Projects
+// section keeps its actions available without a reveal gesture.
 const newChatButton = buttonFor("new-chat");
 check(
   "placed the title, activity filter and search above the New Chat action",
@@ -3076,14 +3076,14 @@ check(
   newProjectButton,
 );
 check(
-  "revealed the Projects actions on hover or keyboard focus",
-  /\.projects-actions \{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none/.test(sheet) &&
-    /\.projects-header:hover \.projects-actions,[\s\S]*?\.projects-header:focus-within \.projects-actions/.test(sheet),
+  "drew the Projects actions before they are pointed at",
+  !hiddenAtRest(rowBodies(".projects-actions")) &&
+    !/pointer-events/.test(rowBodies(".projects-actions")),
 );
 check(
-  "revealed the Projects disclosure on hover or keyboard focus",
-  /\.projects-title svg \{[^}]*color:\s*transparent/.test(sheet) &&
-    /\.projects-header:hover button\.projects-title svg,[\s\S]*?\.projects-header:focus-within button\.projects-title svg \{\s*color:\s*var\(--dim\)/.test(sheet),
+  "drew the Projects disclosure before it is pointed at",
+  /\.projects-title svg \{[^}]*color:\s*var\(--dim\)/.test(sheet) &&
+    !/\.projects-header:(?:hover|focus-within) button\.projects-title svg/.test(sheet),
 );
 
 // A scrollbar is painted over the last pixels of the box it scrolls, so every
@@ -3587,6 +3587,32 @@ check(
 );
 document.fire("click", press({ target: composerLink }));
 document.fire("mouseup", composerLinkPress);
+document.activeElement = null;
+
+// Native disclosures and selects supply their own focus activation. Ending the
+// editor before their press leaves that one press native rather than spending
+// it on the editing session.
+const disclosure = new StubElement("summary", "composer-disclosure");
+document.activeElement = elementFor("prompt");
+const disclosurePress = press({ target: disclosure });
+document.fire("mousedown", disclosurePress);
+check(
+  "left a disclosure's opening press to the browser after ending the editor",
+  disclosurePress.refused !== true && document.activeElement === null,
+  `${disclosurePress.refused} / ${document.activeElement?.id ?? "(none)"}`,
+);
+document.fire("mouseup", disclosurePress);
+
+const scope = new StubElement("select", "panel-scope");
+document.activeElement = elementFor("prompt");
+const scopePress = press({ target: scope });
+document.fire("mousedown", scopePress);
+check(
+  "left a select's opening press to the browser after ending the editor",
+  scopePress.refused !== true && document.activeElement === null,
+  `${scopePress.refused} / ${document.activeElement?.id ?? "(none)"}`,
+);
+document.fire("mouseup", scopePress);
 document.activeElement = null;
 
 // A failed read is painted into the list instead of becoming an empty result.
@@ -5505,8 +5531,16 @@ calls.length = 0;
 app.state.session = "changes-chat";
 app.closeReview();
 check("kept the summary for the idle chat", !elementFor("details-panel").hidden);
-elementFor("details-toggle").click();
-check("hid the project card from its header control", elementFor("details-panel").hidden);
+elementFor("prompt").focus();
+const detailsTogglePress = press({ target: elementFor("details-toggle") });
+document.fire("mousedown", detailsTogglePress);
+document.fire("mouseup", detailsTogglePress);
+await nextTick();
+check(
+  "hid the project card on the first press of its header control",
+  detailsTogglePress.refused === true && elementFor("details-panel").hidden,
+  `${detailsTogglePress.refused} / ${elementFor("details-panel").hidden}`,
+);
 elementFor("details-toggle").click();
 check("restored the project card from its header control", !elementFor("details-panel").hidden);
 
@@ -7406,11 +7440,12 @@ check(
   elementFor("sessions-list").outline(),
 );
 // A mark a stylesheet never styles is a row that says nothing, and the two
-// listings put it in different places: in the tree's indent gutter, and on the
+// listings put it in different places: in the tree's action strip, and on the
 // line of the title it belongs to rather than at the row's far edge.
 check(
   "styled the running-thread mark in both listings",
-  /\.session-item \.session-run \{[^}]*flex:\s*none/.test(sheet) &&
+  /\.session-item \.session-run \{[^}]*position:\s*absolute/.test(sheet) &&
+    /\.session-item \.session-run \{[^}]*right:\s*50px/.test(sheet) &&
     /\.session-row \.session-run \{[^}]*align-self:\s*flex-start/.test(sheet) &&
     (sheet.match(/\.session-run \.spinner \{\s*border-color:\s*var\(--accent\)/g) || [])
       .length === 2,
@@ -8063,11 +8098,20 @@ check(
 );
 const pinnedThread = elementFor("projects-tree").children[0].children[1].children[0];
 calls.length = 0;
-pinnedThread.querySelector(".row-archive").click();
+const archiveButton = pinnedThread.querySelector(".row-archive");
+elementFor("prompt").focus();
+const archivePress = press({ target: archiveButton });
+document.fire("mousedown", archivePress);
+check(
+  "took the archive press while the composer held the caret",
+  archivePress.refused === true && document.activeElement === null,
+  `${archivePress.refused} / ${document.activeElement?.id ?? "(none)"}`,
+);
+document.fire("mouseup", press({ target: archiveButton }));
 await nextTick();
 check(
-  "archived the thread without deleting its session file",
-  calls.some(([name, args]) => name === "archive_session" && args.id === "pin-me") &&
+  "archived on the first press without deleting its session file",
+  calls.filter(([name, args]) => name === "archive_session" && args.id === "pin-me").length === 1 &&
     !calls.some(([name]) => name === "delete_session") &&
     app.state.sessions.length === 0 &&
     elementFor("projects-tree").querySelector(".project-empty")?.textContent === "No chats" &&
@@ -11048,8 +11092,13 @@ localStorage.setItem = (key, value) => {
   if (key === "oxide.reviewUnified") savedReviewLayout = value;
   originalReviewStorageWrite(key, value);
 };
-elementFor("review-layout").onclick();
-check("switched the review to unified diff without replacing its content",
+elementFor("prompt").focus();
+const reviewLayoutPress = press({ target: elementFor("review-layout") });
+document.fire("mousedown", reviewLayoutPress);
+document.fire("mouseup", reviewLayoutPress);
+await nextTick();
+check("switched the review to unified diff on its first press without replacing its content",
+  reviewLayoutPress.refused === true &&
   elementFor("review-modal").classList.contains("unified") &&
     elementFor("review-layout").getAttribute("aria-pressed") === "true" &&
     savedReviewLayout === "true");
@@ -11130,7 +11179,9 @@ check(
     app.focusedTerminalPane().splitDown.getAttribute("aria-label") === "Split terminal down" &&
     app.focusedTerminalPane().clear.getAttribute("aria-label") === "Clear terminal" &&
     app.focusedTerminalPane().maximize.getAttribute("aria-label") === "Maximize terminal" &&
-    app.focusedTerminalPane().close.getAttribute("aria-label") === "Hide the panel",
+    app.focusedTerminalPane().close.getAttribute("aria-label") === "Hide the panel" &&
+    !hiddenAtRest(rowBodies(".terminal-pane-controls")) &&
+    !/pointer-events/.test(rowBodies(".terminal-pane-controls")),
 );
 check(
   "drew the shell's cursor as its own terminal cell",
@@ -11186,9 +11237,19 @@ check(
     terminalWrites.join("|") === "\x0c",
   terminalWrites.join("|"),
 );
-app.toggleTerminalMaximized();
+const terminalSurfaceBeforeMaximize = app.focusedTerminalPane().surface;
+terminalSurfaceBeforeMaximize.focus();
+const maximizePress = press({ target: app.focusedTerminalPane().maximize });
+document.fire("mousedown", maximizePress);
 check(
-  "gave Terminal a native maximize and restore control",
+  "took a Terminal toolbar press while the shell held focus",
+  maximizePress.refused === true && document.activeElement === null,
+  `${maximizePress.refused} / ${document.activeElement?.id ?? "(none)"}`,
+);
+document.fire("mouseup", maximizePress);
+await nextTick();
+check(
+  "gave Terminal a one-press maximize and restore control",
   document.body.classList.contains("terminal-maximized") &&
     app.focusedTerminalPane().maximize.getAttribute("aria-pressed") === "true" &&
     app.focusedTerminalPane().maximize.getAttribute("aria-label") === "Restore terminal",
