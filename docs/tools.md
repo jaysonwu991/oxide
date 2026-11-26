@@ -143,8 +143,8 @@ those commands retain their real shell semantics. A `grep -l` remains a shell
 command because Pi's typed `grep` has no filename-only mode. A recursive grep that cannot be
 converted (a pipe or script) is not refused: on Unix it runs with `grep` redefined to
 skip `node_modules`, `target`, `.git`, `.venv`, `venv`, `dist`, `build` and `vendor`,
-and the output notes this. It is refused only when an operand names one of those
-directories, and on Windows.
+and the output notes this. A command that explicitly names one of those
+directories runs as written, so its requested scope is not narrowed.
 
 A `read` the platform refuses — macOS keeps the
 Desktop, Documents and Downloads folders behind a per-app grant — is reported
@@ -189,6 +189,11 @@ An unpiped `git rev-parse --verify <ref>` or `git show-ref --verify <ref>` probe
 is a neutral result when the ref is absent: its nonzero exit is kept, the result
 is labelled `Git ref not found`, and the frontend does not paint a task failure.
 Chained Git commands and other nonzero statuses remain failures.
+Condition-style commands likewise keep exit 1 as their answer: `git diff
+--quiet`/`--exit-code` (differences present), `git merge-base --is-ancestor`
+(not an ancestor), `git check-ignore -q` (not ignored), `test`/`[`, `cmp -s`
+(files differ), and `jq -e` (false or null) are neutral and say what the exit
+means. Their syntax errors and higher exits remain failures.
 
 The same script reader decides the pending `gh` exits below, so a wait written as
 `sleep 270; cd . && gh pr checks 260 2>&1 | tail -12` is still read through the
@@ -254,13 +259,9 @@ matched literally abandons the restatement rather than searching for something
 else. Shell operators are judged outside quotes, so a pattern that contains
 `|`, `;` or `#` no longer reads as a pipeline.
 Other shell pipelines, redirections, expansions, multiple paths and unsupported options are
-never dropped to make a call fit. The recursive-search guard refuses any other
-recursive `grep` that could
-walk a directory — no operand, a folder, an unresolved path, or an unverified glob —
-and steers it to the `grep` tool, which applies the repository's ignore rules
-and bounds its results; when the command spells out its pattern, path and
-`--include` filter as literal shell arguments, the refusal suggests a `grep` call
-with those values. Quoted spaces and glob filters are decoded, and `-F` maps to
+never dropped to make a call fit. A recursive `grep` that cannot be converted
+runs as written, with generated trees excluded only when the command did not
+name one of them itself. Quoted spaces and glob filters are decoded, and `-F` maps to
 `literal: true`. `-i` maps to `ignoreCase`, `-l` to the default filename output
 mode, `-w` to a pattern wrapped in `\b` boundaries (which turns `-F` text into
 an escaped regex instead), `-E`/`-G` select the pattern's dialect, `-I` is a
@@ -268,13 +269,12 @@ no-op the tool already applies, and several `--include` filters
 that each name an extension become one brace glob (`--include=*.ts
 --include=*.tsx` is `*.{ts,tsx}`). A trailing `| head -N` is the search's
 `limit`, so a bounded sweep written as a pipeline converts instead of being
-refused; any other downstream command still keeps the pipeline as written.
+run as a shell command; any other downstream command still keeps the pipeline as written.
 A grep pointed at several paths is not converted — the tool searches one path
-per call and dropping an operand would change the search — but its refusal
-names one call per path instead of leaving the split to the reader. Several
-patterns, unsupported matching options, shell
-expansions, untranslatable patterns and preceding commands keep the generic
-guidance rather than suggesting a search with different meaning. A
+per call and dropping an operand would change the search — so it runs as a
+shell command. Several patterns, unsupported matching options, shell
+expansions, untranslatable patterns and preceding commands likewise keep their
+real shell semantics. A
 recursive search scoped to files named one by one
 (`grep -rn needle README.md docs/guide.md`) is not a directory sweep and runs
 as written. Simple unquoted globs such as `docs/*.md` and
