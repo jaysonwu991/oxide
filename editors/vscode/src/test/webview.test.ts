@@ -4013,6 +4013,38 @@ describe("webview scrolling", () => {
     assert.equal(body.scrollTop, 0);
   });
 
+  it("keeps the pull request a command raised as a direct link", () => {
+    const { byId, send, posted } = loadRenderer();
+    send(stateMessage());
+    send({
+      k: "push",
+      item: {
+        id: 12,
+        kind: "tool",
+        name: "bash",
+        args: { command: "gh pr create --fill" },
+        output: "https://github.com/jaysonwu991/oxide/pull/352\n[exit: 0]",
+        running: false,
+      },
+    });
+    const link = find(byId.get("transcript")!, "tool-pull-link")!;
+    assert.equal(link.hidden, false);
+    assert.equal(link.getAttribute("href"), "https://github.com/jaysonwu991/oxide/pull/352");
+    assert.match(link.innerHTML, /Pull request #352/);
+    byId.get("transcript")!.fire("click", {
+      target: link,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    const opened = posted.filter((message) => message.k === "openUrl").at(-1);
+    assert.equal(opened?.k, "openUrl");
+    assert.equal(opened?.url, "https://github.com/jaysonwu991/oxide/pull/352");
+  });
+
+  it("puts a link glyph ahead of every composer link", () => {
+    assert.match(style, /\.markdown-input a::before \{[^}]*width: 0\.85em;[^}]*mask: url\("data:image\/svg\+xml/);
+  });
+
   it("re-follows the bottom when the pane itself shrinks", async () => {
     const { byId, resize, send } = loadRenderer();
     send(stateMessage());

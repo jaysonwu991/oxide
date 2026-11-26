@@ -2807,10 +2807,14 @@ const sheetRules = [...sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)].map(([, selectors
   body,
 ]);
 const sidebarActionRule = (selectors) =>
-  /\.row-(?:add|more|pin|archive)|\.session-pull|\.projects-actions/.test(selectors);
+  /\.row-(?:add|more|pin|archive)|\.session-pull|\.recent-pull|\.projects-actions/.test(selectors);
 const inertSidebarActionSurface = (selectors, body) =>
   selectors.includes(".project-item::after") &&
   selectors.includes(".session-item::after") &&
+  /pointer-events:\s*none/.test(body);
+const hidesPullStatusForRowActions = (selectors, body) =>
+  selectors.includes(".session-item:hover .session-pull") &&
+  /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body) &&
   /pointer-events:\s*none/.test(body);
 const hiddenAtRest = (body) =>
   /(^|[;\s])opacity:\s*0(?:[;\s]|$)/.test(body) ||
@@ -2850,6 +2854,7 @@ const cosmeticOnHover = [
   "outline",
   "outline-color",
   "outline-offset",
+  "pointer-events",
   "stroke",
   "text-decoration",
   "text-decoration-color",
@@ -2884,6 +2889,7 @@ const invisibleRules = [
   ...sheetRules
     .filter(([, body]) => /pointer-events/.test(body))
     .filter(([selectors, body]) => !inertSidebarActionSurface(selectors, body))
+    .filter(([selectors, body]) => !hidesPullStatusForRowActions(selectors, body))
     .map(([selectors]) => `${selectors} { pointer-events }`),
 ];
 check(
@@ -2898,6 +2904,7 @@ check(
 // control that is not drawn.
 const hiddenSidebarControls = sheetRules
   .filter(([selectors, body]) => sidebarActionRule(selectors) && /pointer-events|display:\s*none|visibility:\s*hidden/.test(body))
+  .filter(([selectors, body]) => !hidesPullStatusForRowActions(selectors, body))
   .map(([selectors, body]) => `${selectors} { ${body.trim()} }`);
 const revealRule = sheetRules.find(([selectors, body]) =>
   /opacity:\s*1/.test(body) &&
@@ -3034,6 +3041,12 @@ check(
     lastPixels(rowBodies(".session-item.has-pull .row-archive"), "right") === 28 &&
     roomBesideControl(".session-item.has-pull", ".session-pull") >= 6 &&
     /outline: 2px/.test(rowBodies(".session-item .session-pull:focus-visible")),
+);
+check(
+  "hid the pull request mark while the row actions are hovered",
+  /\.session-item:hover \.session-pull \{[^}]*opacity: 0;[^}]*pointer-events: none;/.test(sheet) &&
+    /\.recent-session-item:hover \.recent-pull \{[^}]*opacity: 0;/.test(sheet),
+  rowRule(".session-item:hover .session-pull"),
 );
 check(
   "kept the running mark clear of the row actions",
@@ -3518,7 +3531,8 @@ check(
   String(composerButtonClicks),
 );
 
-// The memory of an ended editing session lasts only for its own press.
+// A control's one-press path does not depend on remembering which editor was
+// focused before: the press itself is enough.
 document.activeElement = elementFor("prompt");
 document.fire("focusout", press({ target: elementFor("prompt") }));
 document.activeElement = null;
@@ -3526,11 +3540,17 @@ await nextTick();
 const laterButtonPress = press({ target: composerButton });
 document.fire("mousedown", laterButtonPress);
 check(
-  "forgot an ended editing session before a later unrelated press",
-  laterButtonPress.refused !== true,
+  "kept a later button press on the one-click path",
+  laterButtonPress.refused === true,
   String(laterButtonPress.refused),
 );
 document.fire("mouseup", laterButtonPress);
+await nextTick();
+check(
+  "supplied that later press exactly once",
+  composerButtonClicks === 4,
+  String(composerButtonClicks),
+);
 
 // A dialog's box is the same case as the message box: a press on a control
 // elsewhere in the window leaves it, and it still answers one click.
@@ -3547,21 +3567,22 @@ document.fire("mouseup", press({ target: composerButton }));
 document.fire("click", press({ target: composerButton }));
 await nextTick();
 
-// With no editor active the press keeps its ordinary browser behavior, and no
-// click is ever supplied on its behalf.
+// Every activation control uses the same one-press path, even with no editing
+// session: WebKit's focus default is kept off the press and the omitted click
+// is supplied once.
 document.activeElement = null;
 const ordinaryButtonPress = press({ target: composerButton });
 document.fire("mousedown", ordinaryButtonPress);
 check(
-  "left a button's ordinary focus behavior alone when no editor was active",
-  ordinaryButtonPress.refused !== true,
+  "kept a button's focus default off the press with no editor active",
+  ordinaryButtonPress.refused === true,
   String(ordinaryButtonPress.refused),
 );
 document.fire("mouseup", ordinaryButtonPress);
 await nextTick();
 check(
-  "supplied nothing for a press with no editing session",
-  composerButtonClicks === 3,
+  "supplied a button's first click with no editing session",
+  composerButtonClicks === 5,
   String(composerButtonClicks),
 );
 
@@ -3642,11 +3663,12 @@ document.activeElement = checkbox;
 const checkboxButtonPress = press({ target: composerButton });
 document.fire("mousedown", checkboxButtonPress);
 check(
-  "left a button press alone while a non-editor input held focus",
-  checkboxButtonPress.refused !== true,
+  "kept a button on the one-click path while a non-editor input held focus",
+  checkboxButtonPress.refused === true,
   String(checkboxButtonPress.refused),
 );
 document.fire("mouseup", checkboxButtonPress);
+await nextTick();
 
 // A row the page wires a click to is a control, so a press on it leaves the box
 // the reader was typing in too; a row with no click of its own is left native.
@@ -5125,6 +5147,25 @@ app.finishTool(proseCard, proseOutput);
 check("kept useful shell results above a decorative footer", proseCard.pre.textContent === "Files: 5\nTests: passed\n[exit: 0]", proseCard.pre.textContent);
 proseCard.hint.onclick?.();
 check("preserved the full shell output when expanded", proseCard.pre.textContent === proseOutput, proseCard.pre.textContent);
+const pullCard = app.startTool("bash", JSON.stringify({ command: "gh pr create --fill" }));
+app.finishTool(pullCard, "https://github.com/jaysonwu991/oxide/pull/352\n[exit: 0]");
+check(
+  "kept the request a forge command raised as a direct link",
+  pullCard.pull.hidden === false &&
+    pullCard.pull.getAttribute("href") === "https://github.com/jaysonwu991/oxide/pull/352" &&
+    pullCard.pull.innerHTML.includes("Pull request #352") &&
+    pullCard.pull.innerHTML.includes(app.ICONS.pull),
+  pullCard.pull.outline(),
+);
+calls.length = 0;
+pullCard.pull.onclick(press({ target: pullCard.pull }));
+await nextTick();
+check(
+  "opened the raised request from its result",
+  projectCalls("open_url").length === 1 &&
+    projectCalls("open_url")[0][1]?.url === "https://github.com/jaysonwu991/oxide/pull/352",
+  JSON.stringify(calls),
+);
 const plainCard = app.startTool("bash", JSON.stringify({ command: "cargo test" }));
 app.finishTool(plainCard, "ok\nline two\nline three\nline four\n", { elapsed: 30 });
 check(
@@ -6539,6 +6580,11 @@ check(
     nestedDestination.includes(">Wiki</a>"),
   nestedDestination,
 );
+check(
+  "put a link glyph ahead of every link in the composer",
+  /\.markdown-input a::before \{[^}]*width: 0\.85em;[^}]*mask: url\("data:image\/svg\+xml/.test(sheet),
+  sheet.slice(sheet.indexOf(".markdown-input a::before"), sheet.indexOf(".markdown-input a::before") + 180),
+);
 
 // A Markdown table is rendered from `splitRow`, a string splitter. The review's
 // diff row builder once shared the name and shadowed it through hoisting, so a
@@ -6957,6 +7003,24 @@ check(
   "sent on the click a mouse produces as well",
   JSON.stringify(calls.map(([name]) => name)) === JSON.stringify(keyboardSend),
   JSON.stringify(calls),
+);
+
+calls.length = 0;
+app.state.session = null;
+elementFor("prompt").value = "send with one press";
+app.setIdle();
+app.updateSendState();
+document.activeElement = elementFor("prompt");
+const sendPress = press({ target: elementFor("send") });
+document.fire("mousedown", sendPress);
+document.fire("mouseup", press({ target: elementFor("send") }));
+await nextTick();
+check(
+  "sent from one pointer press while the composer held focus",
+  sendPress.refused === true &&
+    projectCalls("send_prompt").length === 1 &&
+    elementFor("prompt").value === "",
+  `${sendPress.refused} / ${JSON.stringify(calls)}`,
 );
 
 calls.length = 0;
@@ -9468,9 +9532,8 @@ await app.renderProjectsTree();
 
 // ---------- a thread's pull request ----------
 
-// A thread that opened a pull request carries it on its row, colored by the
-// state the forge last reported. The mark is the link, so a click opens the
-// request in the machine's browser instead of opening the thread.
+// A thread that opened a pull request carries its status at the row's end. The
+// glyph yields that slot to the row actions on hover, as Codex Desktop does.
 console.log("a thread's pull request");
 const pullThread = {
   id: "pull-thread",
@@ -9508,7 +9571,8 @@ check(
     pullMark.title === "Pull request #266 · Merged" &&
     pullMark.innerHTML === app.ICONS.pull &&
     pullMark.children.length === 0 &&
-    pullRow.classList.contains("has-pull"),
+    pullRow.classList.contains("has-pull") &&
+    elementFor("projects-tree").querySelector(".recent-pull")?.innerHTML === app.ICONS.pull,
   `${pullMark?.className} / ${pullMark?.title}`,
 );
 calls.length = 0;
@@ -11435,6 +11499,19 @@ check(
     terminalSurface.getAttribute("autocorrect") === "off" &&
     terminalSurface.spellcheck === false,
   terminalSurface.outline(),
+);
+// Focusing a terminal pane by clicking it changes only which shell owns the
+// keyboard. Rebuilding the pane here replaced the surface and reset the output
+// the reader had scrolled to.
+terminalSurface.scrollTop = 42;
+const terminalSection = app.focusedTerminalPane().section;
+terminalSurface.dispatchEvent({ type: "click" });
+check(
+  "kept a clicked terminal's surface and scroll position in place",
+  app.focusedTerminalPane().surface === terminalSurface &&
+    app.focusedTerminalPane().section === terminalSection &&
+    terminalSurface.scrollTop === 42,
+  `${app.focusedTerminalPane().surface === terminalSurface} / ${terminalSurface.scrollTop}`,
 );
 let nativePastePrevented = false;
 terminalSurface.dispatchEvent({
