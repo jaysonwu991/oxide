@@ -459,6 +459,18 @@ pre,
   opacity: 0.8;
 }
 
+.markdown-input a::before {
+  content: "";
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: 0.28em;
+  vertical-align: -0.08em;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6.2 3.1H3.6A1.6 1.6 0 0 0 2 4.7v7.7a1.6 1.6 0 0 0 1.6 1.6h7.7a1.6 1.6 0 0 0 1.6-1.6v-2.6M9.2 2h4.8v4.8M13.7 2.3 7.5 8.5' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6.2 3.1H3.6A1.6 1.6 0 0 0 2 4.7v7.7a1.6 1.6 0 0 0 1.6 1.6h7.7a1.6 1.6 0 0 0 1.6-1.6v-2.6M9.2 2h4.8v4.8M13.7 2.3 7.5 8.5' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
 :is(.assistant .body, .user .body, .markdown-input) code {
   background: var(--vscode-textPreformat-background, color-mix(in srgb, var(--vscode-foreground, #808080) 12%, transparent));
   color: var(--vscode-textPreformat-foreground, inherit);
@@ -1034,6 +1046,19 @@ pre,
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
 }
+
+.tool-pull-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 8px 7px;
+  color: var(--vscode-textLink-foreground);
+  font-size: 0.85em;
+  text-decoration: none;
+}
+.tool-pull-link:hover { text-decoration: underline; }
+.tool-pull-link:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.tool-pull-link svg { display: block; width: 14px; height: 14px; flex: none; }
 
 .tool .diff {
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));

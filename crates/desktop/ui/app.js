@@ -5195,6 +5195,24 @@ function toolCommand(name, argsJson) {
   return String(toolArgs(argsJson).command || "");
 }
 
+const PULL_REQUEST_URL =
+  /https?:\/\/(?:www\.)?(?:github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+|gitlab\.com\/[^/\s]+\/[^/\s]+\/-\/merge_requests\/\d+)/i;
+
+/// The request a completed forge command named. The printed URL is the result
+/// the reader needs from `gh pr create`, so it stays a real link even when the
+/// command output is folded to its last lines.
+function reportedPullRequest(name, argsJson, output) {
+  const command = toolCommand(name, argsJson);
+  const raises =
+    /\bgh\s+pr\s+(?:create|edit|ready|merge|reopen|close)\b/.test(command) ||
+    /\bglab\s+mr\s+(?:create|update|merge|reopen|close)\b/.test(command);
+  if (!raises) return null;
+  const url = String(output || "").match(PULL_REQUEST_URL)?.[0];
+  if (!url) return null;
+  const label = url.match(/\/(?:pull|merge_requests)\/(\d+)/)?.[1] || "";
+  return { url, label: label ? `${url.includes("merge_requests") ? "!" : "#"}${label}` : "" };
+}
+
 /// The one-line subject a tool card shows. Shell calls drop the boilerplate
 /// (the PATH export every desktop shell needs, the `cd` prefix, `echo` labels)
 /// and keep the first real statement; other tools show their subject.
@@ -5569,6 +5587,11 @@ function createToolCard(name, args) {
   const hint = document.createElement("div");
   hint.className = "thint";
   hint.hidden = true;
+  const pull = document.createElement("a");
+  pull.className = "tool-pull-link";
+  pull.hidden = true;
+  pull.target = "_blank";
+  pull.rel = "noreferrer";
   const tool = {
     name,
     args,
@@ -5580,6 +5603,7 @@ function createToolCard(name, args) {
     tstate,
     actions,
     outputCopy,
+    pull,
     done: false,
     full: "",
     live: "",
@@ -5599,7 +5623,7 @@ function createToolCard(name, args) {
       toggleTool(tool);
     };
   }
-  block.append(head, pre, hint);
+  block.append(head, pre, hint, pull);
   return tool;
 }
 
@@ -5671,6 +5695,21 @@ function finishTool(tool, output, { isError = false, diff = null, elapsed = 0, a
   tool.done = true;
   tool.full = output || "";
   tool.outputCopy.hidden = !tool.full;
+  const request = isError ? null : reportedPullRequest(tool.name, tool.args, tool.full);
+  if (request) {
+    tool.pull.setAttribute("href", request.url);
+    tool.pull.title = pullTitle({ ...request, state: "" });
+    tool.pull.setAttribute("aria-label", tool.pull.title);
+    tool.pull.innerHTML = `${ICONS.pull}<span>${escapeHtml(
+      t("ui.pullRequest", "Pull request {value0}", { value0: request.label }),
+    )}</span>`;
+    tool.pull.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openExternal(request.url);
+    };
+    tool.pull.hidden = false;
+  }
   tool.block.classList.remove("running");
   if (isError) tool.block.classList.add("error");
   tool.quiet =
@@ -9134,8 +9173,8 @@ function openExternal(url) {
   );
 }
 
-/// The mark a thread's row carries for its pull request: colored by state,
-/// named by its label, and a click that opens the request.
+/// The request's state glyph at the row's end. It yields the slot to the row's
+/// actions when the row is hovered, while staying available to keyboard use.
 function pullButton(pull) {
   const button = document.createElement("button");
   button.type = "button";
@@ -12128,11 +12167,16 @@ function renderTerminalPanes() {
 }
 
 function focusTerminalPane(id, focus = false) {
-  if (!terminalPane(id)) return;
+  const pane = terminalPane(id);
+  if (!pane) return;
+  const changed = state.terminal.focused !== id;
   state.terminal.focused = id;
-  renderTerminalPanes();
-  const pane = focusedTerminalPane();
-  if (focus) pane?.surface.focus();
+  if (changed) {
+    for (const each of state.terminal.panes) {
+      each.section.classList.toggle("focused", each.id === id);
+    }
+  }
+  if (focus) pane.surface.focus({ preventScroll: true });
   fitTerminal();
 }
 
@@ -13618,13 +13662,12 @@ function init() {
   el("review-scope").onchange = changeReviewScope;
   el("review-refresh").onclick = changeReviewScope;
 
-  // WebKit can spend the first press after editing only moving focus to a
-  // control, withholding its click until the next press. That focus default is
-  // kept off mousedown so the browser completes that same native click, reading
-  // the editor WebKit may have already ended through the `focusout` it
-  // dispatched just before the press. When a version still omits the click — or
-  // ends the editing session before the page sees the press at all — the next
-  // task supplies the one click that was withheld, and never a second one.
+  // WebKit can spend a control's first press only moving focus, withholding its
+  // click until the next press. That focus default is kept off mousedown so the
+  // browser completes that same native click, reading an editor WebKit may have
+  // already ended through the `focusout` it dispatched just before the press.
+  // When a version still omits the click, the next task supplies the one click
+  // that was withheld, and never a second one.
   // Question choices use labels around their native controls and need the same
   // treatment. Keyboard focus and activation remain untouched.
   document.addEventListener("focusout", rememberBlurredEditor, true);
@@ -13639,13 +13682,9 @@ function init() {
       justBlurredEditor = null;
       const control = pressedControl(event.target);
       if (!control) return;
-      // The composer's own controls never need the focus a press would give
-      // them: keeping it off the press is what lets WebKit's first click land
-      // even when the editing session ended in an earlier task than this press.
-      const composerControl = !isTextEditor(control) &&
-        !control.isContentEditable &&
-        (isInside(control, el("composer")) || control.tagName === "A");
-      if (!editor && !composerControl) return;
+      // Controls never need the focus a press would give them: keeping it off
+      // the press is what lets WebKit's first click land. This covers every
+      // button and link in the window, not only the composer's.
       if (takesPressFocus(control)) {
         editor?.blur();
         justBlurredEditor = null;
@@ -14938,9 +14977,8 @@ async function renderProjectsTree() {
       }${running ? " — a turn is running" : ""}`;
       sessionItem.appendChild(sessionName);
 
-      // A thread that opened a pull request carries it on its row, in the state
-      // the forge last reported: the row is the one place the reader can see a
-      // conversation's request without opening it, and the mark is the link.
+      // The request is a status at rest; the row's pin and archive actions take
+      // its place while the row is pointed at.
       const pull = pullOf(session);
       if (pull) {
         sessionItem.classList.add("has-pull");

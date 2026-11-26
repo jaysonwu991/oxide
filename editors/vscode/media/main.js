@@ -1650,6 +1650,7 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     search: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.4 15.4 4.6 4.6"/></svg>',
     folder: '<svg viewBox="0 0 24 24"><path d="M3 6h7l2 3h9v11H3ZM3 9h18"/></svg>',
     globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg>',
+    pull: '<svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2.4"/><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="19" r="2.4"/><path d="M6 7.4v9.2M18 16.6v-8a2 2 0 0 0-2-2H8"/></svg>',
     plug: '<svg viewBox="0 0 24 24"><path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>',
     tool: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
     copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
@@ -1702,6 +1703,22 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
       web_fetch: "Fetched",
       webfetch: "Fetched",
     }[name] || toolDisplayName(name);
+  }
+
+  const PULL_REQUEST_URL =
+    /https?:\/\/(?:www\.)?(?:github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+|gitlab\.com\/[^/\s]+\/[^/\s]+\/-\/merge_requests\/\d+)/i;
+
+  function reportedPullRequest(name, rawArgs, output) {
+    if (name !== "bash") return null;
+    const command = String(parseArgs(rawArgs).command || "");
+    const raises =
+      /\bgh\s+pr\s+(?:create|edit|ready|merge|reopen|close)\b/.test(command) ||
+      /\bglab\s+mr\s+(?:create|update|merge|reopen|close)\b/.test(command);
+    if (!raises) return null;
+    const url = String(output || "").match(PULL_REQUEST_URL)?.[0];
+    if (!url) return null;
+    const number = url.match(/\/(?:pull|merge_requests)\/(\d+)/)?.[1] || "";
+    return { url, label: number ? `${url.includes("merge_requests") ? "!" : "#"}${number}` : "" };
   }
 
   function toolSummary(name, rawArgs) {
@@ -1887,11 +1904,17 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
     hint.setAttribute("role", "button");
     hint.tabIndex = 0;
     hint.setAttribute("aria-expanded", "false");
-    wrap.append(head, pre, hint);
-    return { el: wrap, pre, hint, state, head, actions, outputCopy, summary };
+    const pull = document.createElement("a");
+    pull.className = "tool-pull-link";
+    pull.hidden = true;
+    pull.target = "_blank";
+    pull.rel = "noreferrer";
+    wrap.append(head, pre, hint, pull);
+    return { el: wrap, pre, hint, state, head, actions, outputCopy, pull, summary };
   }
 
   function parseArgs(raw) {
+    if (raw && typeof raw === "object") return raw;
     try {
       const value = JSON.parse(raw || "{}");
       return value && typeof value === "object" ? value : {};
@@ -2004,6 +2027,16 @@ function installMarkdownInput(editor, render, handlesTab = () => true) {
   function paintTool(entry) {
     const item = entry.item;
     const quietSearch = isQuietSearchResult(item);
+    const request = item.running || item.isError
+      ? null
+      : reportedPullRequest(item.name, item.args, item.output);
+    entry.pull.hidden = !request;
+    if (request) {
+      entry.pull.setAttribute("href", request.url);
+      entry.pull.title = t("ui.pullRequest", "Pull request {value0}", { value0: request.label });
+      entry.pull.setAttribute("aria-label", entry.pull.title);
+      entry.pull.innerHTML = `${TOOL_ICONS.pull}<span>${escapeHtml(entry.pull.title)}</span>`;
+    }
     entry.el.classList.toggle("running", Boolean(item.running));
     entry.el.classList.toggle("quiet", quietSearch);
     // Each state is named as a boolean: `classList.toggle` with an absent force
