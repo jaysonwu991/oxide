@@ -11940,11 +11940,33 @@ let terminalDividerNode = null;
 
 function terminalControl(label, className, icon, run) {
   const control = document.createElement("button");
+  let pointerPress = null;
   control.type = "button";
   control.className = `icon ${className}`;
   control.title = label;
   control.setAttribute("aria-label", label);
   control.innerHTML = icon;
+  // A focused terminal can consume the first native click on its toolbar.
+  // Keep that press off the focus default and supply the click only if WebKit
+  // omits it.
+  control.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !isTextEditor(document.activeElement)) return;
+    event.preventDefault();
+    pointerPress = { clicked: false };
+  });
+  control.addEventListener("pointerup", (event) => {
+    if (event.button !== 0 || !pointerPress) return;
+    const press = pointerPress;
+    setTimeout(() => {
+      if (pointerPress === press) pointerPress = null;
+      if (press.clicked || control.disabled) return;
+      suppliedClick = control;
+      control.click();
+    }, 0);
+  });
+  control.addEventListener("click", () => {
+    if (pointerPress) pointerPress.clicked = true;
+  });
   control.onclick = (event) => {
     event.stopPropagation();
     run();

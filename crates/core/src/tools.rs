@@ -4021,21 +4021,6 @@ impl ShellGrep {
         self.call_for(self.operands.first().map(String::as_str))
     }
 
-    /// Every call this command is worth: the tool searches one path per call,
-    /// so a grep pointed at several directories is restated as one call each
-    /// rather than left for the reader to split. Empty when any part of the
-    /// command cannot be restated faithfully.
-    fn equivalent_calls(&self) -> Vec<String> {
-        if self.operands.len() < 2 {
-            return self.equivalent_call().into_iter().collect();
-        }
-        self.operands
-            .iter()
-            .map(|operand| self.call_for(Some(operand)))
-            .collect::<Option<Vec<String>>>()
-            .unwrap_or_default()
-    }
-
     fn call_for(&self, operand: Option<&str>) -> Option<String> {
         if !self.restatable {
             return None;
@@ -4826,10 +4811,12 @@ fn resolved_directory(base: &Path, target: &str) -> Option<PathBuf> {
         .filter(|path| path.is_dir())
 }
 
-/// Refuses the recursive shell-grep pattern that most often turns a narrow
-/// code search into a walk through dependency and build-output trees. The
-/// dedicated grep tool applies the repository's ignore rules, bounds its
-/// results, and is the right place for a repository-wide content search.
+/// Finds the recursive shell-grep pattern that can turn a narrow code search
+/// into a walk through dependency and build-output trees. The dedicated grep
+/// tool applies the repository's ignore rules and bounds its results; a shell
+/// grep that cannot be converted runs with the same exclusions when it sweeps
+/// the project. A command that explicitly names a generated directory runs as
+/// written, since changing its scope would silently hide the requested files.
 ///
 /// This intentionally permits non-recursive grep over explicit files, grep
 /// used as a pipe filter, and a recursive grep whose operands are all named
@@ -4841,28 +4828,6 @@ fn resolved_directory(base: &Path, target: &str) -> Option<PathBuf> {
 #[cfg(test)]
 fn uses_recursive_shell_grep(command: &str, cwd: &Path) -> bool {
     recursive_shell_grep(command, cwd).is_some()
-}
-
-/// The refusal text for a recursive shell grep, naming the grep-tool call that
-/// searches the same pattern and path when the command spells them out.
-fn recursive_shell_grep_refusal(grep: &ShellGrep) -> String {
-    let mut message = String::from(
-        "recursive shell grep refused, and nothing in this command was run; call the `grep` \
-         tool directly with `pattern` and optional `path`, `glob`, and `limit` instead, then \
-         rerun the rest of the command without the grep. The tool uses ripgrep when \
-         available, skips dependency/generated directories, and respects ignore files",
-    );
-    let calls = grep.equivalent_calls();
-    match calls.len() {
-        0 => {}
-        1 => message.push_str(&format!(". For this command that call is {}", calls[0])),
-        _ => message.push_str(&format!(
-            ". The tool searches one path per call, so this command is {} calls: {}",
-            calls.len(),
-            calls.join(" then ")
-        )),
-    }
-    message
 }
 
 /// Whether a command carries a shell operator that the conversion would throw
@@ -5466,11 +5431,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     let command = required_string(args, "bash", "command", r#"{"command":"cargo test"}"#)?;
     let mut bounded_sweep = false;
     if let Some(grep) = recursive_shell_grep(command, cwd) {
-        if cfg!(unix) && !grep_names_generated_directory(&grep.operands) {
-            bounded_sweep = true;
-        } else {
-            anyhow::bail!("{}", recursive_shell_grep_refusal(&grep));
-        }
+        bounded_sweep = cfg!(unix) && !grep_names_generated_directory(&grep.operands);
     }
     let secs = bash_timeout_secs(args, command);
     #[cfg(unix)]
@@ -5614,6 +5575,14 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
     if no_matches {
         output.push_str(" (search returned no matches)");
     }
+    let status_note = (exit == 1)
+        .then(|| status_only_exit_note(command))
+        .flatten();
+    if let Some(note) = status_note {
+        output.push_str(" (");
+        output.push_str(note);
+        output.push(')');
+    }
     let ref_not_found = exit != 0 && git_ref_probe_not_found(command);
     if ref_not_found {
         output.push_str(" (Git ref not found)");
@@ -5622,7 +5591,7 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
         output.push('\n');
         output.push_str(module_failure_hint(&output, cwd));
     }
-    if exit != 0 && !reader_closed && !no_matches && !checks_failed {
+    if exit != 0 && !reader_closed && !no_matches && !checks_failed && status_note.is_none() {
         if let Some(hint) = bash_failure_hint(&output) {
             output.push('\n');
             output.push_str(hint);
@@ -5635,9 +5604,72 @@ async fn bash(cwd: &Path, args: &Value, progress: &Progress) -> Result<ToolOutpu
             && !checks_pending
             && !run_pending
             && !checks_failed
+            && status_note.is_none()
             && !ref_not_found,
         ..ToolOutput::text(output)
     })
+}
+
+/// Commands whose exit 1 is a result rather than a failed invocation. The
+/// command still ran successfully; the status answers the question it was
+/// asked. Higher exits remain failures, as do the same commands with bad
+/// arguments or a shell syntax error.
+fn status_only_exit_note(command: &str) -> Option<&'static str> {
+    let stages = status_pipeline(command, 1)?;
+    let [stage] = stages.as_slice() else {
+        return None;
+    };
+    let stage = strip_redirections(stage);
+    let words = grep_shell_words(&stage);
+    let index = shell_command_index(&words)?;
+    let name = shell_word_name(words[index]);
+    let arguments = &words[index + 1..];
+    let has = |expected: &str| {
+        arguments
+            .iter()
+            .any(|word| word.trim_matches(['\'', '"']) == expected)
+    };
+    match name {
+        "git" => match git_argument_subcommand(arguments) {
+            Some("diff") if has("--quiet") || has("--exit-code") => Some("differences present"),
+            Some("merge-base") if has("--is-ancestor") => Some("not an ancestor"),
+            Some("check-ignore") if has("-q") || has("--quiet") => Some("path is not ignored"),
+            Some("grep") if has("-q") || has("--quiet") => Some("search returned no matches"),
+            _ => None,
+        },
+        "test" | "[" | "[[" => Some("condition is false"),
+        "cmp" if has("-s") || has("--silent") || has("--quiet") => Some("files differ"),
+        "jq" if has("-e") || has("--exit-status") => Some("filter produced false or null"),
+        _ => None,
+    }
+}
+
+fn git_argument_subcommand<'a>(arguments: &[&'a str]) -> Option<&'a str> {
+    let mut index = 0;
+    while let Some(word) = arguments.get(index) {
+        let word = word.trim_matches(['\'', '"']);
+        if word == "--" {
+            return arguments.get(index + 1).copied();
+        }
+        if matches!(
+            word,
+            "-C" | "-c"
+                | "--git-dir"
+                | "--work-tree"
+                | "--namespace"
+                | "--exec-path"
+                | "--config-env"
+        ) {
+            index += 2;
+            continue;
+        }
+        if word.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return Some(word);
+    }
+    None
 }
 
 fn bash_failure_hint(output: &str) -> Option<&'static str> {
@@ -9943,6 +9975,70 @@ mod tests {
     }
 
     #[test]
+    fn condition_commands_read_exit_one_as_their_answer() {
+        for (command, note) in [
+            ("test -f missing.txt", "condition is false"),
+            ("[ -f missing.txt ]", "condition is false"),
+            ("git diff --quiet", "differences present"),
+            ("git diff --exit-code HEAD", "differences present"),
+            ("git -C repo diff --quiet", "differences present"),
+            ("git --no-pager diff --exit-code", "differences present"),
+            ("git merge-base --is-ancestor old new", "not an ancestor"),
+            ("git check-ignore -q target", "path is not ignored"),
+            ("git grep -q needle", "search returned no matches"),
+            ("cmp -s old new", "files differ"),
+            ("jq -e '.value' input.json", "filter produced false or null"),
+        ] {
+            assert_eq!(status_only_exit_note(command), Some(note), "{command}");
+        }
+        for command in [
+            "false",
+            "git diff --check",
+            "git merge-base old new",
+            "cmp old new",
+            "jq '.value' input.json",
+            "printf x | git diff --quiet",
+        ] {
+            assert_eq!(status_only_exit_note(command), None, "{command}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_keeps_a_false_condition_out_of_the_failure_state() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide_condition_status_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("old"), "old\n").unwrap();
+        std::fs::write(dir.join("new"), "new\n").unwrap();
+        let output = execute(
+            &call("bash", json!({ "command": "cmp -s old new" })),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(!output.is_error, "{}", output.text);
+        assert!(
+            output.text.ends_with("[exit: 1] (files differ)"),
+            "{}",
+            output.text
+        );
+
+        let malformed = execute(
+            &call("bash", json!({ "command": "cmp" })),
+            &dir,
+            &McpRegistry::default(),
+            &Progress::default(),
+        )
+        .await;
+        assert!(malformed.is_error, "{}", malformed.text);
+        assert!(!malformed.text.contains("files differ"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_missing_interpreter_path_gets_a_hint() {
         assert!(
             bash_failure_hint("bash: venv/bin/python: No such file or directory\n[exit: 127]")
@@ -11110,8 +11206,9 @@ mod tests {
             &Progress::default(),
         )
         .await;
-        assert!(named.is_error);
-        assert!(named.text.contains("recursive shell grep refused"));
+        assert!(!named.is_error, "{}", named.text);
+        assert!(named.text.contains("dep.txt:1:needle in a dependency"));
+        assert!(!named.text.contains("prefer the `grep` tool"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -11759,16 +11856,12 @@ mod tests {
     }
 
     #[test]
-    fn recursive_grep_refusal_names_the_equivalent_grep_tool_call() {
+    fn recursive_grep_restates_the_search_it_replaces() {
         let root = Path::new(".");
         let grep = recursive_shell_grep("grep -rn needle src", root).expect("a recursive sweep");
-        let refusal = recursive_shell_grep_refusal(&grep);
-        assert!(
-            refusal.contains("recursive shell grep refused"),
-            "{refusal}"
-        );
-        assert!(refusal.contains(r#""pattern":"needle""#), "{refusal}");
-        assert!(refusal.contains(r#""path":"src""#), "{refusal}");
+        let call = grep.equivalent_call().expect("a restated call");
+        assert!(call.contains(r#""pattern":"needle""#), "{call}");
+        assert!(call.contains(r#""path":"src""#), "{call}");
 
         let grep = recursive_shell_grep("grep -rn todo . --include='*.rs'", root).expect("a sweep");
         let call = grep.equivalent_call().expect("a restated call");
@@ -11829,30 +11922,6 @@ mod tests {
                 expected,
                 "{command}"
             );
-        }
-    }
-
-    #[test]
-    fn recursive_grep_keeps_generic_guidance_for_unrepresentable_searches() {
-        for command in [
-            "grep -rn needle src tests",
-            "grep -rn -e first -e second src",
-            "grep -rn -e first -f patterns.txt src",
-            "grep -rn -f patterns.txt -e second src",
-            "grep -rnL needle src",
-            "grep -rnv needle src",
-            "grep -rln needle src",
-            "grep -rn needle src --exclude-dir=generated",
-            "grep -rn needle src --include='*.rs' --include='src/*'",
-            "grep -rn needle src --include",
-            "cd elsewhere && grep -rn needle src",
-            r#"grep -rn "$PATTERN" src"#,
-            "grep -rn needle '$unterminated",
-            "grep -rn needle src*",
-        ] {
-            let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
-            assert!(grep.equivalent_call().is_none(), "{command}");
-            assert!(recursive_shell_grep_refusal(&grep).contains("call the `grep` tool directly"));
         }
     }
 
@@ -11960,24 +12029,6 @@ mod tests {
             let grep = recursive_shell_grep(command, Path::new(".")).expect(command);
             assert!(grep.equivalent_call().is_none(), "{command}");
         }
-    }
-
-    #[test]
-    fn recursive_grep_refusal_splits_several_search_paths_into_one_call_each() {
-        let grep = recursive_shell_grep("grep -rn needle src tests", Path::new("."))
-            .expect("a recursive sweep");
-        let refusal = recursive_shell_grep_refusal(&grep);
-        assert!(refusal.contains("one path per call"), "{refusal}");
-        assert!(
-            refusal.contains(r#"{"path":"src","pattern":"needle"}"#),
-            "{refusal}"
-        );
-        assert!(
-            refusal.contains(r#"{"path":"tests","pattern":"needle"}"#),
-            "{refusal}"
-        );
-        // The bounded conversion still refuses to run only part of the search.
-        assert!(bounded_shell_grep("grep -rln needle src tests", Path::new(".")).is_none());
     }
 
     #[test]

@@ -3006,15 +3006,11 @@ const rightPadding = (row) => {
   if (!values.length) return NaN;
   return values.length === 1 ? values[0] : values[1];
 };
-const roomBesideControl = (row, control) =>
-  rightPadding(row) -
-  (lastPixels(rowBodies(control), "right") + lastPixels(rowBodies(control), "width"));
 check(
   "let titles run to the row's end at rest and drew the actions over them on hover without moving the title",
   rightPadding(".project-item") === 8 &&
     rightPadding(".session-item") === 8 &&
-    rightPadding(".session-item.has-pull") === 32 &&
-    rightPadding(".session-item.running") === 32 &&
+    !/\.session-item\.(?:has-pull|running)[^{]*\{[^}]*padding-right/.test(sheet) &&
     /\.project-item::after,[\s\S]*?\.session-item::after \{[^}]*width: 54px;[^}]*pointer-events: none;/.test(sheet) &&
     /\.session-item\.has-pull::after,[\s\S]*?\.session-item\.running::after \{ width: 76px; \}/.test(sheet) &&
     /\.project-item:hover::after,[\s\S]*?\.session-item:focus-within::after \{ opacity: 1; \}/.test(sheet) &&
@@ -3039,7 +3035,6 @@ check(
     lastPixels(rowBodies(".row-archive"), "right") === 6 &&
     lastPixels(rowBodies(".session-item.has-pull .row-pin"), "right") === 50 &&
     lastPixels(rowBodies(".session-item.has-pull .row-archive"), "right") === 28 &&
-    roomBesideControl(".session-item.has-pull", ".session-pull") >= 6 &&
     /outline: 2px/.test(rowBodies(".session-item .session-pull:focus-visible")),
 );
 check(
@@ -3051,8 +3046,7 @@ check(
 check(
   "kept the running mark clear of the row actions",
   lastPixels(rowBodies(".session-item .session-run"), "right") === 6 &&
-    lastPixels(rowBodies(".session-item.running .row-pin"), "right") === 50 &&
-    roomBesideControl(".session-item.running", ".session-item .session-run") >= 6,
+    lastPixels(rowBodies(".session-item.running .row-pin"), "right") === 50,
 );
 check(
   "covered sidebar titles with opaque request and row-action backgrounds",
@@ -11359,6 +11353,36 @@ check(
     !hiddenAtRest(rowBodies(".terminal-pane-controls")) &&
     !/pointer-events/.test(rowBodies(".terminal-pane-controls")),
 );
+const terminalToolbarPointerPress = {
+  button: 0,
+  target: app.focusedTerminalPane().maximize,
+  preventDefault() {
+    this.defaultPrevented = true;
+  },
+};
+app.focusedTerminalPane().surface.focus();
+const terminalToolbarPointerEvent = {
+  type: "pointerdown",
+  ...terminalToolbarPointerPress,
+};
+app.focusedTerminalPane().maximize.dispatchEvent(terminalToolbarPointerEvent);
+check(
+  "kept a terminal toolbar pointer press from spending its first click on focus",
+  terminalToolbarPointerEvent.defaultPrevented === true,
+  String(terminalToolbarPointerEvent.defaultPrevented),
+);
+app.focusedTerminalPane().maximize.dispatchEvent({
+  type: "pointerup",
+  button: 0,
+  target: app.focusedTerminalPane().maximize,
+});
+await nextTick();
+check(
+  "answered that pointer press without waiting for a second click",
+  document.body.classList.contains("terminal-maximized") &&
+    app.focusedTerminalPane().maximize.getAttribute("aria-pressed") === "true",
+);
+app.toggleTerminalMaximized();
 check(
   "drew the shell's cursor as its own terminal cell",
   app.focusedTerminalPane().surface.children[0]?.querySelector(".terminal-cursor")?.textContent === "\u00a0",

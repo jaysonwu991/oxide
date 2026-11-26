@@ -3841,8 +3841,6 @@ textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 75%
 }
 .project-item .name { font-size: 13.5px; font-weight: 500; }
 .session-item { padding: 6px 8px 6px var(--sidebar-title-indent); }
-.session-item.has-pull,
-.session-item.running { padding-right: 32px; }
 .session-item.active,
 .activity-row.active { background: var(--panel-3); }
 .sidebar-show-more { padding: 6px 8px 7px var(--sidebar-title-indent); font-size: 12.5px; }
