@@ -527,7 +527,7 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 :is(.msg .body, .markdown-input) blockquote { margin: 7px 0; padding-left: 11px; border-left: 2px solid var(--border); color: var(--dim); }
 :is(.msg .body, .markdown-input) a { color: var(--accent); text-decoration: underline; cursor: pointer; }
 :is(.msg .body, .markdown-input) a:hover { opacity: 0.8; }
-.markdown-input a::before {
+:is(.msg .body, .markdown-input) a::before {
   content: "";
   display: inline-block;
   width: 0.85em;
@@ -2027,17 +2027,34 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .session-item.active { background: var(--panel-3); color: var(--text); }
 /* The thread a turn is running in says so on its own row: the reader may be
    looking at another one, so the sidebar is what names the working thread. */
-.session-item .session-run {
+/* A thread's end-of-row controls share one strip: pin, then archive, with the
+   request stacked in the archive's cell (drawn above it, so it is what rests
+   there until the row is hovered) and the running mark after them. The
+   strip is anchored to the row's end, so whichever control is drawn in the
+   last cell sits flush there. */
+.session-item .session-actions {
   position: absolute;
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
+  display: grid;
+  grid-template-rows: 20px;
+  grid-auto-columns: 20px;
+  column-gap: 2px;
+  align-items: center;
+  z-index: 1;
+}
+.session-actions > * { grid-row: 1; }
+.session-actions .row-pin { grid-column: 1; }
+.session-actions .row-archive,
+.session-actions .session-pull { grid-column: 2; }
+.session-actions .session-run { grid-column: 3; }
+.session-item .session-run {
   width: 20px;
   height: 20px;
   justify-content: center;
   display: flex;
   align-items: center;
-  z-index: 1;
   background: var(--session-control-bg);
   border-radius: 5px;
 }
@@ -2045,6 +2062,18 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 /* The title remains the flexible cell: a long one ellipsizes rather than
    pushing the pin and archive actions out of the row. */
 .session-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A pointed-at title that does not fit slides left until its end clears the
+   row's actions; leaving the row snaps it back to its ellipsis. */
+.session-item .name.marquee {
+  text-overflow: clip;
+  text-indent: var(--title-shift, 0);
+  transition: text-indent var(--title-duration, 1.5s) linear 0.35s;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 10px);
+  mask-image: linear-gradient(90deg, transparent, #000 10px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-item .name.marquee { transition: none; }
+}
 
 /* At rest a title runs to the row's end. The actions are drawn over the title's
    tail when the row is pointed at, on an inert fade that keeps them legible
@@ -2064,7 +2093,6 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
   pointer-events: none;
   transition: opacity 0.12s;
 }
-.session-item.has-pull::after,
 .session-item.running::after { width: 76px; }
 .session-item.active::after { background: linear-gradient(90deg, transparent, var(--panel-3) 34%); }
 .project-item:hover::after,
@@ -2146,9 +2174,6 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .row-more,
 .row-pin,
 .row-archive {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2161,12 +2186,11 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
   color: var(--faint);
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
-  z-index: 1;
 }
 .row-add { z-index: 1; }
-.row-more { position: absolute; right: 28px; color: var(--faint); }
-.row-pin { position: absolute; right: 28px; color: var(--faint); }
-.row-archive { position: absolute; right: 6px; color: var(--faint); }
+.row-more { position: absolute; top: 50%; right: 28px; transform: translateY(-50%); z-index: 1; color: var(--faint); }
+.row-pin,
+.row-archive { color: var(--faint); }
 .row-more:hover, .row-pin:hover, .row-archive:hover { background: var(--panel-3); color: var(--text); }
 .row-pin.active { color: var(--accent); }
 .row-more svg, .row-pin svg, .row-archive svg, .row-add svg { width: 14px; height: 14px; }
@@ -2188,16 +2212,8 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .session-item:focus-within .row-pin,
 .session-item:focus-within .row-archive,
 .row-more[aria-expanded="true"] { opacity: 1; }
-.session-item.has-pull .row-pin,
-.session-item.running .row-pin { right: 50px; }
-.session-item.has-pull .row-archive,
-.session-item.running .row-archive { right: 28px; }
 
 .session-pull {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2209,7 +2225,6 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
   background: transparent;
   color: var(--faint);
   cursor: pointer;
-  z-index: 1;
   transition: background 0.12s, color 0.12s, opacity 0.12s;
 }
 .session-item { --session-control-bg: var(--sidebar); }
@@ -2284,7 +2299,10 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .thread-detail-head,
 .thread-detail-project,
 .thread-detail-branch { display: flex; align-items: center; gap: 8px; min-height: 24px; }
-.thread-detail-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.thread-detail-head { align-items: flex-start; }
+.thread-detail-head > .thread-detail-computer { padding-top: 4px; }
+.thread-detail-head > .thread-detail-age { line-height: 18px; padding-top: 3px; }
+.thread-detail-title { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 18px; padding: 3px 0; font-weight: 600; }
 .thread-detail-computer,
 .thread-detail-age,
 .thread-detail-project,

@@ -1487,6 +1487,11 @@ async fn run_loop(
             // answer is held back so its re-check extends the same assistant
             // turn instead of adding a second summary.
             if !queued && !runtime.cancel.is_cancelled() {
+                if verification.delivery_settle_due()
+                    && !repo_has_pending_delivery(&verification.delivery).await
+                {
+                    verification.settle_delivery();
+                }
                 let mut reminder = verification.reminder();
                 if !follow_through_nudged && unfinished {
                     follow_through_nudged = true;
@@ -2985,6 +2990,26 @@ impl VerificationState {
             return true;
         }
         false
+    }
+
+    /// Whether a finished pull request may still be holding a stale delivery
+    /// reminder: a scratch PR body written beside the change, or an edit
+    /// already committed and pushed, leaves the flags set although the
+    /// repository has nothing left to deliver. Only a repository can answer.
+    fn delivery_settle_due(&self) -> bool {
+        !self.nudged
+            && self.reviewed
+            && (self.edited_since_push || !self.edited.is_empty())
+            && !self.pending.contains("pull request")
+            && self.delivery.join(".git").exists()
+    }
+
+    /// Clears the delivery flags once git reports a clean, pushed repository:
+    /// the link `gh pr create` printed is then the whole handoff, and a
+    /// re-check would only produce a second summary of the same result.
+    fn settle_delivery(&mut self) {
+        self.edited_since_push = false;
+        self.edited.clear();
     }
 
     /// The reminder to send once when work is unconfirmed, or `None` when there
@@ -9181,6 +9206,46 @@ for line in sys.stdin:
         // A reply with no pending code change is allowed.
         let mut state = VerificationState::default();
         assert!(!state.blocks_review_reply("gh pr comment 5 --body hi", false));
+    }
+
+    /// A PR raised with a scratch `--body-file` leaves an edit after the push,
+    /// but a clean, pushed repository has nothing more to deliver: the summary
+    /// with the link ends the run instead of prompting a second one.
+    #[tokio::test]
+    async fn a_pushed_pull_request_with_a_scratch_body_needs_no_recheck() {
+        let dir = std::env::temp_dir().join(format!("oxide_pr_body_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        add_git_remote(&dir);
+        let mut state = VerificationState::new(&dir);
+        state.record("edit", &json!({"path": "catalog.yaml"}), "ok");
+        state.record("bash", &json!({"command": "git push -u origin HEAD"}), "");
+        state.record("write", &json!({"path": ".pr-body.md"}), "wrote 20 bytes");
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --body-file .pr-body.md && rm .pr-body.md"}),
+            "https://github.com/owner/repo/pull/33\n[exit: 0]",
+        );
+        assert!(state.edited_since_push && state.delivery_settle_due());
+        assert!(!repo_has_pending_delivery(&state.delivery).await);
+        state.settle_delivery();
+        assert!(state.reminder().is_none());
+
+        // Work that is really unpushed keeps the reminder.
+        let mut state = VerificationState::new(&dir);
+        std::fs::write(dir.join("catalog.yaml"), "unpushed\n").unwrap();
+        state.record("edit", &json!({"path": "catalog.yaml"}), "ok");
+        state.record(
+            "bash",
+            &json!({"command": "gh pr create --fill"}),
+            "https://github.com/owner/repo/pull/34",
+        );
+        assert!(state.delivery_settle_due());
+        assert!(repo_has_pending_delivery(&state.delivery).await);
+        assert!(state.reminder().unwrap().contains("have not pushed"));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(format!("{}.origin.git", dir.display())).ok();
     }
 
     #[tokio::test]

@@ -2143,8 +2143,8 @@ check(
   "listed a worktree thread under its project with its checkout on the row",
   Boolean(wtRow) &&
     wtRow.querySelector(".session-worktree") !== null &&
-    /worktree fix-login-bug/.test(String(wtRow.title)),
-  wtRow ? `${wtRow.outline()} / ${wtRow.title}` : elementFor("projects-tree").outline(),
+    /worktree fix-login-bug/.test(String(wtRow.getAttribute("aria-description"))),
+  wtRow ? `${wtRow.outline()} / ${wtRow.getAttribute("aria-description")}` : elementFor("projects-tree").outline(),
 );
 threads = threads.filter((thread) => thread.id !== "6f3031b2cafe");
 await app.loadSessions();
@@ -2973,8 +2973,9 @@ check(
   !/"shortcut"/.test(source) &&
     !/\.session-item \.shortcut/.test(sheet) &&
     /\.session-item \.name \{ flex: 1/.test(sheet) &&
-    /position: absolute/.test(rowRule(".row-pin")) &&
-    /position: absolute/.test(rowRule(".row-archive")),
+    /position: absolute/.test(rowRule(".session-item .session-actions")) &&
+    !/position: absolute/.test(rowRule(".row-pin")) &&
+    !/position: absolute/.test(rowRule(".row-archive")),
   `badge ${/"shortcut"/.test(source)} / rule ${
     /\.session-item \.shortcut/.test(sheet)
   } / ${rowRule(".session-item .name").replace(/\s+/g, " ")}`,
@@ -3012,9 +3013,11 @@ check(
     rightPadding(".session-item") === 8 &&
     !/\.session-item\.(?:has-pull|running)[^{]*\{[^}]*padding-right/.test(sheet) &&
     /\.project-item::after,[\s\S]*?\.session-item::after \{[^}]*width: 54px;[^}]*pointer-events: none;/.test(sheet) &&
-    /\.session-item\.has-pull::after,[\s\S]*?\.session-item\.running::after \{ width: 76px; \}/.test(sheet) &&
+    !/\.session-item\.has-pull::after/.test(sheet) &&
+    /\.session-item\.running::after \{ width: 76px; \}/.test(sheet) &&
     /\.project-item:hover::after,[\s\S]*?\.session-item:focus-within::after \{ opacity: 1; \}/.test(sheet) &&
-    /\.row-more,[\s\S]*?\.row-archive \{[^}]*z-index: 1;/.test(sheet),
+    /z-index: 1/.test(rowRule(".row-more")) &&
+    /z-index: 1/.test(rowRule(".session-item .session-actions")),
   `${rightPadding(".project-item")}px / ${rightPadding(".session-item")}px / ${rightPadding(".session-item.has-pull")}px`,
 );
 check(
@@ -3027,14 +3030,14 @@ check(
   rowRule(".project-item"),
 );
 check(
-  "kept the pull request at the row's end with both row actions beside it",
+  "stacked the pull request in the archive button's cell of one strip at the row's end",
   /min-width: 0/.test(rowRule(".session-item .name")) &&
-    /position: absolute/.test(rowRule(".session-pull")) &&
-    lastPixels(rowBodies(".session-pull"), "right") === 6 &&
-    lastPixels(rowBodies(".row-pin"), "right") === 28 &&
-    lastPixels(rowBodies(".row-archive"), "right") === 6 &&
-    lastPixels(rowBodies(".session-item.has-pull .row-pin"), "right") === 50 &&
-    lastPixels(rowBodies(".session-item.has-pull .row-archive"), "right") === 28 &&
+    lastPixels(rowBodies(".session-item .session-actions"), "right") === 6 &&
+    /grid-column: 1/.test(rowBodies(".session-actions .row-pin")) &&
+    /grid-column: 2/.test(rowBodies(".session-actions .row-archive")) &&
+    /grid-column: 2/.test(rowBodies(".session-actions .session-pull")) &&
+    !/position:|right:/.test(rowRule(".session-pull")) &&
+    !/\.session-item\.has-pull \.row-(?:pin|archive)/.test(sheet) &&
     /outline: 2px/.test(rowBodies(".session-item .session-pull:focus-visible")),
 );
 check(
@@ -3045,8 +3048,8 @@ check(
 );
 check(
   "kept the running mark clear of the row actions",
-  lastPixels(rowBodies(".session-item .session-run"), "right") === 6 &&
-    lastPixels(rowBodies(".session-item.running .row-pin"), "right") === 50,
+  /grid-column: 3/.test(rowBodies(".session-actions .session-run")) &&
+    !/position:/.test(rowRule(".session-item .session-run")),
 );
 check(
   "covered sidebar titles with opaque request and row-action backgrounds",
@@ -6575,9 +6578,9 @@ check(
   nestedDestination,
 );
 check(
-  "put a link glyph ahead of every link in the composer",
-  /\.markdown-input a::before \{[^}]*width: 0\.85em;[^}]*mask: url\("data:image\/svg\+xml/.test(sheet),
-  sheet.slice(sheet.indexOf(".markdown-input a::before"), sheet.indexOf(".markdown-input a::before") + 180),
+  "put a link glyph ahead of every link in the composer and in sent and received messages",
+  /:is\(\.msg \.body, \.markdown-input\) a::before \{[^}]*width: 0\.85em;[^}]*mask: url\("data:image\/svg\+xml/.test(sheet),
+  sheet.slice(sheet.indexOf(" a::before") - 40, sheet.indexOf(" a::before") + 180),
 );
 
 // A Markdown table is rendered from `splitRow`, a string splitter. The review's
@@ -7614,8 +7617,8 @@ check(
 // line of the title it belongs to rather than at the row's far edge.
 check(
   "styled the running-thread mark in both listings",
-  /\.session-item \.session-run \{[^}]*position:\s*absolute/.test(sheet) &&
-    /\.session-item \.session-run \{[^}]*right:\s*6px/.test(sheet) &&
+  /\.session-item \.session-run \{[^}]*display:\s*flex/.test(sheet) &&
+    /\.session-actions \.session-run \{[^}]*grid-column:\s*3/.test(sheet) &&
     /\.session-row \.session-run \{[^}]*align-self:\s*flex-start/.test(sheet) &&
     (sheet.match(/\.session-run \.spinner \{\s*border-color:\s*var\(--accent\)/g) || [])
       .length === 2,
@@ -8245,9 +8248,24 @@ check(
   threadRow.outline(),
 );
 gitAnswer = { repo: true, root: removeTarget.path, branch: "main", detached: "" };
+const threadName = threadRow.querySelector(".name");
+threadName.clientWidth = 200;
+threadName.scrollWidth = 320;
 threadRow.fire("mouseenter", {});
 await nextTick();
 const detailCard = document.body.children.at(-1);
+check(
+  "left the thread row without a native tooltip that would cover its hover card",
+  !threadRow.title && !threadRow.getAttribute("title") &&
+    threadRow.getAttribute("aria-description") === "Pinned work",
+  threadRow.outline(),
+);
+check(
+  "slid a clipped thread title to reveal its end while the row is pointed at",
+  threadName.classList.contains("marquee") &&
+    threadName.style.getPropertyValue("--title-shift") === "-120px",
+  `${threadName.className} ${threadName.style.getPropertyValue("--title-shift")}`,
+);
 check(
   "showed the Codex thread summary with title, device, age, project and branch",
   detailCard.querySelector(".thread-detail-title").textContent === "Pinned work" &&
@@ -8257,6 +8275,8 @@ check(
     detailCard.querySelector(".thread-detail-branch").children[1].textContent === "main",
   detailCard.outline(),
 );
+threadRow.fire("mouseleave", { relatedTarget: null });
+check("snapped the thread title back after the pointer left", !threadName.classList.contains("marquee"), threadName.className);
 calls.length = 0;
 threadRow.querySelector(".row-pin").click();
 await nextTick();
@@ -9568,6 +9588,14 @@ check(
     pullRow.classList.contains("has-pull") &&
     elementFor("projects-tree").querySelector(".recent-pull")?.innerHTML === app.ICONS.pull,
   `${pullMark?.className} / ${pullMark?.title}`,
+);
+const pullStrip = pullRow?.querySelector(".session-actions");
+check(
+  "put the request and the pin/archive actions in one strip, the request last so it rests over the archive cell",
+  Boolean(pullStrip) &&
+    pullStrip.children.map((child) => String(child.className).split(" ")[0]).join(",") ===
+      "row-pin,row-archive,session-pull",
+  pullStrip?.outline() || pullRow?.outline(),
 );
 calls.length = 0;
 pullMark.onclick(press({ target: pullMark, stopPropagation() {} }));
@@ -11508,6 +11536,32 @@ check(
   "waited for the rest of a split sequence",
   colored?.textContent === "green" && colored?.style.color === app.terminalColor("32"),
   `${lastLine.map((span) => span.textContent).join("|")} / ${colored?.style.color}`,
+);
+// A long sequence can be cut anywhere, and a private one is a mode, not text.
+app.terminalFeed("\r\n\x1b[38;5;");
+app.terminalFeed("7;49mgrey\x1b[>4;2m\x1b[?1u plain\x1b[0m");
+await new Promise((resolve) => setTimeout(resolve, 30));
+const splitLine = app.focusedTerminalPane().surface.children.at(-1);
+check(
+  "read a long split sequence and private modes without painting their bytes",
+  terminalLineText(splitLine) === "grey plain" &&
+    splitLine.children.find((span) => span.textContent.startsWith("grey"))?.style.color === app.terminalColor("263") &&
+    !splitLine.children.some((span) => span.style.textDecoration === "underline"),
+  `${terminalLineText(splitLine)} / ${splitLine.outline()}`,
+);
+// A full-screen program positions its cursor on the screen it can see and
+// leaves the shell's output as it found it.
+const beforeAlternate = app.focusedTerminalPane().surface.children.map(terminalLineText).join("\n");
+app.terminalFeed("\x1b[?1049h\x1b[1;1HNx view\x1b[3;2Hrow three");
+await new Promise((resolve) => setTimeout(resolve, 30));
+const alternate = app.focusedTerminalPane().surface.children.map(terminalLineText);
+app.terminalFeed("\x1b[?1049l");
+await new Promise((resolve) => setTimeout(resolve, 30));
+check(
+  "drew a full-screen program on its own screen and restored the shell's output after it",
+  alternate[0] === "Nx view" && alternate[2] === " row three" &&
+    app.focusedTerminalPane().surface.children.map(terminalLineText).join("\n") === beforeAlternate,
+  `${JSON.stringify(alternate)}`,
 );
 // The shell does its own line editing, so the window sends the keys rather than
 // keeping a buffer of its own.
