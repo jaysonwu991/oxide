@@ -11649,15 +11649,24 @@ function writeTerminalCell(screen, ch) {
 
 /// One escape sequence, from the `ESC` at `at`: how many characters it took, or
 /// zero when the sequence is still arriving and the bytes wait for the rest.
+/// A control sequence is read by its byte classes (parameters `0x30`-`0x3f`,
+/// intermediates `0x20`-`0x2f`, one final `0x40`-`0x7e`), so a sequence split
+/// across two reads, or one with a private marker this screen does not draw,
+/// is never painted as text.
 function readTerminalEscape(screen, input, at) {
   const rest = input.slice(at);
   if (rest.length < 2) return 0;
   const kind = rest[1];
   if (kind === "[") {
-    const match = /^\x1b\[([0-9;?]*)([A-Za-z])/.exec(rest);
-    if (!match) return rest.length < 4 ? 0 : 2;
-    applyTerminalCsi(screen, match[1], match[2]);
-    return match[0].length;
+    let end = 2;
+    while (end < rest.length && rest.charCodeAt(end) >= 0x30 && rest.charCodeAt(end) <= 0x3f) end += 1;
+    const paramsEnd = end;
+    while (end < rest.length && rest.charCodeAt(end) >= 0x20 && rest.charCodeAt(end) <= 0x2f) end += 1;
+    if (end >= rest.length) return rest.length > 256 ? rest.length : 0;
+    const code = rest.charCodeAt(end);
+    if (code < 0x40 || code > 0x7e) return end;
+    if (paramsEnd === end) applyTerminalCsi(screen, rest.slice(2, paramsEnd), rest[end]);
+    return end + 1;
   }
   if (kind === "]") {
     // An operating-system command (a window title): it is read to its end and
@@ -11667,32 +11676,36 @@ function readTerminalEscape(screen, input, at) {
     const tail = rest.slice(2 + end);
     return 2 + end + (tail.startsWith("\x1b\\") ? 2 : 1);
   }
-  if (kind === "(" || kind === ")") return Math.min(rest.length, 3);
+  if (kind === "(" || kind === ")") return rest.length < 3 ? 0 : 3;
   return 2;
 }
 
-function applyTerminalCsi(screen, params, final) {
+/// The scrollback row the visible screen starts at: a cursor position a
+/// program names is on the screen it can see, not the panel's history.
+function terminalTop(screen) {
+  return Math.max(0, screen.lines.length - screen.rows);
+}
+
+function applyTerminalCsi(screen, rawParams, final) {
+  const params = rawParams.replace(/:/g, ";");
   const numbers = params
+    .replace(/^[<=>?]/, "")
     .split(";")
     .map((value) => (value === "" ? 0 : Number(value)))
     .filter((value) => Number.isFinite(value));
   const first = numbers[0] ?? 0;
-  if (params === "?2004" && final === "h") {
-    screen.bracketedPaste = true;
+  if (/^[?]/.test(params) && (final === "h" || final === "l")) {
+    const on = final === "h";
+    for (const mode of numbers) {
+      if (mode === 2004) screen.bracketedPaste = on;
+      else if (mode === 25) screen.cursorVisible = on;
+      else if (mode === 1049 || mode === 1047 || mode === 47) setTerminalAlternate(screen, on);
+    }
     return;
   }
-  if (params === "?2004" && final === "l") {
-    screen.bracketedPaste = false;
-    return;
-  }
-  if (params.includes("?25") && final === "h") {
-    screen.cursorVisible = true;
-    return;
-  }
-  if (params.includes("?25") && final === "l") {
-    screen.cursorVisible = false;
-    return;
-  }
+  // Any other private sequence (`ESC[>4;2m`, `ESC[?u`) is a mode this screen
+  // does not keep; read as SGR it would restyle the text that follows.
+  if (/^[<=>?]/.test(params)) return;
   if (final === "m") {
     for (let index = 0; index < numbers.length; index += 1) {
       const value = numbers[index];
@@ -11747,18 +11760,37 @@ function applyTerminalCsi(screen, params, final) {
     return;
   }
   if (final === "H" || final === "f") {
-    screen.row = Math.max(0, (numbers[0] ?? 1) - 1);
-    screen.col = Math.max(0, (numbers[1] ?? 1) - 1);
+    screen.row = terminalTop(screen) + Math.max(0, (numbers[0] || 1) - 1);
+    screen.col = Math.max(0, (numbers[1] || 1) - 1);
     ensureTerminalRow(screen, screen.row);
     return;
   }
-  if (final === "A") screen.row = Math.max(0, screen.row - Math.max(1, first));
+  if (final === "d") {
+    screen.row = terminalTop(screen) + Math.max(0, (first || 1) - 1);
+    ensureTerminalRow(screen, screen.row);
+    return;
+  }
+  if (final === "A") screen.row = Math.max(terminalTop(screen), screen.row - Math.max(1, first));
   else if (final === "B") {
     screen.row += Math.max(1, first);
     ensureTerminalRow(screen, screen.row);
   } else if (final === "C") screen.col += Math.max(1, first);
   else if (final === "D") screen.col = Math.max(0, screen.col - Math.max(1, first));
   else if (final === "G") screen.col = Math.max(0, first - 1);
+}
+
+/// A full-screen program draws on a screen of its own and hands the shell's
+/// output back untouched when it leaves, as a terminal's alternate buffer does.
+function setTerminalAlternate(screen, on) {
+  if (on && !screen.saved) {
+    screen.saved = { lines: screen.lines, row: screen.row, col: screen.col };
+    screen.lines = [{ cells: [] }];
+    screen.row = 0;
+    screen.col = 0;
+  } else if (!on && screen.saved) {
+    ({ lines: screen.lines, row: screen.row, col: screen.col } = screen.saved);
+    screen.saved = null;
+  }
 }
 
 /// Feeds the shell's output into the screen: the small part of a terminal's
@@ -14361,6 +14393,31 @@ function showProjectActions(project, sessions, row, trigger, focusMenu = true) {
   if (focusMenu) pin.focus();
 }
 
+/// Slides a clipped thread title so its end rests just before the row's hover
+/// actions, the way Codex reveals a long title in place.
+function startTitleMarquee(row, name) {
+  const visible = Number(name.clientWidth) || 0;
+  const full = Number(name.scrollWidth) || 0;
+  if (!visible || full <= visible) return;
+  let reserve = 0;
+  const nameRight = name.getBoundingClientRect?.().right;
+  for (const action of row.querySelectorAll(".row-pin, .row-archive, .session-run")) {
+    const left = action.getBoundingClientRect?.().left;
+    if (Number.isFinite(left) && Number.isFinite(nameRight) && left < nameRight) {
+      reserve = Math.max(reserve, nameRight - left + 4);
+    }
+  }
+  const shift = Math.ceil(full - Math.max(0, visible - reserve));
+  if (shift <= 0) return;
+  name.style.setProperty("--title-shift", `-${shift}px`);
+  name.style.setProperty("--title-duration", `${Math.min(4, Math.max(0.6, shift / 45)).toFixed(2)}s`);
+  name.classList.add("marquee");
+}
+
+function stopTitleMarquee(name) {
+  name.classList.remove("marquee");
+}
+
 async function showThreadDetails(session, row) {
   closeSidebarCards();
   const card = document.createElement("div");
@@ -14994,18 +15051,20 @@ async function renderProjectsTree() {
       const sessionName = document.createElement("div");
       sessionName.className = "name";
       sessionName.textContent = label;
-      sessionItem.title = `${
+      // The hover card already names the thread; a native tooltip would be drawn
+      // over it, so the row's extra context is only its accessible description.
+      sessionItem.setAttribute("aria-description", `${
         session.worktree ? `${label} — worktree ${session.worktree}` : label
-      }${running ? " — a turn is running" : ""}`;
+      }${running ? " — a turn is running" : ""}`);
       sessionItem.appendChild(sessionName);
 
       // The request is a status at rest; the row's pin and archive actions take
-      // its place while the row is pointed at.
+      // its place while the row is pointed at. All of them share one strip at
+      // the row's end, the request stacked over the archive button's cell.
+      const actions = document.createElement("span");
+      actions.className = "session-actions";
       const pull = pullOf(session);
-      if (pull) {
-        sessionItem.classList.add("has-pull");
-        if (!running) sessionItem.appendChild(pullButton(pull));
-      }
+      if (pull) sessionItem.classList.add("has-pull");
 
       if (running) {
         const mark = document.createElement("span");
@@ -15015,7 +15074,7 @@ async function renderProjectsTree() {
         const spinner = document.createElement("span");
         spinner.className = "spinner";
         mark.appendChild(spinner);
-        sessionItem.appendChild(mark);
+        actions.appendChild(mark);
       }
 
       // A thread the store has not written has no file to remove, so its row
@@ -15031,7 +15090,7 @@ async function renderProjectsTree() {
           event.stopPropagation();
           pinSession(session);
         };
-        sessionItem.appendChild(pinBtn);
+        actions.appendChild(pinBtn);
 
         const archiveBtn = document.createElement("button");
         archiveBtn.type = "button";
@@ -15043,8 +15102,10 @@ async function renderProjectsTree() {
           event.stopPropagation();
           archiveSession(session);
         };
-        sessionItem.appendChild(archiveBtn);
+        actions.appendChild(archiveBtn);
       }
+      if (pull && !running) actions.appendChild(pullButton(pull));
+      if (actions.children.length) sessionItem.appendChild(actions);
 
       sessionItem.onclick = (event) => {
         if (event?.metaKey || event?.ctrlKey) openSessionTab(session);
@@ -15053,10 +15114,22 @@ async function renderProjectsTree() {
       sessionItem.onauxclick = (event) => {
         if (event.button === 1) { event.preventDefault(); openSessionTab(session); }
       };
-      sessionItem.addEventListener("mouseenter", () => showThreadDetails(session, sessionItem));
-      sessionItem.addEventListener("mouseleave", closeSidebarCards);
-      sessionItem.addEventListener("focusin", () => showThreadDetails(session, sessionItem));
-      sessionItem.addEventListener("focusout", closeSidebarCards);
+      sessionItem.addEventListener("mouseenter", () => {
+        startTitleMarquee(sessionItem, sessionName);
+        showThreadDetails(session, sessionItem);
+      });
+      sessionItem.addEventListener("mouseleave", () => {
+        stopTitleMarquee(sessionName);
+        closeSidebarCards();
+      });
+      sessionItem.addEventListener("focusin", () => {
+        startTitleMarquee(sessionItem, sessionName);
+        showThreadDetails(session, sessionItem);
+      });
+      sessionItem.addEventListener("focusout", () => {
+        stopTitleMarquee(sessionName);
+        closeSidebarCards();
+      });
 
       sessionsContainer.appendChild(sessionItem);
     }
