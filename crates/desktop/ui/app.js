@@ -219,6 +219,8 @@ const GLYPHS = {
   details:
     '<circle cx="5" cy="6" r="1.8" stroke-width="1.8"/><circle cx="5" cy="18" r="1.8" stroke-width="1.8"/><path d="M10.5 6H21M10.5 12H21M10.5 18H21M3 12h4" stroke-width="1.8"/>',
   close: '<path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/>',
+  fullscreen: '<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/>',
+  restore: '<path d="M8 3v5H3M16 3v5h5M21 16h-5v5M3 16h5v5"/>',
   check: '<path d="m5.5 12.5 4.2 4.2 8.8-9"/>',
   changes:
     '<rect x="4" y="3" width="16" height="18" rx="3" stroke-width="1.8"/><path d="M8.5 9.5h7M12 6v7M8.5 16.5h7" stroke-width="1.8"/>',
@@ -274,6 +276,8 @@ const ICONS = {
   file: glyphBody(GLYPHS.file),
   search: glyphBody(GLYPHS.search),
   close: glyphBody(GLYPHS.close),
+  fullscreen: glyphBody(GLYPHS.fullscreen),
+  restore: glyphBody(GLYPHS.restore),
   copy: glyphBody(GLYPHS.copy),
   plus: glyphBody(GLYPHS.plus),
   more: glyphBody(GLYPHS.more),
@@ -829,6 +833,7 @@ function repaintLanguage() {
   paintStatus();
   paintQueue();
   paintRunClock();
+  paintPanelFullscreen();
   for (const card of state.changes) if (card.title) paintChanges(card);
   repaintWelcome();
   void renderProjectsTree();
@@ -6465,6 +6470,7 @@ function paintDockToggles() {
   el("changes-toggle").setAttribute("aria-expanded", String(!el("bottom-panel").hidden && state.panelTab === "review"));
   el("editor-toggle").setAttribute("aria-expanded", String(!el("bottom-panel").hidden && state.panelTab === "editor"));
   el("details-toggle").setAttribute("aria-expanded", String(!panel.hidden));
+  paintPanelFullscreen();
   if (wasHidden && !panel.hidden) return refreshProjectDetails();
 }
 
@@ -11340,14 +11346,56 @@ state.terminal = {
   paintTimer: 0,
 };
 
+function panelFullscreen() {
+  return document.body.classList.contains("panel-fullscreen");
+}
+
+function panelFullscreenControl() {
+  const id = `${state.panelTab}-fullscreen`;
+  return PANEL_BODIES[state.panelTab] ? el(id) : null;
+}
+
+function paintPanelFullscreen() {
+  const full = panelFullscreen();
+  for (const tab of ["review", "editor"]) {
+    const button = el(`${tab}-fullscreen`);
+    if (!button) continue;
+    const active = full && state.panelTab === tab;
+    const label = t(
+      active ? "panel.exitFullscreen" : "panel.enterFullscreen",
+      active ? "Exit fullscreen view" : "Enter fullscreen view",
+    );
+    button.innerHTML = active ? ICONS.restore : ICONS.fullscreen;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  paintTerminalMaximized(full && state.panelTab === "terminal");
+}
+
+function setPanelFullscreen(on) {
+  const next = Boolean(on && !el("bottom-panel").hidden && PANEL_BODIES[state.panelTab]);
+  document.body.classList.toggle("panel-fullscreen", next);
+  document.body.classList.toggle("terminal-maximized", next && state.panelTab === "terminal");
+  el("terminal-resizer").hidden =
+    next || state.panelTab !== "terminal" || el("bottom-panel").hidden;
+  paintPanelFullscreen();
+  fitTerminal();
+  layoutEditor();
+}
+
+function togglePanelFullscreen() {
+  setPanelFullscreen(!panelFullscreen());
+}
+
 function openPanel(tab) {
   const chosen = PANEL_BODIES[tab] ? tab : "review";
+  if (state.panelTab !== chosen) setPanelFullscreen(false);
   state.panelTab = chosen;
   for (const [name, body] of Object.entries(PANEL_BODIES)) el(body).hidden = name !== chosen;
   const terminalMode = chosen === "terminal";
   el("bottom-panel").classList.toggle("terminal-mode", terminalMode);
   el("terminal-resizer").hidden = !terminalMode;
-  if (!terminalMode) setTerminalMaximized(false);
   el("bottom-panel").hidden = false;
   paintDockToggles();
   if (chosen === "terminal") {
@@ -11361,10 +11409,10 @@ function openPanel(tab) {
 /// Hides the panel and everything in it. The shell goes with it: a terminal the
 /// reader cannot see must not keep a process alive.
 function hidePanel() {
+  setPanelFullscreen(false);
   el("bottom-panel").hidden = true;
   el("bottom-panel").classList.remove("terminal-mode");
   el("terminal-resizer").hidden = true;
-  setTerminalMaximized(false);
   for (const body of Object.values(PANEL_BODIES)) el(body).hidden = true;
   void stopTerminal();
   paintDockToggles();
@@ -11373,6 +11421,7 @@ function hidePanel() {
 /// The panel is only there while one of its bodies is.
 function syncPanel() {
   if (Object.values(PANEL_BODIES).every((body) => el(body).hidden)) {
+    setPanelFullscreen(false);
     el("bottom-panel").hidden = true;
   }
 }
@@ -12586,8 +12635,10 @@ const TERMINAL_ICONS = {
     '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/></svg>',
   clear:
     '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
-  maximize:
-    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" stroke-width="1.8"/></svg>',
+  fullscreen:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg>',
+  restore:
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v5H3M16 3v5h5M21 16h-5v5M3 16h5v5"/></svg>',
   close:
     '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
 };
@@ -12636,9 +12687,9 @@ function terminalPaneHeader(pane, { starting = false } = {}) {
     () => clearTerminal(pane.id),
   );
   const maximize = terminalControl(
-    t("terminal.maximize", "Maximize terminal"),
+    t("panel.enterFullscreen", "Enter fullscreen view"),
     "pane-maximize",
-    TERMINAL_ICONS.maximize,
+    TERMINAL_ICONS.fullscreen,
     toggleTerminalMaximized,
   );
   maximize.setAttribute("aria-pressed", "false");
@@ -12938,8 +12989,8 @@ function clearTerminal(id = state.terminal.focused) {
 
 function paintTerminalMaximized(next) {
   const label = t(
-    next ? "terminal.restore" : "terminal.maximize",
-    next ? "Restore terminal" : "Maximize terminal",
+    next ? "panel.exitFullscreen" : "panel.enterFullscreen",
+    next ? "Exit fullscreen view" : "Enter fullscreen view",
   );
   const buttons = [
     ...state.terminal.panes.map((pane) => pane.maximize),
@@ -12947,6 +12998,7 @@ function paintTerminalMaximized(next) {
   ];
   for (const button of buttons) {
     if (!button) continue;
+    button.innerHTML = next ? TERMINAL_ICONS.restore : TERMINAL_ICONS.fullscreen;
     button.setAttribute("aria-pressed", String(next));
     button.title = label;
     button.setAttribute("aria-label", label);
@@ -12954,18 +13006,11 @@ function paintTerminalMaximized(next) {
 }
 
 function setTerminalMaximized(on) {
-  const next = Boolean(
-    on && state.panelTab === "terminal" && !el("bottom-panel").hidden,
-  );
-  document.body.classList.toggle("terminal-maximized", next);
-  el("terminal-resizer").hidden =
-    next || state.panelTab !== "terminal" || el("bottom-panel").hidden;
-  paintTerminalMaximized(next);
-  fitTerminal();
+  setPanelFullscreen(Boolean(on && state.panelTab === "terminal"));
 }
 
 function toggleTerminalMaximized() {
-  setTerminalMaximized(!document.body.classList.contains("terminal-maximized"));
+  setTerminalMaximized(!panelFullscreen());
 }
 
 async function openTerminal() {
@@ -14265,11 +14310,13 @@ function init() {
   });
   el("help-close").onclick = () => (el("help-modal").hidden = true);
   el("review-close").onclick = () => { closeReview(); el("changes-toggle").focus(); };
+  el("review-fullscreen").onclick = togglePanelFullscreen;
   el("changes-toggle").onclick = () => {
     if (!el("review-modal").hidden) closeReview();
     else openRepositoryChanges();
   };
   el("editor-toggle").onclick = () => void openEditorPanel();
+  el("editor-fullscreen").onclick = togglePanelFullscreen;
   el("details-toggle").onclick = () => {
     if (!el("bottom-panel").hidden) return openProjectDetails();
     state.detailsOpen = !state.detailsOpen;
@@ -14599,6 +14646,12 @@ function init() {
       // hidden, so the turn continues instead of waiting out the timeout.
       if (!el("question").hidden) answerQuestion(true);
       closeOverlays();
+      if (!modalOpen && panelFullscreen()) {
+        const control = panelFullscreenControl() || focusedTerminalPane()?.maximize;
+        setPanelFullscreen(false);
+        control?.focus();
+        return;
+      }
       if (railControl) el(railControl).focus();
       if (!modalOpen) {
         if (!el("projects-page").hidden) { closeProjectDirectory(); el("rail-projects").focus(); }
