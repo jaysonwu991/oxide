@@ -1927,8 +1927,6 @@ pub const CATALOG: &[(&str, &str, &str)] = &[
     ("panel.title", "Workspace panel", "工作区面板"),
     ("panel.terminal", "Terminal", "终端"),
     ("panel.hide", "Hide the panel", "隐藏面板"),
-    ("panel.enterFullscreen", "Enter fullscreen view", "进入全屏视图"),
-    ("panel.exitFullscreen", "Exit fullscreen view", "退出全屏视图"),
     ("settings.memories", "Memories", "记忆"),
     ("menu.memories", "Memories…", "记忆…"),
     ("memories.hint", "What the agent was asked to remember for this project and for you. A memory it wrote is kept until it is forgotten here.", "代理被要求为本项目和你记住的内容。它写下的记忆会一直保留，直到在这里删除。"),

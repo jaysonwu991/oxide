@@ -951,7 +951,6 @@ body:has(.rail-panel:not([hidden])) #rail-home { background: transparent; color:
 .review-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 42px; padding: 7px 12px; line-height: var(--ui-line-height); border-bottom: 1px solid var(--border); }
 .dock-title { display: flex; align-items: center; justify-content: space-between; min-height: 52px; padding: 0 12px; border-bottom: 1px solid var(--border); }
 .dock-title h2 { margin: 0; font-size: 13px; font-weight: 500; }
-.dock-title-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 #review-scope { min-width: 0; max-width: 135px; border: 0; border-radius: 16px; background: var(--panel-2); color: var(--text); font: inherit; font-size: 12px; padding: 6px; }
 .review-total { display: inline-flex; gap: 5px; flex: none; font-size: 12px; }
 #review-refresh { margin-left: auto; }
@@ -3310,26 +3309,6 @@ body.settings-open .topbar { grid-column: 1 / -1; }
   min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--bg);
-}
-
-/* A workspace body can take the room the conversation leaves behind. The
-   control lives in the body's own header, so fullscreen keeps the window,
-   project rail and title bar exactly where they were. */
-body.panel-fullscreen .center-column > .conversation-pane { display: none; }
-body.panel-fullscreen .center-column > .panel-resizer,
-body.panel-fullscreen .center-column > .terminal-resizer { display: none; }
-body.panel-fullscreen .bottom-panel:not(.terminal-mode) {
-  flex: 1 1 auto;
-  width: auto;
-  max-width: none;
-  border-left: 0;
-  border-top: 0;
-}
-body.panel-fullscreen .bottom-panel.terminal-mode {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: none;
-  border-top: 0;
 }
 
 .terminal-pane-shell {

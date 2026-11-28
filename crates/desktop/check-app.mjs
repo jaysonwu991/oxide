@@ -1368,8 +1368,7 @@ vm.runInThisContext(
     " openSearch, closeSearch, requestSearch, renderSearchResults, openSearchRow," +
     " openActivity, closeActivity, renderActivity, paintActivityDot, activityGroups," +
     " openArchived, closeArchived, renderArchived, openFind, closeFind, stepFind, findHits," +
-    " openPanel, hidePanel, togglePanel, syncPanel, panelFullscreen, setPanelFullscreen, togglePanelFullscreen," +
-    " openTerminal, startTerminal, stopTerminal, restartTerminal," +
+    " openPanel, hidePanel, togglePanel, syncPanel, openTerminal, startTerminal, stopTerminal, restartTerminal," +
     " clearTerminal, setTerminalMaximized, toggleTerminalMaximized, terminalPane, focusedTerminalPane," +
     " openTerminalPane, splitTerminal, closeTerminalPane, renderTerminalPanes, focusTerminalPane," +
     " terminalFeed, paintTerminal, terminalKey, terminalColor, newTerminalScreen, fitTerminal," +
@@ -2664,10 +2663,8 @@ const shellGlyphs = {
   stop: "square",
   send: "arrow-up",
   "review-close": "close",
-  "review-fullscreen": "fullscreen",
   "review-refresh": "activity",
   "editor-files-toggle": "folder",
-  "editor-fullscreen": "fullscreen",
   "editor-close": "close",
   "details-more": "more",
   "details-add-source": "plus",
@@ -5797,24 +5794,6 @@ check(
     elementFor("review-scope").value === "repository" &&
     calls.some(([name]) => name === "repository_changes") &&
     calls.some(([name]) => name === "repository_sides"),
-);
-elementFor("review-fullscreen").click();
-check(
-  "expanded Changes over the conversation from its own header",
-  document.body.classList.contains("panel-fullscreen") &&
-    elementFor("review-fullscreen").getAttribute("aria-pressed") === "true" &&
-    elementFor("review-fullscreen").getAttribute("aria-label") === "Exit fullscreen view" &&
-    /body\.panel-fullscreen \.center-column > \.conversation-pane \{ display: none; \}/.test(sheet) &&
-    /body\.panel-fullscreen \.bottom-panel:not\(\.terminal-mode\)/.test(sheet),
-  `${document.body.className} / ${elementFor("review-fullscreen").getAttribute("aria-label")}`,
-);
-document.fire("keydown", { key: "Escape", preventDefault() {} });
-check(
-  "restored the conversation on Escape before closing Changes",
-  !document.body.classList.contains("panel-fullscreen") &&
-    !elementFor("review-modal").hidden &&
-    elementFor("review-fullscreen").getAttribute("aria-pressed") === "false",
-  `${document.body.className} / ${elementFor("review-modal").hidden}`,
 );
 check(
   "kept staging controls to the expanded file instead of repeating them for every row",
@@ -11417,7 +11396,7 @@ check(
     app.focusedTerminalPane().splitRight.getAttribute("aria-label") === "Split terminal right" &&
     app.focusedTerminalPane().splitDown.getAttribute("aria-label") === "Split terminal down" &&
     app.focusedTerminalPane().clear.getAttribute("aria-label") === "Clear terminal" &&
-    app.focusedTerminalPane().maximize.getAttribute("aria-label") === "Enter fullscreen view" &&
+    app.focusedTerminalPane().maximize.getAttribute("aria-label") === "Maximize terminal" &&
     app.focusedTerminalPane().close.getAttribute("aria-label") === "Hide the panel" &&
     !hiddenAtRest(rowBodies(".terminal-pane-controls")) &&
     !/pointer-events/.test(rowBodies(".terminal-pane-controls")),
@@ -11448,8 +11427,7 @@ app.focusedTerminalPane().maximize.dispatchEvent({
 await nextTick();
 check(
   "answered that pointer press without waiting for a second click",
-  document.body.classList.contains("panel-fullscreen") &&
-    document.body.classList.contains("terminal-maximized") &&
+  document.body.classList.contains("terminal-maximized") &&
     app.focusedTerminalPane().maximize.getAttribute("aria-pressed") === "true",
 );
 app.toggleTerminalMaximized();
@@ -11519,17 +11497,15 @@ check(
 document.fire("mouseup", maximizePress);
 await nextTick();
 check(
-  "gave Terminal a one-press fullscreen and restore control",
-  document.body.classList.contains("panel-fullscreen") &&
-    document.body.classList.contains("terminal-maximized") &&
+  "gave Terminal a one-press maximize and restore control",
+  document.body.classList.contains("terminal-maximized") &&
     app.focusedTerminalPane().maximize.getAttribute("aria-pressed") === "true" &&
-    app.focusedTerminalPane().maximize.getAttribute("aria-label") === "Exit fullscreen view",
+    app.focusedTerminalPane().maximize.getAttribute("aria-label") === "Restore terminal",
 );
 app.toggleTerminalMaximized();
 check(
   "restored the conversation above Terminal",
-  !document.body.classList.contains("panel-fullscreen") &&
-    !document.body.classList.contains("terminal-maximized") &&
+  !document.body.classList.contains("terminal-maximized") &&
     app.focusedTerminalPane().maximize.getAttribute("aria-pressed") === "false",
 );
 // What the shell writes is drawn: colours are runs, a carriage return goes back
@@ -12009,21 +11985,6 @@ document.fire("keydown", { key: "Escape", preventDefault() {} });
 check(
   "put the file picker away before the dock",
   elementFor("editor-file-picker").hidden && !elementFor("editor-modal").hidden,
-);
-elementFor("editor-fullscreen").click();
-check(
-  "expanded the editor over the conversation from its own header",
-  document.body.classList.contains("panel-fullscreen") &&
-    elementFor("editor-fullscreen").getAttribute("aria-pressed") === "true" &&
-    elementFor("editor-fullscreen").getAttribute("aria-label") === "Exit fullscreen view",
-  `${document.body.className} / ${elementFor("editor-fullscreen").getAttribute("aria-label")}`,
-);
-document.fire("keydown", { key: "Escape", preventDefault() {} });
-check(
-  "returned the editor to the dock without closing it",
-  !document.body.classList.contains("panel-fullscreen") &&
-    !elementFor("editor-modal").hidden,
-  `${document.body.className} / ${elementFor("editor-modal").hidden}`,
 );
 
 console.log("the system's own notifications");

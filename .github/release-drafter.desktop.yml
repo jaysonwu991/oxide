@@ -22,26 +22,25 @@
 name-template: 'Oxide Desktop v$RESOLVED_VERSION'
 tag-template: 'desktop-v$RESOLVED_VERSION'
 tag-prefix: 'desktop-v'
+exclude-labels:
+  - 'cli'
+  - 'vscode'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
 sort-by: merged_at
 sort-direction: descending
 
-# Drop a `feat(scope): ` prefix and capitalize the remaining title so the notes
-# read as plain English.
+# Drop a `feat(scope): ` prefix so the notes read as plain English.
 replacers:
-  - target: change-title
-    search: '/^(?:feat|fix|perf|refactor|docs|test|ci|build|chore)(?:\([^)]*\))?!?: (.*)$/'
-    replace: '\u$1'
+  - search: '/^(feat|fix|perf|refactor|docs|test|ci|build|chore)(\(.+?\))?!?:\s*/i'
+    replace: ''
 
 categories:
   # Administrative labels that should never reach the changelog.
   - type: 'pre-exclude'
     when:
       labels:
-        - 'cli'
-        - 'vscode'
         - 'skip-changelog'
         - 'duplicate'
         - 'invalid'

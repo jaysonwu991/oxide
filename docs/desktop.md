@@ -31,11 +31,6 @@ being refused. Saves carry the digest read when the file was opened and are
 refused if an agent turn changed the file in the meantime. Use **Revert** to
 reload the disk copy after a refused save.
 
-Changes, Editor and Terminal each have an **Enter fullscreen view** control in
-their header. It hides the conversation while that body fills the workspace;
-the same control restores the dock, and `Esc` does the same before closing the
-panel.
-
 ```mermaid
 graph TD
     Tauri["Tauri window<br/>crates/desktop"] --> Page["Desktop page<br/>crates/desktop/ui"]
