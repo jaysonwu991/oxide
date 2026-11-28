@@ -158,8 +158,8 @@ async fn forward_packets(
 /// for a second instance while the old process is still alive. That gives the
 /// Dock two Oxide tiles during an update and breaks the expectation that an
 /// installed release replaces the running one. Wait until this process has
-/// exited, then open the bundle normally so LaunchServices reuses Oxide's one
-/// application identity.
+/// exited, then open the bundle normally and bring it forward so LaunchServices
+/// reuses Oxide's one application identity.
 fn restart_app(app: &AppHandle) -> ! {
     #[cfg(target_os = "macos")]
     {
@@ -207,8 +207,20 @@ fn schedule_macos_restart(bundle: &Path) -> std::io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn macos_restart_command(bundle: &Path, pid: u32) -> Command {
-    const WAIT_THEN_OPEN: &str =
-        "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open -g \"$2\"";
+    const WAIT_THEN_OPEN: &str = r#"
+while kill -0 "$1" 2>/dev/null; do
+  state="$(/bin/ps -p "$1" -o stat= 2>/dev/null)"
+  case "$state" in Z*) break ;; esac
+  /bin/sleep 0.1
+done
+/bin/sleep 0.2
+attempt=0
+until /usr/bin/open "$2"; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -ge 20 ] && exit 1
+  /bin/sleep 0.25
+done
+"#;
     let mut command = Command::new("/bin/sh");
     command
         .arg("-c")
@@ -225,7 +237,6 @@ fn native_ready(app: &AppHandle, state: &HostState) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
     if let Some(window) = app.get_webview_window("main") {
-        window.maximize().map_err(|error| error.to_string())?;
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
     }
@@ -573,8 +584,11 @@ mod tests {
 
         assert_eq!(args[0], "-c");
         assert!(args[1].contains("kill -0 \"$1\""));
-        assert!(args[1].ends_with("exec /usr/bin/open -g \"$2\""));
+        assert!(args[1].contains("case \"$state\" in Z*) break ;; esac"));
+        assert!(args[1].contains("until /usr/bin/open \"$2\"; do"));
+        assert!(args[1].contains("attempt=$((attempt + 1))"));
         assert!(!args.iter().any(|arg| arg == "-n"));
+        assert!(!args.iter().any(|arg| arg == "-g"));
         assert_eq!(args[2], "oxide-restart");
         assert_eq!(args[3], "42");
         assert_eq!(args[4], bundle.to_string_lossy());

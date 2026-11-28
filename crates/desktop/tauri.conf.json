@@ -17,6 +17,7 @@
         "minWidth": 820,
         "minHeight": 560,
         "center": true,
+        "maximized": true,
         "visible": false,
         "acceptFirstMouse": true,
         "titleBarStyle": "Overlay",

@@ -313,6 +313,42 @@ const ICONS = {
   ),
 };
 
+let launchScreen = null;
+
+/// The window remains hidden until the page has loaded, then reveals this
+/// lockup over the finished shell for one short transition. It is removed even
+/// when animations are disabled, so a launch can never leave a cover behind.
+function installLaunchScreen() {
+  launchScreen = document.createElement("div");
+  launchScreen.id = "launch-screen";
+  launchScreen.className = "launch-screen";
+  launchScreen.setAttribute("aria-hidden", "true");
+  launchScreen.innerHTML =
+    `<div class="launch-lockup"><span class="launch-mark">${ICONS.mark}</span>` +
+    `<span class="launch-name">Oxide</span></div>`;
+  document.body.appendChild(launchScreen);
+}
+
+function revealLaunchScreen() {
+  const screen = launchScreen;
+  if (!screen || screen.dataset.revealed === "true") return;
+  screen.dataset.revealed = "true";
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    screen.remove();
+    launchScreen = null;
+    return;
+  }
+  requestAnimationFrame(() => {
+    screen.classList.add("leaving");
+    setTimeout(() => {
+      screen.remove();
+      if (launchScreen === screen) launchScreen = null;
+    }, 220);
+  });
+}
+
+installLaunchScreen();
+
 /// The check a chosen row wears, or nothing at all on a row that is not the one
 /// in use: a picker repaints its rows in place, so what it draws is replaced
 /// rather than added to.
@@ -14097,8 +14133,10 @@ Promise.all([init(), tauriListener])
       });
       drainPendingHostMessages();
     }
+    revealLaunchScreen();
   })
   .catch((error) => {
+    revealLaunchScreen();
     console.error("Oxide could not start its window:", error);
   });
 

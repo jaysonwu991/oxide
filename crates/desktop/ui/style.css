@@ -45,6 +45,62 @@
    an overlay rendered with `display: flex` stays on top of the whole app. */
 [hidden] { display: none !important; }
 
+/* The native window is already at its final maximized geometry when it appears;
+   this cover gives that first frame a deliberate reveal instead of a layout
+   resize. The page removes it after the outgoing animation. */
+.launch-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: var(--sidebar);
+  will-change: opacity, transform;
+}
+.launch-lockup {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  color: var(--text);
+  animation: launch-lockup-in 360ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.launch-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 19%;
+  background: #14141a;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .32);
+}
+.launch-mark svg { display: block; width: 40px; height: 40px; }
+.launch-name {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -.35px;
+}
+.launch-screen.leaving {
+  animation: launch-screen-out 200ms cubic-bezier(.4, 0, .2, 1) forwards;
+}
+.launch-screen.leaving .launch-lockup {
+  animation: launch-lockup-out 200ms cubic-bezier(.4, 0, .2, 1) forwards;
+}
+@keyframes launch-lockup-in {
+  from { opacity: .001; transform: translateY(5px) scale(.97); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes launch-screen-out {
+  to { opacity: .001; transform: scale(1.012); }
+}
+@keyframes launch-lockup-out {
+  to { opacity: .001; transform: translateY(-3px) scale(.985); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-lockup,
+  .launch-screen.leaving,
+  .launch-screen.leaving .launch-lockup { animation: none; }
+}
+
 html, body {
   margin: 0;
   height: 100%;
