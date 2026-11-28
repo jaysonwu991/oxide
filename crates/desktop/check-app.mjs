@@ -10,8 +10,10 @@
 // full-size preview it opens), the question dialog (its title, what a blank
 // form sends, and the two ways a request goes away — the run ending, and the CLI
 // giving up on it), the reasoning picker (its rows, the level a row applies, and
-// the Escape and Close that put it away), and the `/` menu's dispatch of every built-in
-// the shared catalog offers — since a Rust test never runs the app's own
+// the Escape and Close that put it away), the right-hand Monaco editor (project
+// file search, dirty/save state, external-change refusal and dock switching),
+// and the `/` menu's dispatch of every built-in the shared catalog offers —
+// since a Rust test never runs the app's own
 // JavaScript. Every command it performs goes through the one command the app
 // answers on its bridge, so a check in this file that reaches a command by name is
 // reaching the same entry point the window does. The
@@ -425,6 +427,11 @@ const notified = [];
 // What a file the conversation produced reads as.
 let fileAnswer = { path: "notes.md", kind: "markdown", text: "# Title\n\nBody", data_url: "", truncated: false };
 let fileError = null;
+let editorAnswer = { path: "src/main.rs", text: "fn main() {}\n", digest: "digest-one" };
+let editorError = null;
+let editorSaveError = null;
+let editorFilesAnswer = ["src/main.rs", "src/lib.rs", "README.md"];
+const editorSaves = [];
 const badges = [];
 const awakeCalls = [];
 let repositoryStates = [];
@@ -1123,6 +1130,15 @@ const invoke = async (command, args = {}) => {
     case "file_view":
       if (fileError) throw fileError;
       return { ...fileAnswer };
+    case "editor_open":
+      if (editorError) throw editorError;
+      return { ...editorAnswer, path: args.path };
+    case "editor_save":
+      if (editorSaveError) throw editorSaveError;
+      editorSaves.push({ ...args });
+      return { digest: `digest-${editorSaves.length + 1}`, bytes: args.text.length };
+    case "editor_files":
+      return [...editorFilesAnswer];
     case "notify":
       notified.push({ ...args });
       return null;
@@ -1362,6 +1378,7 @@ vm.runInThisContext(
     " maybePredict, showPrediction, clearPrediction, acceptPrediction, runSlashCommand," +
     " notifyFinished, notifyWaiting, notificationsAllowed, paintBadge, paintAwake," +
     " openFile, closeFile, paintFile, csvTable, toolDisplayIcon, isMcpTool," +
+    " editorLanguage, openEditorFile, saveEditorFile, closeEditorFile, openEditorPanel, toggleEditorFiles, renderEditorFiles, editorState," +
     " threads, SHORTCUTS, SETTINGS_SECTIONS, DEFAULT_PREFS, pushNav, navBack, navForward, reopenClosedTab, closeOtherTabs, clearUnread };\n",
 );
 
@@ -2623,6 +2640,7 @@ const shellGlyphs = {
   settings: "settings",
   "window-commands": "more",
   "changes-toggle": "changes",
+  "editor-toggle": "code",
   "details-toggle": "details",
   "new-tab": "plus",
   "search-chats": "search",
@@ -2646,6 +2664,8 @@ const shellGlyphs = {
   send: "arrow-up",
   "review-close": "close",
   "review-refresh": "activity",
+  "editor-files-toggle": "folder",
+  "editor-close": "close",
   "details-more": "more",
   "details-add-source": "plus",
   "sources-close": "close",
@@ -11313,7 +11333,7 @@ check("clamped the side panel to its maximum", reviewDivider.getAttribute("aria-
 reviewDivider.fire("dblclick", {});
 check("reset the side panel width", reviewDivider.getAttribute("aria-valuenow") === "360");
 console.log("the panel and its terminal");
-// Changes is the only right-hand body. Terminal is a separate bottom dock.
+// Changes and Editor share the right-hand body. Terminal is a separate bottom dock.
 app.openPanel("review");
 check(
   "opened the workspace on Changes",
@@ -11870,6 +11890,102 @@ check(
 fileError = null;
 document.fire("keydown", { key: "Escape", preventDefault() {} });
 check("put the viewer away on Escape", elementFor("file-modal").hidden === true);
+
+console.log("the right-hand editor");
+check(
+  "named the language from the file rather than a fixed editor",
+  app.editorLanguage("src/main.rs").id === "rust" &&
+    app.editorLanguage("src/main.tsx").id === "typescript" &&
+    app.editorLanguage("Dockerfile").id === "dockerfile" &&
+    app.editorLanguage("notes.unknown").id === "plaintext",
+  `${app.editorLanguage("src/main.rs").id} / ${app.editorLanguage("notes.unknown").id}`,
+);
+await app.openEditorFile("src/main.rs");
+check(
+  "opened a project file in the dock beside the conversation",
+  !elementFor("bottom-panel").hidden &&
+    !elementFor("editor-modal").hidden &&
+    elementFor("review-modal").hidden &&
+    elementFor("editor-title").textContent === "main.rs" &&
+    elementFor("editor-language").textContent === "Rust" &&
+    elementFor("editor-fallback").value === "fn main() {}\n" &&
+    elementFor("editor-toggle").getAttribute("aria-expanded") === "true",
+  `${elementFor("bottom-panel").hidden} / ${elementFor("editor-title").textContent}`,
+);
+check(
+  "opened a clean file without an enabled save",
+  app.editorState.dirty === false && elementFor("editor-save").disabled === true,
+  `${app.editorState.dirty} / ${elementFor("editor-save").disabled}`,
+);
+elementFor("editor-fallback").value = "fn main() {\n    println!(\"hi\");\n}\n";
+elementFor("editor-fallback").fire("input", {});
+check(
+  "marked the file modified as the reader typed",
+  app.editorState.dirty &&
+    elementFor("editor-save").disabled === false &&
+    elementFor("editor-save-state").textContent === "Modified" &&
+    elementFor("editor-revert").hidden === false,
+  `${elementFor("editor-save-state").textContent} / ${elementFor("editor-save").disabled}`,
+);
+await app.saveEditorFile();
+await nextTick();
+check(
+  "saved the exact text against the version it opened",
+  editorSaves.length === 1 &&
+    editorSaves[0].path === "src/main.rs" &&
+    editorSaves[0].digest === "digest-one" &&
+    editorSaves[0].text.includes("println!") &&
+    app.editorState.dirty === false &&
+    app.editorState.digest === "digest-2" &&
+    elementFor("editor-save").disabled === true,
+  `${JSON.stringify(editorSaves[0])} / ${app.editorState.digest}`,
+);
+editorSaveError = "main.rs changed on disk; reopen it before saving.";
+elementFor("editor-fallback").value += "// local\n";
+elementFor("editor-fallback").fire("input", {});
+await app.saveEditorFile();
+check(
+  "kept the edit when a turn had changed the file on disk",
+  app.editorState.dirty &&
+    elementFor("editor-fallback").value.endsWith("// local\n") &&
+    String(elementFor("editor-message").textContent).includes("changed on disk"),
+  `${app.editorState.dirty} / ${elementFor("editor-message").textContent}`,
+);
+editorSaveError = null;
+await app.openEditorFile("src/main.rs", null, true);
+check(
+  "reopened the file and took the new disk version as its baseline",
+  app.editorState.dirty === false && elementFor("editor-fallback").value === "fn main() {}\n",
+);
+await app.closeEditorFile();
+check(
+  "closed a clean editor and the dock with it",
+  app.editorState.path === null &&
+    elementFor("editor-modal").hidden &&
+    elementFor("bottom-panel").hidden,
+);
+await app.openEditorPanel();
+check(
+  "listed the project files from the editor's own picker",
+  !elementFor("editor-modal").hidden &&
+    !elementFor("editor-file-picker").hidden &&
+    elementFor("editor-file-list").children.length === 3 &&
+    elementFor("editor-file-list").children.every((row) => row.tagName === "BUTTON"),
+  elementFor("editor-file-list").children.map((row) => row.textContent).join(" / "),
+);
+elementFor("editor-file-search").value = "lib";
+elementFor("editor-file-search").fire("input", {});
+check(
+  "narrowed the project files as the reader searched",
+  elementFor("editor-file-list").children.length === 1 &&
+    elementFor("editor-file-list").children[0].outline().includes("src/lib.rs"),
+  elementFor("editor-file-list").children.map((row) => row.outline()).join(" / "),
+);
+document.fire("keydown", { key: "Escape", preventDefault() {} });
+check(
+  "put the file picker away before the dock",
+  elementFor("editor-file-picker").hidden && !elementFor("editor-modal").hidden,
+);
 
 console.log("the system's own notifications");
 notified.length = 0;

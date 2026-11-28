@@ -222,6 +222,7 @@ const GLYPHS = {
   check: '<path d="m5.5 12.5 4.2 4.2 8.8-9"/>',
   changes:
     '<rect x="4" y="3" width="16" height="18" rx="3" stroke-width="1.8"/><path d="M8.5 9.5h7M12 6v7M8.5 16.5h7" stroke-width="1.8"/>',
+  code: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" stroke-width="1.8"/>',
   image:
     '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.7"/><path d="m20.5 15.5-5-4-8.5 8"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
@@ -278,6 +279,7 @@ const ICONS = {
   more: glyphBody(GLYPHS.more),
   compose: glyphBody(GLYPHS.pencil),
   changes: glyphBody(GLYPHS.changes),
+  code: glyphBody(GLYPHS.code),
   undo: glyph('<path d="m9 4-5 5 5 5M4 9h10a6 6 0 0 1 0 12h-3" ' + STROKE_24 + '/>'),
   pin: glyphBody(GLYPHS.pin),
   archive: glyphBody(GLYPHS.archive),
@@ -6253,11 +6255,11 @@ function changeActions(file) {
   open.className = "change-action";
   open.dataset.open = file.path;
   open.textContent = t("file.open", "Open");
-  open.title = t("file.openHint", "Open {value0}", { value0: file.path });
+  open.title = t("file.openHint", "Open {value0} in the editor", { value0: file.path });
   open.setAttribute("aria-label", open.title);
   open.onclick = (event) => {
     event.stopPropagation?.();
-    void openFile(file.path);
+    void openEditorFile(file.path, reviewState?.card?.project || null);
   };
   actions.appendChild(open);
   return actions.children.length ? actions : null;
@@ -6458,8 +6460,10 @@ function paintDockToggles() {
   panel.hidden = !state.detailsOpen || !hasChat() || !el("bottom-panel").hidden || !dockHasRoom();
   el("details-toggle").hidden = !hasChat();
   el("changes-toggle").hidden = !hasChat();
+  el("editor-toggle").hidden = !hasChat() && !state.project;
   paintLiveChanges();
-  el("changes-toggle").setAttribute("aria-expanded", String(!el("bottom-panel").hidden));
+  el("changes-toggle").setAttribute("aria-expanded", String(!el("bottom-panel").hidden && state.panelTab === "review"));
+  el("editor-toggle").setAttribute("aria-expanded", String(!el("bottom-panel").hidden && state.panelTab === "editor"));
   el("details-toggle").setAttribute("aria-expanded", String(!panel.hidden));
   if (wasHidden && !panel.hidden) return refreshProjectDetails();
 }
@@ -7820,6 +7824,7 @@ function applyTheme(colors) {
   for (const [slot, variable] of Object.entries(map)) {
     if (colors[slot]) root.style.setProperty(variable, colors[slot]);
   }
+  refreshEditorTheme();
 }
 
 async function loadTheme() {
@@ -9992,6 +9997,13 @@ const SHORTCUTS = [
     run: () => openTerminal(),
   },
   {
+    id: "editor",
+    key: "settings.actionEditor",
+    fallback: "Open the editor",
+    chords: ["mod+e"],
+    run: () => openEditorPanel(),
+  },
+  {
     id: "split-terminal-right",
     key: "settings.actionSplitTerminalRight",
     fallback: "Split terminal right",
@@ -10590,6 +10602,7 @@ function commandActions() {
     { id: "search", label: t("menu.searchChats", "Search chats…"), hint: "mod+shift+f", run: () => openSearch() },
     { id: "panel", label: t("menu.panel", "Show or hide the panel"), hint: "mod+j", run: () => togglePanel() },
     { id: "terminal", label: t("menu.terminal", "Terminal"), hint: "ctrl+` / ctrl+~", run: () => void openTerminal() },
+    { id: "editor", label: t("menu.editor", "Editor"), hint: "mod+e", run: () => void openEditorPanel() },
     { id: "split-terminal-right", label: t("settings.actionSplitTerminalRight", "Split terminal right"), hint: "mod+d", run: () => void splitTerminal("row") },
     { id: "split-terminal-down", label: t("settings.actionSplitTerminalDown", "Split terminal down"), hint: "mod+shift+d", run: () => void splitTerminal("column") },
     { id: "review", label: t("menu.review", "Review the changes"), hint: null, run: () => openRepositoryChanges() },
@@ -11308,10 +11321,11 @@ function paintFindCount() {
 
 // ---------- the workspace panel ----------
 
-/// The workspace has one right-hand body, Changes, and an independent bottom
-/// Terminal dock. Only one is visible at a time.
+/// The workspace has one right-hand body (Changes or Editor) and an independent
+/// bottom Terminal dock. Only one body is visible at a time.
 const PANEL_BODIES = {
   review: "review-modal",
+  editor: "editor-modal",
   terminal: "panel-terminal",
 };
 
@@ -11339,6 +11353,8 @@ function openPanel(tab) {
   if (chosen === "terminal") {
     fitTerminal();
     focusedTerminalPane()?.surface.focus();
+  } else if (chosen === "editor") {
+    layoutEditor();
   }
 }
 
@@ -11366,6 +11382,522 @@ function togglePanel(tab = state.panelTab) {
   else if (el("bottom-panel").hidden) openPanel(tab);
   else if (state.panelTab === tab) hidePanel();
   else openPanel(tab);
+}
+
+// ---------- the project editor ----------
+
+const EDITOR_LANGUAGE_BY_EXTENSION = {
+  bat: "bat",
+  c: "cpp",
+  cc: "cpp",
+  clj: "clojure",
+  cljs: "clojure",
+  cjs: "javascript",
+  coffee: "coffee",
+  conf: "ini",
+  cpp: "cpp",
+  cs: "csharp",
+  css: "css",
+  cxx: "cpp",
+  dart: "dart",
+  ex: "elixir",
+  exs: "elixir",
+  fs: "fsharp",
+  fsx: "fsharp",
+  go: "go",
+  gql: "graphql",
+  graphql: "graphql",
+  h: "cpp",
+  hpp: "cpp",
+  hxx: "cpp",
+  htm: "html",
+  html: "html",
+  ini: "ini",
+  java: "java",
+  js: "javascript",
+  json: "json",
+  jsonc: "json",
+  jsx: "javascript",
+  jl: "julia",
+  kt: "kotlin",
+  kts: "kotlin",
+  less: "less",
+  lua: "lua",
+  m: "objective-c",
+  md: "markdown",
+  mdx: "markdown",
+  mjs: "javascript",
+  mm: "objective-c",
+  php: "php",
+  pl: "perl",
+  pm: "perl",
+  proto: "protobuf",
+  ps1: "powershell",
+  psm1: "powershell",
+  py: "python",
+  pyw: "python",
+  r: "r",
+  rb: "ruby",
+  rs: "rust",
+  scss: "scss",
+  sh: "shell",
+  sol: "solidity",
+  sql: "sql",
+  svelte: "html",
+  svg: "xml",
+  swift: "swift",
+  tf: "hcl",
+  tfvars: "hcl",
+  toml: "ini",
+  ts: "typescript",
+  tsx: "typescript",
+  vue: "html",
+  xml: "xml",
+  yaml: "yaml",
+  yml: "yaml",
+  zsh: "shell",
+};
+const EDITOR_LANGUAGE_BY_NAME = {
+  ".babelrc": "json",
+  ".eslintrc": "json",
+  ".prettierrc": "json",
+  "cmakelists.txt": "cmake",
+  dockerfile: "dockerfile",
+  gemfile: "ruby",
+  makefile: "makefile",
+  "package.json": "json",
+  "tsconfig.json": "json",
+};
+
+const editorState = {
+  project: null,
+  path: null,
+  text: "",
+  savedText: "",
+  digest: "",
+  dirty: false,
+  saving: false,
+  opening: 0,
+  monaco: null,
+  instance: null,
+  engine: null,
+  files: [],
+  filesProject: null,
+  filesLoading: null,
+};
+
+function editorLanguage(path) {
+  const name = String(path || "").split(/[\\/]/).pop().toLowerCase();
+  const id = EDITOR_LANGUAGE_BY_NAME[name] || EDITOR_LANGUAGE_BY_EXTENSION[name.split(".").pop()] || "plaintext";
+  const available = !editorState.monaco || editorState.monaco.languages.getLanguages().some((language) => language.id === id);
+  const chosen = available ? id : "plaintext";
+  return {
+    id: chosen,
+    label: chosen === "plaintext"
+      ? t("editor.plainText", "Plain Text")
+      : chosen.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+  };
+}
+
+function editorCssColor(name, fallback) {
+  try {
+    return globalThis.getComputedStyle?.(document.documentElement)?.getPropertyValue(name).trim() || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function editorColorLuminance(color) {
+  const hex = String(color).trim().replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return 0;
+  const [r, g, b] = [0, 2, 4].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function refreshEditorTheme() {
+  const monaco = editorState.monaco;
+  if (!monaco?.editor?.defineTheme) return;
+  const background = editorCssColor("--bg", "#181818");
+  const slider = editorCssColor("--panel-3", "#303030");
+  monaco.editor.defineTheme("oxide-workbench", {
+    base: editorColorLuminance(background) > 0.5 ? "vs" : "vs-dark",
+    inherit: true,
+    rules: [],
+    colors: {
+      "editor.background": background,
+      "editor.foreground": editorCssColor("--text", "#f1f1f1"),
+      "editorLineNumber.foreground": editorCssColor("--faint", "#737373"),
+      "editorLineNumber.activeForeground": editorCssColor("--dim", "#a3a3a3"),
+      "editorCursor.foreground": editorCssColor("--accent", "#8fb8ff"),
+      "editor.selectionBackground": editorCssColor("--panel-3", "#303030"),
+      "editor.inactiveSelectionBackground": editorCssColor("--panel-2", "#272727"),
+      "editorIndentGuide.background1": editorCssColor("--border", "#343434"),
+      "editorGutter.background": editorCssColor("--bg", "#181818"),
+      "editorWidget.background": editorCssColor("--panel", "#202020"),
+      "editorWidget.border": editorCssColor("--border", "#343434"),
+      "scrollbarSlider.background": /^#[0-9a-f]{6}$/i.test(slider) ? `${slider}99` : slider,
+    },
+  });
+  monaco.editor.setTheme("oxide-workbench");
+}
+
+async function ensureEditorEngine() {
+  if (editorState.instance) return true;
+  if (editorState.engine) return editorState.engine;
+  if (typeof globalThis.oxideLoadMonaco !== "function") return false;
+  editorState.engine = (async () => {
+    try {
+      const monaco = await globalThis.oxideLoadMonaco();
+      if (editorState.instance) return true;
+      editorState.monaco = monaco;
+      refreshEditorTheme();
+      const model = monaco.editor.createModel(editorState.text, editorLanguage(editorState.path).id);
+      const instance = monaco.editor.create(el("editor-monaco"), {
+        model,
+        automaticLayout: true,
+        contextmenu: true,
+        fontFamily: '"JetBrainsMonoNLNerdFontMono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        fontSize: 12.5,
+        lineHeight: 20,
+        lineNumbersMinChars: 3,
+        minimap: { enabled: false },
+        overviewRulerLanes: 0,
+        padded: true,
+        padding: { top: 10, bottom: 10 },
+        renderLineHighlight: "line",
+        scrollBeyondLastLine: false,
+        smoothScrolling: true,
+        tabSize: 4,
+        trimAutoWhitespace: false,
+        wordWrap: "off",
+      });
+      editorState.instance = instance;
+      instance.onDidChangeModelContent(() => {
+        syncEditorDirty();
+        paintEditorPosition();
+      });
+      instance.onDidChangeCursorPosition(() => paintEditorPosition());
+      instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => void saveEditorFile());
+      paintEditor();
+      layoutEditor();
+      instance.focus();
+      return true;
+    } catch (error) {
+      el("editor-message").textContent = t("editor.richUnavailable", "Rich highlighting unavailable: {value0}", { value0: error });
+      return false;
+    } finally {
+      editorState.engine = null;
+    }
+  })();
+  return editorState.engine;
+}
+
+function editorCurrentText() {
+  return editorState.instance?.getModel()?.getValue() ?? el("editor-fallback").value;
+}
+
+function setEditorText(value) {
+  const text = String(value ?? "");
+  el("editor-fallback").value = text;
+  const model = editorState.instance?.getModel();
+  if (model && model.getValue() !== text) model.setValue(text);
+  editorState.text = text;
+  syncEditorDirty();
+  paintEditorPosition();
+}
+
+function syncEditorDirty() {
+  editorState.text = editorCurrentText();
+  editorState.dirty = editorState.text !== editorState.savedText;
+  el("editor-save").disabled = !editorState.dirty || editorState.saving || !editorState.path;
+  el("editor-revert").hidden = !editorState.dirty;
+  el("editor-save-state").classList.toggle("dirty", editorState.dirty);
+  el("editor-save-state").textContent = editorState.saving
+    ? t("editor.saving", "Saving…")
+    : editorState.dirty ? t("editor.modified", "Modified") : editorState.path ? t("editor.saved", "Saved") : "";
+}
+
+function paintEditorPosition() {
+  const value = editorCurrentText();
+  const position = editorState.instance?.getPosition?.();
+  const offset = position ? null : Math.max(0, Number(el("editor-fallback").selectionStart) || 0);
+  const before = position ? value.slice(0, editorState.instance.getModel().getOffsetAt(position)) : value.slice(0, offset);
+  const lines = before.split("\n");
+  el("editor-position").textContent = t("editor.position", "Ln {value0}, Col {value1}", {
+    value0: position?.lineNumber || lines.length,
+    value1: position?.column || (lines.at(-1)?.length || 0) + 1,
+  });
+}
+
+function paintEditor() {
+  const loaded = Boolean(editorState.path);
+  const language = editorLanguage(editorState.path);
+  el("editor-title").textContent = loaded ? baseName(editorState.path) : t("editor.title", "Editor");
+  el("editor-title").title = loaded ? editorState.path : "";
+  el("editor-language").textContent = loaded ? language.label : "";
+  el("editor-empty").hidden = loaded;
+  el("editor-fallback").hidden = !loaded || Boolean(editorState.instance);
+  el("editor-monaco").hidden = !loaded || !editorState.instance;
+  if (editorState.instance?.getModel()) editorState.monaco?.editor.setModelLanguage(editorState.instance.getModel(), language.id);
+  syncEditorDirty();
+  paintEditorPosition();
+}
+
+function layoutEditor() {
+  if (!el("editor-modal").hidden) editorState.instance?.layout();
+}
+
+async function openEditorFile(path, projectOverride = null, force = false) {
+  const project = projectOverride || runFolder() || state.project;
+  if (!project) {
+    showToast(t("editor.selectProject", "Select a project before opening its editor."), "error");
+    return false;
+  }
+  if (!force && editorState.dirty) {
+    if (project === editorState.project && path === editorState.path) {
+      openPanel("editor");
+      (editorState.instance || el("editor-fallback")).focus();
+      return true;
+    }
+    if (!(await resolveEditorChanges())) return false;
+  }
+  const opening = ++editorState.opening;
+  el("editor-file-picker").hidden = true;
+  el("editor-files-toggle").setAttribute("aria-expanded", "false");
+  el("editor-message").textContent = t("editor.reading", "Reading {value0}…", { value0: path });
+  openPanel("editor");
+  try {
+    const view = await invoke("editor_open", { project, path });
+    if (opening !== editorState.opening) return false;
+    const text = String(view?.text ?? "");
+    editorState.project = project;
+    editorState.path = path;
+    editorState.savedText = text;
+    editorState.digest = String(view?.digest || "");
+    editorState.dirty = false;
+    el("editor-message").textContent = "";
+    setEditorText(text);
+    paintEditor();
+    void ensureEditorEngine().then(() => {
+      paintEditor();
+      layoutEditor();
+      (editorState.instance || el("editor-fallback")).focus();
+    });
+    return true;
+  } catch (error) {
+    if (opening === editorState.opening) {
+      el("editor-message").textContent = String(error);
+      paintEditor();
+    }
+    return false;
+  }
+}
+
+async function saveEditorFile() {
+  if (!editorState.path || !editorState.project || editorState.saving) return false;
+  const text = editorCurrentText();
+  if (text === editorState.savedText) {
+    syncEditorDirty();
+    return true;
+  }
+  editorState.saving = true;
+  syncEditorDirty();
+  try {
+    const saved = await invoke("editor_save", {
+      project: editorState.project,
+      path: editorState.path,
+      text,
+      digest: editorState.digest,
+    });
+    editorState.savedText = text;
+    editorState.text = text;
+    editorState.digest = String(saved?.digest || "");
+    editorState.dirty = false;
+    el("editor-message").textContent = t("editor.savedBytes", "Saved {value0} bytes", {
+      value0: Number(saved?.bytes ?? text.length).toLocaleString(),
+    });
+    if (editorState.project === runFolder()) void readProjectChanges(editorState.project);
+    return true;
+  } catch (error) {
+    el("editor-message").textContent = String(error);
+    showToast(t("editor.saveFailed", "Could not save {value0}: {value1}", {
+      value0: editorState.path,
+      value1: error,
+    }), "error");
+    return false;
+  } finally {
+    editorState.saving = false;
+    syncEditorDirty();
+    paintEditor();
+  }
+}
+
+async function resolveEditorChanges() {
+  if (!editorState.dirty) return true;
+  const choice = await confirmDialog(
+    t("editor.unsavedTitle", "Unsaved changes"),
+    t("editor.unsavedBody", "Save the changes to {value0} before continuing?", { value0: editorState.path }),
+    t("common.save", "Save"),
+    { label: t("editor.discard", "Discard"), value: "discard" },
+  );
+  if (choice === true) return saveEditorFile();
+  return choice === "discard";
+}
+
+async function closeEditorFile() {
+  if (!editorState.path) {
+    hidePanel();
+    return;
+  }
+  if (!(await resolveEditorChanges())) return;
+  editorState.project = null;
+  editorState.path = null;
+  editorState.text = "";
+  editorState.savedText = "";
+  editorState.digest = "";
+  editorState.dirty = false;
+  el("editor-message").textContent = "";
+  setEditorText("");
+  paintEditor();
+  hidePanel();
+}
+
+async function revertEditorFile() {
+  if (!editorState.dirty) return;
+  const discard = await confirmDialog(
+    t("editor.discardTitle", "Discard changes?"),
+    t("editor.discardBody", "Reload {value0} from disk. Your edits are lost.", { value0: editorState.path }),
+    t("editor.discard", "Discard"),
+  );
+  if (!discard) return;
+  await openEditorFile(editorState.path, editorState.project, true);
+}
+
+async function loadEditorFiles(force = false) {
+  const project = runFolder() || state.project;
+  if (!project) return [];
+  if (!force && editorState.filesProject === project) return editorState.files;
+  if (editorState.filesLoading?.project === project) return editorState.filesLoading.promise;
+  const promise = invoke("editor_files", { project })
+    .then((files) => {
+      if (editorState.filesLoading?.promise !== promise) return editorState.files;
+      editorState.files = Array.isArray(files) ? files.map(String) : [];
+      editorState.filesProject = project;
+      return editorState.files;
+    })
+    .catch((error) => {
+      el("editor-message").textContent = String(error);
+      return [];
+    })
+    .finally(() => {
+      if (editorState.filesLoading?.promise === promise) editorState.filesLoading = null;
+    });
+  editorState.filesLoading = { project, promise };
+  return promise;
+}
+
+function renderEditorFiles() {
+  const list = el("editor-file-list");
+  const query = el("editor-file-search").value.trim().toLowerCase();
+  const files = editorState.files
+    .filter((path) => !query || path.toLowerCase().includes(query))
+    .slice(0, 240);
+  if (!files.length) {
+    list.replaceChildren(reviewNote(query
+      ? t("editor.noMatchingFiles", "No matching project files.")
+      : t("editor.noFiles", "No editable files found.")));
+    return;
+  }
+  list.replaceChildren(...files.map((path) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "editor-file-row";
+    row.classList.toggle("active", path === editorState.path);
+    row.title = path;
+    const name = document.createElement("span");
+    name.textContent = path;
+    row.appendChild(name);
+    row.onclick = () => void openEditorFile(path, editorState.filesProject);
+    return row;
+  }));
+}
+
+async function toggleEditorFiles(open = el("editor-file-picker").hidden) {
+  const picker = el("editor-file-picker");
+  const project = runFolder() || state.project;
+  if (!open) {
+    picker.hidden = true;
+    el("editor-files-toggle").setAttribute("aria-expanded", "false");
+    (editorState.instance || el("editor-fallback")).focus();
+    return;
+  }
+  if (!project) {
+    showToast(t("editor.selectProject", "Select a project before opening its editor."), "error");
+    return;
+  }
+  openPanel("editor");
+  picker.hidden = false;
+  el("editor-files-toggle").setAttribute("aria-expanded", "true");
+  el("editor-file-search").value = "";
+  el("editor-file-list").replaceChildren(reviewNote(t("editor.readingFiles", "Reading project files…")));
+  await ensureEditorEngine();
+  await loadEditorFiles(true);
+  renderEditorFiles();
+  el("editor-file-search").focus();
+}
+
+async function openEditorPanel() {
+  if (!el("bottom-panel").hidden && state.panelTab === "editor") {
+    hidePanel();
+    return;
+  }
+  if (!runFolder() && !state.project) {
+    showToast(t("editor.selectProject", "Select a project before opening its editor."), "error");
+    return;
+  }
+  openPanel("editor");
+  await ensureEditorEngine();
+  paintEditor();
+  layoutEditor();
+  if (editorState.path) (editorState.instance || el("editor-fallback")).focus();
+  else await toggleEditorFiles(true);
+}
+
+function initEditor() {
+  el("editor-save").onclick = () => void saveEditorFile();
+  el("editor-revert").onclick = () => void revertEditorFile();
+  el("editor-close").onclick = () => void closeEditorFile();
+  el("editor-open").onclick = () => void toggleEditorFiles(true);
+  el("editor-files-toggle").onclick = () => void toggleEditorFiles();
+  el("editor-file-search").addEventListener("input", renderEditorFiles);
+  el("editor-fallback").addEventListener("input", () => {
+    syncEditorDirty();
+    paintEditorPosition();
+  });
+  const position = () => paintEditorPosition();
+  el("editor-fallback").addEventListener("click", position);
+  el("editor-fallback").addEventListener("keyup", position);
+  el("editor-fallback").addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    const field = event.target || el("editor-fallback");
+    const start = field.selectionStart || 0;
+    const end = field.selectionEnd || start;
+    const value = String(field.value);
+    const indent = "    ";
+    if (!event.shiftKey) {
+      field.value = value.slice(0, start) + indent + value.slice(end);
+      field.setSelectionRange(start + indent.length, start + indent.length);
+    } else {
+      const from = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+      const width = value.slice(from, start).match(/^ {1,4}/)?.[0].length || 0;
+      field.value = value.slice(0, start - width) + value.slice(start);
+      field.setSelectionRange(start - width, start - width);
+    }
+    syncEditorDirty();
+    paintEditorPosition();
+  });
+  paintEditor();
 }
 
 // ---------- a file the conversation produced ----------
@@ -11408,6 +11940,7 @@ function paintFile() {
   if (!view) return;
   const toggle = el("file-mode");
   const rendered = view.kind === "markdown" || view.kind === "html";
+  el("file-edit").hidden = view.kind === "image";
   toggle.hidden = !rendered;
   toggle.textContent = source ? t("file.preview", "Preview") : t("file.source", "Source");
   if (view.kind === "image") {
@@ -12746,6 +13279,7 @@ async function initEvents() {
   });
   await listen("toggle-panel", () => togglePanel());
   await listen("open-terminal", () => void openTerminal());
+  await listen("open-editor", () => void openEditorPanel());
   await listen("open-settings", () => openSettings());
   await listen("command-menu", () => openCommandMenu());
   await listen("toggle-sidebar", () => toggleSidebar());
@@ -13588,14 +14122,22 @@ function init() {
   el("find-prev").onclick = () => stepFind(-1);
   el("find-close").onclick = closeFind;
   el("file-close").onclick = closeFile;
+  el("file-edit").onclick = () => {
+    const path = state.file.view?.path;
+    if (!path) return;
+    closeFile();
+    void openEditorFile(path, runFolder() || state.project);
+  };
   el("file-mode").onclick = () => {
     state.file.source = !state.file.source;
     paintFile();
   };
+  initEditor();
   el("review-stage-all").onclick = () => void shapeChange("stage-all");
   el("review-unstage-all").onclick = () => void shapeChange("unstage-all");
   window.addEventListener("resize", () => {
     if (!el("panel-terminal").hidden) fitTerminal();
+    layoutEditor();
   });
   // The preferences are read before anything else asks what the window should
   // look like, since the sidebar and the scale are drawn from them.
@@ -13727,6 +14269,7 @@ function init() {
     if (!el("review-modal").hidden) closeReview();
     else openRepositoryChanges();
   };
+  el("editor-toggle").onclick = () => void openEditorPanel();
   el("details-toggle").onclick = () => {
     if (!el("bottom-panel").hidden) return openProjectDetails();
     state.detailsOpen = !state.detailsOpen;
@@ -14023,6 +14566,12 @@ function init() {
       return;
     }
     if (event.defaultPrevented) return;
+    if (event.key === "Escape" && !el("editor-file-picker").hidden) {
+      event.preventDefault();
+      void toggleEditorFiles(false);
+      el("editor-files-toggle").focus();
+      return;
+    }
     if (event.key === "Escape") {
       // The catalog is the menu's second page: Escape steps back to the
       // summary first, the way the Tauri window's does.
@@ -14084,6 +14633,16 @@ function init() {
         runCommand(state.commandRows[state.commandIndex]);
         return;
       }
+    }
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      event.key.toLowerCase() === "s" &&
+      !el("bottom-panel").hidden &&
+      state.panelTab === "editor"
+    ) {
+      event.preventDefault();
+      void saveEditorFile();
+      return;
     }
     const action = matchShortcut(event);
     if (action) {

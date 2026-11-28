@@ -5,7 +5,12 @@
   "description": "Runtime assets for the Oxide Desktop page.",
   "license": "MIT",
   "packageManager": "pnpm@12.23.0",
+  "scripts": {
+    "prepare:editor": "node scripts/prepare-editor.mjs",
+    "postinstall": "node scripts/prepare-editor.mjs"
+  },
   "devDependencies": {
-    "mermaid": "12.2.0"
+    "mermaid": "12.2.0",
+    "monaco-editor": "^0.58.0"
   }
 }

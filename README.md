@@ -150,8 +150,8 @@ Keyboard shortcuts, the transcript layout, and copy behavior are in
 in-process (`oxide_desktop::commands::dispatch`), so it reads and writes the same
 projects, sessions, approvals, configuration, themes and language as the
 terminal and editor integration. It manages multiple projects and their threads
-from one window, with streamed turns, reviews, worktrees, terminals, plugins,
-MCP servers and platform webview accessibility.
+from one window, with streamed turns, a right-hand Monaco code editor, reviews,
+worktrees, terminals, plugins, MCP servers and platform webview accessibility.
 
 Oxide Desktop owns the `desktop-latest` installer links and the `desktop-v*`
 release train.
