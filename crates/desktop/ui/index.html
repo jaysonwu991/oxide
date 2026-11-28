@@ -467,6 +467,17 @@
     <aside id="review-modal" class="changes-pane" aria-label="Changes" data-i18n-aria="ui.changes" hidden>
       <div class="review-dialog">
         <div class="dock-title"><h2 id="review-title" data-i18n="topbar.viewChanges">Changes</h2>
+          <div class="dock-title-actions">
+          <button
+            id="review-fullscreen"
+            class="icon"
+            type="button"
+            title="Enter fullscreen view"
+            aria-label="Enter fullscreen view"
+            aria-pressed="false"
+            data-i18n-title="panel.enterFullscreen"
+            data-i18n-aria="panel.enterFullscreen"
+          ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg></button>
           <button
             id="review-close"
             class="icon"
@@ -475,6 +486,7 @@
             data-i18n-title="common.close"
             data-i18n-aria="common.close"
           ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" stroke-width="1.8"/></svg></button>
+          </div>
         </div>
         <div id="review-repository-row" class="review-repository-row" hidden>
           <span id="review-repository-icon" aria-hidden="true"></span>
@@ -515,6 +527,16 @@
           <span id="editor-save-state" class="editor-save-state" aria-live="polite"></span>
           <button id="editor-revert" class="panel-action" type="button" title="Discard changes and reload the file" hidden>Revert</button>
           <button id="editor-save" class="panel-action" type="button" title="Save (⌘S / Ctrl+S)" disabled>Save</button>
+          <button
+            id="editor-fullscreen"
+            class="icon"
+            type="button"
+            title="Enter fullscreen view"
+            aria-label="Enter fullscreen view"
+            aria-pressed="false"
+            data-i18n-title="panel.enterFullscreen"
+            data-i18n-aria="panel.enterFullscreen"
+          ><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/></svg></button>
           <button
             id="editor-close"
             class="icon"
