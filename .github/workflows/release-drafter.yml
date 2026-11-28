@@ -59,10 +59,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # release-drafter's autolabeler matches one file at a time, so it cannot
-      # express "only this component". Label the component only when every
-      # changed file lives under it; a shared (`crates/core`) or mixed change
-      # keeps no component label. A rename counts its old path too, so moving a
-      # file between components is not mistaken for a single-component change.
+      # express "only this component". Label the component when every changed
+      # file lives under it, or when a mixed change names one component in its
+      # conventional-commit scope. A shared or ambiguous change keeps no
+      # component label, so every front-end includes it. A rename counts its old
+      # path too, so moving a file between components is not mistaken for a
+      # single-component change.
       - name: Label the changed component
         if: github.event_name == 'pull_request'
         shell: bash
@@ -92,6 +94,18 @@ jobs:
             if [ "$only_cli" = 1 ]; then label="cli"; fi
             if [ "$only_desktop" = 1 ]; then label="desktop"; fi
             if [ "$only_vscode" = 1 ]; then label="vscode"; fi
+          fi
+
+          if [ -z "$label" ]; then
+            title="$(gh pr view "$PR" --repo "$REPO" --json title --jq '.title' | tr '[:upper:]' '[:lower:]')"
+            scope="$(printf '%s\n' "$title" \
+              | sed -n 's/^[a-z][a-z0-9-]*!*(\([^)]*\)).*/\1/p' \
+              | tr -d ' ')"
+            case ",${scope}," in
+              *',desktop,'*) label="desktop" ;;
+              *',vscode,'* | *',extension,'*) label="vscode" ;;
+              *',cli,'*) label="cli" ;;
+            esac
           fi
 
           current="$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')"

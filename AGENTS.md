@@ -9,7 +9,7 @@ An optimized AI coding agent CLI written in Rust.
 - `crates/cli/` (`oxide`): terminal binary, RPC mode and ratatui TUI.
 - `crates/desktop/` (`oxide-desktop`): the native Tauri desktop app, a separate
   Cargo workspace. `src/` holds the in-process engine and Tauri host, `ui/` the
-  desktop page, `assets/` and `icons/` the installer resources, and `package.sh`
+  desktop page, `assets/` and `icons/` the packaging resources, and `package.sh`
   the platform packaging. It is released by `desktop.yml`.
 - `editors/vscode/`: separate pnpm/TypeScript package. Runs the installed CLI with
   `oxide --mode rpc`; shares its configuration and session store.
@@ -47,7 +47,7 @@ and detailed explanations in the relevant guide.
 - `cargo fmt`
 - `cd crates/desktop && pnpm install` (the page's Mermaid and Monaco dependencies, once; pnpm 12 and the app's own lockfile are what CI installs from)
 - `cd crates/desktop && node ../../scripts/prepare-diagrams.mjs desktop && cargo run` (the Tauri window; install the page dependency first with `pnpm install`)
-- `cd crates/desktop && cargo build --release && ./package.sh` (this platform's installer under `artifacts/`)
+- `cd crates/desktop && cargo build --release && ./package.sh` (this platform's packages under `artifacts/`)
 - `cd crates/desktop && cargo test` (desktop manager, turn, command, bridge, host and updater tests)
 - `node crates/desktop/check-app.mjs` (front-end behavior against a stubbed DOM and bridge)
 - `node crates/desktop/check-shell.mjs` (the Tauri host, page bridge, native services, menu, release train and packaging)

@@ -83,9 +83,9 @@ whose files are replaced on every publish. Since `/releases/latest` names the
 newest release of the repository as a whole — which may be a CLI or extension
 one — `desktop-latest` is what a permanent link is built on.
 
-The native app ships a disk image for macOS (Apple Silicon and Intel), and
-`tar.gz` packages for Windows x64 and Linux x64/arm64.
-[README.md](../README.md#installers) links each of them;
+The native app ships a disk image for macOS (Apple Silicon and Intel), an NSIS
+installer for Windows x64, and an AppImage plus `tar.gz` package for Linux
+x64/arm64. [README.md](../README.md#downloads) links each of them;
 [desktop.md](desktop.md) explains the packaging.
 
 On macOS, an app that was not notarized — a build made without both the
@@ -108,7 +108,7 @@ node ../../scripts/prepare-diagrams.mjs desktop
 cargo run
 ```
 
-Use `./package.sh` to produce this platform's installer under `artifacts/`.
+Use `./package.sh` to produce this platform's packages under `artifacts/`.
 See [desktop.md](desktop.md) for the native app.
 
 ## VS Code extension

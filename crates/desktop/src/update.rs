@@ -1,7 +1,7 @@
 //! The desktop app's own release train.
 //!
 //! The app releases from its own tags (`desktop-v0.34.0`) carrying its own
-//! bundles, so what this layer offers is a desktop release rather than the
+//! artifacts, so what this layer offers is a desktop release rather than the
 //! CLI's: the rules themselves — which tag belongs to the app, which artifact
 //! this platform installs, whether a release is newer — live in
 //! `oxide_core::updates`, shared with `oxide update` and the VS Code panel. What
@@ -444,7 +444,7 @@ pub async fn install_reporting(token: &str, report: impl Fn(Progress)) -> Result
 /// Installs the newest release of one desktop release train against `current`.
 ///
 /// The stable and beta apps share the release rules, the checksum check and the
-/// installation layouts, but each runs from its own train and bundle. The
+/// installation layouts, but each runs from its own train and package. The
 /// caller supplies both rather than this library borrowing the stable package's
 /// version for the beta binary that links it.
 pub async fn install_component_reporting(
@@ -547,7 +547,7 @@ pub async fn install_component_reporting(
     }))
 }
 
-/// Downloads the newest release's installer into the reader's Downloads folder,
+/// Downloads the newest release's artifact into the reader's Downloads folder,
 /// reporting each step to `report`.
 ///
 /// This is the path for a copy the app cannot put in place itself — a
@@ -561,7 +561,7 @@ pub async fn download_reporting(token: &str, report: impl Fn(Progress)) -> Resul
     download_component_reporting(Component::Desktop, current_version(), token, report).await
 }
 
-/// Downloads the newest installer from one desktop release train against
+/// Downloads the newest artifact from one desktop release train against
 /// `current` into the reader's Downloads folder.
 pub async fn download_component_reporting(
     component: Component,
@@ -584,7 +584,7 @@ pub async fn download_component_reporting(
     fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
     let download = folder.join(&release.asset);
     // The bytes land beside the name until they have verified, so a download
-    // that stopped leaves no half file where the reader's installer should be.
+    // that stopped leaves no half file where the release file should be.
     let partial = folder.join(format!(".{}.part", release.asset));
     report(Progress::step("downloading", release.version.clone()));
     let mut reported = 0u64;
@@ -630,12 +630,12 @@ pub async fn download_component_reporting(
         bail!(CANCELLED);
     }
     // Windows will not rename over an existing file, and each release publishes
-    // the same name, so a previous installer is replaced rather than kept.
+    // the same name, so a previous download is replaced rather than kept.
     remove(&download);
     fs::rename(&partial, &download)
         .with_context(|| format!("moving {} to {}", partial.display(), download.display()))?;
     notes.push(format!(
-        "Oxide {} is in {}. Open it to install the update.",
+        "Oxide {} is in {}. Open it to install or unpack the update.",
         release.version,
         download.display()
     ));

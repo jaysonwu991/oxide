@@ -26,6 +26,9 @@
 name-template: 'Oxide for VS Code v$RESOLVED_VERSION'
 tag-template: 'extension-v$RESOLVED_VERSION'
 tag-prefix: 'extension-v'
+exclude-labels:
+  - 'cli'
+  - 'desktop'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
@@ -144,15 +147,3 @@ template: |
   The extension drives the `oxide` CLI, which is released separately: install it
   from the [releases page](https://github.com/$OWNER/$REPOSITORY/releases) (see
   `install.sh` / `install.ps1`).
-
-  ## Full Changelog
-
-  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...extension-v$RESOLVED_VERSION
-
-  ## New Contributors
-
-  $NEW_CONTRIBUTORS
-
-  ## Contributors
-
-  $CONTRIBUTORS

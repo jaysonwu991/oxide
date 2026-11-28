@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Packages Oxide for Desktop for the machine that runs it.
 #
-# The app is one native binary, so this script turns it into the thing people
-# install: a `.app` in a `.dmg` on macOS, an NSIS `Setup.exe` and `.tar.gz`
-# bundle on Windows, and a `.tar.gz` bundle plus `.AppImage` on Linux. The names
-# it writes are the ones `.github/workflows/desktop.yml` uploads and the shared
-# updater resolves.
+# The app is one native binary, so this script turns it into the platform
+# packages people install: a `.app` in a `.dmg` on macOS, an NSIS `Setup.exe` on
+# Windows, and a `.tar.gz` bundle plus `.AppImage` on Linux. The names it writes
+# are the ones `.github/workflows/desktop.yml` uploads and the shared updater
+# resolves.
 #
 # Signing and notarization happen when the corresponding secrets are configured,
 # through an imported Developer ID identity (hardened runtime, timestamped) and

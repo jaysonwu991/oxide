@@ -98,7 +98,7 @@ jobs:
         run: node --test shared/diagrams.test.mjs
 
   # Build and test the debug profile on each platform Oxide Desktop ships to.
-  # The optimized LTO build and installer stay tag-time work in `desktop.yml`.
+  # The optimized LTO build and platform packages stay tag-time work in `desktop.yml`.
   desktop:
     name: desktop (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

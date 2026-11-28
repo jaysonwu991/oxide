@@ -106,7 +106,8 @@ application instance, which leaves two Oxide Dock icons during an update.
 | Linux x64 / arm64 | `Oxide-linux-x86_64-Setup.AppImage` / `Oxide-linux-arm64-Setup.AppImage`, and `Oxide-linux-<arch>-Setup.tar.gz` |
 | Windows x64 | `Oxide-win-x64-Setup.exe` (per-user NSIS installer; `/S` installs silently) |
 
-The product name, identifier, icon and installers are defined by this package.
+The product name, identifier, icon and platform packages are defined by this
+package.
 macOS signing and notarization use the imported Developer ID and App Store
 Connect credentials when configured; otherwise the bundle is signed ad-hoc.
 
@@ -120,7 +121,7 @@ Linux needs WebKitGTK 4.1 and GTK 3 at runtime. Windows uses the system WebView2
 runtime. On macOS Tauri uses the system WKWebView.
 
 The versioned release train is `desktop-v*`. The permanent `desktop-latest`
-alias points at the newest desktop installers.
+alias points at the newest desktop downloads.
 
 ## Host boundary
 
