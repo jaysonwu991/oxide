@@ -22,6 +22,9 @@
 name-template: 'Oxide Desktop v$RESOLVED_VERSION'
 tag-template: 'desktop-v$RESOLVED_VERSION'
 tag-prefix: 'desktop-v'
+exclude-labels:
+  - 'cli'
+  - 'vscode'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
@@ -130,16 +133,19 @@ template: |
 
   $CHANGES
 
-  ## Install Oxide Desktop
+  ## Download Oxide Desktop
 
-  Download the installer for your platform from the assets below. The app is
+  Download the package for your platform from the assets below. The app is
   built for Apple Silicon, Intel and 64-bit Windows and Linux.
 
   - **macOS, Apple Silicon** — `Oxide-macos-arm64.dmg`
   - **macOS, Intel** — `Oxide-macos-x64.dmg`
-  - **Windows x64** — `Oxide-win-x64-Setup.tar.gz`
-  - **Linux x64** — `Oxide-linux-x64-Setup.tar.gz`
-  - **Linux arm64** — `Oxide-linux-arm64-Setup.tar.gz`
+  - **Windows x64** — `Oxide-win-x64-Setup.exe`, a one-click install for the
+    user who runs it
+  - **Linux x64** — `Oxide-linux-x86_64-Setup.AppImage`, or
+    `Oxide-linux-x64-Setup.tar.gz` to unpack by hand
+  - **Linux arm64** — `Oxide-linux-arm64-Setup.AppImage`, or
+    `Oxide-linux-arm64-Setup.tar.gz` to unpack by hand
 
   On macOS the app is notarized only when this release was built with both an
   Apple Developer certificate and an App Store Connect key configured; a build
@@ -154,20 +160,8 @@ template: |
 
   The macOS app keeps itself current: **Check for Updates…** in the app menu
   downloads and verifies the newest `desktop-v` disk image, replaces the
-  installed **Oxide** app, and offers to restart into it. Other packages
-  download the verified installer to your Downloads folder so you can
-  unpack it the same way as the first install. The CLI is released separately:
+  installed **Oxide** app, and offers to restart into it. Windows downloads the
+  verified installer to your Downloads folder; Linux downloads its verified
+  AppImage or archive there. The CLI is released separately:
   its binaries, install scripts, and notes live on the
   [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
-
-  ## Full Changelog
-
-  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...desktop-v$RESOLVED_VERSION
-
-  ## New Contributors
-
-  $NEW_CONTRIBUTORS
-
-  ## Contributors
-
-  $CONTRIBUTORS

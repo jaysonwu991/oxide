@@ -122,15 +122,17 @@ impl Component {
     /// The CLI's archive is `Oxide-<platform>.<ext>` — the name `cli.yml`
     /// writes and the installers read out of the manifest — and the app and the
     /// panel publish `Oxide-macos-<arch>.dmg`,
-    /// `Oxide-linux-<arch>-Setup.tar.gz`, `Oxide-win-<arch>-Setup.tar.gz` and
-    /// `oxide-vscode.vsix`, the names the desktop packager and the extension's
-    /// `vsce package` write. None of them carries a version, so the
+    /// `Oxide-linux-<arch>-Setup.AppImage`, `Oxide-linux-<arch>-Setup.tar.gz`,
+    /// `Oxide-win-<arch>-Setup.exe` and `oxide-vscode.vsix`, the names the
+    /// desktop packager and the extension's `vsce package` write. None of them
+    /// carries a version, so the
     /// newest file of each kind keeps one name from release to release, which is
     /// what the permanent `desktop-latest`/`extension-latest` links `README.md`
     /// publishes are built on. A release published before the names lost their
     /// version carries the versioned ones, which follow the current names here
     /// so a pinned install of such a release still resolves. Both macOS
-    /// architectures use a disk image; Linux and Windows publish an archive.
+    /// architectures use a disk image; Windows publishes an installer, while
+    /// Linux prefers the AppImage and falls back to the archive.
     pub fn assets(self, tag: &str, platform: &str) -> Vec<String> {
         let mut names = self.named(platform);
         names.extend(self.versioned(&release_version(tag), platform));
@@ -158,16 +160,20 @@ impl Component {
                     "Oxide-Beta-macos-x64.dmg".to_string(),
                 ],
                 "linux-x64" => vec![
+                    "Oxide-linux-x86_64-Setup.AppImage".to_string(),
+                    "Oxide-Beta-linux-x86_64-Setup.AppImage".to_string(),
                     "Oxide-linux-x64-Setup.tar.gz".to_string(),
                     "Oxide-Beta-linux-x64-Setup.tar.gz".to_string(),
                 ],
                 "linux-arm64" => vec![
+                    "Oxide-linux-arm64-Setup.AppImage".to_string(),
+                    "Oxide-Beta-linux-arm64-Setup.AppImage".to_string(),
                     "Oxide-linux-arm64-Setup.tar.gz".to_string(),
                     "Oxide-Beta-linux-arm64-Setup.tar.gz".to_string(),
                 ],
                 "win-x64" => vec![
-                    "Oxide-win-x64-Setup.tar.gz".to_string(),
-                    "Oxide-Beta-win-x64-Setup.tar.gz".to_string(),
+                    "Oxide-win-x64-Setup.exe".to_string(),
+                    "Oxide-Beta-win-x64-Setup.exe".to_string(),
                 ],
                 _ => Vec::new(),
             },
@@ -196,16 +202,20 @@ impl Component {
                     format!("Oxide-Beta-{version}-macos-x64.dmg"),
                 ],
                 "linux-x64" => vec![
+                    format!("Oxide-{version}-linux-x86_64-Setup.AppImage"),
+                    format!("Oxide-Beta-{version}-linux-x86_64-Setup.AppImage"),
                     format!("Oxide-{version}-linux-x64-Setup.tar.gz"),
                     format!("Oxide-Beta-{version}-linux-x64-Setup.tar.gz"),
                 ],
                 "linux-arm64" => vec![
+                    format!("Oxide-{version}-linux-arm64-Setup.AppImage"),
+                    format!("Oxide-Beta-{version}-linux-arm64-Setup.AppImage"),
                     format!("Oxide-{version}-linux-arm64-Setup.tar.gz"),
                     format!("Oxide-Beta-{version}-linux-arm64-Setup.tar.gz"),
                 ],
                 "win-x64" => vec![
-                    format!("Oxide-{version}-win-x64-Setup.tar.gz"),
-                    format!("Oxide-Beta-{version}-win-x64-Setup.tar.gz"),
+                    format!("Oxide-{version}-win-x64-Setup.exe"),
+                    format!("Oxide-Beta-{version}-win-x64-Setup.exe"),
                 ],
                 _ => Vec::new(),
             },
@@ -738,8 +748,8 @@ pub async fn fetch(
     Ok(Some(bytes.to_vec()))
 }
 
-/// Downloads `url` into `destination` a chunk at a time. A desktop bundle is
-/// tens of megabytes, and holding one in memory to write it out again is a copy
+/// Downloads `url` into `destination` a chunk at a time. A desktop release is
+/// tens of megabytes, and holding it in memory to write it out again is a copy
 /// nothing needs; the byte count is returned so a caller can say how big the
 /// download was.
 pub async fn download(client: &reqwest::Client, url: &str, destination: &Path) -> Result<u64> {
@@ -800,7 +810,7 @@ pub async fn download_reporting(
 /// Checks a downloaded artifact against the digest its release published. A
 /// digest that is not the file's is how a truncated or substituted download is
 /// refused before it is installed, since the same bytes go on to replace the
-/// app or open an installer.
+/// app or open a package.
 pub fn verify_sha256(file: &Path, expected: &str) -> Result<()> {
     let expected = expected.trim();
     let expected = match expected.split_once(':') {
@@ -1084,21 +1094,26 @@ mod tests {
             .contains(&"Oxide-Beta-macos-arm64.dmg".to_string()));
         for (platform, asset) in [
             ("macos-x64", "Oxide-macos-x64.dmg"),
-            ("linux-x64", "Oxide-linux-x64-Setup.tar.gz"),
-            ("linux-arm64", "Oxide-linux-arm64-Setup.tar.gz"),
-            ("win-x64", "Oxide-win-x64-Setup.tar.gz"),
+            ("linux-x64", "Oxide-linux-x86_64-Setup.AppImage"),
+            ("linux-arm64", "Oxide-linux-arm64-Setup.AppImage"),
+            ("win-x64", "Oxide-win-x64-Setup.exe"),
         ] {
             assert_eq!(
                 Release::new(Component::Desktop, "desktop-v0.34.0", None, platform).asset,
                 asset
             );
         }
-        // The version-less and versioned archive names are both resolved.
+        // The version-less and versioned AppImage names come before the archive
+        // fallback, so an in-place Linux update uses the AppImage.
         assert_eq!(
             Component::Desktop.assets("desktop-v0.34.0", "linux-x64"),
             [
+                "Oxide-linux-x86_64-Setup.AppImage",
+                "Oxide-Beta-linux-x86_64-Setup.AppImage",
                 "Oxide-linux-x64-Setup.tar.gz",
                 "Oxide-Beta-linux-x64-Setup.tar.gz",
+                "Oxide-0.34.0-linux-x86_64-Setup.AppImage",
+                "Oxide-Beta-0.34.0-linux-x86_64-Setup.AppImage",
                 "Oxide-0.34.0-linux-x64-Setup.tar.gz",
                 "Oxide-Beta-0.34.0-linux-x64-Setup.tar.gz",
             ]
@@ -1235,6 +1250,7 @@ mod tests {
         let releases = serde_json::json!([{
             "tag_name": "desktop-v0.34.0",
             "assets": [
+                { "name": "Oxide-linux-x86_64-Setup.AppImage", "digest": "sha256:appimage" },
                 { "name": "Oxide-linux-x64-Setup.tar.gz", "digest": "sha256:linux" },
                 { "name": "Oxide-macos-arm64.dmg", "digest": "sha256:mac" }
             ]
@@ -1248,8 +1264,8 @@ mod tests {
             &releases,
             "linux-x64",
         );
-        assert_eq!(release.asset, "Oxide-linux-x64-Setup.tar.gz");
-        assert_eq!(release.digest.as_deref(), Some("sha256:linux"));
+        assert_eq!(release.asset, "Oxide-linux-x86_64-Setup.AppImage");
+        assert_eq!(release.digest.as_deref(), Some("sha256:appimage"));
 
         // A release carrying only the names from before the versioning is not
         // resolved by them: this prefers the names a release is built under
@@ -1273,7 +1289,7 @@ mod tests {
         let release = Release::listed(Component::Desktop, "desktop-v0.33.0", &before, "linux-x64");
         assert!(release.asset.is_empty());
 
-        // A release that published no installer for this platform has nothing
+        // A release that published no package for this platform has nothing
         // to offer rather than an artifact it never built.
         let macos_only = serde_json::json!([{
             "tag_name": "desktop-v0.34.0",

@@ -60,7 +60,7 @@ The repository is a Cargo workspace with two members — `oxide-core`
 `main.rs`, `tui/`, `theme.rs`, `install.rs`, `update.rs`, `uninstall.rs`) — plus
 `oxide-desktop` (`crates/desktop`), which is a workspace of its own. It contains
 the Tauri host, the in-process engine (`src/`), the desktop page (`ui/`) and
-the platform installers (`package.sh`), documented in
+the platform packaging (`package.sh`), documented in
 [`docs/desktop.md`](docs/desktop.md). The VS Code extension under
 `editors/vscode` is a separate pnpm/TypeScript package, not a Cargo workspace
 member, documented in [`docs/vscode.md`](docs/vscode.md). Every path below is
@@ -237,7 +237,7 @@ Releases are automated by GitHub Actions:
    checksum, and publishes a GitHub Release with `install.sh` and `install.ps1`
    attached.
 3. `desktop.yml` triggers on `desktop-v*` tags (and manually), builds Oxide
-   Desktop for every supported platform, and publishes its installers and
+   Desktop for every supported platform, and publishes its release artifacts and
    `desktop-latest` alias.
 4. `vscode.yml` triggers on `extension-v*` tags, runs the extension's type
    check and unit tests, builds `oxide-vscode.vsix`, and attaches it
@@ -265,7 +265,9 @@ are created by `labels.yml`.
 A PR whose changes are limited to `crates/cli/` is labeled `cli`, one limited to
 `crates/desktop/` is labeled `desktop`, and one limited to `editors/vscode/` is
 labeled `vscode`; a change that also touches shared code (for example
-`crates/core/`) or more than one component carries none of those labels.
+`crates/core/`) takes the component named in its conventional-commit scope,
+such as `feat(desktop):`. A shared or ambiguous change carries none of those
+labels and appears in every component's draft.
 
 The repository keeps a placeholder version (`0.0.0`). On a tag, the matching
 workflow runs `scripts/set-version.sh "$GITHUB_REF_NAME"` followed by
@@ -296,7 +298,7 @@ The desktop and extension workflows also refresh alias releases —
 `desktop-latest` and `extension-latest` — with the same files under tags that
 never move, because `/releases/latest` names the newest release of the
 repository as a whole and multiple components publish into it, so it cannot
-address one component's installers. That is what the installer table in
+address one component's downloads. That is what the download table in
 `README.md` links to, which is also why the app's and the extension's files
 carry no version in their names;
 the CLI's keep theirs, since the installers read the version out of the

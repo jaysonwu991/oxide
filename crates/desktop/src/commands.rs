@@ -1705,7 +1705,7 @@ pub async fn check_updates(current: String) -> CmdResult<Value> {
     serde_json::to_value(check).map_err(err)
 }
 
-/// Installs the newest release of the app from its own train: the bundle this
+/// Installs the newest release of the app from its own train: the artifact this
 /// platform installs is downloaded, verified against the digest its release
 /// published, and put in this installation's place, so the window offers the
 /// update the app itself would run.
@@ -1762,7 +1762,7 @@ pub async fn install_update(
     }
 }
 
-/// Downloads the newest release's installer into the reader's Downloads folder,
+/// Downloads the newest release's artifact into the reader's Downloads folder,
 /// for a copy the app cannot replace in place: a distribution's package, a
 /// checkout's build, or an installation an administrator owns. The window calls
 /// this from the dialog's Download button, so such a copy still has a way to

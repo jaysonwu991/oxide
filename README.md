@@ -70,10 +70,10 @@ cargo install --path crates/cli
 
 A prebuilt install keeps current with `oxide update`, and each released surface
 updates its own train, so updating one never pulls a release meant for another.
-Supported platforms, the installer overrides, the desktop build, `oxide update`
+Supported platforms, the install-script overrides, the desktop build, `oxide update`
 and `oxide uninstall` are in [docs/install.md](docs/install.md).
 
-## Installers
+## Downloads
 
 Oxide Desktop and the VS Code extension are always the newest build. Desktop
 links use `desktop-latest`, and the extension uses `extension-latest`; their
@@ -81,13 +81,13 @@ files are replaced on every publish, so the links themselves never change.
 Versioned `desktop-v*` and `extension-v*` releases name the version a file is
 from.
 
-| Surface | Platform | Installer |
+| Surface | Platform | Download |
 | --- | --- | --- |
 | Oxide Desktop | macOS, Apple Silicon | [Oxide-macos-arm64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-arm64.dmg) |
 | Oxide Desktop | macOS, Intel | [Oxide-macos-x64.dmg](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-macos-x64.dmg) |
-| Oxide Desktop | Windows x64 | [Oxide-win-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.tar.gz) |
-| Oxide Desktop | Linux x64 | [Oxide-linux-x64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
-| Oxide Desktop | Linux arm64 | [Oxide-linux-arm64-Setup.tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
+| Oxide Desktop | Windows x64 | [Oxide-win-x64-Setup.exe](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-win-x64-Setup.exe) |
+| Oxide Desktop | Linux x64 | [AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x86_64-Setup.AppImage) · [tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-x64-Setup.tar.gz) |
+| Oxide Desktop | Linux arm64 | [AppImage](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.AppImage) · [tar.gz](https://github.com/jaysonwu991/oxide/releases/download/desktop-latest/Oxide-linux-arm64-Setup.tar.gz) |
 | VS Code | any | [oxide-vscode.vsix](https://github.com/jaysonwu991/oxide/releases/download/extension-latest/oxide-vscode.vsix) |
 
 On macOS, an app that was not notarized — a build made without both the
@@ -153,7 +153,7 @@ terminal and editor integration. It manages multiple projects and their threads
 from one window, with streamed turns, a right-hand Monaco code editor, reviews,
 worktrees, terminals, plugins, MCP servers and platform webview accessibility.
 
-Oxide Desktop owns the `desktop-latest` installer links and the `desktop-v*`
+Oxide Desktop owns the `desktop-latest` download links and the `desktop-v*`
 release train.
 
 The package is its own Cargo workspace:
@@ -165,7 +165,7 @@ node ../../scripts/prepare-diagrams.mjs desktop
 cargo run
 ```
 
-Prebuilt installers are in [Installers](#installers). See
+Prebuilt desktop and extension downloads are in [Downloads](#downloads). See
 [docs/desktop.md](docs/desktop.md) for the complete surface,
 accessibility, signing and packaging.
 

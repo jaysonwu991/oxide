@@ -8040,8 +8040,8 @@ function paintUpdate(check) {
         ? t("ui.installingDownloadsTheReleaseForThisMachineAndPutsItInThisAppSPlace", "Installing downloads the release for this machine and puts it in this app's place. ") +
           t("update.keepsRunning", "The app keeps running until it is restarted.")
         : t(
-            "ui.downloadingFetchesTheInstallerIntoYourDownloadsFolder",
-            "Downloading fetches this release's installer into your Downloads folder. Open it to install the update.",
+            "ui.downloadingFetchesTheReleaseFileIntoYourDownloadsFolder",
+            "Downloading fetches this release's file into your Downloads folder. Open it to install or unpack the update.",
           )
       : "",
   );
@@ -8051,7 +8051,7 @@ function paintUpdate(check) {
   // Only the app itself decides whether it can replace this installation: a
   // copy in a system directory, a distribution's package or a checkout's build
   // cannot be written over. Such a copy still gets the release itself: the
-  // Download button fetches the installer into the reader's Downloads folder,
+  // Download button fetches the release file into the reader's Downloads folder,
   // and the release page stays where the notes are.
   const install = available && check.installable === true;
   const download = available && Boolean(check.asset && check.asset.url);
@@ -8371,7 +8371,7 @@ function paintInstalled(answer) {
   );
 }
 
-/// A download that landed: the installer is in the reader's Downloads folder,
+/// A download that landed: the release file is in the reader's Downloads folder,
 /// and opening it from there is the install the release page's would be. No
 /// restart is offered, because nothing was put in place to restart into.
 function paintDownloaded(answer) {
@@ -8380,8 +8380,8 @@ function paintDownloaded(answer) {
   updateHead(
     t("dialog.update.downloaded", "Oxide {version} is downloaded", { version }),
     t(
-      "ui.openTheInstallerFromYourDownloadsFolderToFinishTheUpdate",
-      "Open the installer from your Downloads folder to finish the update.",
+      "ui.openTheReleaseFileFromYourDownloadsFolderToFinishTheUpdate",
+      "Open the release file from your Downloads folder to finish the update.",
     ),
   );
   const lines = [];

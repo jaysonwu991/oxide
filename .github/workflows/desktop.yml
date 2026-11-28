@@ -1,7 +1,7 @@
 name: Desktop
 
 # Builds Oxide Desktop, the native Tauri front-end in `crates/desktop`, for
-# macOS x64 and arm64, Linux x64 and arm64, and Windows, and hands the installers
+# macOS x64 and arm64, Linux x64 and arm64, and Windows, and hands the artifacts
 # it produced to the release job. The `desktop-v*` train names the release; its
 # stable-name artifacts feed the public `desktop-latest` alias.
 #
@@ -210,7 +210,7 @@ jobs:
             "$binary" --check
           fi
 
-      # The installers `docs/desktop.md` lists under **Release assets**, named the
+      # The packages `docs/desktop.md` lists under **Packaging**, named the
       # same way from release to release so the permanent links keep working.
       - uses: actions/upload-artifact@v4
         with:
@@ -238,7 +238,7 @@ jobs:
       # Keep the notes release-drafter already drafted for this tag; only create
       # a release when none exists yet. Upload everything before publishing,
       # including when reusing a draft.
-      - name: Upload installers and publish release
+      - name: Upload release artifacts and publish release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -252,7 +252,7 @@ jobs:
             | xargs -0 gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber
           gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false
 
-      # The permanent installer address is replaced on every publish.
+      # The permanent download address is replaced on every publish.
       - name: Refresh the desktop aliases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -262,11 +262,11 @@ jobs:
           for alias_tag in desktop-latest; do
             if ! gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
               gh release create "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
-                --title "Oxide Desktop installers" \
-                --notes "The newest desktop installers, at an address that does not change. Every publish replaces these files; the versioned \`desktop-v*\` release is the one that names a version."
+                --title "Oxide Desktop downloads" \
+                --notes "The newest desktop downloads, at an address that does not change. Every publish replaces these files; the versioned \`desktop-v*\` release is the one that names a version."
             else
               gh release edit "$alias_tag" --repo "${GITHUB_REPOSITORY}" --prerelease \
-                --title "Oxide Desktop installers"
+                --title "Oxide Desktop downloads"
             fi
             gh release view "$alias_tag" --repo "${GITHUB_REPOSITORY}" \
               --json assets --jq '.assets[].name' \

@@ -28,6 +28,8 @@ const sheet = read(`${root}crates/desktop/ui/style.css`);
 const updates = read(`${root}crates/core/src/updates.rs`);
 const workflow = read(`${root}.github/workflows/desktop.yml`);
 const releaseDrafter = read(`${root}.github/release-drafter.desktop.yml`);
+const cliReleaseDrafter = read(`${root}.github/release-drafter.cli.yml`);
+const vscodeReleaseDrafter = read(`${root}.github/release-drafter.vscode.yml`);
 const packageScript = read(`${here}package.sh`);
 
 console.log("the pinned Tauri host");
@@ -142,6 +144,38 @@ check(
   /desktop-v\*/.test(workflow) &&
     /desktop-latest/.test(workflow) &&
     /tag-template: 'desktop-v\$RESOLVED_VERSION'/.test(releaseDrafter),
+);
+check(
+  "kept all three release notes free of duplicate changelog and contributor sections",
+  [cliReleaseDrafter, releaseDrafter, vscodeReleaseDrafter].every(
+    (notes) =>
+      !/## Full Changelog|## New Contributors|## Contributors|NEW_CONTRIBUTORS|CONTRIBUTORS/.test(
+        notes,
+      ),
+  ),
+);
+check(
+  "kept each release draft out of the other components' logs",
+  [
+    [cliReleaseDrafter, ["desktop", "vscode"]],
+    [releaseDrafter, ["cli", "vscode"]],
+    [vscodeReleaseDrafter, ["cli", "desktop"]],
+  ].every(([notes, excluded]) => {
+    const section = notes.match(/(?:^|\n)exclude-labels:\n((?:  - '[^']+'\n)+)/);
+    return excluded.every((label) => section?.[1].includes(`  - '${label}'`));
+  }),
+);
+check(
+  "kept the CLI release notes on the install scripts",
+  /raw\.githubusercontent\.com\/\$OWNER\/\$REPOSITORY\/main\/install\.sh/.test(cliReleaseDrafter) &&
+    /raw\.githubusercontent\.com\/\$OWNER\/\$REPOSITORY\/main\/install\.ps1/.test(
+      cliReleaseDrafter,
+    ),
+);
+check(
+  "kept the VS Code release notes on the VSIX",
+  /Download `oxide-vscode\.vsix`/.test(vscodeReleaseDrafter) &&
+    !/Setup\.tar\.gz/.test(vscodeReleaseDrafter),
 );
 check(
   "packaged the updater asset names",

@@ -1003,7 +1003,7 @@ const invoke = async (command, args = {}) => {
         asset: name,
         bytes: 1024,
         path: `/Users/me/Downloads/${name}`,
-        text: `Oxide ${updateAnswer.latest} is in /Users/me/Downloads/${name}. Open it to install the update.`,
+        text: `Oxide ${updateAnswer.latest} is in /Users/me/Downloads/${name}. Open it to install or unpack the update.`,
       };
     }
     case "cancel_update": {
@@ -8741,13 +8741,13 @@ check(
 );
 await downloadButton.onclick();
 check(
-  "downloaded the installer into the reader's Downloads folder",
+  "downloaded the release file into the reader's Downloads folder",
   projectCalls("download_update").length === 1 &&
     updateTitle() === "Oxide 0.34.0 is downloaded",
   `${projectCalls("download_update").length} / ${updateTitle()}`,
 );
 check(
-  "named where the installer landed",
+  "named where the release file landed",
   updateBody().includes("/Users/me/Downloads/Oxide-macos-arm64.dmg"),
   updateBody(),
 );
@@ -9571,7 +9571,7 @@ await app.renderProjectsTree();
 console.log("a thread's pull request");
 const pullThread = {
   id: "pull-thread",
-  name: "Installer links in root README",
+  name: "Download links in root README",
   cwd: "/tmp/sidebar-0",
   created_at: 5,
   modified_at: 5,

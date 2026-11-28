@@ -21,6 +21,11 @@ tag-template: 'v$RESOLVED_VERSION'
 # the previous-release lookup that resolves the next version. A run without a
 # prefix would adopt whichever draft GitHub returns first.
 tag-prefix: 'v'
+# A scoped mixed change carries the label of the front-end it names. Shared
+# changes carry none, so they remain in every component's notes.
+exclude-labels:
+  - 'desktop'
+  - 'vscode'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
@@ -188,18 +193,6 @@ template: |
   irm https://raw.githubusercontent.com/$OWNER/$REPOSITORY/main/install.ps1 | iex
   ```
 
-  The desktop app is versioned separately: its bundles are drafted from
+  The desktop app is versioned separately: its release artifacts are drafted from
   `desktop-v*` tags and live on the
   [releases page](https://github.com/$OWNER/$REPOSITORY/releases).
-
-  ## Full Changelog
-
-  https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
-
-  ## New Contributors
-
-  $NEW_CONTRIBUTORS
-
-  ## Contributors
-
-  $CONTRIBUTORS

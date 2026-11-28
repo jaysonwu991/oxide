@@ -90,6 +90,6 @@ jobs:
           alias_tag=extension-latest
           gh release view "$alias_tag" --repo "${{ github.repository }}" >/dev/null 2>&1 \
             || gh release create "$alias_tag" --repo "${{ github.repository }}" --prerelease \
-                 --title "Oxide for VS Code installer" \
+                 --title "Oxide for VS Code extension" \
                  --notes "The newest VSIX, at an address that does not change. Every publish replaces this file; the versioned \`extension-v*\` release is the one that names a version."
           find vsix -type f -name '*.vsix' -exec gh release upload "$alias_tag" --repo "${{ github.repository }}" --clobber {} \;
