@@ -22,9 +22,6 @@
 name-template: 'Oxide Desktop v$RESOLVED_VERSION'
 tag-template: 'desktop-v$RESOLVED_VERSION'
 tag-prefix: 'desktop-v'
-exclude-labels:
-  - 'cli'
-  - 'vscode'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
@@ -41,6 +38,8 @@ categories:
   - type: 'pre-exclude'
     when:
       labels:
+        - 'cli'
+        - 'vscode'
         - 'skip-changelog'
         - 'duplicate'
         - 'invalid'

@@ -26,9 +26,6 @@
 name-template: 'Oxide for VS Code v$RESOLVED_VERSION'
 tag-template: 'extension-v$RESOLVED_VERSION'
 tag-prefix: 'extension-v'
-exclude-labels:
-  - 'cli'
-  - 'desktop'
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
@@ -45,6 +42,8 @@ categories:
   - type: 'pre-exclude'
     when:
       labels:
+        - 'cli'
+        - 'desktop'
         - 'skip-changelog'
         - 'duplicate'
         - 'invalid'

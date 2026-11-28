@@ -161,8 +161,13 @@ check(
     [releaseDrafter, ["cli", "vscode"]],
     [vscodeReleaseDrafter, ["cli", "desktop"]],
   ].every(([notes, excluded]) => {
-    const section = notes.match(/(?:^|\n)exclude-labels:\n((?:  - '[^']+'\n)+)/);
-    return excluded.every((label) => section?.[1].includes(`  - '${label}'`));
+    const section = notes.match(
+      /-\s+type:\s*'pre-exclude'\s*\n\s+when:\s*\n\s+labels:\s*\n((?:\s+-\s+'[^']+'\s*\n)+)/,
+    );
+    return (
+      !/(?:^|\n)exclude-labels:/.test(notes) &&
+      excluded.every((label) => section?.[1].includes(`  - '${label}'`))
+    );
   }),
 );
 check(
