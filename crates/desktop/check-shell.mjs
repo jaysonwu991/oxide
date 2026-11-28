@@ -171,6 +171,14 @@ check(
   }),
 );
 check(
+  "kept conventional-commit prefixes out of release note titles",
+  [cliReleaseDrafter, releaseDrafter, vscodeReleaseDrafter].every(
+    (notes) =>
+      notes.includes("target: change-title") &&
+      notes.includes("replace: '\\u$1'"),
+  ),
+);
+check(
   "kept the CLI release notes on the install scripts",
   /raw\.githubusercontent\.com\/\$OWNER\/\$REPOSITORY\/main\/install\.sh/.test(cliReleaseDrafter) &&
     /raw\.githubusercontent\.com\/\$OWNER\/\$REPOSITORY\/main\/install\.ps1/.test(
