@@ -53,11 +53,12 @@ check(
     config.app.windows[0].minHeight === 560,
 );
 check(
-  "waited for the page before showing the window",
+  "created the maximized window before revealing the page",
   config.app.windows[0].visible === false &&
+    config.app.windows[0].maximized === true &&
     /fn native_ready\(app: &AppHandle/.test(main) &&
-    /window\.maximize\(\)/.test(main) &&
-    /window\.show\(\)/.test(main),
+    /window\.show\(\)/.test(main) &&
+    !/window\.maximize\(\)/.test(main),
 );
 check(
   "kept the app's topbar draggable",
@@ -121,11 +122,12 @@ check(
     !/"open-pulls" =>/.test(menu),
 );
 check(
-  "relaunched only after the engine accepts the restart",
+  "relaunched in front only after the engine accepts the restart",
   /packet\["id"\] == "restart"/.test(main) &&
     /restart_app\(&app\)/.test(main) &&
-    /while kill -0 \\"\$1\\"/.test(main) &&
-    /exec \/usr\/bin\/open -g/.test(main),
+    /while kill -0 "\$1"/.test(main) &&
+    /\/usr\/bin\/open \\"\$2\\"/.test(main) &&
+    !/\/usr\/bin\/open -g/.test(main),
 );
 
 console.log("the release contract");

@@ -77,10 +77,12 @@ Host-owned requests are handled in Rust rather than sent to the engine:
 
 Other requests dispatch through `oxide_desktop::commands::dispatch`. The host
 adds this build's version to `check_updates`, `install_update` and
-`download_update`; they resolve the single `desktop-v*` train. On macOS, an
-update restart waits for the replaced process to exit before opening the bundle
-through LaunchServices. Tauri's default `open -n` relaunch briefly creates a
-second application instance, which leaves two Oxide Dock icons during an update.
+`download_update`; they resolve the single `desktop-v*` train. The window is
+created maximized while hidden and is only revealed after the page is ready, so
+startup does not resize a visible window. On macOS, an update restart waits for
+the replaced process to exit before opening the bundle in front through
+LaunchServices. Tauri's default `open -n` relaunch briefly creates a second
+application instance, which leaves two Oxide Dock icons during an update.
 
 ## Packaging
 
