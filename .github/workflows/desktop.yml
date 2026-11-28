@@ -99,7 +99,7 @@ jobs:
           }
           "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Install the page's diagram packages
+      - name: Install the page's diagram and editor packages
         working-directory: crates/desktop
         run: pnpm install --frozen-lockfile
 

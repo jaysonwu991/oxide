@@ -202,6 +202,12 @@ pub fn install(app: &AppHandle, state: &NativeMenu) -> Result<(), String> {
         &state.text("settings.actionTerminal", "Terminal"),
         Some(&state.accelerator("terminal", "Ctrl+`")),
     )?;
+    let editor = item(
+        app,
+        "open-editor",
+        &state.text("menu.editor", "Editor"),
+        Some(&state.accelerator("editor", "CmdOrCtrl+E")),
+    )?;
     let sidebar = item(
         app,
         "toggle-sidebar",
@@ -238,6 +244,7 @@ pub fn install(app: &AppHandle, state: &NativeMenu) -> Result<(), String> {
             &separator(app)?,
             &panel,
             &terminal,
+            &editor,
             &separator(app)?,
             &sidebar,
             &back,
@@ -303,6 +310,7 @@ pub fn handle(app: &AppHandle, event: &MenuEvent) {
         "zoom-reset" => ("zoom", json!({ "action": "reset" })),
         "toggle-panel" => ("toggle-panel", json!({})),
         "open-terminal" => ("open-terminal", json!({})),
+        "open-editor" => ("open-editor", json!({})),
         "toggle-sidebar" => ("toggle-sidebar", json!({})),
         "history-back" => ("history", json!({ "action": "back" })),
         "history-forward" => ("history", json!({ "action": "forward" })),

@@ -19,6 +19,18 @@ refuses native DOM edits. Terminal paste deliberately avoids
 `navigator.clipboard.readText()`, which WebKit presents as another Paste
 permission callout rather than a direct paste.
 
+The right-hand dock also carries a project editor. It uses VS Code's Monaco
+engine, loaded from `node_modules/monaco-editor` into the ignored
+`ui/vendor/monaco` directory by `scripts/prepare-editor.mjs`, so the release
+stays offline and the launch does not pay for the language runtime until the
+editor is opened. Open it from the code control in the title bar, **View >
+Editor**, or `⌘E` / `Ctrl+E`; `⌘S` / `Ctrl+S` saves. The picker uses the same
+ignore-aware project file walk as composer `@path` completion. Any UTF-8 file up
+to 8 MiB is editable; unknown extensions fall back to plain text rather than
+being refused. Saves carry the digest read when the file was opened and are
+refused if an agent turn changed the file in the meantime. Use **Revert** to
+reload the disk copy after a refused save.
+
 ```mermaid
 graph TD
     Tauri["Tauri window<br/>crates/desktop"] --> Page["Desktop page<br/>crates/desktop/ui"]

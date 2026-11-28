@@ -18,6 +18,7 @@ pub mod ask;
 pub mod at;
 pub mod bridge;
 pub mod commands;
+pub mod editor;
 pub mod git;
 pub mod manager;
 pub mod predict;

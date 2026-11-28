@@ -13,8 +13,8 @@ and [vscode.md](vscode.md).
 - **Oxide Desktop** (`crates/desktop`) is the native Tauri app: it links the
   desktop engine in-process, manages multiple projects, and shares the CLI's
   configuration and session store. It includes chat tabs, independent drafts
-  and runs, streamed Markdown, reviews, worktrees, terminals, MCP servers,
-  plugins, and the platform webview's accessibility (see
+  and runs, streamed Markdown, a Monaco project editor, reviews, worktrees,
+  terminals, MCP servers, plugins, and the platform webview's accessibility (see
   [desktop.md](desktop.md)).
 - VS Code extension (`editors/vscode`) that drives the same `oxide` binary from
   a chat panel in the activity bar, with editor actions for the selection and

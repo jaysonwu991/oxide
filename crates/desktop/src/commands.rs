@@ -4,6 +4,7 @@ use crate::approval::ApprovalBroker;
 use crate::ask::AskBroker;
 use crate::at::{AtAnswer, PathCache};
 use crate::bridge::{EventSink, Host};
+use crate::editor;
 use crate::manager::{expand_project_path, DesktopManager, ProjectView, SessionView};
 use crate::prefs::Prefs;
 use crate::turn::{notify_finished, open_session, start_turn, Turn};
@@ -1206,6 +1207,49 @@ pub async fn file_view(project: String, path: String) -> CmdResult<crate::previe
         .map_err(err)
 }
 
+// ---------- the project editor ----------
+
+/// Opens one UTF-8 file in the right-hand editor.
+pub async fn editor_open(project: String, path: String) -> CmdResult<editor::EditorFile> {
+    let root = project_dir(&project)?;
+    tokio::task::spawn_blocking(move || editor::read(&root, &path))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+/// Saves the editor's text after checking that the file still holds the bytes
+/// the editor opened, so an agent turn cannot be silently overwritten.
+pub async fn editor_save(
+    project: String,
+    path: String,
+    text: String,
+    digest: String,
+    state: &DesktopState,
+) -> CmdResult<editor::SavedFile> {
+    let root = project_dir(&project)?;
+    let saved = tokio::task::spawn_blocking(move || editor::save(&root, &path, &text, &digest))
+        .await
+        .map_err(err)?
+        .map_err(err)?;
+    state.at.clear();
+    Ok(saved)
+}
+
+/// The project's editable file names, from the same ignored-respecting walk the
+/// composer uses for `@path`.
+pub fn editor_files(project: String, state: &DesktopState) -> CmdResult<Vec<String>> {
+    let root = project_dir(&project)?;
+    Ok(state
+        .at
+        .paths(&root)
+        .iter()
+        .filter(|path| !path.ends_with('/'))
+        .take(20_000)
+        .cloned()
+        .collect())
+}
+
 // ---------- the next message, and side chats ----------
 
 /// Asks the configured model for the message the reader is likely to send next.
@@ -2187,6 +2231,20 @@ pub async fn dispatch(
             .await,
         ),
         "file_view" => command_value(file_view(arg(&args, "project")?, arg(&args, "path")?).await),
+        "editor_open" => {
+            command_value(editor_open(arg(&args, "project")?, arg(&args, "path")?).await)
+        }
+        "editor_save" => command_value(
+            editor_save(
+                arg(&args, "project")?,
+                arg(&args, "path")?,
+                arg(&args, "text")?,
+                arg(&args, "digest")?,
+                &state,
+            )
+            .await,
+        ),
+        "editor_files" => command_value(editor_files(arg(&args, "project")?, &state)),
         "predict" => command_value(predict(arg(&args, "project")?, arg(&args, "id")?).await),
         "fork_session" => command_value(
             fork_session(

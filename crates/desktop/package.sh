@@ -72,6 +72,7 @@ if [ -z "$version" ]; then
 fi
 
 node "$here/../../scripts/prepare-diagrams.mjs" desktop
+node "$here/scripts/prepare-editor.mjs"
 
 if [ "${OXIDE_SKIP_BUILD:-0}" != "1" ]; then
   echo "building oxide-desktop $version"

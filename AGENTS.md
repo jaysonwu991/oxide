@@ -45,7 +45,7 @@ and detailed explanations in the relevant guide.
 - `cargo test`
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo fmt`
-- `cd crates/desktop && pnpm install` (the page's Mermaid build dependency, once; pnpm 12 and the app's own lockfile are what CI installs from)
+- `cd crates/desktop && pnpm install` (the page's Mermaid and Monaco dependencies, once; pnpm 12 and the app's own lockfile are what CI installs from)
 - `cd crates/desktop && node ../../scripts/prepare-diagrams.mjs desktop && cargo run` (the Tauri window; install the page dependency first with `pnpm install`)
 - `cd crates/desktop && cargo build --release && ./package.sh` (this platform's installer under `artifacts/`)
 - `cd crates/desktop && cargo test` (desktop manager, turn, command, bridge, host and updater tests)

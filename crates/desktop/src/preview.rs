@@ -27,7 +27,7 @@ pub struct FileView {
     pub truncated: bool,
 }
 
-fn checked(path: &str) -> Result<&Path> {
+pub(crate) fn checked(path: &str) -> Result<&Path> {
     let candidate = Path::new(path);
     if candidate.is_absolute() {
         bail!("`{path}` is not a path inside the project.");

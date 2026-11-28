@@ -81,7 +81,7 @@ jobs:
             libdbus-1-dev \
             libssl-dev \
             patchelf
-      - name: Install the page's diagram packages
+      - name: Install the page's diagram and editor packages
         working-directory: crates/desktop
         run: pnpm install --frozen-lockfile
       - name: Check formatting
@@ -137,7 +137,7 @@ jobs:
             libdbus-1-dev \
             libssl-dev \
             patchelf
-      - name: Install the page's diagram packages
+      - name: Install the page's diagram and editor packages
         working-directory: crates/desktop
         run: pnpm install --frozen-lockfile
       - name: Test Oxide Desktop

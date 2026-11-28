@@ -2956,12 +2956,12 @@ button.create-project-add:hover:not(:disabled) { background: color-mix(in srgb, 
 .jump-latest:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 /* Shared toolbar geometry keeps controls and readings on one baseline. */
-.topbar .icon, .dialog .icon, .popover .icon, .composer .icon, .changes-pane .icon, .details-pane .icon, .send {
+.topbar .icon, .dialog .icon, .popover .icon, .composer .icon, .changes-pane .icon, .editor-pane .icon, .details-pane .icon, .send {
   display: inline-flex; align-items: center; justify-content: center;
   width: var(--control-size); height: var(--control-size); min-height: var(--control-size);
   padding: 0; flex: none; border-radius: 8px;
 }
-.topbar .icon svg, .dialog .icon svg, .popover .icon svg, .composer .icon svg, .changes-pane .icon svg, .details-pane .icon svg, .send svg { width: var(--control-icon-size); height: var(--control-icon-size); }
+.topbar .icon svg, .dialog .icon svg, .popover .icon svg, .composer .icon svg, .changes-pane .icon svg, .editor-pane .icon svg, .details-pane .icon svg, .send svg { width: var(--control-icon-size); height: var(--control-icon-size); }
 #model { flex: 0 1 auto; }
 .changes-review, .changes-undo { min-height: var(--control-size); padding: 4px 10px; line-height: var(--ui-line-height); border-radius: 6px; }
 #usage:empty { display: none; }
@@ -3330,6 +3330,102 @@ body.settings-open .topbar { grid-column: 1 / -1; }
 }
 .terminal-pane-shell svg { display: block; flex: none; }
 .panel-bodies { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+/* The project editor shares the right-hand dock with Changes, while Terminal
+   takes the bottom dock. It keeps its own model while hidden so switching back
+   does not lose an edit. */
+.editor-pane {
+  position: relative;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.editor-dialog { position: relative; height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.editor-titlebar { justify-content: flex-start; gap: 5px; min-height: 48px; padding: 0 8px 0 4px; }
+.editor-heading { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 7px; }
+.editor-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; }
+.editor-language { flex: none; color: var(--faint); font-size: 10.5px; }
+.editor-save-state { flex: none; color: var(--faint); font-size: 10.5px; white-space: nowrap; }
+.editor-save-state.dirty { color: var(--accent); }
+.editor-file-picker {
+  position: absolute;
+  z-index: 20;
+  inset: 48px 8px auto;
+  max-height: min(460px, calc(100% - 62px));
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px #0007;
+}
+.editor-file-picker input { width: 100%; box-sizing: border-box; padding: 7px 9px; font-size: 12px; }
+.editor-file-list { min-height: 0; overflow-y: auto; }
+.editor-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--dim);
+  text-align: left;
+  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.editor-file-row:hover, .editor-file-row.active { color: var(--text); background: var(--panel-2); }
+.editor-file-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-file-empty { padding: 10px 8px; color: var(--faint); font-size: 12px; }
+.editor-body { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.editor-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--faint);
+  text-align: center;
+}
+.editor-empty p { margin: 0; }
+.editor-fallback {
+  flex: 1 1 auto;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  box-sizing: border-box;
+  resize: none;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 12.5px/1.6 "JetBrainsMonoNLNerdFontMono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 4;
+}
+.editor-monaco { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.editor-statusbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 25px;
+  padding: 0 9px;
+  border-top: 1px solid var(--border);
+  color: var(--faint);
+  font-size: 10.5px;
+}
+#editor-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 
 /* The terminal takes macOS Terminal's compact bottom-window shape: the
    conversation above it and one restrained control row over the shell. */
