@@ -22,10 +22,9 @@ tag-template: 'v$RESOLVED_VERSION'
 # prefix would adopt whichever draft GitHub returns first.
 tag-prefix: 'v'
 # A scoped mixed change carries the label of the front-end it names. Shared
-# changes carry none, so they remain in every component's notes.
-exclude-labels:
-  - 'desktop'
-  - 'vscode'
+# changes carry none, so they remain in every component's notes. Component
+# exclusions live in the `pre-exclude` category below, the v7 replacement for
+# the deprecated top-level `exclude-labels` field.
 change-template: '- $TITLE (#$NUMBER) by @$AUTHOR'
 change-title-escapes: '\<*_&'
 category-template: '### $TITLE'
@@ -42,6 +41,8 @@ categories:
   - type: 'pre-exclude'
     when:
       labels:
+        - 'desktop'
+        - 'vscode'
         - 'skip-changelog'
         - 'duplicate'
         - 'invalid'
